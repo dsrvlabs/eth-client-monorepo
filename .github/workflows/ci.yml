@@ -1,0 +1,85 @@
+# CC-07a — core CI gates: fmt, clippy, test (+ caching).
+# Toolchain pin lives only in rust-toolchain.toml (CC-07/2); never duplicate the version here.
+name: CI
+
+on:
+  pull_request:
+  push:
+    # develop is this monorepo's integration branch (intentional deviation from Architecture §9 main-only).
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Reads rust-toolchain.toml (channel + rustfmt/clippy components).
+      # cache: false — avoid double-invoking Swatinem/rust-cache (setup-rust-toolchain defaults cache: true).
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo clippy
+        # --locked: R-5 (Cargo.lock is source of truth for binary workspaces).
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      # D-3: DAG guard lives in clippy (required) so it blocks merges before deps (CC-08) is required.
+      - name: check crate DAG
+        run: bash scripts/check-crate-dag.sh
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: cargo nextest
+        # R-9: nextest defaults to --no-tests=fail; workspace has no tests until CC-01b
+        # (bootstrap shutdown integration test). Remove --no-tests=warn when CC-01b lands.
+        run: cargo nextest run --workspace --locked --profile ci --no-tests=warn
