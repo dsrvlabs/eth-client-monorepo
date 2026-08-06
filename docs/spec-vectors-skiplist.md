@@ -29,10 +29,10 @@ the entry (e.g. `CC-12e`).
 - `minimal/fulu/fork_choice` (`tick` step kind) -- `on_tick` structure landed; vector runner not wired -- CC-15c
 - `mainnet/fulu/fork_choice` (`block` step kind) -- `on_block` / `compute_pulled_up_tip` landed; vector runner not wired -- CC-15c
 - `minimal/fulu/fork_choice` (`block` step kind) -- `on_block` / `compute_pulled_up_tip` landed; vector runner not wired -- CC-15c
-- `mainnet/fulu/fork_choice` (`attestation` step kind) -- `on_attestation` not implemented -- CC-16
-- `minimal/fulu/fork_choice` (`attestation` step kind) -- `on_attestation` not implemented -- CC-16
-- `mainnet/fulu/fork_choice` (`attester_slashing` step kind) -- `on_attester_slashing` not implemented -- CC-16
-- `minimal/fulu/fork_choice` (`attester_slashing` step kind) -- `on_attester_slashing` not implemented -- CC-16
+- `mainnet/fulu/fork_choice` (`attestation` step kind) -- `on_attestation` / vote trackers / `compute_deltas` landed; vector runner not wired -- CC-15c
+- `minimal/fulu/fork_choice` (`attestation` step kind) -- `on_attestation` / vote trackers / `compute_deltas` landed; vector runner not wired -- CC-15c
+- `mainnet/fulu/fork_choice` (`attester_slashing` step kind) -- `on_attester_slashing` / equivocating indices landed; vector runner not wired -- CC-15c
+- `minimal/fulu/fork_choice` (`attester_slashing` step kind) -- `on_attester_slashing` / equivocating indices landed; vector runner not wired -- CC-15c
 - `mainnet/fulu/fork_choice` (`checks` step kind) -- full checks assertion and suite green -- CC-15c
 - `minimal/fulu/fork_choice` (`checks` step kind) -- full checks assertion and suite green -- CC-15c
 - `minimal/fulu/fork_choice_compliance` -- OQ-3 in-scope compliance suite; same step runner as `fork_choice` -- CC-15c

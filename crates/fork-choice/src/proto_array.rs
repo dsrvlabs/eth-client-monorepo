@@ -51,6 +51,9 @@ pub enum ProtoArrayError {
     /// Node root not present.
     #[error("unknown root: {0:?}")]
     UnknownRoot(Root),
+    /// Weight-delta slice length does not match the node count.
+    #[error("weight delta length {got} does not match node count {expected}")]
+    DeltaLengthMismatch { got: usize, expected: usize },
 }
 
 /// Arguments for [`ProtoArray::on_block`] (one logical block insertion).
@@ -328,9 +331,35 @@ impl ProtoArray {
     /// **`pub(crate)` only** — do not store the result across [`Self::prune`].
     /// Prefer keeping a [`Root`] and re-resolving. Reserved for weight / head
     /// passes (CC-15b/c); tests use it to demonstrate stale-index hazards.
-    #[allow(dead_code)] // consumed by get_head / compute_deltas (CC-15b/c)
+    #[cfg_attr(not(test), allow(dead_code))] // consumed by get_head (CC-15c)
     pub(crate) fn index_of(&self, root: &Root) -> Option<usize> {
         self.indices.get(root).copied()
+    }
+
+    /// Borrow the root→index map for `compute_deltas` / weight application.
+    ///
+    /// **`pub(crate)` only** — indices are invalidated by [`Self::prune`].
+    pub(crate) fn indices(&self) -> &HashMap<Root, usize> {
+        &self.indices
+    }
+
+    /// Apply per-node weight deltas in place (`deltas[i]` added to `nodes[i].weight`).
+    ///
+    /// Called by `get_head` after [`crate::on_attestation::compute_deltas`]
+    /// (CC-15c). Length must match the current node count.
+    ///
+    /// **Weights are only meaningful immediately after this + a full head pass.**
+    pub fn apply_weight_deltas(&mut self, deltas: &[i64]) -> Result<(), ProtoArrayError> {
+        if deltas.len() != self.nodes.len() {
+            return Err(ProtoArrayError::DeltaLengthMismatch {
+                got: deltas.len(),
+                expected: self.nodes.len(),
+            });
+        }
+        for (node, delta) in self.nodes.iter_mut().zip(deltas.iter()) {
+            node.weight = node.weight.saturating_add(*delta);
+        }
+        Ok(())
     }
 
     /// Borrow all nodes (read-only public view for diagnostics / tests).

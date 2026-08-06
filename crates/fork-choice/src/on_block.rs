@@ -138,6 +138,19 @@ pub fn get_forkchoice_store<P: Preset>(
     store.insert_block(anchor_root, header, anchor_state.clone());
 
     let ctx = CheckpointContext::from_state(&anchor_state, justified);
+    // Seed the justified-balance snapshot from the anchor context so the first
+    // `compute_deltas` pass does not treat all balances as zero (SEC-16-3).
+    let justified_balances: Vec<u64> = ctx.effective_balances.iter().map(|g| g.as_u64()).collect();
+    // Keep votes / balances length aligned with the registry at the anchor.
+    let n = justified_balances.len().max(anchor_state.validators_len());
+    store.resize_votes(n);
+    store.set_justified_balances(if justified_balances.len() == n {
+        justified_balances
+    } else {
+        let mut b = justified_balances;
+        b.resize(n, 0);
+        b
+    });
     store.insert_checkpoint_context(justified, Arc::new(ctx));
 
     Ok(store)

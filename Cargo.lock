@@ -774,6 +774,7 @@ dependencies = [
  "cc-state-transition",
  "cc-types",
  "lru",
+ "ssz_types",
  "thiserror",
  "tree_hash",
 ]

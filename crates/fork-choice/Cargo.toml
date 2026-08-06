@@ -16,3 +16,6 @@ cc-state-transition = { workspace = true }
 thiserror = { workspace = true }
 lru = { workspace = true }
 tree_hash = { workspace = true }
+
+[dev-dependencies]
+ssz_types = { workspace = true }

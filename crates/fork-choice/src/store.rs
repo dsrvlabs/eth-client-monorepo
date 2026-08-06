@@ -28,13 +28,59 @@ use crate::proto_array::ProtoArray;
 /// Default capacity for the checkpoint-context LRU (Architecture §6.6: **8**).
 pub const DEFAULT_CHECKPOINT_CONTEXT_CAPACITY: usize = 8;
 
-/// Spec `LatestMessage` — dense-vector element of the store's latest-messages table.
+/// Spec `LatestMessage` — the **next** (unapplied or applied) vote view of a validator.
+///
+/// Derived from [`VoteTracker`]'s `next_root` / `next_epoch`. Prefer reading via
+/// [`Store::latest_message`]; weight bookkeeping uses the full tracker (§6.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LatestMessage {
     /// Target epoch of the latest attestation.
     pub epoch: Epoch,
     /// LMD head root of the latest attestation.
     pub root: Root,
+}
+
+/// Per-validator vote tracker for batched weight updates (Architecture §6.3).
+///
+/// `on_attestation` writes only `next_root` / `next_epoch` (O(1), no weight math).
+/// `compute_deltas` (called from `get_head`, never from `on_attestation`) produces
+/// a per-node delta vector and promotes `current_root = next_root`.
+///
+/// **Node weights are only correct immediately after `get_head` applies deltas.**
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VoteTracker {
+    /// Root whose weight currently includes this validator (after last `compute_deltas`).
+    pub current_root: Root,
+    /// Root of the newest accepted attestation (may differ from `current_root`).
+    pub next_root: Root,
+    /// Target epoch of the newest accepted attestation.
+    pub next_epoch: Epoch,
+}
+
+impl VoteTracker {
+    /// Whether this tracker has never accepted a vote.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.current_root == Root::ZERO
+            && self.next_root == Root::ZERO
+            && self.next_epoch.as_u64() == 0
+    }
+
+    /// Spec-shaped latest message from the **next** vote, if any has been cast.
+    #[inline]
+    pub fn latest_message(&self) -> Option<LatestMessage> {
+        // `next_*` is written by `on_attestation` and left in place after
+        // `compute_deltas` promotes `current_root`. Default zero next means no
+        // vote has ever been accepted for this validator.
+        if self.next_root == Root::ZERO && self.next_epoch.as_u64() == 0 {
+            None
+        } else {
+            Some(LatestMessage {
+                epoch: self.next_epoch,
+                root: self.next_root,
+            })
+        }
+    }
 }
 
 /// Head-cache entry served while the store's mutation counter is unchanged (§6.4).
@@ -65,8 +111,8 @@ pub enum StoreError {
 /// `blocks` stores **headers, not blocks**. Post-states for unfinalized roots
 /// live in `block_states` so `on_block` can run `state_transition` and
 /// `compute_pulled_up_tip` (residency pruning is owned by the chain service,
-/// CC-18b). `latest_messages` is a dense `Vec<Option<LatestMessage>>` so
-/// `compute_deltas` is a linear scan.
+/// CC-18b). Vote trackers are a dense `Vec<VoteTracker>` so `compute_deltas`
+/// is a linear scan (Architecture §6.3).
 ///
 /// # Mutation discipline
 ///
@@ -91,7 +137,13 @@ pub struct Store<P: Preset> {
     block_states: HashMap<Root, BeaconState<P>>,
     /// Checkpoint-context LRU (Architecture §6.6 — capacity 8). ADR-P1-08.
     checkpoint_contexts: LruCache<(Epoch, Root), Arc<CheckpointContext>>,
-    latest_messages: Vec<Option<LatestMessage>>,
+    /// Dense vote trackers indexed by validator index (§6.3 batching contract).
+    votes: Vec<VoteTracker>,
+    /// Effective-balance snapshot last applied by `compute_deltas` (justified).
+    ///
+    /// Compared against the new justified [`CheckpointContext`] balances on the
+    /// next delta pass so balance changes at justification are correct.
+    justified_balances: Vec<u64>,
     proto_array: ProtoArray,
     head_cache: Option<CachedHead>,
     mutation_counter: u64,
@@ -121,7 +173,8 @@ impl<P: Preset> std::fmt::Debug for Store<P> {
             .field("blocks_len", &self.blocks.len())
             .field("block_states_len", &self.block_states.len())
             .field("checkpoint_contexts_len", &self.checkpoint_contexts.len())
-            .field("latest_messages_len", &self.latest_messages.len())
+            .field("votes_len", &self.votes.len())
+            .field("justified_balances_len", &self.justified_balances.len())
             .field("proto_array_len", &self.proto_array.len())
             .field("head_cache", &self.head_cache)
             .field("mutation_counter", &self.mutation_counter)
@@ -159,7 +212,8 @@ impl<P: Preset> Store<P> {
             blocks: HashMap::new(),
             block_states: HashMap::new(),
             checkpoint_contexts: LruCache::new(capacity),
-            latest_messages: vec![None; validator_count],
+            votes: vec![VoteTracker::default(); validator_count],
+            justified_balances: vec![0; validator_count],
             proto_array: ProtoArray::new(justified_checkpoint, finalized_checkpoint),
             head_cache: None,
             mutation_counter: 0,
@@ -255,10 +309,30 @@ impl<P: Preset> Store<P> {
         self.block_states.len()
     }
 
-    /// Borrow latest-messages table (read-only).
+    /// Borrow vote trackers (read-only).
     #[inline]
-    pub fn latest_messages(&self) -> &[Option<LatestMessage>] {
-        &self.latest_messages
+    pub fn votes(&self) -> &[VoteTracker] {
+        &self.votes
+    }
+
+    /// Spec-shaped latest message for `validator_index`, if any.
+    #[inline]
+    pub fn latest_message(&self, validator_index: ValidatorIndex) -> Option<LatestMessage> {
+        self.votes
+            .get(validator_index.as_u64() as usize)
+            .and_then(VoteTracker::latest_message)
+    }
+
+    /// Borrow equivocating validator indices (read-only).
+    #[inline]
+    pub fn equivocating_indices(&self) -> &BTreeSet<ValidatorIndex> {
+        &self.equivocating_indices
+    }
+
+    /// Effective balances last applied by `compute_deltas`.
+    #[inline]
+    pub fn justified_balances(&self) -> &[u64] {
+        &self.justified_balances
     }
 
     /// Borrow the DA seam.
@@ -441,6 +515,55 @@ impl<P: Preset> Store<P> {
     /// the mutation can move the head (insert already bumps via `insert_block`).
     pub(crate) fn proto_array_mut(&mut self) -> &mut ProtoArray {
         &mut self.proto_array
+    }
+
+    /// Mutable vote-tracker slice for `on_attestation` / `compute_deltas`.
+    pub(crate) fn votes_mut(&mut self) -> &mut [VoteTracker] {
+        &mut self.votes
+    }
+
+    /// Resize the vote-tracker and balance tables to exactly `count` entries.
+    ///
+    /// Controlled grow/shrink for registry changes and test seeding. Attestation
+    /// handlers must **not** grow unbounded from arbitrary indices (SEC-16-2) —
+    /// they reject out-of-range validator indices instead.
+    pub fn resize_votes(&mut self, count: usize) {
+        self.votes.resize(count, VoteTracker::default());
+        self.justified_balances.resize(count, 0);
+    }
+
+    /// Number of vote-tracker slots (validator capacity known to fork choice).
+    #[inline]
+    pub fn vote_capacity(&self) -> usize {
+        self.votes.len()
+    }
+
+    /// Insert equivocating indices and bump the mutation counter if any are new.
+    ///
+    /// A slashed validator's weight is retracted on the next `compute_deltas`
+    /// pass (skip + negative delta on `current_root`).
+    pub fn insert_equivocating_indices(
+        &mut self,
+        indices: impl IntoIterator<Item = ValidatorIndex>,
+    ) {
+        let mut changed = false;
+        for index in indices {
+            if self.equivocating_indices.insert(index) {
+                changed = true;
+            }
+        }
+        if changed {
+            self.bump_mutation_counter();
+        }
+    }
+
+    /// Replace the justified-balance snapshot used by the next `compute_deltas`.
+    ///
+    /// Called after a successful delta pass (and when seeding from a justified
+    /// [`CheckpointContext`]). Does not bump `mutation_counter` by itself —
+    /// balance swap alone does not move the head until deltas are applied.
+    pub fn set_justified_balances(&mut self, balances: Vec<u64>) {
+        self.justified_balances = balances;
     }
 
     /// Checkpoint-context LRU capacity (Architecture §6.6).
