@@ -1,0 +1,67 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/types",
+  "crates/crypto",
+  "crates/proto",
+  "crates/bootstrap",
+  "crates/config",
+  "services/chain",
+  "services/p2p",
+  "services/attestation",
+  "services/engine",
+  "services/beacon-api",
+  "services/storage",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "Apache-2.0"
+repository = "https://github.com/dsrvlabs/eth-client-monorepo"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+dbg_macro = "warn"
+
+[workspace.dependencies]
+# Internal crates
+cc-types = { path = "crates/types" }
+cc-crypto = { path = "crates/crypto" }
+cc-proto = { path = "crates/proto" }
+cc-bootstrap = { path = "crates/bootstrap" }
+cc-config = { path = "crates/config" }
+
+# External pins (Architecture §2.3 / §10)
+tonic = "0.14.6"
+prost = "0.14.4"
+
+[profile.release]
+opt-level = 3
+debug = 1
+lto = "thin"
+codegen-units = 16
+panic = "unwind"
+overflow-checks = true
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.bench]
+inherits = "release"
+debug = 2
