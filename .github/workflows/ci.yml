@@ -83,3 +83,59 @@ jobs:
         # R-9: nextest defaults to --no-tests=fail; workspace has no tests until CC-01b
         # (bootstrap shutdown integration test). Remove --no-tests=warn when CC-01b lands.
         run: cargo nextest run --workspace --locked --profile ci --no-tests=warn
+
+  # CC-06c — sanctioned Stream B cross-stream edit: adds this job only; does not
+  # modify fmt/clippy/test (or later proto/deps/compose). Non-required in Phase 0
+  # (CC-07/1); becomes required in Phase 1 when `test` depends on it. R-7: this run
+  # is the independent second digest computation against spec-vectors.lock.
+  vectors:
+    name: vectors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Resolve <cache>/<tag>/_dl so the cache path stays pin-accurate without
+      # hardcoding the tag (key changes only when the lockfile changes).
+      - name: Resolve spec-vector cache path
+        id: vectors
+        run: |
+          CACHE_ROOT="${SPEC_VECTORS_CACHE:-${HOME}/.cache/eth-consensus-spec-vectors}"
+          TAG="$(awk -F'=' '
+            $0 ~ /^[[:space:]]*tag[[:space:]]*=/ {
+              v = $0
+              sub(/^[^=]*=[[:space:]]*/, "", v)
+              gsub(/^[[:space:]]*"?|"?[[:space:]]*$/, "", v)
+              print v
+              exit
+            }
+          ' spec-vectors.lock)"
+          if [[ -z "${TAG}" ]]; then
+            echo "error: failed to parse tag from spec-vectors.lock" >&2
+            exit 1
+          fi
+          # Same allowlist as scripts/record-vector-layout.sh (F1): start with
+          # alnum; only [A-Za-z0-9._-] thereafter; reject ".." path traversal.
+          if [[ ! "${TAG}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "error: tag contains disallowed characters (want ^[A-Za-z0-9][A-Za-z0-9._-]*\$): ${TAG}" >&2
+            exit 1
+          fi
+          if [[ "${TAG}" == *..* ]]; then
+            echo "error: tag must not contain '..': ${TAG}" >&2
+            exit 1
+          fi
+          echo "dl_dir=${CACHE_ROOT}/${TAG}/_dl" >> "${GITHUB_OUTPUT}"
+          echo "cache_root=${CACHE_ROOT}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      # R-3 / §7.5: cache _dl/ tarballs only — never the unpacked tree (tests/, markers).
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.vectors.outputs.dl_dir }}
+          key: ${{ hashFiles('spec-vectors.lock') }}
+
+      - name: Fetch and verify spec vectors
+        env:
+          SPEC_VECTORS_CACHE: ${{ steps.vectors.outputs.cache_root }}
+        run: bash scripts/fetch-spec-vectors.sh
