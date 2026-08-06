@@ -17,4 +17,5 @@ message BuildInfo {
   string version = 2; // CARGO_PKG_VERSION
   string git_sha = 3;
   string rustc = 4;
+  string BadCamelCase = 5; // deliberate lint violation for CC-07b
 }
