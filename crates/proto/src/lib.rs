@@ -205,12 +205,14 @@ mod smoke {
         >();
     }
 
-    /// Compile-only construction of every CC-18 request/response type (CC-18a acceptance).
+    /// Compile-only construction of every CC-18 / CC-1E request/response type.
     #[test]
     fn cc18_request_response_types_construct() {
         use crate::chain::{
-            Checkpoint, Cursor, Event, EventKind, GetHeadRequest, GetHeadResponse,
-            ImportBlockRequest, ImportBlockResponse, ImportBlockVerdict, SubscribeEventsRequest,
+            ApplyAttestationsRequest, ApplyAttestationsResponse, AttestationApplyResult,
+            AttestationApplyVerdict, Checkpoint, Cursor, Event, EventKind, GetHeadRequest,
+            GetHeadResponse, ImportBlockRequest, ImportBlockResponse, ImportBlockVerdict,
+            SubscribeEventsRequest,
         };
         use crate::common::Source;
 
@@ -295,6 +297,28 @@ mod smoke {
         assert_eq!(decoded.fork, req.fork);
         assert_eq!(decoded.root, req.root);
         assert_eq!(decoded.source, req.source);
+
+        // CC-1E ApplyAttestations types (additive; field numbers live).
+        let apply_req = ApplyAttestationsRequest {
+            attestations_ssz: vec![vec![1u8; 8], vec![2u8; 8]],
+        };
+        assert_eq!(apply_req.attestations_ssz.len(), 2);
+        let apply_resp = ApplyAttestationsResponse {
+            results: vec![
+                AttestationApplyResult {
+                    verdict: AttestationApplyVerdict::Applied as i32,
+                    reason: String::new(),
+                },
+                AttestationApplyResult {
+                    verdict: AttestationApplyVerdict::Rejected as i32,
+                    reason: "unknown block".into(),
+                },
+            ],
+        };
+        assert_eq!(apply_resp.results.len(), 2);
+        let apply_bytes = apply_req.encode_to_vec();
+        let apply_decoded = ApplyAttestationsRequest::decode(apply_bytes.as_slice()).unwrap();
+        assert_eq!(apply_decoded.attestations_ssz, apply_req.attestations_ssz);
     }
 
     /// §13/6 detail-attachment API: pack `ErrorInfo{reason=CURSOR_TOO_OLD}` into a

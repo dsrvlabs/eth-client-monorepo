@@ -107,10 +107,9 @@ to an existing service is **not** a `FILE`-category break — `buf breaking` mus
 | `ImportBlock` | unary | Import a `SignedBeaconBlock` (SSZ bytes) and return a first-class verdict |
 | `GetHead` | unary | Head root/slot plus justified/finalized checkpoints (served from `ArcSwap` in CC-18b) |
 | `SubscribeEvents` | server-streaming | Event bus with resume cursor; consumers must be idempotent |
+| `ApplyAttestations` | unary | Batched free-floating `on_attestation` (CC-1E); weight observed through `GetHead` |
 | `GetCommitteeShuffling` | unary | Packed epoch shuffling + `dependent_root` from head state (CC-1F, **served**) |
 | `GetValidatorPubkeys` | unary | Registry pubkeys by index range/list, bound 256 (CC-1F, **served**) |
-
-CC-1E (`ApplyAttestations`) lands in its own issue — not pre-declared here.
 
 ### `ImportBlock`
 
@@ -152,6 +151,49 @@ gRPC status errors (not verdicts) used by the implementation issues:
 
 `Checkpoint` here is the fork-choice checkpoint **identity** (epoch + root), not a re-model of a
 consensus body. Blocks still cross service boundaries only as `bytes ssz`.
+
+### `ApplyAttestations` (CC-1E)
+
+Batched fork-choice vote updates on the core thread. The handler is a loop of
+`on_attestation` with **no per-attestation head computation**; after any successful
+apply the core runs `get_head` **once** and publishes the head snapshot so weight
+is observable through `GetHead` (Architecture §6.3 — weights are only correct
+immediately after `get_head`).
+
+| Field | Type | Notes |
+|---|---|---|
+| `attestations_ssz` | `repeated bytes` | SSZ-encoded `IndexedAttestation` values (indices already resolved) |
+
+**Bound:** **128** attestations per batch. Over that → `INVALID_ARGUMENT` naming the
+bound; **never** silent truncation and **no** partial application.
+
+**Trust boundary (SEC-1E-1 residual):** signatures, committee membership, and
+structural `is_valid_indexed_attestation` are **not** checked at the chain store
+(§6.6). Any caller of this RPC can inject free-floating votes for known blocks.
+Until Phase 5 verifies BLS against CC-1F cached shufflings and is the sole live
+producer, treat `ApplyAttestations` as a **trusted internal** surface only
+(loopback / private mesh / mTLS / network policy — not a public gateway without
+authz). Phase 1 implementers must not assume `chain` is checking BLS.
+
+**Trailing `get_head` failure (SEC-1E-2):** vote trackers are committed before the
+recompute. If `get_head` fails after applies, the RPC still returns per-item
+results (`APPLIED` / `REJECTED`) so outcomes are not lost; the head snapshot may
+remain **stale** until the next successful recompute (import or a later batch).
+
+**Response** — one `AttestationApplyResult` per request entry (same order):
+
+| Verdict | Meaning |
+|---|---|
+| `APPLIED` | Accepted by `on_attestation` (vote tracker may or may not change) |
+| `REJECTED` | Failed decode or `validate_on_attestation`; `reason` carries a short explanation |
+
+gRPC status errors:
+
+| Status | When |
+|---|---|
+| `INVALID_ARGUMENT` | Batch size &gt; 128 |
+| `FAILED_PRECONDITION` + `NOT_BOOTSTRAPPED` | Called before checkpoint bootstrap completes (CC-19) |
+| `RESOURCE_EXHAUSTED` | Core command channel full after `send_timeout` |
 
 ### `SubscribeEvents`
 

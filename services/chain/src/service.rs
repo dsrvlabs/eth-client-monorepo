@@ -1,22 +1,25 @@
-//! gRPC `ChainService` implementation (CC-18b / CC-1F).
+//! gRPC `ChainService` implementation (CC-18b / CC-1E / CC-1F).
 //!
 //! - `ImportBlock` → core command channel (`send_timeout` 2 s)
+//! - `ApplyAttestations` → core command channel (batched `on_attestation`, CC-1E)
 //! - `GetHead` → [`HeadSnapshotStore`] pointer load (no core interaction)
 //! - `SubscribeEvents` → events task (CC-18c)
 //! - `GetCommitteeShuffling` / `GetValidatorPubkeys` → core [`Query`] (CC-1F)
 //!
 //! Until CC-19 checkpoint bootstrap lands, a service constructed without a
 //! [`CoreHandle`] returns `FAILED_PRECONDITION` / `NOT_BOOTSTRAPPED` for
-//! `ImportBlock` (and optionally `GetHead` when no snapshot has been published).
+//! `ImportBlock` / `ApplyAttestations` (and optionally `GetHead` when no
+//! snapshot has been published).
 
 use std::pin::Pin;
 
 use bytes::Bytes;
 use cc_proto::chain::chain_service_server::ChainService;
 use cc_proto::chain::{
-    Checkpoint as ProtoCheckpoint, GetCommitteeShufflingRequest, GetCommitteeShufflingResponse,
-    GetHeadRequest, GetHeadResponse, GetInfoRequest, GetInfoResponse, GetValidatorPubkeysRequest,
-    GetValidatorPubkeysResponse, ImportBlockRequest, ImportBlockResponse, SubscribeEventsRequest,
+    ApplyAttestationsRequest, ApplyAttestationsResponse, Checkpoint as ProtoCheckpoint,
+    GetCommitteeShufflingRequest, GetCommitteeShufflingResponse, GetHeadRequest, GetHeadResponse,
+    GetInfoRequest, GetInfoResponse, GetValidatorPubkeysRequest, GetValidatorPubkeysResponse,
+    ImportBlockRequest, ImportBlockResponse, SubscribeEventsRequest,
 };
 use cc_proto::common::BuildInfo;
 use cc_proto::status_with_error_info;
@@ -24,6 +27,7 @@ use futures::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Response, Status};
 
+use crate::apply_attestations::MAX_APPLY_ATTESTATIONS;
 use crate::core::{CoreHandle, MAX_VALIDATOR_PUBKEYS_PER_REQUEST, QueryReply, QueryRequest};
 use crate::events::EventsHandle;
 use crate::head::HeadSnapshotStore;
@@ -115,6 +119,30 @@ impl ChainService for ChainServiceImpl {
             ));
         };
         let response = core.import_block(request.into_inner()).await?;
+        Ok(Response::new(response))
+    }
+
+    async fn apply_attestations(
+        &self,
+        request: Request<ApplyAttestationsRequest>,
+    ) -> Result<Response<ApplyAttestationsResponse>, Status> {
+        // SEC-1E-1: trusted internal RPC until Phase 5 validates signatures —
+        // see apply_attestations module docs / contracts.md.
+        let inner = request.into_inner();
+        // Fail fast on the gRPC worker so an oversized batch never queues work
+        // on the core thread (bound is also enforced on the core path).
+        let n = inner.attestations_ssz.len();
+        if n > MAX_APPLY_ATTESTATIONS {
+            return Err(Status::invalid_argument(format!(
+                "ApplyAttestations batch size {n} exceeds bound of {MAX_APPLY_ATTESTATIONS}"
+            )));
+        }
+        let Some(core) = self.core.as_ref() else {
+            return Err(Self::not_bootstrapped(
+                "chain core not bootstrapped; ApplyAttestations unavailable until checkpoint sync",
+            ));
+        };
+        let response = core.apply_attestations(inner).await?;
         Ok(Response::new(response))
     }
 

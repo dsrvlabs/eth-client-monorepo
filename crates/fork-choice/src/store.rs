@@ -569,11 +569,11 @@ impl<P: Preset> Store<P> {
         }
     }
 
-    /// Mutable proto-array access for in-crate insert/weight paths (CC-15b+).
+    /// Mutable proto-array access for insert/weight paths (CC-15b+ / CC-1E tests).
     ///
     /// Callers that mutate must also call [`Self::bump_mutation_counter`] when
     /// the mutation can move the head (insert already bumps via `insert_block`).
-    pub(crate) fn proto_array_mut(&mut self) -> &mut ProtoArray {
+    pub fn proto_array_mut(&mut self) -> &mut ProtoArray {
         &mut self.proto_array
     }
 

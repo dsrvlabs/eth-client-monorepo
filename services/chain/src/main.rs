@@ -24,6 +24,7 @@ const GET_INFO_METHOD: &str = "/eth.chain.v1.ChainService/GetInfo";
 const IMPORT_BLOCK_METHOD: &str = "/eth.chain.v1.ChainService/ImportBlock";
 const GET_HEAD_METHOD: &str = "/eth.chain.v1.ChainService/GetHead";
 const SUBSCRIBE_EVENTS_METHOD: &str = "/eth.chain.v1.ChainService/SubscribeEvents";
+const APPLY_ATTESTATIONS_METHOD: &str = "/eth.chain.v1.ChainService/ApplyAttestations";
 
 /// Per-service config: shared [`ServiceConfig`] plus chain-only fields.
 #[derive(Debug, Deserialize)]
@@ -80,6 +81,7 @@ impl ChainConfig {
                 IMPORT_BLOCK_METHOD.to_owned(),
                 GET_HEAD_METHOD.to_owned(),
                 SUBSCRIBE_EVENTS_METHOD.to_owned(),
+                APPLY_ATTESTATIONS_METHOD.to_owned(),
             ],
         }
     }

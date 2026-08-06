@@ -3,13 +3,15 @@
 //! - **CC-18c**: resumable event bus (ring, cursor, fan-out)
 //! - **CC-1C**: timing metrics (budgeted histograms, gauges, counters)
 //! - **CC-18b**: dedicated core thread, import path, `ArcSwap<HeadSnapshot>`, residency
+//! - **CC-1E**: batched `ApplyAttestations` (weight observed through `GetHead`)
 //!
 //! The binary (`main.rs`) serves gRPC; until CC-19 bootstrap the core is absent
-//! and `ImportBlock` returns `NOT_BOOTSTRAPPED`. Tests construct a store and
-//! spawn the core directly via [`core::spawn_core_thread`].
+//! and `ImportBlock` / `ApplyAttestations` return `NOT_BOOTSTRAPPED`. Tests
+//! construct a store and spawn the core directly via [`core::spawn_core_thread`].
 
 #![allow(missing_docs)]
 
+pub mod apply_attestations;
 pub mod core;
 pub mod events;
 pub mod head;
@@ -18,6 +20,7 @@ pub mod metrics;
 pub mod residency;
 pub mod service;
 
+pub use apply_attestations::MAX_APPLY_ATTESTATIONS;
 pub use core::{
     COMMAND_CHANNEL_CAPACITY, CoreCommand, CoreConfig, CoreHandle, CoreThread, IMPORT_SEND_TIMEOUT,
     MAX_VALIDATOR_PUBKEYS_PER_REQUEST, QueryReply, QueryRequest, SHUTDOWN_JOIN_TIMEOUT,

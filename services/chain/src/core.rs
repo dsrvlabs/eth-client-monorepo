@@ -17,7 +17,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use cc_fork_choice::Store;
-use cc_proto::chain::{ImportBlockRequest, ImportBlockResponse};
+use cc_proto::chain::{
+    ApplyAttestationsRequest, ApplyAttestationsResponse, ImportBlockRequest, ImportBlockResponse,
+};
 use cc_state_transition::{
     BlockSignatureStrategy, compute_shuffled_active_indices, decision_root_for_epoch,
     get_committee_count_per_slot, get_current_epoch, get_or_compute_shuffling,
@@ -29,6 +31,7 @@ use cc_types::primitives::{Epoch, Root};
 use tokio::sync::{mpsc, oneshot};
 use tonic::Status;
 
+use crate::apply_attestations::apply_attestations;
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
 use crate::import::{ImportCounters, import_block};
 use crate::metrics::ChainMetrics;
@@ -54,6 +57,11 @@ pub enum CoreCommand {
     ImportBlock {
         request: ImportBlockRequest,
         reply: oneshot::Sender<Result<ImportBlockResponse, Status>>,
+    },
+    /// Batched free-floating `on_attestation` (CC-1E). No per-item head recompute.
+    ApplyAttestations {
+        request: ApplyAttestationsRequest,
+        reply: oneshot::Sender<Result<ApplyAttestationsResponse, Status>>,
     },
     /// State-requiring read (single FIFO queue in Phase 1; priority lane is Phase 6).
     ///
@@ -174,6 +182,34 @@ impl CoreHandle {
         );
         rx.await
             .map_err(|_| Status::unavailable("core thread dropped import reply"))?
+    }
+
+    /// Apply a batch of free-floating attestations (CC-1E).
+    ///
+    /// Uses the same 2 s send timeout as [`Self::import_block`] so a stalled
+    /// core does not hang gRPC workers indefinitely.
+    pub async fn apply_attestations(
+        &self,
+        request: ApplyAttestationsRequest,
+    ) -> Result<ApplyAttestationsResponse, Status> {
+        let (reply, rx) = oneshot::channel();
+        let cmd = CoreCommand::ApplyAttestations { request, reply };
+        match self.cmd_tx.send_timeout(cmd, IMPORT_SEND_TIMEOUT).await {
+            Ok(()) => {}
+            Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
+                return Err(Status::resource_exhausted(
+                    "apply_attestations command channel full after 2s send_timeout",
+                ));
+            }
+            Err(mpsc::error::SendTimeoutError::Closed(_)) => {
+                return Err(Status::unavailable("chain core thread is shut down"));
+            }
+        }
+        self.metrics.set_import_queue_depth(
+            (COMMAND_CHANNEL_CAPACITY.saturating_sub(self.cmd_tx.capacity())) as u64,
+        );
+        rx.await
+            .map_err(|_| Status::unavailable("core thread dropped apply_attestations reply"))?
     }
 
     /// `Query` command (single FIFO queue in Phase 1).
@@ -489,6 +525,17 @@ fn core_loop<P: Preset>(
                     verify,
                 );
                 let _ = reply.send(outcome.map(|o| o.response));
+            }
+            CoreCommand::ApplyAttestations { request, reply } => {
+                let outcome = apply_attestations(
+                    &mut store,
+                    &head,
+                    &event_tx,
+                    &metrics,
+                    &mut snapshot_sequence,
+                    request,
+                );
+                let _ = reply.send(outcome);
             }
             CoreCommand::Query { request, reply } => {
                 let outcome = handle_query(&store, &residency, request);

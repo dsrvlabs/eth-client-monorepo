@@ -15,6 +15,12 @@ service ChainService {
   rpc ImportBlock(ImportBlockRequest) returns (ImportBlockResponse);
   rpc GetHead(GetHeadRequest) returns (GetHeadResponse);
   rpc SubscribeEvents(SubscribeEventsRequest) returns (stream Event);
+  // Batched on_attestation weight updates (CC-1E).
+  // Signatures / committee membership are NOT verified here (SEC-1E-1 residual).
+  // Trusted internal RPC until Phase 5 is the sole producer and validates BLS
+  // against cached shufflings — do not expose to untrusted networks without authz.
+  // Bound: 128 attestations per batch; over that is INVALID_ARGUMENT (never truncated).
+  rpc ApplyAttestations(ApplyAttestationsRequest) returns (ApplyAttestationsResponse);
   // CC-1F: packed epoch shuffling from the head state's cache (current + next
   // epoch only). Other epochs → FAILED_PRECONDITION. Response carries
   // dependent_root so callers cache by decision root (§5.4).
@@ -105,6 +111,47 @@ message Event {
   bytes root = 3;
   EventKind kind = 4;
   bytes payload = 5; // kind-specific; opaque to the bus
+}
+
+// ---------------------------------------------------------------------------
+// ApplyAttestations (CC-1E)
+// ---------------------------------------------------------------------------
+
+// Bound for ApplyAttestationsRequest.attestations_ssz. Over this → INVALID_ARGUMENT
+// with no partial application. Documented here for consumers; the numeric check
+// is enforced by the handler (proto has no max_items on repeated bytes).
+// MAX_APPLY_ATTESTATIONS = 128
+
+// Batched free-floating attestations for fork-choice vote trackers.
+//
+// Each entry is SSZ-encoded IndexedAttestation (indices already resolved). Phase 1
+// does **not** verify BLS signatures, committee membership, or structural
+// indexed-attestation rules at the store level (§6.6 / SEC-1E-1 residual).
+// This is a privileged weight-injection surface: **trusted internal callers only**
+// until Phase 5 verifies in the attestation service and is the sole live feed.
+// The handler is a loop of on_attestation with **no per-attestation head
+// computation**; weights are only correct after get_head (observed through GetHead).
+message ApplyAttestationsRequest {
+  // SSZ-encoded IndexedAttestation values. Max 128; over → INVALID_ARGUMENT.
+  repeated bytes attestations_ssz = 1;
+}
+
+// Per-attestation outcome so a Phase 5 producer can distinguish applied from
+// rejected without a second round trip.
+enum AttestationApplyVerdict {
+  ATTESTATION_APPLY_VERDICT_UNSPECIFIED = 0;
+  ATTESTATION_APPLY_VERDICT_APPLIED = 1;
+  ATTESTATION_APPLY_VERDICT_REJECTED = 2;
+}
+
+message AttestationApplyResult {
+  AttestationApplyVerdict verdict = 1;
+  string reason = 2; // empty on APPLIED; short explanation on REJECTED
+}
+
+message ApplyAttestationsResponse {
+  // One result per request entry, in the same order.
+  repeated AttestationApplyResult results = 1;
 }
 
 // ── CC-1F: GetCommitteeShuffling ─────────────────────────────────────────────

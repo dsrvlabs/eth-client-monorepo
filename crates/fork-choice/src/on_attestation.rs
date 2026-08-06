@@ -412,9 +412,17 @@ pub fn on_attester_slashing<P: Preset>(
 /// `justified_balances`); `new_balances` is the current justified
 /// [`CheckpointContext`] effective balances. After a successful apply, the
 /// caller should `store.set_justified_balances(new_balances)`.
-/// Test-only counter of successful [`compute_deltas`] completions (instrumentation AC).
-#[cfg(test)]
-static COMPUTE_DELTAS_CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Counter of successful [`compute_deltas`] completions (batching-contract instrumentation).
+///
+/// Used by CC-1E to assert a 128-attestation batch triggers `compute_deltas` at most once
+/// (inside the single trailing `get_head`, never per `on_attestation`).
+static COMPUTE_DELTAS_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Number of successful [`compute_deltas`] completions process-wide (monotonic).
+#[inline]
+pub fn compute_deltas_call_count() -> u64 {
+    COMPUTE_DELTAS_CALLS.load(std::sync::atomic::Ordering::SeqCst)
+}
 
 /// Compute per-node weight deltas from vote trackers.
 ///
@@ -495,7 +503,6 @@ pub fn compute_deltas(
         votes[val_index].current_root = new_current;
     }
 
-    #[cfg(test)]
     COMPUTE_DELTAS_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     Ok(deltas)

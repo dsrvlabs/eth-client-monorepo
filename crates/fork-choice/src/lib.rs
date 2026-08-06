@@ -26,8 +26,8 @@ pub use head_cache::{
     get_proposer_head,
 };
 pub use on_attestation::{
-    OnAttestationError, apply_attestation_deltas, compute_deltas, on_attestation,
-    on_attester_slashing, store_target_checkpoint_context, validate_on_attestation,
+    OnAttestationError, apply_attestation_deltas, compute_deltas, compute_deltas_call_count,
+    on_attestation, on_attester_slashing, store_target_checkpoint_context, validate_on_attestation,
 };
 pub use on_block::{
     OnBlockError, compute_pulled_up_tip, get_checkpoint_block, get_forkchoice_store, on_block,
