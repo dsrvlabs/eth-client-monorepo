@@ -1,6 +1,25 @@
 # CC-07a — core CI gates: fmt, clippy, test (+ caching).
 # CC-08 — deps job (cargo deny + crate DAG); required once this lands (Architecture §9).
+# CC-10h — suite split (§10.4): test = unit + minimal; vectors = mainnet + general,
+#          sharded and merge-blocking. Hoodi fixture cache installed (CC-10b block).
 # Toolchain pin lives only in rust-toolchain.toml (CC-07/2); never duplicate the version here.
+#
+# Local reproduction of the suite split (after fetch scripts; same filters as CI):
+#
+#   bash scripts/fetch-spec-vectors.sh
+#   bash scripts/fetch-hoodi-fixtures.sh
+#   export HOODI_FIXTURES_CACHE="${HOODI_FIXTURES_CACHE:-$HOME/.cache/cc-hoodi-fixtures}"
+#
+#   # test job — unit tests + all minimal-preset suites (CC-07/4 ≤10 min intent)
+#   cargo nextest run --workspace --locked --profile ci \
+#     -E 'not binary(ssz_generic) & not binary(custody) & not (binary(ssz_static) & test(mainnet::))'
+#
+#   # vectors job — mainnet + general (ssz_generic, KZG both backends), shard i of 4
+#   cargo nextest run --workspace --locked --profile ci \
+#     --features cc-crypto/kzg-c-kzg,cc-crypto/kzg-rust-eth-kzg \
+#     -E 'binary(ssz_generic) + binary(custody) + binary(kzg) + (binary(ssz_static) & test(mainnet::))' \
+#     --partition count:i/4
+#
 name: CI
 
 on:
@@ -68,9 +87,13 @@ jobs:
       - name: check no env reads outside crates/config
         run: bash scripts/check-no-env-reads.sh
 
+  # CC-10h — unit tests + all minimal-preset suites; keep inside Phase 0's 10-minute
+  # CC-07/4 budget. Mainnet + general suites move to the sharded `vectors` job.
   test:
     name: test
     runs-on: ubuntu-latest
+    env:
+      HOODI_FIXTURES_CACHE: /home/runner/.cache/cc-hoodi-fixtures
     steps:
       - uses: actions/checkout@v4
         with:
@@ -86,9 +109,70 @@ jobs:
         with:
           tool: cargo-nextest
 
-      - name: cargo nextest
-        # R-9 retired by CC-01b: shutdown integration test + existing bootstrap/config/proto tests.
-        run: cargo nextest run --workspace --locked --profile ci
+      # Spec-vector tarball cache (Phase 0 shape) — minimal ssz_static needs the tree.
+      - name: Resolve spec-vector cache path
+        id: vectors
+        run: |
+          CACHE_ROOT="${SPEC_VECTORS_CACHE:-${HOME}/.cache/eth-consensus-spec-vectors}"
+          TAG="$(awk -F'=' '
+            $0 ~ /^[[:space:]]*tag[[:space:]]*=/ {
+              v = $0
+              sub(/^[^=]*=[[:space:]]*/, "", v)
+              gsub(/^[[:space:]]*"?|"?[[:space:]]*$/, "", v)
+              print v
+              exit
+            }
+          ' spec-vectors.lock)"
+          if [[ -z "${TAG}" ]]; then
+            echo "error: failed to parse tag from spec-vectors.lock" >&2
+            exit 1
+          fi
+          # Same allowlist as scripts/record-vector-layout.sh (F1): start with
+          # alnum; only [A-Za-z0-9._-] thereafter; reject ".." path traversal.
+          if [[ ! "${TAG}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "error: tag contains disallowed characters (want ^[A-Za-z0-9][A-Za-z0-9._-]*\$): ${TAG}" >&2
+            exit 1
+          fi
+          if [[ "${TAG}" == *..* ]]; then
+            echo "error: tag must not contain '..': ${TAG}" >&2
+            exit 1
+          fi
+          echo "dl_dir=${CACHE_ROOT}/${TAG}/_dl" >> "${GITHUB_OUTPUT}"
+          echo "cache_root=${CACHE_ROOT}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      # R-3 / §7.5: cache _dl/ tarballs only — never the unpacked tree (tests/, markers).
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.vectors.outputs.dl_dir }}
+          key: ${{ hashFiles('spec-vectors.lock') }}
+
+      - name: Fetch and verify spec vectors
+        env:
+          SPEC_VECTORS_CACHE: ${{ steps.vectors.outputs.cache_root }}
+        run: bash scripts/fetch-spec-vectors.sh
+
+      # CC-10b Hoodi fixture cache — defined in
+      # crates/types/tests/fixtures/README.md; installed by CC-10h.
+      - name: Hoodi fixtures cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.HOODI_FIXTURES_CACHE }}
+          key: hoodi-fixtures-3649472-a87477f2d26512114cea60cab285733b61b1a5aab1a12df3dc73105b510b4a96
+          restore-keys: |
+            hoodi-fixtures-3649472-
+
+      - name: Ensure Hoodi fixtures (miss → fetch)
+        env:
+          HOODI_FIXTURES_CACHE: ${{ env.HOODI_FIXTURES_CACHE }}
+        run: bash scripts/fetch-hoodi-fixtures.sh
+
+      - name: cargo nextest (unit + minimal)
+        # Exclude mainnet/general suites owned by `vectors`. Keep unit tests
+        # (incl. kzg with default backend) and ssz_static::minimal::*.
+        run: |
+          cargo nextest run --workspace --locked --profile ci \
+            -E 'not binary(ssz_generic) & not binary(custody) & not (binary(ssz_static) & test(mainnet::))'
 
   # CC-03 — buf governance (Architecture §3.3, §9): lint + format + FILE-category
   # breaking via the unified bufbuild/buf-action@v1 (not the deprecated trio), and
@@ -123,17 +207,45 @@ jobs:
       - name: check no consensus re-modelling
         run: bash scripts/check-no-remodelling.sh
 
-  # CC-06c — sanctioned Stream B cross-stream edit: adds this job only; does not
-  # modify fmt/clippy/test (or later proto/deps/compose). Non-required in Phase 0
-  # (CC-07/1); becomes required in Phase 1 when `test` depends on it. R-7: this run
-  # is the independent second digest computation against spec-vectors.lock.
+  # CC-10h — mainnet-preset suites + general (ssz_generic, KZG cell under both
+  # backends). Merge-blocking once branch protection requires every matrix check
+  # (Phase 0 §7.5 / Architecture §10.4). Own ~20-minute budget (not CC-07/4).
+  #
+  # R-8: partition count = number of M1.1 vector test binaries — four
+  # (ssz_static, ssz_generic, kzg, custody) — NOT Architecture §10.4's
+  # illustrative count:N/4. nextest's default for a shard matching zero tests is
+  # fail; a newly required job that is red on the commit that requires it invites
+  # un-requiring it. Raise the count once M1.2's suites land, and again if one
+  # shard's wall time dominates. Do not add a placeholder test to fill a shard.
+  #
+  # Branch-protection check names (matrix): `vectors (1/4)`, `vectors (2/4)`,
+  # `vectors (3/4)`, `vectors (4/4)`. A human must add all four to required
+  # status checks on `develop` (and later `main`); this workflow cannot edit
+  # branch protection.
   vectors:
-    name: vectors
+    name: vectors (${{ matrix.partition }}/4)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # R-8: four = M1.1 binaries ssz_static, ssz_generic, kzg, custody.
+        partition: [1, 2, 3, 4]
+    env:
+      HOODI_FIXTURES_CACHE: /home/runner/.cache/cc-hoodi-fixtures
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
 
       # Resolve <cache>/<tag>/_dl so the cache path stays pin-accurate without
       # hardcoding the tag (key changes only when the lockfile changes).
@@ -178,6 +290,30 @@ jobs:
         env:
           SPEC_VECTORS_CACHE: ${{ steps.vectors.outputs.cache_root }}
         run: bash scripts/fetch-spec-vectors.sh
+
+      # CC-10b Hoodi fixture cache — defined in
+      # crates/types/tests/fixtures/README.md; installed by CC-10h.
+      - name: Hoodi fixtures cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.HOODI_FIXTURES_CACHE }}
+          key: hoodi-fixtures-3649472-a87477f2d26512114cea60cab285733b61b1a5aab1a12df3dc73105b510b4a96
+          restore-keys: |
+            hoodi-fixtures-3649472-
+
+      - name: Ensure Hoodi fixtures (miss → fetch)
+        env:
+          HOODI_FIXTURES_CACHE: ${{ env.HOODI_FIXTURES_CACHE }}
+        run: bash scripts/fetch-hoodi-fixtures.sh
+
+      - name: cargo nextest (mainnet + general, shard)
+        # Both KZG features (CC-11/1): cell suite exercises c-kzg and rust-eth-kzg.
+        # Filter = M1.1 vector binaries; partition count matches that set (R-8).
+        run: |
+          cargo nextest run --workspace --locked --profile ci \
+            --features cc-crypto/kzg-c-kzg,cc-crypto/kzg-rust-eth-kzg \
+            -E 'binary(ssz_generic) + binary(custody) + binary(kzg) + (binary(ssz_static) & test(mainnet::))' \
+            --partition count:${{ matrix.partition }}/4
 
   # CC-08 — supply-chain gate (Architecture §9, R-5). Required for merge once
   # branch protection includes `deps` (fmt/clippy/test/proto/deps).
