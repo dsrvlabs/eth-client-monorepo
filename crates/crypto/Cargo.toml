@@ -9,3 +9,15 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+blst = { workspace = true }
+cc-types = { workspace = true }
+ethereum_hashing = { workspace = true }
+getrandom = { workspace = true }
+thiserror = { workspace = true }
+tree_hash = { workspace = true }
+tree_hash_derive = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }

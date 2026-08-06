@@ -111,8 +111,13 @@ sha2 = "0.10.9"
 typenum = "1.20.1"
 thiserror = "2.0.17"
 
+<<<<<<< HEAD
 # CC-10d ExecutionPayload base_fee_per_gas (uint256); also used by ethereum_ssz / tree_hash
 alloy-primitives = "1.6.1"
+=======
+# CC-11a BLS batch verification CSPRNG (Architecture §4.1)
+getrandom = "0.3.3"
+>>>>>>> 6423eb4 (feat(crypto): add blst wrapper, SignatureSet, and domain helpers)
 
 [profile.release]
 opt-level = 3
