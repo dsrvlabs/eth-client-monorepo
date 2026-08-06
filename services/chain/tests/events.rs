@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use cc_chain::{
-    EventInput, EventSubscription, EventsConfig, EventsHandle, DEFAULT_RING_CAPACITY,
-    DEFAULT_SUBSCRIBER_QUEUE_CAPACITY, REASON_CURSOR_TOO_OLD, REASON_CURSOR_UNKNOWN_SESSION,
+    DEFAULT_RING_CAPACITY, DEFAULT_SUBSCRIBER_QUEUE_CAPACITY, EventInput, EventSubscription,
+    EventsConfig, EventsHandle, REASON_CURSOR_TOO_OLD, REASON_CURSOR_UNKNOWN_SESSION,
 };
 use cc_proto::chain::{Cursor, Event};
 use cc_proto::error_info_from_status;

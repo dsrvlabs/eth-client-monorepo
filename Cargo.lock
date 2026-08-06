@@ -699,10 +699,21 @@ dependencies = [
  "cc-bootstrap",
  "cc-config",
  "cc-proto",
+ "cc-types",
+ "ethereum_ssz",
  "getrandom 0.3.4",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "prometheus-client",
  "serde",
+ "serde_json",
  "tokio",
  "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "tree_hash",
 ]
 
 [[package]]

@@ -283,7 +283,10 @@ impl EventsHandle {
     }
 
     /// Async publish (tests / tokio producers).
-    pub async fn publish(&self, input: EventInput) -> Result<(), mpsc::error::SendError<EventInput>> {
+    pub async fn publish(
+        &self,
+        input: EventInput,
+    ) -> Result<(), mpsc::error::SendError<EventInput>> {
         self.event_tx.send(input).await
     }
 
@@ -387,10 +390,7 @@ fn handle_subscribe(
 
     let replay: Vec<Event> = match resume_from {
         None => Vec::new(), // live-only: no replay from the ring tip
-        Some(from) => ring
-            .iter_from(from)
-            .map(StoredEvent::to_event)
-            .collect(),
+        Some(from) => ring.iter_from(from).map(StoredEvent::to_event).collect(),
     };
 
     let (live_rx, termination) = fanout.insert();
@@ -410,12 +410,7 @@ fn random_session_id() -> u64 {
 
 /// Map a cursor validation failure into a tonic `Status` with `ErrorInfo`.
 pub(crate) fn cursor_status(reason: &str, message: &str) -> Status {
-    status_with_error_info(
-        Code::FailedPrecondition,
-        message,
-        reason,
-        ERROR_DOMAIN,
-    )
+    status_with_error_info(Code::FailedPrecondition, message, reason, ERROR_DOMAIN)
 }
 
 /// Build `RESOURCE_EXHAUSTED` for a slow consumer.
@@ -440,9 +435,12 @@ mod tests {
             session_id: Some(1),
         });
         let mut sub = h.subscribe(None).await.unwrap();
-        h.publish(EventInput::block_imported(10, Bytes::from_static(b"root-a")))
-            .await
-            .unwrap();
+        h.publish(EventInput::block_imported(
+            10,
+            Bytes::from_static(b"root-a"),
+        ))
+        .await
+        .unwrap();
         let ev = sub.recv().await.unwrap().unwrap();
         assert_eq!(ev.seq, 0);
         assert_eq!(ev.slot, 10);

@@ -3,6 +3,7 @@
 //! Phase 0 surface: health + reflection + `GetInfo`. Real RPCs land in Phase 1+.
 
 use cc_bootstrap::{PeerSpec, ServiceSpec, TelemetrySettings};
+use cc_chain::ChainMetrics;
 use cc_config::ServiceConfig;
 use cc_proto::chain::chain_service_server::{ChainService, ChainServiceServer};
 use cc_proto::chain::{GetInfoRequest, GetInfoResponse};
@@ -75,7 +76,10 @@ impl ChainService for ChainStub {
 async fn main() -> anyhow::Result<()> {
     // Fail before any bind (CC-09/2): load config, then telemetry, then serve.
     let cfg = cc_config::load::<ChainConfig>(SERVICE)?;
-    let bs = cc_bootstrap::init(SERVICE, TelemetrySettings::from(&cfg.service))?;
+    let mut bs = cc_bootstrap::init(SERVICE, TelemetrySettings::from(&cfg.service))?;
+    // CC-1C: register chain metrics into bs.registry between init and serve
+    // (Architecture §11.1 / Phase 0 §4.1 seam). Do not re-invent tracing or Registry.
+    let _chain_metrics = ChainMetrics::register(&mut bs.registry);
     let routes = Routes::default().add_service(ChainServiceServer::new(ChainStub));
     cc_bootstrap::serve(bs, cfg.service_spec(), routes).await?;
     Ok(())
