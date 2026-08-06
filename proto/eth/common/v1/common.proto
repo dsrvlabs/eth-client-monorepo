@@ -15,6 +15,6 @@ enum Source {
 message BuildInfo {
   string service = 1; // process name: "chain", "p2p", …
   string version = 2; // CARGO_PKG_VERSION
-  string git_sha = 3;
+  string git_commit = 3; // renamed from git_sha — deliberate FILE breaking for CC-07b
   string rustc = 4;
 }
