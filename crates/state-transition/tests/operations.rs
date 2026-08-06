@@ -1,10 +1,11 @@
-//! `operations` runner — CC-12b (`execution_payload`, `withdrawals`) + CC-12c
-//! (slashings / attestation / exit / bls-change) + CC-12d (execution requests +
-//! `sync_aggregate`). Deposit eth1-bridge has no Fulu operations tree; covered
-//! by unit tests. `randao` / `eth1_data` are unit-tested only.
+//! `operations` runner — CC-12e declaration: every on-disk handler, both presets
+//! (CC-12a header + CC-12b–d handlers). Deposit eth1-bridge has no Fulu
+//! operations tree; covered by unit tests. `randao` / `eth1_data` are
+//! unit-tested only.
 //!
-//! Does **not** depend on `cc-spec-tests` (crate DAG). Vector cache layout and
-//! readiness markers match Architecture §10.1 / the committed `spec-vectors.lock`.
+//! Suite directory name is resolved from `spec-vectors-layout.md` (A-P0-3 /
+//! A-P1-5: pin may rename the suite). Does **not** depend on `cc-spec-tests`
+//! (crate DAG).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -13,9 +14,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cc_state_transition::{
-    process_attestation, process_attester_slashing, process_bls_to_execution_change,
-    process_consolidation_request, process_deposit_request, process_eth1_data,
-    process_execution_payload, process_proposer_slashing, process_randao,
+    process_attestation, process_attester_slashing, process_block_header,
+    process_bls_to_execution_change, process_consolidation_request, process_deposit_request,
+    process_eth1_data, process_execution_payload, process_proposer_slashing, process_randao,
     process_sync_aggregate_with_opts, process_voluntary_exit, process_withdrawal_request,
     process_withdrawals, BlockError, EngineError, ExecutionEngine, GossipClass, NewPayloadRequest,
     PayloadStatus, ProcessAttestationOpts, TransitionContext,
@@ -34,24 +35,66 @@ use cc_types::{
 use ssz::{Decode, Encode};
 
 const FORK: &str = "fulu";
-const RUNNER: &str = "operations";
+const LAYOUT: &str = include_str!("../../../spec-vectors-layout.md");
 const LOCKFILE: &str = include_str!("../../../spec-vectors.lock");
 const SKIPLIST: &str = include_str!("../../../docs/spec-vectors-skiplist.md");
 
-/// Handlers this runner owns (CC-12b + CC-12c + CC-12d).
+/// Handlers this runner owns — must equal the on-disk set (CC-12e coverage).
 const HANDLERS: &[&str] = &[
-    "execution_payload",
-    "withdrawals",
-    "proposer_slashing",
-    "attester_slashing",
     "attestation",
-    "voluntary_exit",
+    "attester_slashing",
+    "block_header",
     "bls_to_execution_change",
-    "deposit_request",
-    "withdrawal_request",
     "consolidation_request",
+    "deposit_request",
+    "execution_payload",
+    "proposer_slashing",
     "sync_aggregate",
+    "voluntary_exit",
+    "withdrawal_request",
+    "withdrawals",
 ];
+
+/// Resolve the Fulu operations-suite directory name from the committed layout.
+///
+/// Identifies the suite by a distinctive handler child (`block_header` +
+/// `withdrawals`) so a pin that renames the suite (A-P1-5) does not require a
+/// code change — only a layout re-record.
+fn operations_suite_name() -> &'static str {
+    // Collect suite → handlers from lines like `tests/mainnet/fulu/<suite>/<handler>`.
+    let mut suites: Vec<(&str, BTreeSet<&str>)> = Vec::new();
+    for line in LAYOUT.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("tests/mainnet/fulu/") else {
+            continue;
+        };
+        let mut parts = rest.split('/');
+        let Some(suite) = parts.next() else {
+            continue;
+        };
+        let Some(handler) = parts.next() else {
+            continue;
+        };
+        if parts.next().is_some() {
+            // Deeper path (suite/handler/suite_name) — still counts the handler.
+        }
+        if let Some((_, set)) = suites.iter_mut().find(|(s, _)| *s == suite) {
+            set.insert(handler);
+        } else {
+            let mut set = BTreeSet::new();
+            set.insert(handler);
+            suites.push((suite, set));
+        }
+    }
+    for (suite, handlers) in &suites {
+        if handlers.contains("block_header") && handlers.contains("withdrawals") {
+            return suite;
+        }
+    }
+    panic!(
+        "spec-vectors-layout.md has no Fulu suite with block_header+withdrawals; re-record layout"
+    );
+}
 
 // ---------------------------------------------------------------------------
 // Vector-cache helpers
@@ -127,12 +170,13 @@ fn is_skipped(rel: &str, prefixes: &[String]) -> bool {
 }
 
 fn collect_cases(tests: &Path, preset: &str, handler: &str) -> Vec<(String, PathBuf)> {
-    let handler_dir = tests.join(preset).join(FORK).join(RUNNER).join(handler);
+    let runner = operations_suite_name();
+    let handler_dir = tests.join(preset).join(FORK).join(runner).join(handler);
     if !handler_dir.is_dir() {
         return Vec::new();
     }
     let mut out = Vec::new();
-    collect_leaf_cases(&handler_dir, &handler_dir, preset, handler, &mut out);
+    collect_leaf_cases(&handler_dir, &handler_dir, preset, runner, handler, &mut out);
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
@@ -141,6 +185,7 @@ fn collect_leaf_cases(
     handler_dir: &Path,
     current: &Path,
     preset: &str,
+    runner: &str,
     handler: &str,
     out: &mut Vec<(String, PathBuf)>,
 ) {
@@ -161,13 +206,25 @@ fn collect_leaf_cases(
             .unwrap()
             .to_string_lossy()
             .replace('\\', "/");
-        let case_rel = format!("{preset}/{FORK}/{RUNNER}/{handler}/{rel_name}");
+        let case_rel = format!("{preset}/{FORK}/{runner}/{handler}/{rel_name}");
         out.push((case_rel, current.to_path_buf()));
         return;
     }
     for sub in subdirs {
-        collect_leaf_cases(handler_dir, &sub, preset, handler, out);
+        collect_leaf_cases(handler_dir, &sub, preset, runner, handler, out);
     }
+}
+
+fn list_handlers(tests: &Path, preset: &str) -> BTreeSet<String> {
+    let dir = tests.join(preset).join(FORK).join(operations_suite_name());
+    let mut set = BTreeSet::new();
+    for ent in fs::read_dir(&dir).unwrap() {
+        let ent = ent.unwrap();
+        if ent.file_type().unwrap().is_dir() {
+            set.insert(ent.file_name().to_string_lossy().into_owned());
+        }
+    }
+    set
 }
 
 // ---------------------------------------------------------------------------
@@ -319,6 +376,83 @@ fn read_execution_valid(case_dir: &Path) -> bool {
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
+
+fn rebuild_pubkey_cache<P: Preset>(state: &mut BeaconState<P>) {
+    let pk_entries: Vec<_> = state
+        .validators_iter()
+        .enumerate()
+        .map(|(i, v)| (v.pubkey, cc_types::primitives::ValidatorIndex::new(i as u64)))
+        .collect();
+    for (pk, idx) in pk_entries {
+        state.caches_mut().pubkeys.insert(pk, idx);
+    }
+}
+
+fn run_block_header_cases<P: Preset>() {
+    let tests = tests_root();
+    let prefixes = skiplist_prefixes();
+    let cases = collect_cases(&tests, P::NAME, "block_header");
+    assert!(
+        !cases.is_empty(),
+        "expected block_header cases for {}",
+        P::NAME
+    );
+
+    let mut ran = 0usize;
+    let mut invalid_ok = 0usize;
+
+    for (rel, case_dir) in &cases {
+        if is_skipped(rel, &prefixes) {
+            continue;
+        }
+
+        let pre_bytes = snappy_decompress(&case_dir.join("pre.ssz_snappy"));
+        let mut state = BeaconState::<P>::from_ssz_bytes_with(ForkName::Fulu, &pre_bytes)
+            .unwrap_or_else(|e| panic!("decode pre {rel}: {e:?}"));
+        rebuild_pubkey_cache(&mut state);
+
+        let block_bytes = snappy_decompress(&case_dir.join("block.ssz_snappy"));
+        let block = BeaconBlock::<P>::from_ssz_bytes(&block_bytes)
+            .unwrap_or_else(|e| panic!("decode block {rel}: {e:?}"));
+
+        // Pre-state is already at the block slot for operations/block_header.
+        // Thread the latest header's state_root (filled by process_slot in the
+        // generator) so process_block_header's parent-root check is well-formed.
+        let pre_root = state.latest_block_header().state_root;
+        let post_path = case_dir.join("post.ssz_snappy");
+        let result = process_block_header(&mut state, &block, pre_root);
+
+        if post_path.is_file() {
+            result.unwrap_or_else(|e| panic!("block_header valid case {rel}: {e}"));
+            let post_bytes = snappy_decompress(&post_path);
+            let expected = BeaconState::<P>::from_ssz_bytes_with(ForkName::Fulu, &post_bytes)
+                .unwrap_or_else(|e| panic!("decode post {rel}: {e:?}"));
+            assert_eq!(state, expected, "post-state mismatch for {rel}");
+            ran += 1;
+        } else {
+            let err = result.expect_err(&format!("invalid case must Err: {rel}"));
+            assert_typed_reject(&err, rel);
+            invalid_ok += 1;
+        }
+    }
+
+    assert!(ran > 0, "expected valid block_header cases for {}", P::NAME);
+    assert!(
+        invalid_ok > 0,
+        "expected invalid block_header cases for {}",
+        P::NAME
+    );
+}
+
+#[test]
+fn block_header_minimal() {
+    run_block_header_cases::<Minimal>();
+}
+
+#[test]
+fn block_header_mainnet() {
+    run_block_header_cases::<Mainnet>();
+}
 
 fn run_withdrawals_cases<P: Preset>() {
     let tests = tests_root();
@@ -520,14 +654,7 @@ fn run_single_op_handler<P: Preset, Op, F>(
             .unwrap_or_else(|e| panic!("decode pre {rel}: {e:?}"));
 
         // Rebuild pubkey index map from the pre-state (SSZ decode does not fill caches).
-        let pk_entries: Vec<_> = state
-            .validators_iter()
-            .enumerate()
-            .map(|(i, v)| (v.pubkey, cc_types::primitives::ValidatorIndex::new(i as u64)))
-            .collect();
-        for (pk, idx) in pk_entries {
-            state.caches_mut().pubkeys.insert(pk, idx);
-        }
+        rebuild_pubkey_cache(&mut state);
 
         let op_bytes = snappy_decompress(&case_dir.join(artifact));
         let op = Op::from_ssz_bytes(&op_bytes)
@@ -994,24 +1121,43 @@ fn hoodi_real_block_commitment_count_when_cached() {
 }
 
 // ---------------------------------------------------------------------------
-// Handler directory coverage for the two we own
+// Handler coverage (Architecture §10.2) — set equality vs on-disk listing
 // ---------------------------------------------------------------------------
 
 #[test]
-fn handler_dirs_exist() {
+fn handler_coverage() {
     let tests = tests_root();
+    let suite = operations_suite_name();
     for preset in ["mainnet", "minimal"] {
-        for handler in HANDLERS {
-            let dir = tests.join(preset).join(FORK).join(RUNNER).join(handler);
-            assert!(dir.is_dir(), "missing {}", dir.display());
-        }
+        let on_disk = list_handlers(&tests, preset);
+        let declared: BTreeSet<&str> = HANDLERS.iter().copied().collect();
+        let on_disk_refs: BTreeSet<&str> = on_disk.iter().map(String::as_str).collect();
+        assert_eq!(
+            declared, on_disk_refs,
+            "handler coverage mismatch for {preset} suite={suite}: declared={declared:?} on_disk={on_disk_refs:?}"
+        );
     }
+}
+
+/// Negative control: a partial HANDLERS list must fail coverage (recorded for
+/// the commit description).
+#[test]
+fn handler_coverage_negative_missing_handler_fails() {
+    let on_disk: BTreeSet<String> = HANDLERS.iter().map(|s| (*s).to_string()).collect();
+    let partial: BTreeSet<&str> = HANDLERS.iter().copied().skip(1).collect();
+    let on_disk_refs: BTreeSet<&str> = on_disk.iter().map(String::as_str).collect();
+    assert_ne!(
+        partial, on_disk_refs,
+        "partial HANDLERS must differ from full set"
+    );
 }
 
 #[test]
 fn skiplist_operations_entries_match_disk_if_any() {
     let tests = tests_root();
     let prefixes = skiplist_prefixes();
+    let suite = operations_suite_name();
+    let suite_marker = format!("/{suite}/");
     let mut paths: BTreeSet<String> = BTreeSet::new();
     for preset in ["mainnet", "minimal"] {
         for handler in HANDLERS {
@@ -1021,20 +1167,7 @@ fn skiplist_operations_entries_match_disk_if_any() {
         }
     }
     for p in &prefixes {
-        if !p.contains("/operations/") {
-            continue;
-        }
-        // Only care about handlers this runner owns.
-        if !(p.contains("/withdrawals")
-            || p.contains("/execution_payload")
-            || p.contains("/proposer_slashing")
-            || p.contains("/attester_slashing")
-            || p.contains("/attestation")
-            || p.contains("/voluntary_exit")
-            || p.contains("/bls_to_execution_change")
-            || p.contains("/randao")
-            || p.contains("/eth1_data"))
-        {
+        if !p.contains(&suite_marker) {
             continue;
         }
         let matched = paths
@@ -1155,11 +1288,15 @@ fn multi_committee_electra_attestation_and_nonzero_index_from_vectors() {
     use cc_state_transition::{process_attestation, ProcessAttestationOpts};
 
     let tests = tests_root();
+    let suite = operations_suite_name();
     let config = spec_config_for_preset(PresetName::Minimal);
 
     // Multi-committee valid case (minimal).
     let multi_dir = tests
-        .join("minimal/fulu/operations/attestation/pyspec_tests/multiple_committees");
+        .join("minimal")
+        .join(FORK)
+        .join(suite)
+        .join("attestation/pyspec_tests/multiple_committees");
     assert!(multi_dir.is_dir(), "missing {}", multi_dir.display());
     let pre = snappy_decompress(&multi_dir.join("pre.ssz_snappy"));
     let mut state = BeaconState::<Minimal>::from_ssz_bytes_with(ForkName::Fulu, &pre).unwrap();
@@ -1194,15 +1331,15 @@ fn multi_committee_electra_attestation_and_nonzero_index_from_vectors() {
     // data.index != 0 rejected for both presets.
     for preset_name in ["mainnet", "minimal"] {
         let idx_dir = tests.join(format!(
-            "{preset_name}/fulu/operations/attestation/pyspec_tests/invalid_attestation_data_index_not_zero"
+            "{preset_name}/{FORK}/{suite}/attestation/pyspec_tests/invalid_attestation_data_index_not_zero"
         ));
         assert!(idx_dir.is_dir(), "missing {}", idx_dir.display());
     }
 
     // Run the minimal invalid-index case through the handler.
-    let idx_dir = tests.join(
-        "minimal/fulu/operations/attestation/pyspec_tests/invalid_attestation_data_index_not_zero",
-    );
+    let idx_dir = tests.join(format!(
+        "minimal/{FORK}/{suite}/attestation/pyspec_tests/invalid_attestation_data_index_not_zero"
+    ));
     let pre = snappy_decompress(&idx_dir.join("pre.ssz_snappy"));
     let mut state = BeaconState::<Minimal>::from_ssz_bytes_with(ForkName::Fulu, &pre).unwrap();
     let att = Attestation::<Minimal>::from_ssz_bytes(&snappy_decompress(
@@ -1535,9 +1672,10 @@ fn sync_aggregate_uses_pubkey_index_map_no_registry_scan() {
     // Covered by the empty-participants case above; also run a vector case with
     // an explicit scan counter assertion.
     let tests = tests_root();
-    let case = tests.join(
-        "minimal/fulu/operations/sync_aggregate/pyspec_tests/sync_committee_rewards_empty_participants",
-    );
+    let suite = operations_suite_name();
+    let case = tests.join(format!(
+        "minimal/{FORK}/{suite}/sync_aggregate/pyspec_tests/sync_committee_rewards_empty_participants"
+    ));
     assert!(case.is_dir(), "missing empty participants vector case");
     let pre = snappy_decompress(&case.join("pre.ssz_snappy"));
     let mut state = BeaconState::<Minimal>::from_ssz_bytes_with(ForkName::Fulu, &pre).unwrap();

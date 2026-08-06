@@ -1,7 +1,8 @@
-//! `sanity` runner — `blocks` + `slots` green for both presets (CC-12e).
+//! `random` runner — adversarially generated multi-block cases (CC-12e).
 //!
-//! - `slots`: advances by a slot count via [`process_slots`].
-//! - `blocks`: applies a sequence of signed blocks via [`state_transition`].
+//! Same shape as `sanity/blocks`: `pre` + `blocks_N` sequence + optional `post`,
+//! driven by [`state_transition`]. Handler on disk is the suite name `random`
+//! under `tests/<preset>/fulu/random/random/`.
 //!
 //! Epoch-crossing cases stay skiplisted under CC-13 until `process_epoch`.
 //! Does **not** depend on `cc-spec-tests` (crate DAG).
@@ -13,22 +14,22 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cc_state_transition::{
-    process_slots, state_transition, BlockError, BlockSignatureStrategy, EngineError,
-    ExecutionEngine, GossipClass, NewPayloadRequest, PayloadStatus, TransitionContext,
+    state_transition, BlockError, BlockSignatureStrategy, EngineError, ExecutionEngine,
+    GossipClass, NewPayloadRequest, PayloadStatus, TransitionContext,
 };
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::preset::{Mainnet, Minimal, Preset};
-use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Slot};
+use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion};
 use cc_types::{BeaconState, ForkName, SignedBeaconBlock};
 use ssz::Encode;
 
 const FORK: &str = "fulu";
-const RUNNER: &str = "sanity";
+const RUNNER: &str = "random";
 const LOCKFILE: &str = include_str!("../../../spec-vectors.lock");
 const SKIPLIST: &str = include_str!("../../../docs/spec-vectors-skiplist.md");
 
-/// Handlers this runner owns.
-const HANDLERS: &[&str] = &["blocks", "slots"];
+/// Handlers this runner owns (`tests/<preset>/fulu/random/<handler>/`).
+const HANDLERS: &[&str] = &["random"];
 
 // ---------------------------------------------------------------------------
 // Vector-cache helpers
@@ -247,7 +248,6 @@ fn assert_typed_reject(err: &BlockError, rel: &str) {
     assert!(!err.to_string().is_empty(), "empty error for {rel}");
 }
 
-/// Engine that always accepts payloads (sanity/random vectors assume EL valid).
 #[derive(Debug, Clone, Copy)]
 struct AcceptEngine;
 
@@ -261,76 +261,14 @@ impl<P: Preset> ExecutionEngine<P> for AcceptEngine {
 }
 
 // ---------------------------------------------------------------------------
-// slots runner
+// random handler (blocks sequence)
 // ---------------------------------------------------------------------------
 
-fn run_slots_cases<P: Preset>() {
+fn run_random_cases<P: Preset>() {
     let tests = tests_root();
     let prefixes = skiplist_prefixes();
-    let cases = collect_cases(&tests, P::NAME, "slots");
-    assert!(!cases.is_empty(), "expected slots cases for {}", P::NAME);
-
-    let mut ran = 0usize;
-    let mut skipped = 0usize;
-
-    for (rel, case_dir) in &cases {
-        if is_skipped(rel, &prefixes) {
-            skipped += 1;
-            continue;
-        }
-
-        let pre_path = case_dir.join("pre.ssz_snappy");
-        let pre_bytes = snappy_decompress(&pre_path);
-        let mut state = BeaconState::<P>::from_ssz_bytes_with(ForkName::Fulu, &pre_bytes)
-            .unwrap_or_else(|e| panic!("decode pre {rel}: {e:?}"));
-
-        let slots_text = fs::read_to_string(case_dir.join("slots.yaml"))
-            .unwrap_or_else(|e| panic!("slots.yaml {rel}: {e}"));
-        let slots: u64 = serde_yaml::from_str(&slots_text)
-            .unwrap_or_else(|e| panic!("parse slots.yaml {rel}: {e}"));
-        let target = state
-            .slot()
-            .checked_add(slots)
-            .unwrap_or_else(|| panic!("slot overflow {rel}"));
-
-        process_slots(&mut state, Slot::new(target.as_u64()))
-            .unwrap_or_else(|e| panic!("process_slots {rel}: {e}"));
-
-        let post_path = case_dir.join("post.ssz_snappy");
-        let post_bytes = snappy_decompress(&post_path);
-        let expected = BeaconState::<P>::from_ssz_bytes_with(ForkName::Fulu, &post_bytes)
-            .unwrap_or_else(|e| panic!("decode post {rel}: {e:?}"));
-
-        assert_eq!(state, expected, "post-state mismatch for {rel}");
-        assert_eq!(
-            state.as_ssz_bytes(),
-            expected.as_ssz_bytes(),
-            "post SSZ bytes mismatch for {rel}"
-        );
-        ran += 1;
-    }
-
-    assert!(
-        ran > 0,
-        "expected to execute at least one non-skipped slots case for {}",
-        P::NAME
-    );
-    assert!(
-        skipped > 0,
-        "expected some slots cases skiplisted under CC-13 for {}",
-        P::NAME
-    );
-}
-
-// ---------------------------------------------------------------------------
-// blocks runner (state_transition over blocks_N sequence)
-// ---------------------------------------------------------------------------
-
-fn run_blocks_cases<P: Preset>() {
-    let tests = tests_root();
-    let prefixes = skiplist_prefixes();
-    let cases = collect_cases(&tests, P::NAME, "blocks");
-    assert!(!cases.is_empty(), "expected blocks cases for {}", P::NAME);
+    let cases = collect_cases(&tests, P::NAME, "random");
+    assert!(!cases.is_empty(), "expected random cases for {}", P::NAME);
 
     let config = spec_config_for_preset(match P::NAME {
         "mainnet" => PresetName::Mainnet,
@@ -341,7 +279,6 @@ fn run_blocks_cases<P: Preset>() {
     let ctx = TransitionContext::<P>::new(&config, &engine);
 
     let mut ran = 0usize;
-    let mut invalid_ok = 0usize;
     let mut skipped = 0usize;
 
     for (rel, case_dir) in &cases {
@@ -376,13 +313,12 @@ fn run_blocks_cases<P: Preset>() {
                     break;
                 }
             }
-            // Pubkey map may grow if deposits introduced new validators.
             rebuild_pubkey_cache(&mut state);
         }
 
         if post_path.is_file() {
             if let Some(e) = first_err {
-                panic!("blocks valid case {rel}: {e}");
+                panic!("random valid case {rel}: {e}");
             }
             let post_bytes = snappy_decompress(&post_path);
             let expected = BeaconState::<P>::from_ssz_bytes_with(ForkName::Fulu, &post_bytes)
@@ -396,43 +332,34 @@ fn run_blocks_cases<P: Preset>() {
             ran += 1;
         } else {
             let err = first_err.unwrap_or_else(|| {
-                panic!("invalid blocks case must Err: {rel}");
+                panic!("invalid random case must Err: {rel}");
             });
             assert_typed_reject(&err, rel);
-            invalid_ok += 1;
+            ran += 1;
         }
     }
 
+    // All current random cases span an epoch boundary and are skiplisted under
+    // CC-13 until process_epoch lands. The suite is still green: every non-skipped
+    // case must pass, and when the skiplist is emptied at CC-13d, ran > 0 holds.
     assert!(
-        ran > 0,
-        "expected valid non-skipped blocks cases for {} (skipped={skipped})",
+        ran > 0 || skipped > 0,
+        "expected random cases for {} (ran={ran}, skipped={skipped})",
         P::NAME
     );
-    assert!(
-        invalid_ok > 0,
-        "expected invalid blocks cases for {}",
-        P::NAME
-    );
+    if skipped == 0 {
+        assert!(ran > 0, "expected to execute random cases for {}", P::NAME);
+    }
 }
 
 #[test]
-fn slots_minimal() {
-    run_slots_cases::<Minimal>();
+fn random_minimal() {
+    run_random_cases::<Minimal>();
 }
 
 #[test]
-fn slots_mainnet() {
-    run_slots_cases::<Mainnet>();
-}
-
-#[test]
-fn blocks_minimal() {
-    run_blocks_cases::<Minimal>();
-}
-
-#[test]
-fn blocks_mainnet() {
-    run_blocks_cases::<Mainnet>();
+fn random_mainnet() {
+    run_random_cases::<Mainnet>();
 }
 
 #[test]
@@ -449,21 +376,20 @@ fn handler_coverage() {
     }
 }
 
-/// Negative control: renaming one declared handler fails coverage.
+/// Negative control: empty HANDLERS fails coverage equality.
 #[test]
 fn handler_coverage_negative_missing_handler_fails() {
     let on_disk: BTreeSet<String> = HANDLERS.iter().map(|s| (*s).to_string()).collect();
-    let partial = ["blocks"]; // missing slots
+    let partial: BTreeSet<&str> = BTreeSet::new();
     let on_disk_refs: BTreeSet<&str> = on_disk.iter().map(String::as_str).collect();
-    let partial_set: BTreeSet<&str> = partial.iter().copied().collect();
     assert_ne!(
-        partial_set, on_disk_refs,
-        "partial HANDLERS must differ from full set"
+        partial, on_disk_refs,
+        "empty HANDLERS must differ from full set"
     );
 }
 
 #[test]
-fn skiplist_sanity_entries_match_disk() {
+fn skiplist_random_entries_match_disk() {
     let tests = tests_root();
     let prefixes = skiplist_prefixes();
     let mut paths: BTreeSet<String> = BTreeSet::new();
@@ -475,7 +401,7 @@ fn skiplist_sanity_entries_match_disk() {
         }
     }
     for p in &prefixes {
-        if !p.contains("/sanity/") {
+        if !p.contains("/random/") {
             continue;
         }
         let matched = paths
@@ -483,7 +409,7 @@ fn skiplist_sanity_entries_match_disk() {
             .any(|c| c == p || c.starts_with(&format!("{p}/")));
         assert!(
             matched,
-            "stale skip entry matches no sanity case on disk: `{p}`"
+            "stale skip entry matches no random case on disk: `{p}`"
         );
     }
 }

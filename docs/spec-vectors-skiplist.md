@@ -21,9 +21,6 @@ the entry (e.g. `CC-12e`).
 
 ## CC-12
 
-- `mainnet/fulu/sanity/blocks` -- process_block handlers after process_block_header land in CC-12b–d -- CC-12e
-- `minimal/fulu/sanity/blocks` -- process_block handlers after process_block_header land in CC-12b–d -- CC-12e
-
 ## CC-13
 
 - `mainnet/fulu/sanity/slots/pyspec_tests/balance_change_affects_proposer` -- needs process_epoch -- CC-13d
@@ -52,5 +49,41 @@ the entry (e.g. `CC-12e`).
 - `minimal/fulu/sanity/slots/pyspec_tests/over_epoch_boundary` -- needs process_epoch -- CC-13d
 - `minimal/fulu/sanity/slots/pyspec_tests/pending_consolidation` -- needs process_epoch -- CC-13d
 - `minimal/fulu/sanity/slots/pyspec_tests/pending_deposit_extra_gwei` -- needs process_epoch -- CC-13d
+- `mainnet/fulu/sanity/blocks/pyspec_tests/attestation` -- needs process_epoch -- CC-13d
+- `mainnet/fulu/sanity/blocks/pyspec_tests/balance_driven_status_transitions` -- needs process_epoch -- CC-13d
+- `mainnet/fulu/sanity/blocks/pyspec_tests/duplicate_attestation_same_block` -- needs process_epoch -- CC-13d
+- `mainnet/fulu/sanity/blocks/pyspec_tests/effective_balance_increase_changes_lookahead` -- needs process_epoch -- CC-13d
+- `mainnet/fulu/sanity/blocks/pyspec_tests/empty_epoch_transition` -- needs process_epoch -- CC-13d
+- `mainnet/fulu/sanity/blocks/pyspec_tests/full_withdrawal_in_epoch_transition` -- needs process_epoch -- CC-13d
+- `mainnet/fulu/sanity/blocks/pyspec_tests/historical_batch` -- needs process_epoch -- CC-13d
+- `mainnet/fulu/sanity/blocks/pyspec_tests/inactivity_scores_full_participation_leaking` -- needs process_epoch -- CC-13d
+- `mainnet/fulu/sanity/blocks/pyspec_tests/inactivity_scores_leaking` -- needs process_epoch -- CC-13d
+- `mainnet/fulu/sanity/blocks/pyspec_tests/many_partial_withdrawals_in_epoch_transition` -- needs process_epoch -- CC-13d
+- `mainnet/fulu/sanity/blocks/pyspec_tests/multiple_different_validator_exits_same_block` -- needs process_epoch -- CC-13d
+- `mainnet/fulu/sanity/blocks/pyspec_tests/partial_withdrawal_in_epoch_transition` -- needs process_epoch -- CC-13d
+- `mainnet/fulu/sanity/blocks/pyspec_tests/voluntary_exit` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/activate_and_partial_withdrawal_max_effective_balance` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/activate_and_partial_withdrawal_overdeposit` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/attestation` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/balance_driven_status_transitions` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/duplicate_attestation_same_block` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/effective_balance_increase_changes_lookahead` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/empty_epoch_transition` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/empty_epoch_transition_large_validator_set` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/empty_epoch_transition_not_finalizing` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/eth1_data_votes_consensus` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/eth1_data_votes_no_consensus` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/full_withdrawal_in_epoch_transition` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/historical_batch` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/inactivity_scores_full_participation_leaking` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/inactivity_scores_leaking` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/many_partial_withdrawals_in_epoch_transition` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/multi_epoch_consolidation_chain` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/multiple_different_validator_exits_same_block` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/partial_withdrawal_in_epoch_transition` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/voluntary_exit` -- needs process_epoch -- CC-13d
+- `minimal/fulu/sanity/blocks/pyspec_tests/withdrawal_and_consolidation_effective_balance_updates` -- needs process_epoch -- CC-13d
+- `mainnet/fulu/random/random` -- needs process_epoch (adversarial multi-block spans) -- CC-13d
+- `minimal/fulu/random/random` -- needs process_epoch (adversarial multi-block spans) -- CC-13d
 
 ## CC-15
