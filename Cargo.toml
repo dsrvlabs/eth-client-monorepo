@@ -58,6 +58,20 @@ figment = { version = "0.10.19", features = ["env", "toml"] }
 http = "1.5.0"
 serde = { version = "1.0.219", features = ["derive"] }
 
+# Bootstrap telemetry (Architecture §4 / ADR-06, CC-05a)
+prometheus-client = "0.25.0"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "signal", "time", "sync"] }
+tower = { version = "0.5.3", features = ["util"] }
+hyper = { version = "1.11.0", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1.20", features = ["tokio"] }
+http-body = "1.1.0"
+http-body-util = "0.1.4"
+bytes = "1.12.1"
+pin-project-lite = "0.2.17"
+futures = "0.3.33"
+
 [profile.release]
 opt-level = 3
 debug = 1

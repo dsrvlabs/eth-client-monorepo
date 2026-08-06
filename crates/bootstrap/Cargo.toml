@@ -9,3 +9,23 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+cc-config = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+http-body = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+pin-project-lite = { workspace = true }
+prometheus-client = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1.0.145"
+tokio = { workspace = true, features = ["test-util", "io-util"] }
