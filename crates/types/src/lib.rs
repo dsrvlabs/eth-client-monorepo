@@ -53,7 +53,10 @@ pub use sidecar::{
     DataColumnSidecar, DataColumnsByRootIdentifier, MatrixEntry, PartialDataColumnGroupID,
     PartialDataColumnHeader, PartialDataColumnPartsMetadata, PartialDataColumnSidecar,
 };
-pub use state::{BeaconState, List, StateCaches, Vector};
+pub use state::{
+    BeaconState, EpochCache, FieldRootCache, List, ListHashCache, PubkeyIndexMap, ShufflingCache,
+    StateAccessError, StateCaches, StateField, Vector, list_id,
+};
 
 // ---------------------------------------------------------------------------
 // KZG / DAS constants (Architecture §4.3, Fulu das-core / polynomial-commitments)

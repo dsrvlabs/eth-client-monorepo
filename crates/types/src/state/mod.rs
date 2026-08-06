@@ -1,8 +1,27 @@
-//! `BeaconState` flat struct + cache placeholder + List/Vector seam (Architecture §3.4).
+//! `BeaconState` flat struct + cached hashing + List/Vector seam (Architecture §3.4).
 //!
-//! Spec fields are private and reached through accessors. `StateCaches` is an
-//! empty placeholder filled by CC-10g; it is excluded from SSZ / tree-hash and
-//! from `PartialEq`.
+//! Spec fields are private and reached through accessors. `StateCaches` holds list-hash
+//! caches, field roots, and epoch/pubkey/shuffling shells. Caches are excluded from
+//! SSZ / tree-hash and from `PartialEq`.
+//!
+//! ## Compile-fail: external crates cannot index state lists directly
+//!
+//! Spec list fields are private. The following must not compile outside this crate:
+//!
+//! ```compile_fail,E0616
+//! use cc_types::{BeaconState, Mainnet};
+//! let state = BeaconState::<Mainnet>::default();
+//! let _ = state.validators[0];
+//! ```
+
+mod accessors;
+mod caches;
+
+pub use accessors::StateAccessError;
+pub use caches::{
+    BEACON_STATE_FIELD_COUNT, EpochCache, FieldRootCache, ListHashCache, PubkeyIndexMap,
+    ShufflingCache, StateCaches, StateField, list_id,
+};
 
 use std::fmt;
 
@@ -36,35 +55,6 @@ pub type JustificationBitsLength = U4;
 
 /// Participation flag byte (`ParticipationFlags` in the spec).
 pub type ParticipationFlags = u8;
-
-/// Placeholder for cached hashing / epoch / pubkey layers (filled by CC-10g).
-///
-/// Carries a debug-only tag so unit tests can construct two states that differ
-/// only in cache contents and assert `PartialEq` ignores caches.
-#[derive(Clone, Default)]
-pub struct StateCaches<P: Preset> {
-    /// Non-spec discriminator for PartialEq unit tests; always zero on decode.
-    pub(crate) tag: u64,
-    _marker: std::marker::PhantomData<P>,
-}
-
-impl<P: Preset> fmt::Debug for StateCaches<P> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("StateCaches")
-            .field("tag", &self.tag)
-            .finish()
-    }
-}
-
-impl<P: Preset> StateCaches<P> {
-    /// Construct caches with an explicit tag (test / debug only).
-    pub fn with_tag(tag: u64) -> Self {
-        Self {
-            tag,
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
 
 /// Spec `BeaconState` (Electra fields + Fulu `proposer_lookahead`).
 ///
@@ -237,71 +227,6 @@ impl<P: Preset> BeaconState<P> {
             ))),
         }
     }
-
-    /// No-op under `ssz_types`; milhouse will `apply_updates()` here (CC-1H).
-    pub fn commit(&mut self) {}
-
-    // --- read accessors (intersection-only contract grows in CC-10g) --------
-
-    /// Genesis time.
-    pub fn genesis_time(&self) -> u64 {
-        self.genesis_time
-    }
-
-    /// Genesis validators root.
-    pub fn genesis_validators_root(&self) -> Root {
-        self.genesis_validators_root
-    }
-
-    /// Current slot.
-    pub fn slot(&self) -> Slot {
-        self.slot
-    }
-
-    /// Current fork.
-    pub fn fork(&self) -> Fork {
-        self.fork
-    }
-
-    /// Latest block header.
-    pub fn latest_block_header(&self) -> &BeaconBlockHeader {
-        &self.latest_block_header
-    }
-
-    /// Finalized checkpoint.
-    pub fn finalized_checkpoint(&self) -> Checkpoint {
-        self.finalized_checkpoint
-    }
-
-    /// Current justified checkpoint.
-    pub fn current_justified_checkpoint(&self) -> Checkpoint {
-        self.current_justified_checkpoint
-    }
-
-    /// Previous justified checkpoint.
-    pub fn previous_justified_checkpoint(&self) -> Checkpoint {
-        self.previous_justified_checkpoint
-    }
-
-    /// Validator registry length.
-    pub fn validators_len(&self) -> usize {
-        self.validators.len()
-    }
-
-    /// Proposer lookahead vector (Fulu EIP-7917).
-    pub fn proposer_lookahead(&self) -> &Vector<ValidatorIndex, P::ProposerLookaheadLen> {
-        &self.proposer_lookahead
-    }
-
-    /// Borrow caches (CC-10g will expand this surface).
-    pub fn caches(&self) -> &StateCaches<P> {
-        &self.caches
-    }
-
-    /// Mutable caches (test / CC-10g).
-    pub fn caches_mut(&mut self) -> &mut StateCaches<P> {
-        &mut self.caches
-    }
 }
 
 #[cfg(test)]
@@ -344,10 +269,8 @@ mod tests {
         b.caches_mut().tag = 999;
         assert_eq!(a, b, "states that differ only in caches must compare equal");
         // Sanity: a real field difference is unequal.
-        let c = BeaconState::<Mainnet> {
-            slot: Slot::new(1),
-            ..Default::default()
-        };
+        let mut c = BeaconState::<Mainnet>::default();
+        c.set_slot(Slot::new(1));
         assert_ne!(a, c);
     }
 
@@ -389,18 +312,52 @@ mod tests {
     }
 
     #[test]
-    fn commit_is_noop() {
+    fn commit_is_noop_under_ssz_types() {
         let mut state = BeaconState::<Minimal>::default();
         state.commit();
     }
 
     #[test]
+    fn canonical_root_matches_tree_hash_on_default() {
+        let mut state = BeaconState::<Minimal>::default();
+        let cold = state.tree_hash_root();
+        let cached = state.canonical_root();
+        assert_eq!(cached.to_hash256(), cold);
+        // Warm path agrees.
+        let warm = state.canonical_root();
+        assert_eq!(warm.to_hash256(), cold);
+    }
+
+    #[test]
+    fn canonical_root_without_external_commit() {
+        let mut state = BeaconState::<Minimal>::default();
+        state.set_slot(Slot::new(7));
+        // No explicit commit() — internal call must suffice.
+        let cached = state.canonical_root();
+        let cold = BeaconState::<Minimal> {
+            // Reconstruct via mutation-free compare: clone then cold hash.
+            ..state.clone()
+        }
+        .tree_hash_root();
+        // state was mutated; compare against tree_hash of current state.
+        let cold_now = TreeHash::tree_hash_root(&state);
+        assert_eq!(cached.to_hash256(), cold_now);
+        let _ = cold;
+    }
+
+    #[test]
     fn no_public_spec_fields() {
-        // Compile-time / documentation: fields are private; this test exists so
-        // `grep -rn "pub " crates/types/src/state/mod.rs` reviewers have a
-        // named companion AC check. Spec fields are not `pub`.
         let state = BeaconState::<Minimal>::default();
         let _ = state.slot();
         let _ = state.proposer_lookahead();
+    }
+
+    #[test]
+    fn clone_preserves_caches() {
+        let mut state = BeaconState::<Minimal>::default();
+        let _ = state.canonical_root();
+        assert!(state.caches().list_hashes[list_id::VALIDATORS].is_some());
+        let cloned = state.clone();
+        assert!(cloned.caches().list_hashes[list_id::VALIDATORS].is_some());
     }
 }

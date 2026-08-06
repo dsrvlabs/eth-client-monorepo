@@ -781,8 +781,10 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "cc-spec-tests",
+ "ethereum_hashing",
  "ethereum_ssz",
  "ethereum_ssz_derive",
+ "fixedbitset",
  "serde",
  "serde_yaml",
  "sha2",
