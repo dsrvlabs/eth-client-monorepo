@@ -54,6 +54,18 @@ pub enum ProtoArrayError {
     /// Weight-delta slice length does not match the node count.
     #[error("weight delta length {got} does not match node count {expected}")]
     DeltaLengthMismatch { got: usize, expected: usize },
+    /// Justified checkpoint root is not in the array.
+    #[error("unknown justified root: {0:?}")]
+    UnknownJustified(Root),
+    /// Weight arithmetic overflowed.
+    #[error("weight delta overflow at node index {0}")]
+    WeightOverflow(usize),
+    /// Best-descendant / best-child index is out of range.
+    #[error("invalid best-link index {0}")]
+    InvalidBestLink(usize),
+    /// Selected head is not viable for the current store checkpoints.
+    #[error("selected head root {0:?} is not viable")]
+    NonViableHead(Root),
 }
 
 /// Arguments for [`ProtoArray::on_block`] (one logical block insertion).
@@ -111,6 +123,15 @@ pub struct ProtoNode {
     pub best_descendant: Option<usize>,
 }
 
+/// Previously applied proposer-boost delta (reversed on the next head pass).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PreviousProposerBoost {
+    /// Root that last received the boost (or zero if none).
+    pub root: Root,
+    /// Boost score last applied (Gwei as i64).
+    pub score: i64,
+}
+
 /// Proto-array: contiguous nodes with parent links and O(1) root lookup.
 #[derive(Debug, Clone)]
 pub struct ProtoArray {
@@ -118,6 +139,8 @@ pub struct ProtoArray {
     indices: HashMap<Root, usize>,
     justified_checkpoint: Checkpoint,
     finalized_checkpoint: Checkpoint,
+    /// Last applied proposer-boost delta (Architecture §6.3 — boost is a delta).
+    previous_proposer_boost: PreviousProposerBoost,
 }
 
 impl ProtoArray {
@@ -128,6 +151,7 @@ impl ProtoArray {
             indices: HashMap::new(),
             justified_checkpoint,
             finalized_checkpoint,
+            previous_proposer_boost: PreviousProposerBoost::default(),
         }
     }
 
@@ -377,20 +401,315 @@ impl ProtoArray {
     }
 
     /// Record unrealized checkpoints on a node after `compute_pulled_up_tip`.
+    ///
+    /// Returns `true` if either checkpoint value changed. Callers **must** bump
+    /// the store `mutation_counter` when this returns `true` so head-cache /
+    /// viability cannot serve a stale result (SEC-15c-2): node unrealized is
+    /// the voting source for prior-epoch blocks even when store-level
+    /// unrealized does not advance.
     pub fn set_unrealized_checkpoints(
         &mut self,
         root: Root,
         unrealized_justified: Checkpoint,
         unrealized_finalized: Checkpoint,
-    ) -> Result<(), ProtoArrayError> {
+    ) -> Result<bool, ProtoArrayError> {
         let idx = *self
             .indices
             .get(&root)
             .ok_or(ProtoArrayError::UnknownRoot(root))?;
         let node = &mut self.nodes[idx];
+        let changed = node.unrealized_justified_checkpoint != unrealized_justified
+            || node.unrealized_finalized_checkpoint != unrealized_finalized;
         node.unrealized_justified_checkpoint = unrealized_justified;
         node.unrealized_finalized_checkpoint = unrealized_finalized;
+        Ok(changed)
+    }
+
+    /// Roots of **filtered-tree leaves** under the justified root, with current
+    /// node weights (post-`get_head` only).
+    ///
+    /// Matches pyspec `get_viable_for_head_checks`: leaves of
+    /// `get_filtered_block_tree` with `get_weight`. A filtered leaf is a node
+    /// with no children that passes the per-node viability predicate and is a
+    /// descendant of (or equal to) `justified_root`.
+    pub fn viable_for_head_leaves(
+        &self,
+        justified_root: Root,
+        current_epoch: Epoch,
+        slots_per_epoch: u64,
+    ) -> Vec<(Root, i64)> {
+        // Indices that appear as a parent (have at least one child).
+        let mut has_child = vec![false; self.nodes.len()];
+        for node in &self.nodes {
+            if let Some(p) = node.parent
+                && let Some(slot) = has_child.get_mut(p)
+            {
+                *slot = true;
+            }
+        }
+
+        let mut out = Vec::new();
+        for (i, node) in self.nodes.iter().enumerate() {
+            if has_child.get(i).copied().unwrap_or(true) {
+                continue; // not a leaf of the full tree
+            }
+            if !self.node_is_viable(node, current_epoch, slots_per_epoch) {
+                continue;
+            }
+            // Must sit under the justified root (filtered tree base).
+            if !self.is_descendant_or_equal(justified_root, node.root) {
+                continue;
+            }
+            out.push((node.root, node.weight));
+        }
+        // Stable order by root bytes for set comparison independence.
+        out.sort_by(|a, b| a.0.as_slice().cmp(b.0.as_slice()));
+        out
+    }
+
+    /// Whether `root` equals `ancestor` or has `ancestor` on its parent chain.
+    fn is_descendant_or_equal(&self, ancestor: Root, root: Root) -> bool {
+        if ancestor == root {
+            return true;
+        }
+        let Some(anc_idx) = self.indices.get(&ancestor).copied() else {
+            return false;
+        };
+        let Some(mut idx) = self.indices.get(&root).copied() else {
+            return false;
+        };
+        // Walk parents; bound by node count.
+        for _ in 0..self.nodes.len() {
+            if idx == anc_idx {
+                return true;
+            }
+            match self.nodes.get(idx).and_then(|n| n.parent) {
+                Some(p) => idx = p,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// Borrow the previous proposer-boost application (for diagnostics / tests).
+    #[inline]
+    pub fn previous_proposer_boost(&self) -> PreviousProposerBoost {
+        self.previous_proposer_boost
+    }
+
+    /// Apply vote deltas, proposer-boost delta, parent weight propagation, and
+    /// rebuild `best_child` / `best_descendant` (Architecture §6.1 / §6.3).
+    ///
+    /// # Proposer boost as a delta
+    ///
+    /// The previously applied boost score is **reversed** on
+    /// `previous_proposer_boost.root`, and the new boost (if any) is applied to
+    /// `proposer_boost_root`. Boost is never a persistent field weight.
+    ///
+    /// # Complexity
+    ///
+    /// O(N) — two reverse passes over the node vector. Must not call
+    /// `get_ancestor` inside the weight loop (CC-15/5).
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_score_changes(
+        &mut self,
+        mut deltas: Vec<i64>,
+        justified_checkpoint: Checkpoint,
+        finalized_checkpoint: Checkpoint,
+        proposer_boost_root: Root,
+        proposer_boost_score: i64,
+        current_epoch: Epoch,
+        slots_per_epoch: u64,
+    ) -> Result<(), ProtoArrayError> {
+        if deltas.len() != self.nodes.len() {
+            return Err(ProtoArrayError::DeltaLengthMismatch {
+                got: deltas.len(),
+                expected: self.nodes.len(),
+            });
+        }
+
+        self.justified_checkpoint = justified_checkpoint;
+        self.finalized_checkpoint = finalized_checkpoint;
+
+        let mut applied_boost_score = 0_i64;
+        let prev_boost = self.previous_proposer_boost;
+
+        // Pass 1: apply deltas + boost reverse/apply + parent back-propagation.
+        for node_index in (0..self.nodes.len()).rev() {
+            let node_root = self.nodes[node_index].root;
+            let mut node_delta = deltas[node_index];
+
+            // Reverse previous proposer boost on its node.
+            if prev_boost.root != Root::ZERO && prev_boost.root == node_root {
+                node_delta = node_delta
+                    .checked_sub(prev_boost.score)
+                    .ok_or(ProtoArrayError::WeightOverflow(node_index))?;
+            }
+            // Apply current proposer boost.
+            if proposer_boost_root != Root::ZERO
+                && proposer_boost_root == node_root
+                && proposer_boost_score != 0
+            {
+                node_delta = node_delta
+                    .checked_add(proposer_boost_score)
+                    .ok_or(ProtoArrayError::WeightOverflow(node_index))?;
+                applied_boost_score = proposer_boost_score;
+            }
+
+            let node = &mut self.nodes[node_index];
+            node.weight = node
+                .weight
+                .checked_add(node_delta)
+                .ok_or(ProtoArrayError::WeightOverflow(node_index))?;
+
+            // Back-propagate to parent so ancestor weights include this vote/boost.
+            if let Some(parent_index) = node.parent {
+                let parent_slot = deltas
+                    .get_mut(parent_index)
+                    .ok_or(ProtoArrayError::InvalidBestLink(parent_index))?;
+                *parent_slot = parent_slot
+                    .checked_add(node_delta)
+                    .ok_or(ProtoArrayError::WeightOverflow(parent_index))?;
+            }
+        }
+
+        self.previous_proposer_boost = PreviousProposerBoost {
+            root: if applied_boost_score != 0 {
+                proposer_boost_root
+            } else {
+                Root::ZERO
+            },
+            score: applied_boost_score,
+        };
+
+        // Pass 2: rebuild best_child / best_descendant bottom-up.
+        for node_index in (0..self.nodes.len()).rev() {
+            let parent_index = self.nodes[node_index].parent;
+            if let Some(parent_index) = parent_index {
+                self.maybe_update_best_child_and_descendant(
+                    parent_index,
+                    node_index,
+                    current_epoch,
+                    slots_per_epoch,
+                )?;
+            }
+        }
+
         Ok(())
+    }
+
+    /// Select the head root starting from the justified checkpoint root.
+    pub fn find_head(
+        &self,
+        justified_root: Root,
+        current_epoch: Epoch,
+        slots_per_epoch: u64,
+    ) -> Result<Root, ProtoArrayError> {
+        let justified_index = *self
+            .indices
+            .get(&justified_root)
+            .ok_or(ProtoArrayError::UnknownJustified(justified_root))?;
+        let justified_node = &self.nodes[justified_index];
+        let best_descendant_index = justified_node.best_descendant.unwrap_or(justified_index);
+        let best_node = self
+            .nodes
+            .get(best_descendant_index)
+            .ok_or(ProtoArrayError::InvalidBestLink(best_descendant_index))?;
+
+        if !self.node_is_viable(best_node, current_epoch, slots_per_epoch) {
+            // Fall back: justified itself may still be the only viable tip
+            // (empty best links after prune). Prefer justified when viable.
+            if self.node_is_viable(justified_node, current_epoch, slots_per_epoch) {
+                return Ok(justified_node.root);
+            }
+            return Err(ProtoArrayError::NonViableHead(best_node.root));
+        }
+        Ok(best_node.root)
+    }
+
+    fn maybe_update_best_child_and_descendant(
+        &mut self,
+        parent_index: usize,
+        child_index: usize,
+        current_epoch: Epoch,
+        slots_per_epoch: u64,
+    ) -> Result<(), ProtoArrayError> {
+        let child = self
+            .nodes
+            .get(child_index)
+            .ok_or(ProtoArrayError::InvalidBestLink(child_index))?
+            .clone();
+        let parent = self
+            .nodes
+            .get(parent_index)
+            .ok_or(ProtoArrayError::InvalidBestLink(parent_index))?
+            .clone();
+
+        let child_leads = self.node_leads_to_viable_head(&child, current_epoch, slots_per_epoch);
+
+        let change_to_none = (None, None);
+        let change_to_child = (
+            Some(child_index),
+            child.best_descendant.or(Some(child_index)),
+        );
+        let no_change = (parent.best_child, parent.best_descendant);
+
+        let (new_best_child, new_best_descendant) =
+            if let Some(best_child_index) = parent.best_child {
+                if best_child_index == child_index && !child_leads {
+                    change_to_none
+                } else if best_child_index == child_index {
+                    change_to_child
+                } else {
+                    let best_child = self
+                        .nodes
+                        .get(best_child_index)
+                        .ok_or(ProtoArrayError::InvalidBestLink(best_child_index))?
+                        .clone();
+                    let best_leads =
+                        self.node_leads_to_viable_head(&best_child, current_epoch, slots_per_epoch);
+
+                    if child_leads && !best_leads {
+                        change_to_child
+                    } else if !child_leads && best_leads {
+                        no_change
+                    } else if child.weight == best_child.weight {
+                        // Spec / Lighthouse: higher root wins ties.
+                        if child.root.as_slice() >= best_child.root.as_slice() {
+                            change_to_child
+                        } else {
+                            no_change
+                        }
+                    } else if child.weight > best_child.weight {
+                        change_to_child
+                    } else {
+                        no_change
+                    }
+                }
+            } else if child_leads {
+                change_to_child
+            } else {
+                no_change
+            };
+
+        let parent = &mut self.nodes[parent_index];
+        parent.best_child = new_best_child;
+        parent.best_descendant = new_best_descendant;
+        Ok(())
+    }
+
+    /// Node itself is viable, or its `best_descendant` is viable.
+    fn node_leads_to_viable_head(
+        &self,
+        node: &ProtoNode,
+        current_epoch: Epoch,
+        slots_per_epoch: u64,
+    ) -> bool {
+        let best_descendant_viable = node
+            .best_descendant
+            .and_then(|i| self.nodes.get(i))
+            .is_some_and(|d| self.node_is_viable(d, current_epoch, slots_per_epoch));
+        best_descendant_viable || self.node_is_viable(node, current_epoch, slots_per_epoch)
     }
 }
 

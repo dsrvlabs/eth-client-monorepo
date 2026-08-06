@@ -771,9 +771,14 @@ dependencies = [
 name = "cc-fork-choice"
 version = "0.1.0"
 dependencies = [
+ "cc-crypto",
  "cc-state-transition",
  "cc-types",
+ "ethereum_ssz",
  "lru",
+ "serde",
+ "serde_yaml",
+ "snap",
  "ssz_types",
  "thiserror",
  "tree_hash",

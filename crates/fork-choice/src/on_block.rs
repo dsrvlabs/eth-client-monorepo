@@ -218,8 +218,17 @@ pub fn on_block<P: Preset>(
     let ctx = TransitionContext::new(config, engine.as_ref());
     state_transition(&mut state, signed_block, &ctx, verify)?;
 
+    // Spec: compute head **before** applying the block (for proposer-boost gate).
+    let head_before = crate::head_cache::get_head(store)
+        .map(|(r, _)| r)
+        .unwrap_or(store.justified_checkpoint().root);
+
     // --- 5–7. Integrate: proto-array first, then store, then checkpoints ----
     integrate_block(store, block_root, block, state)?;
+
+    // Spec `record_block_timeliness` + `update_proposer_boost_root`.
+    record_block_timeliness(store, block_root);
+    update_proposer_boost_root(store, head_before, block_root);
 
     Ok(BlockImport::Imported(ImportedBlock { root: block_root }))
 }
@@ -253,7 +262,12 @@ fn complete_partial_import<P: Preset>(
         body: Default::default(),
     };
 
+    let head_before = crate::head_cache::get_head(store)
+        .map(|(r, _)| r)
+        .unwrap_or(store.justified_checkpoint().root);
     integrate_block(store, block_root, &block, state)?;
+    record_block_timeliness(store, block_root);
+    update_proposer_boost_root(store, head_before, block_root);
     Ok(BlockImport::Imported(ImportedBlock { root: block_root }))
 }
 
@@ -306,11 +320,17 @@ fn integrate_block<P: Preset>(
             unrealized_finalized_checkpoint: unrealized_finalized,
         })?;
     } else {
-        store.proto_array_mut().set_unrealized_checkpoints(
+        // Resume / re-pull path: node unrealized can change without a new header.
+        let node_changed = store.proto_array_mut().set_unrealized_checkpoints(
             block_root,
             unrealized_justified,
             unrealized_finalized,
         )?;
+        if node_changed {
+            // SEC-15c-2: node-level unrealized affects voting source / viability
+            // even when store unrealized epoch does not advance.
+            store.bump_mutation_counter();
+        }
     }
 
     // --- Header + post-state only after proto-array membership -------------
@@ -354,13 +374,20 @@ pub fn compute_pulled_up_tip<P: Preset>(
     let unrealized_justified = state.current_justified_checkpoint();
     let unrealized_finalized = state.finalized_checkpoint();
 
-    store.proto_array_mut().set_unrealized_checkpoints(
+    let node_changed = store.proto_array_mut().set_unrealized_checkpoints(
         block_root,
         unrealized_justified,
         unrealized_finalized,
     )?;
 
     store.update_unrealized_checkpoints(unrealized_justified, unrealized_finalized);
+
+    // SEC-15c-2: node unrealized can move without store unrealized advancing
+    // (e.g. equal epoch, different root). Invalidate head cache whenever the
+    // node value changed so viability cannot read a stale CachedHead.
+    if node_changed {
+        store.bump_mutation_counter();
+    }
 
     let block_slot = store
         .blocks()
@@ -429,6 +456,60 @@ fn block_to_header<P: Preset>(block: &BeaconBlock<P>) -> BeaconBlockHeader {
         parent_root: block.parent_root,
         state_root: block.state_root,
         body_root: Root::from_hash256(TreeHash::tree_hash_root(&block.body)),
+    }
+}
+
+/// Spec `record_block_timeliness(store, root)`.
+///
+/// Timely iff the block's slot equals the current store slot and the time into
+/// the slot is before the attestation due threshold (`SECONDS_PER_SLOT / 3`).
+pub fn record_block_timeliness<P: Preset>(store: &mut Store<P>, root: Root) {
+    let Some(header) = store.blocks().get(&root).copied() else {
+        store.set_block_timeliness(root, false);
+        return;
+    };
+    let seconds_per_slot = store.seconds_per_slot().max(1);
+    let seconds_since_genesis = store.time().saturating_sub(store.genesis_time());
+    let time_into_slot = seconds_since_genesis % seconds_per_slot;
+    // Spec `get_attestation_due_ms` ≈ SLOT_DURATION / INTERVALS_PER_SLOT (3).
+    let attestation_threshold = seconds_per_slot / 3;
+    let is_before_attesting_interval = time_into_slot < attestation_threshold;
+    let is_timely =
+        store.get_current_slot().as_u64() == header.slot.as_u64() && is_before_attesting_interval;
+    store.set_block_timeliness(root, is_timely);
+}
+
+/// Spec `get_shuffling_dependent_root(store, root, epoch)`.
+fn get_shuffling_dependent_root<P: Preset>(store: &Store<P>, root: Root, epoch: Epoch) -> Root {
+    if epoch.as_u64() <= P::MIN_SEED_LOOKAHEAD {
+        return Root::ZERO;
+    }
+    let dependent_epoch = epoch.as_u64().saturating_sub(P::MIN_SEED_LOOKAHEAD);
+    let dependent_slot = Slot::new(
+        dependent_epoch
+            .saturating_mul(P::SLOTS_PER_EPOCH)
+            .saturating_sub(1),
+    );
+    match store.proto_array().get_ancestor(root, dependent_slot) {
+        Ok(r) => r,
+        Err(_) => get_ancestor_from_headers(store, root, dependent_slot),
+    }
+}
+
+/// Spec `update_proposer_boost_root(store, head, root)`.
+///
+/// Boost is granted only when the block is timely, no prior boost this slot,
+/// and the block shares the shuffling dependent root with the current head.
+pub fn update_proposer_boost_root<P: Preset>(store: &mut Store<P>, head: Root, root: Root) {
+    let is_first_block = store.proposer_boost_root() == Root::ZERO;
+    let is_timely = store.block_timeliness(&root).unwrap_or(false);
+    let epoch = store.get_current_store_epoch();
+    let head_dependent = get_shuffling_dependent_root(store, head, epoch);
+    let block_dependent = get_shuffling_dependent_root(store, root, epoch);
+    let is_same_dependent_root = head_dependent == block_dependent;
+
+    if is_timely && is_first_block && is_same_dependent_root {
+        store.set_proposer_boost_root(root);
     }
 }
 

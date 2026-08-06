@@ -147,6 +147,10 @@ pub struct Store<P: Preset> {
     proto_array: ProtoArray,
     head_cache: Option<CachedHead>,
     mutation_counter: u64,
+    /// Last head returned by `get_head` (for reorg detection).
+    last_head_root: Option<Root>,
+    /// Spec `block_timeliness` — whether a block was timely at import.
+    block_timeliness: HashMap<Root, bool>,
     engine: Arc<dyn ExecutionEngine<P>>,
     da: Arc<dyn DataAvailability>,
     _preset: std::marker::PhantomData<P>,
@@ -217,6 +221,8 @@ impl<P: Preset> Store<P> {
             proto_array: ProtoArray::new(justified_checkpoint, finalized_checkpoint),
             head_cache: None,
             mutation_counter: 0,
+            last_head_root: None,
+            block_timeliness: HashMap::new(),
             engine,
             da,
             _preset: std::marker::PhantomData,
@@ -283,6 +289,18 @@ impl<P: Preset> Store<P> {
     #[inline]
     pub fn head_cache(&self) -> Option<&CachedHead> {
         self.head_cache.as_ref()
+    }
+
+    /// Last head root known to the store (after a successful `get_head`).
+    #[inline]
+    pub fn last_head_root(&self) -> Option<Root> {
+        self.last_head_root
+    }
+
+    /// Whether `root` was recorded as timely at import (spec `block_timeliness`).
+    #[inline]
+    pub fn block_timeliness(&self, root: &Root) -> Option<bool> {
+        self.block_timeliness.get(root).copied()
     }
 
     /// Borrow the proto-array (read-only). Mutations go through store methods.
@@ -423,11 +441,36 @@ impl<P: Preset> Store<P> {
         }
     }
 
-    /// Test / future helper: set proposer boost through a mutator (bumps).
+    /// Set the proposer-boost root (bumps mutation counter).
+    ///
+    /// Used by `on_block` after a timely import and by tests.
+    pub fn set_proposer_boost_root(&mut self, root: Root) {
+        if self.proposer_boost_root != root {
+            self.proposer_boost_root = root;
+            self.bump_mutation_counter();
+        }
+    }
+
+    /// Test helper: set proposer boost (always bumps).
     #[cfg(test)]
     pub(crate) fn set_proposer_boost_root_for_test(&mut self, root: Root) {
         self.proposer_boost_root = root;
         self.bump_mutation_counter();
+    }
+
+    /// Write the head cache after a successful `get_head` (does **not** bump).
+    pub(crate) fn set_head_cache(&mut self, cached: CachedHead) {
+        self.head_cache = Some(cached);
+    }
+
+    /// Record the head root after `get_head` (does **not** bump).
+    pub(crate) fn set_last_head_root(&mut self, root: Root) {
+        self.last_head_root = Some(root);
+    }
+
+    /// Record block timeliness (spec `record_block_timeliness`).
+    pub(crate) fn set_block_timeliness(&mut self, root: Root, timely: bool) {
+        self.block_timeliness.insert(root, timely);
     }
 
     /// Test helper: set unrealized checkpoints without bumping (seed for epoch pull-up).

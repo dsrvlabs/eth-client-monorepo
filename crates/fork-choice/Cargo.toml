@@ -19,3 +19,12 @@ tree_hash = { workspace = true }
 
 [dev-dependencies]
 ssz_types = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+snap = { workspace = true }
+ethereum_ssz = { workspace = true }
+cc-crypto = { workspace = true }
+
+[[bench]]
+name = "head"
+harness = false

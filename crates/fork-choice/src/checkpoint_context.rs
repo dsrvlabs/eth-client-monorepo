@@ -63,16 +63,28 @@ impl CheckpointContext {
     /// supplied by the caller (CC-16 may fill on first use).
     pub fn from_state<P: Preset>(state: &BeaconState<P>, checkpoint: Checkpoint) -> Self {
         let epoch = checkpoint.epoch;
-        let effective_balances: Vec<Gwei> = state
-            .validators_iter()
-            .map(|v| v.effective_balance)
-            .collect();
-
         // Prefer the checkpoint epoch's active set; fall back to a zero total on
         // empty registries (tests / pre-genesis shells).
         let active = get_active_validator_indices(state, epoch);
         let total_active_balance =
             get_total_balance(state, &active).unwrap_or_else(|_| Gwei::new(0));
+
+        // Spec `get_attestation_score` only sums **unslashed and active**
+        // validators. Zero balances for everyone else so `compute_deltas` cannot
+        // apply weight for slashed / inactive indices (CC-15c / SEC weight).
+        let active_set: std::collections::HashSet<u64> =
+            active.iter().map(|i| i.as_u64()).collect();
+        let effective_balances: Vec<Gwei> = state
+            .validators_iter()
+            .enumerate()
+            .map(|(i, v)| {
+                if v.slashed || !active_set.contains(&(i as u64)) {
+                    Gwei::new(0)
+                } else {
+                    v.effective_balance
+                }
+            })
+            .collect();
 
         Self {
             epoch,
