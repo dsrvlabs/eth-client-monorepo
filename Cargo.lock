@@ -770,6 +770,10 @@ dependencies = [
 [[package]]
 name = "cc-fork-choice"
 version = "0.1.0"
+dependencies = [
+ "cc-state-transition",
+ "cc-types",
+]
 
 [[package]]
 name = "cc-p2p"
