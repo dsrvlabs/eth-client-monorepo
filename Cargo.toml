@@ -104,6 +104,8 @@ reqwest = "0.13.4"
 serde_yaml = "0.9.34"
 ethereum_hashing = "0.8.0"
 criterion = "0.8.2"
+# CC-10b Hoodi fixture SHA-256 verify (test harness)
+sha2 = "0.10.9"
 
 [profile.release]
 opt-level = 3

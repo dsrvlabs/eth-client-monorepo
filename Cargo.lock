@@ -721,6 +721,9 @@ dependencies = [
 [[package]]
 name = "cc-types"
 version = "0.1.0"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "cfg-if"
