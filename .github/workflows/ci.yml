@@ -1,4 +1,5 @@
 # CC-07a — core CI gates: fmt, clippy, test (+ caching).
+# CC-08 — deps job (cargo deny + crate DAG); required once this lands (Architecture §9).
 # Toolchain pin lives only in rust-toolchain.toml (CC-07/2); never duplicate the version here.
 name: CI
 
@@ -173,6 +174,33 @@ jobs:
         env:
           SPEC_VECTORS_CACHE: ${{ steps.vectors.outputs.cache_root }}
         run: bash scripts/fetch-spec-vectors.sh
+
+  # CC-08 — supply-chain gate (Architecture §9, R-5). Required for merge once
+  # branch protection includes `deps` (fmt/clippy/test/proto/deps).
+  # check-crate-dag.sh also runs in clippy (D-3); duplicate is intentional.
+  deps:
+    name: deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: cargo deny
+        run: cargo deny check advisories bans licenses sources
+
+      - name: check crate DAG
+        run: bash scripts/check-crate-dag.sh
 
   # CC-04b — mutual-health compose proof (Architecture §6.5, §9, §12.6).
   # Non-required: deliberately outside CC-07/4's ten-minute budget (cold release

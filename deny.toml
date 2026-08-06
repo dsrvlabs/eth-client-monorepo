@@ -1,0 +1,73 @@
+# CC-08 — cargo-deny supply-chain gate.
+# Checked by the `deps` CI job: cargo deny check advisories bans licenses sources
+# Docs: docs/supply-chain.md (coverage gaps and compensating controls).
+
+[graph]
+# Match the CI / Docker builder targets we actually ship.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+all-features = true
+
+[advisories]
+# Yanked crates and RUSTSEC advisories fail the gate.
+version = 2
+yanked = "deny"
+ignore = [
+    # Add temporary ignores with a reason and a removal ticket, e.g.:
+    # { id = "RUSTSEC-0000-0000", reason = "…" },
+]
+
+[licenses]
+version = 2
+# Workspace is Apache-2.0; allow the usual permissive dual-license set used by
+# the Rust ecosystem (tonic/prost/tokio/hyper transitive tree in Phase 0).
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+# Workspace members set publish = false; license is still Apache-2.0 via
+# [workspace.package], but private crates are not registry-published.
+ignore = true
+
+[bans]
+# Multiple versions are common in the gRPC/http stack; warn so we notice
+# growth without blocking Phase 0 scaffolding.
+multiple-versions = "warn"
+# Deny `*` version reqs on external crates. Workspace path members use
+# `{ workspace = true }` / path deps without a semver req; those are private
+# (`publish = false`) and allowed via allow-wildcard-paths.
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+# Reject non-crates.io registries and unlisted git sources.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# Phase 0 has no git dependencies (R-5 / --locked everywhere).
+#
+# Phase 2 entry point (CC-20): git-pinned libp2p.
+# When CC-20 lands, add the exact repo URL to `allow-git` (and pin the rev in
+# Cargo.toml / a named constant — see docs/supply-chain.md). Do not broaden
+# unknown-git; only the reviewed libp2p pin is anticipated here.
+#
+# Example (not active until CC-20):
+#   allow-git = ["https://github.com/libp2p/rust-libp2p"]
+allow-git = []
