@@ -56,7 +56,8 @@ pub use shuffling::{
     get_or_compute_shuffling,
 };
 pub use root_measure::{
-    canonical_root_call_count, measured_canonical_root, take_canonical_root_call_count,
+    canonical_root_call_count, canonical_root_elapsed_ns, measured_canonical_root,
+    take_canonical_root_call_count, take_canonical_root_elapsed_ns,
 };
 pub use signatures::{
     decode_block_pubkey, decode_pubkey, decode_signature, decode_state_pubkey,

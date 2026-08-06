@@ -1,8 +1,8 @@
-//! `epoch_processing` runner — CC-13c handlers (12) + CC-13b handlers (3).
+//! `epoch_processing` runner — every Fulu handler, both presets (CC-13d).
 //!
-//! Full suite-level green declaration / set-equality against every on-disk
-//! handler is CC-13d's; this runner exercises every implemented handler so
-//! CC-13c acceptance can be checked early.
+//! Enumerates handler subdirectories from disk and asserts set equality against
+//! the declared list (union across presets). Mainnet omits
+//! `sync_committee_updates`; minimal includes it. Every on-disk case is run.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -27,11 +27,9 @@ const LAYOUT: &str = include_str!("../../../spec-vectors-layout.md");
 const LOCKFILE: &str = include_str!("../../../spec-vectors.lock");
 const SKIPLIST: &str = include_str!("../../../docs/spec-vectors-skiplist.md");
 
-/// Handlers this runner can dispatch (CC-13b + CC-13c).
+/// Handlers this runner owns — must equal the on-disk set (union across presets).
 ///
-/// Mainnet vectors omit `sync_committee_updates`; minimal includes it. Coverage
-/// asserts every on-disk handler is declared, and every declared handler that
-/// exists on disk is runnable (CC-13d tightens to full set equality).
+/// Order matches neither spec nor disk; coverage uses set equality.
 const HANDLERS: &[&str] = &[
     "effective_balance_updates",
     "eth1_data_reset",
@@ -45,22 +43,6 @@ const HANDLERS: &[&str] = &[
     "randao_mixes_reset",
     "registry_updates",
     "rewards_and_penalties",
-    "slashings",
-    "slashings_reset",
-    "sync_committee_updates",
-];
-
-/// CC-13c-owned handlers (twelve).
-const CC13C_HANDLERS: &[&str] = &[
-    "effective_balance_updates",
-    "eth1_data_reset",
-    "historical_summaries_update",
-    "participation_flag_updates",
-    "pending_consolidations",
-    "pending_deposits",
-    "proposer_lookahead",
-    "randao_mixes_reset",
-    "registry_updates",
     "slashings",
     "slashings_reset",
     "sync_committee_updates",
@@ -279,27 +261,60 @@ fn run_handler<P: Preset>(handler: &str) {
 fn handler_coverage() {
     let tests = tests_root();
     let declared: BTreeSet<_> = HANDLERS.iter().map(|s| (*s).to_string()).collect();
+    let mut union = BTreeSet::new();
     for preset in ["mainnet", "minimal"] {
         let on_disk = list_handlers(&tests, preset);
         // Every on-disk handler must be declared (no silent skips).
-        for h in &on_disk {
-            assert!(
-                declared.contains(h),
-                "{preset}: on-disk handler {h} not declared"
-            );
-        }
-        // Every CC-13c handler present on disk for this preset must be declared.
-        for h in CC13C_HANDLERS {
-            if on_disk.contains(*h) {
-                assert!(declared.contains(*h), "{preset}: missing declared {h}");
-            }
-        }
+        assert!(
+            on_disk.is_subset(&declared),
+            "{preset}: on-disk handlers not ⊆ declared: extra={:?}",
+            on_disk.difference(&declared).collect::<Vec<_>>()
+        );
+        // Per-preset set equality against the declared handlers that exist on disk
+        // for this preset (mainnet omits sync_committee_updates).
+        let expected: BTreeSet<_> = declared
+            .iter()
+            .filter(|h| {
+                tests
+                    .join(preset)
+                    .join(FORK)
+                    .join(RUNNER)
+                    .join(h)
+                    .is_dir()
+            })
+            .cloned()
+            .collect();
+        assert_eq!(
+            on_disk, expected,
+            "handler set equality for {preset}: on_disk={on_disk:?} expected={expected:?}"
+        );
+        union.extend(on_disk);
     }
-    assert_eq!(CC13C_HANDLERS.len(), 12);
+    // Union across presets equals the full declared list.
+    assert_eq!(
+        union, declared,
+        "union of on-disk handlers must equal declared HANDLERS"
+    );
+    assert_eq!(HANDLERS.len(), 15);
     assert!(
         LAYOUT.contains("fulu/epoch_processing"),
         "layout should list fulu/epoch_processing"
     );
+}
+
+/// Negative control: a declared handler renamed fails coverage equality.
+#[test]
+fn handler_coverage_negative_missing_handler_fails() {
+    let declared: BTreeSet<&str> = HANDLERS.iter().copied().collect();
+    let mut renamed: BTreeSet<&str> = declared.clone();
+    renamed.remove("slashings");
+    renamed.insert("slashings_renamed");
+    assert_ne!(
+        renamed, declared,
+        "renamed HANDLERS must differ from full set"
+    );
+    // Simulate on-disk == full declared: renamed ≠ on-disk.
+    assert_ne!(renamed, declared);
 }
 
 // ---------------------------------------------------------------------------

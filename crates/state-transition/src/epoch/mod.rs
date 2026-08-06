@@ -1,7 +1,7 @@
 //! Epoch processing handlers (Architecture §5.1).
 //!
-//! Handler bodies: CC-13a–c. `process_epoch` assembly (fifteen calls in
-//! spec order) lands at CC-13d.
+//! Handler bodies: CC-13a–c. `process_epoch` is the flat fifteen-call list
+//! in consensus-specs order (CC-13d).
 
 pub mod effective_balance_updates;
 pub mod eth1_data_reset;
@@ -57,7 +57,38 @@ pub(crate) fn block_to_epoch(err: BlockError) -> EpochError {
 /// Spec `process_epoch` — public for `epoch_processing` vectors and
 /// `compute_pulled_up_tip` (CC-15b).
 ///
-/// Assembly (fifteen calls in spec order, no conditionals) lands at CC-13d.
-pub fn process_epoch<P: Preset>(_state: &mut BeaconState<P>) -> Result<(), EpochError> {
-    Err(EpochError::NotYetImplemented("process_epoch"))
+/// Flat list of fifteen handlers in consensus-specs order; no conditionals.
+/// Spec (`fulu/beacon-chain.md` / Electra epoch processing):
+/// 1. process_justification_and_finalization
+/// 2. process_inactivity_updates
+/// 3. process_rewards_and_penalties
+/// 4. process_registry_updates
+/// 5. process_slashings
+/// 6. process_eth1_data_reset
+/// 7. process_pending_deposits
+/// 8. process_pending_consolidations
+/// 9. process_effective_balance_updates
+/// 10. process_slashings_reset
+/// 11. process_randao_mixes_reset
+/// 12. process_historical_summaries_update
+/// 13. process_participation_flag_updates
+/// 14. process_sync_committee_updates
+/// 15. process_proposer_lookahead
+pub fn process_epoch<P: Preset>(state: &mut BeaconState<P>) -> Result<(), EpochError> {
+    process_justification_and_finalization(state)?;
+    process_inactivity_updates(state)?;
+    process_rewards_and_penalties(state)?;
+    process_registry_updates(state)?;
+    process_slashings(state)?;
+    process_eth1_data_reset(state)?;
+    process_pending_deposits(state)?;
+    process_pending_consolidations(state)?;
+    process_effective_balance_updates(state)?;
+    process_slashings_reset(state)?;
+    process_randao_mixes_reset(state)?;
+    process_historical_summaries_update(state)?;
+    process_participation_flag_updates(state)?;
+    process_sync_committee_updates(state)?;
+    process_proposer_lookahead(state)?;
+    Ok(())
 }

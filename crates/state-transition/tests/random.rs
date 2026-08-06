@@ -4,7 +4,7 @@
 //! driven by [`state_transition`]. Handler on disk is the suite name `random`
 //! under `tests/<preset>/fulu/random/random/`.
 //!
-//! Epoch-crossing cases stay skiplisted under CC-13 until `process_epoch`.
+//! Epoch-crossing cases run through assembled `process_epoch` (CC-13d).
 //! Does **not** depend on `cc-spec-tests` (crate DAG).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -339,17 +339,11 @@ fn run_random_cases<P: Preset>() {
         }
     }
 
-    // All current random cases span an epoch boundary and are skiplisted under
-    // CC-13 until process_epoch lands. The suite is still green: every non-skipped
-    // case must pass, and when the skiplist is emptied at CC-13d, ran > 0 holds.
     assert!(
-        ran > 0 || skipped > 0,
-        "expected random cases for {} (ran={ran}, skipped={skipped})",
+        ran > 0,
+        "expected to execute random cases for {} (ran={ran}, skipped={skipped})",
         P::NAME
     );
-    if skipped == 0 {
-        assert!(ran > 0, "expected to execute random cases for {}", P::NAME);
-    }
 }
 
 #[test]
