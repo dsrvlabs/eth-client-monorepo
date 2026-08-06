@@ -6,6 +6,7 @@ use cc_types::preset::Preset;
 use cc_types::primitives::{BlsSignature, Epoch, Gwei, Slot, ValidatorIndex};
 use cc_types::BeaconState;
 
+use crate::epoch_cache::note_registry_or_effective_balance_change;
 use crate::error::BlockError;
 use crate::helpers::accessors::{
     get_activation_exit_churn_limit, get_beacon_proposer_index, get_consolidation_churn_limit,
@@ -109,6 +110,8 @@ pub fn initiate_validator_exit<P: Preset>(
         .ok_or(BlockError::ArithmeticOverflow)?;
     v.exit_epoch = exit_queue_epoch;
     v.withdrawable_epoch = withdrawable;
+    // Exit epoch change affects future active sets in EpochCache (CC-13b).
+    note_registry_or_effective_balance_change(state);
     Ok(())
 }
 

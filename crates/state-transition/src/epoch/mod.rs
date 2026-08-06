@@ -4,10 +4,23 @@
 //! `process_slots` can call it at epoch boundaries. Until CC-13d fills the
 //! flat call list, this returns [`EpochError::NotYetImplemented`].
 
+pub mod inactivity_updates;
+pub mod justification_and_finalization;
+pub mod rewards_and_penalties;
+
 use cc_types::preset::Preset;
 use cc_types::BeaconState;
 
 use crate::error::EpochError;
+
+pub use inactivity_updates::process_inactivity_updates;
+pub use justification_and_finalization::{
+    process_justification_and_finalization, weigh_justification_and_finalization,
+};
+pub use rewards_and_penalties::{
+    get_flag_index_deltas, get_inactivity_penalty_deltas, process_rewards_and_penalties,
+    RewardPenalties,
+};
 
 /// Spec `process_epoch` — public for `epoch_processing` vectors and
 /// `compute_pulled_up_tip` (CC-15b).

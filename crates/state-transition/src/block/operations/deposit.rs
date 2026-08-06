@@ -8,6 +8,7 @@ use cc_types::primitives::{Gwei, Root, Slot, ValidatorIndex};
 use cc_types::BeaconState;
 use tree_hash::TreeHash;
 
+use crate::epoch_cache::note_registry_or_effective_balance_change;
 use crate::error::{BlockError, OperationError};
 use crate::helpers::constants::{
     DEPOSIT_CONTRACT_TREE_DEPTH, EFFECTIVE_BALANCE_INCREMENT, FAR_FUTURE_EPOCH, GENESIS_SLOT,
@@ -91,6 +92,8 @@ pub fn add_validator_to_registry<P: Preset>(
     state.inactivity_scores_push(0)?;
     // Extend PubkeyIndexMap cache (§3.4).
     state.caches_mut().pubkeys.insert(pubkey, index);
+    // Registry growth invalidates epoch-derived active-set cache (CC-13b).
+    note_registry_or_effective_balance_change(state);
     Ok(index)
 }
 

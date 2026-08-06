@@ -18,9 +18,9 @@ use ssz_types::BitVector;
 
 use crate::error::BlockError;
 use crate::helpers::constants::{
-    network, EFFECTIVE_BALANCE_INCREMENT, GENESIS_EPOCH, MIN_ATTESTATION_INCLUSION_DELAY,
-    PARTICIPATION_FLAG_WEIGHTS, TIMELY_HEAD_FLAG_INDEX, TIMELY_SOURCE_FLAG_INDEX,
-    TIMELY_TARGET_FLAG_INDEX, BASE_REWARD_FACTOR,
+    network, BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, GENESIS_EPOCH,
+    MIN_ATTESTATION_INCLUSION_DELAY, MIN_EPOCHS_TO_INACTIVITY_PENALTY, PARTICIPATION_FLAG_WEIGHTS,
+    TIMELY_HEAD_FLAG_INDEX, TIMELY_SOURCE_FLAG_INDEX, TIMELY_TARGET_FLAG_INDEX,
 };
 use crate::helpers::misc::{
     compute_epoch_at_slot, compute_start_slot_at_epoch, integer_squareroot, u64_to_bytes_le,
@@ -313,6 +313,10 @@ pub fn get_base_reward_per_increment<P: Preset>(
 }
 
 /// Spec `get_base_reward`.
+///
+/// Uses the epoch cache's `base_reward_per_increment` when valid for the
+/// current epoch so an epoch-boundary rebuild supplies it once for all
+/// validators (CC-13b); falls back to a direct compute on miss.
 pub fn get_base_reward<P: Preset>(
     state: &BeaconState<P>,
     index: ValidatorIndex,
@@ -321,8 +325,92 @@ pub fn get_base_reward<P: Preset>(
         .validators_get(index.as_u64() as usize)
         .ok_or(BlockError::ArithmeticOverflow)?;
     let increments = v.effective_balance.as_u64() / EFFECTIVE_BALANCE_INCREMENT.as_u64();
-    let per = get_base_reward_per_increment(state)?;
+    let current = get_current_epoch(state);
+    let per = if let Some(epoch) = state.caches().epoch.epoch
+        && epoch == current
+        && let Some(v) = state.caches().epoch.base_reward_per_increment
+    {
+        Gwei::new(v)
+    } else {
+        get_base_reward_per_increment(state)?
+    };
     Ok(Gwei::new(increments.saturating_mul(per.as_u64())))
+}
+
+/// Spec `get_finality_delay`.
+#[inline]
+pub fn get_finality_delay<P: Preset>(state: &BeaconState<P>) -> u64 {
+    get_previous_epoch(state)
+        .as_u64()
+        .saturating_sub(state.finalized_checkpoint().epoch.as_u64())
+}
+
+/// Spec `is_in_inactivity_leak`.
+#[inline]
+pub fn is_in_inactivity_leak<P: Preset>(state: &BeaconState<P>) -> bool {
+    get_finality_delay(state) > MIN_EPOCHS_TO_INACTIVITY_PENALTY
+}
+
+/// Spec `get_eligible_validator_indices`.
+pub fn get_eligible_validator_indices<P: Preset>(
+    state: &BeaconState<P>,
+) -> Vec<ValidatorIndex> {
+    let previous_epoch = get_previous_epoch(state);
+    state
+        .validators_iter()
+        .enumerate()
+        .filter(|(_, v)| {
+            is_active_validator(v, previous_epoch)
+                || (v.slashed
+                    && previous_epoch.as_u64().saturating_add(1) < v.withdrawable_epoch.as_u64())
+        })
+        .map(|(i, _)| ValidatorIndex::new(i as u64))
+        .collect()
+}
+
+/// Spec `get_unslashed_participating_indices`.
+pub fn get_unslashed_participating_indices<P: Preset>(
+    state: &BeaconState<P>,
+    flag_index: usize,
+    epoch: Epoch,
+) -> Result<Vec<ValidatorIndex>, BlockError> {
+    let current = get_current_epoch(state);
+    let previous = get_previous_epoch(state);
+    if epoch != current && epoch != previous {
+        return Err(invalid_op(
+            "epoch",
+            format!(
+                "epoch {} is neither current ({}) nor previous ({})",
+                epoch.as_u64(),
+                current.as_u64(),
+                previous.as_u64()
+            ),
+        ));
+    }
+    let active = get_active_validator_indices(state, epoch);
+    let mut out = Vec::new();
+    for index in active {
+        let i = index.as_u64() as usize;
+        let flags = if epoch == current {
+            state
+                .current_epoch_participation_get(i)
+                .ok_or(BlockError::ArithmeticOverflow)?
+        } else {
+            state
+                .previous_epoch_participation_get(i)
+                .ok_or(BlockError::ArithmeticOverflow)?
+        };
+        if !crate::helpers::predicates::has_flag(flags, flag_index) {
+            continue;
+        }
+        let v = state
+            .validators_get(i)
+            .ok_or(BlockError::ArithmeticOverflow)?;
+        if !v.slashed {
+            out.push(index);
+        }
+    }
+    Ok(out)
 }
 
 /// Spec `get_attestation_participation_flag_indices`.

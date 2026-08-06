@@ -27,7 +27,11 @@ pub use block::{
 pub use engine_seam::{
     ExecutionEngine, NewPayloadRequest, PayloadStatus, StubOptimisticEngine, VersionedHash,
 };
-pub use epoch::process_epoch;
+pub use epoch::{
+    get_flag_index_deltas, get_inactivity_penalty_deltas, process_epoch,
+    process_inactivity_updates, process_justification_and_finalization,
+    process_rewards_and_penalties, weigh_justification_and_finalization, RewardPenalties,
+};
 pub use error::{
     BlockError, EngineError, EpochError, GossipClass, OperationError, SignatureKind,
 };

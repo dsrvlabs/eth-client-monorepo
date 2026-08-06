@@ -776,6 +776,8 @@ pub struct EpochCache {
     pub previous_active_indices: Option<Vec<ValidatorIndex>>,
     /// Active validator indices at the next epoch.
     pub next_active_indices: Option<Vec<ValidatorIndex>>,
+    /// Number of times the cache was rebuilt (CC-13b once-per-epoch assert).
+    rebuild_count: u64,
 }
 
 impl fmt::Debug for EpochCache {
@@ -796,6 +798,7 @@ impl fmt::Debug for EpochCache {
                 "next_active_len",
                 &self.next_active_indices.as_ref().map(Vec::len),
             )
+            .field("rebuild_count", &self.rebuild_count)
             .finish()
     }
 }
@@ -812,8 +815,15 @@ impl EpochCache {
     }
 
     /// Drop all cached values (registry / effective-balance change).
+    ///
+    /// Preserves [`rebuild_count`](Self::rebuild_count) so once-per-epoch
+    /// instrumentation survives invalidation.
     pub fn invalidate(&mut self) {
-        *self = Self::default();
+        let count = self.rebuild_count;
+        *self = Self {
+            rebuild_count: count,
+            ..Self::default()
+        };
     }
 
     /// Whether any field is populated.
@@ -824,6 +834,23 @@ impl EpochCache {
             && self.current_active_indices.is_none()
             && self.previous_active_indices.is_none()
             && self.next_active_indices.is_none()
+    }
+
+    /// Number of successful rebuilds (instrumentation for CC-13b).
+    pub fn rebuild_count(&self) -> u64 {
+        self.rebuild_count
+    }
+
+    /// Reset rebuild counter (tests).
+    pub fn take_rebuild_count(&mut self) -> u64 {
+        let n = self.rebuild_count;
+        self.rebuild_count = 0;
+        n
+    }
+
+    /// Bump rebuild counter after a fill (called by `cc-state-transition`).
+    pub fn note_rebuild(&mut self) {
+        self.rebuild_count = self.rebuild_count.saturating_add(1);
     }
 }
 

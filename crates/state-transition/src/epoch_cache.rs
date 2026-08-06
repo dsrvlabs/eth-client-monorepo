@@ -38,6 +38,7 @@ pub fn rebuild_epoch_cache<P: Preset>(state: &mut BeaconState<P>) -> Result<(), 
     cache.current_active_indices = Some(current_active);
     cache.previous_active_indices = Some(previous_active);
     cache.next_active_indices = Some(next_active);
+    cache.note_rebuild();
     Ok(())
 }
 

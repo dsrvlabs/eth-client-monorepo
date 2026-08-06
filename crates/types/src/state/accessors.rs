@@ -117,6 +117,14 @@ impl<P: Preset> BeaconState<P> {
         &self.justification_bits
     }
 
+    /// Replace justification bits (epoch FFG processing).
+    pub fn set_justification_bits(&mut self, v: BitVector<JustificationBitsLength>) {
+        self.justification_bits = v;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::JustificationBits);
+    }
+
     /// Eth1 data.
     pub fn eth1_data(&self) -> Eth1Data {
         self.eth1_data
