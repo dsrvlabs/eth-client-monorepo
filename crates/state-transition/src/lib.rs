@@ -8,9 +8,11 @@
 pub mod block;
 pub mod engine_seam;
 pub mod epoch;
+pub mod epoch_cache;
 pub mod error;
 pub mod helpers;
 pub mod root_measure;
+pub mod shuffling;
 pub mod signatures;
 pub mod slots;
 
@@ -29,10 +31,20 @@ pub use epoch::process_epoch;
 pub use error::{
     BlockError, EngineError, EpochError, GossipClass, OperationError, SignatureKind,
 };
+pub use epoch_cache::{
+    base_reward_per_increment_cached, invalidate_epoch_cache, note_registry_or_effective_balance_change,
+    rebuild_epoch_cache, total_active_balance_cached,
+};
 pub use helpers::{
     compute_epoch_at_slot, compute_time_at_slot, decrease_balance, get_beacon_proposer_index,
     get_current_epoch, get_max_effective_balance, get_randao_mix, increase_balance,
     kzg_commitment_to_versioned_hash,
+};
+pub use shuffling::{
+    compute_proposer_index, compute_proposer_indices, compute_shuffled_active_indices,
+    decision_root_for_epoch, get_beacon_committee, get_beacon_proposer_indices,
+    get_committee_count_per_slot, get_next_sync_committee, get_next_sync_committee_indices,
+    get_or_compute_shuffling,
 };
 pub use root_measure::{
     canonical_root_call_count, measured_canonical_root, take_canonical_root_call_count,

@@ -1,8 +1,8 @@
 //! Spec accessors over [`BeaconState`] (Architecture §5.1 / §5.4).
 //!
 //! Fulu EIP-7917: `get_beacon_proposer_index` is a `proposer_lookahead` read.
-//! Shuffling is the uncached path (CC-13a adds the cache without changing
-//! signatures).
+//! [`get_beacon_committee`] is provided by [`crate::shuffling`] (cached) and
+//! re-exported here so existing call sites keep the same import path.
 
 use cc_crypto::{
     compute_domain, compute_signing_root, fast_aggregate_verify, get_domain, DOMAIN_BEACON_ATTESTER,
@@ -23,8 +23,7 @@ use crate::helpers::constants::{
     TIMELY_TARGET_FLAG_INDEX, BASE_REWARD_FACTOR,
 };
 use crate::helpers::misc::{
-    compute_committee, compute_epoch_at_slot, compute_start_slot_at_epoch, integer_squareroot,
-    u64_to_bytes_le,
+    compute_epoch_at_slot, compute_start_slot_at_epoch, integer_squareroot, u64_to_bytes_le,
 };
 use crate::helpers::predicates::is_active_validator;
 use crate::signatures::{decode_signature, decode_state_pubkey};
@@ -173,20 +172,16 @@ pub fn get_committee_count_per_slot<P: Preset>(state: &BeaconState<P>, epoch: Ep
     count.clamp(1, P::MAX_COMMITTEES_PER_SLOT)
 }
 
-/// Spec `get_beacon_committee` — uncached path (CC-13a adds cache later).
+/// Spec `get_beacon_committee` — cached via [`crate::shuffling`] (CC-13a).
+///
+/// Signature unchanged from the uncached helper: attestation handlers keep working.
+#[inline]
 pub fn get_beacon_committee<P: Preset>(
     state: &BeaconState<P>,
     slot: Slot,
     index: CommitteeIndex,
 ) -> Result<Vec<ValidatorIndex>, BlockError> {
-    let epoch = compute_epoch_at_slot::<P>(slot);
-    let committees_per_slot = get_committee_count_per_slot(state, epoch);
-    let indices = get_active_validator_indices(state, epoch);
-    let seed = get_seed(state, epoch, DOMAIN_BEACON_ATTESTER)?;
-    let committee_index =
-        (slot.as_u64() % P::SLOTS_PER_EPOCH) * committees_per_slot + index.as_u64();
-    let count = committees_per_slot * P::SLOTS_PER_EPOCH;
-    compute_committee::<P>(&indices, seed, committee_index, count)
+    crate::shuffling::get_beacon_committee(state, slot, index)
 }
 
 /// Spec `get_committee_indices` (Electra).

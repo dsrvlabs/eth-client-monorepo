@@ -13,7 +13,7 @@ use std::fmt;
 use fixedbitset::FixedBitSet;
 use tree_hash::{Hash256, TreeHash, mix_in_length};
 
-use crate::primitives::{BlsPublicKey, ValidatorIndex};
+use crate::primitives::{BlsPublicKey, Epoch, Root, ValidatorIndex};
 
 /// Number of SSZ tree-hash leaves on [`crate::state::BeaconState`] (Fulu, excluding caches).
 pub const BEACON_STATE_FIELD_COUNT: usize = 38;
@@ -563,36 +563,267 @@ impl PubkeyIndexMap {
     }
 }
 
-/// Shuffling cache placeholder — filled at CC-13a.
-#[derive(Clone, Default)]
+/// Default capacity for [`ShufflingCache`] (Architecture §5.4).
+pub const SHUFFLING_CACHE_DEFAULT_CAPACITY: usize = 16;
+
+/// Key for a cached epoch shuffling: `(epoch, decision_root)`.
+///
+/// `decision_root` is the block root at `start_slot(epoch) − 1` (Architecture §5.4).
+/// Two branches in the same epoch with different decision roots must not share a
+/// shuffling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ShufflingCacheKey {
+    /// Target epoch of the shuffling.
+    pub epoch: Epoch,
+    /// Dependent / decision block root for that epoch.
+    pub decision_root: Root,
+}
+
+/// One epoch's shuffled active-validator list (content-addressed by
+/// [`ShufflingCacheKey`]).
+///
+/// `shuffled[i]` is the active validator at shuffled position `i` — i.e.
+/// `active_indices[compute_shuffled_index(i, len, seed)]`. Committees are
+/// contiguous slices of this vector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShuffledCommitteeEpoch {
+    /// Active validators in shuffled order for the epoch.
+    pub shuffled: Vec<ValidatorIndex>,
+}
+
+/// Committee shuffling cache keyed by `(epoch, decision_root)` with LRU eviction.
+///
+/// Filled by `cc-state-transition` (CC-13a). Interior-mutable so
+/// `get_beacon_committee(&BeaconState, …)` can populate on miss without `&mut`.
+/// Never invalidated by state mutation — the key is content-addressed; only LRU
+/// eviction removes entries (Architecture §5.4).
 pub struct ShufflingCache {
-    /// Non-spec tag so tests can observe the empty shell.
-    pub(crate) _entries: usize,
+    capacity: usize,
+    inner: std::sync::Mutex<lru::LruCache<ShufflingCacheKey, std::sync::Arc<ShuffledCommitteeEpoch>>>,
+    /// Number of times a shuffling was computed (cache miss fill). Instrumented
+    /// for CC-13/6 compute-once assertions.
+    compute_count: std::sync::atomic::AtomicU64,
+}
+
+impl Default for ShufflingCache {
+    fn default() -> Self {
+        Self::with_capacity(SHUFFLING_CACHE_DEFAULT_CAPACITY)
+    }
+}
+
+impl Clone for ShufflingCache {
+    fn clone(&self) -> Self {
+        let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let cap = std::num::NonZeroUsize::new(self.capacity.max(1))
+            .unwrap_or(std::num::NonZeroUsize::MIN);
+        let mut new_map = lru::LruCache::new(cap);
+        // Preserve LRU order: `iter` yields MRU → LRU; re-insert in reverse.
+        let entries: Vec<_> = guard.iter().map(|(k, v)| (*k, std::sync::Arc::clone(v))).collect();
+        for (k, v) in entries.into_iter().rev() {
+            new_map.put(k, v);
+        }
+        Self {
+            capacity: self.capacity,
+            inner: std::sync::Mutex::new(new_map),
+            compute_count: std::sync::atomic::AtomicU64::new(
+                self.compute_count
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        }
+    }
 }
 
 impl fmt::Debug for ShufflingCache {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let len = self.len();
         f.debug_struct("ShufflingCache")
-            .field("entries", &self._entries)
+            .field("capacity", &self.capacity)
+            .field("len", &len)
+            .field(
+                "compute_count",
+                &self
+                    .compute_count
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            )
             .finish()
     }
 }
 
-/// Epoch cache placeholder — filled at CC-13a.
+impl ShufflingCache {
+    /// Create a cache with the given maximum entry count (LRU bound).
+    pub fn with_capacity(capacity: usize) -> Self {
+        let cap = capacity.max(1);
+        let nz = std::num::NonZeroUsize::new(cap).unwrap_or(std::num::NonZeroUsize::MIN);
+        Self {
+            capacity: cap,
+            inner: std::sync::Mutex::new(lru::LruCache::new(nz)),
+            compute_count: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Configured capacity (LRU bound).
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Current number of cached epochs.
+    pub fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+
+    /// Whether the cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Instrumented compute-once counter (cache-miss fills).
+    pub fn compute_count(&self) -> u64 {
+        self.compute_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Reset the compute counter (tests).
+    pub fn take_compute_count(&self) -> u64 {
+        self.compute_count
+            .swap(0, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Lookup without computing.
+    pub fn get(
+        &self,
+        key: &ShufflingCacheKey,
+    ) -> Option<std::sync::Arc<ShuffledCommitteeEpoch>> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .map(std::sync::Arc::clone)
+    }
+
+    /// Return cached value or compute+insert on miss. Increments
+    /// [`compute_count`](Self::compute_count) only on miss.
+    pub fn get_or_insert_with<F>(
+        &self,
+        key: ShufflingCacheKey,
+        f: F,
+    ) -> std::sync::Arc<ShuffledCommitteeEpoch>
+    where
+        F: FnOnce() -> ShuffledCommitteeEpoch,
+    {
+        {
+            let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(hit) = guard.get(&key) {
+                return std::sync::Arc::clone(hit);
+            }
+        }
+        // Compute outside the lock so concurrent misses may double-fill; both
+        // results are equivalent for a content-addressed key.
+        let value = std::sync::Arc::new(f());
+        self.compute_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        // Another thread may have won the race; prefer existing entry.
+        if let Some(hit) = guard.get(&key) {
+            return std::sync::Arc::clone(hit);
+        }
+        guard.put(key, std::sync::Arc::clone(&value));
+        value
+    }
+
+    /// Insert explicitly (tests / warm-start). Does **not** bump compute_count.
+    pub fn insert(&self, key: ShufflingCacheKey, value: ShuffledCommitteeEpoch) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .put(key, std::sync::Arc::new(value));
+    }
+
+    /// Clear all entries (does not reset compute_count).
+    pub fn clear(&self) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
+    /// Whether `key` is present (does not update LRU order).
+    pub fn contains(&self, key: &ShufflingCacheKey) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(key)
+    }
+}
+
+/// Epoch-derived values for rewards / active sets (Architecture §5.4).
+///
+/// Keyed by current epoch. Invalidated by any registry or effective-balance
+/// change; rebuilt at the epoch boundary by `cc-state-transition`.
 #[derive(Clone, Default)]
 pub struct EpochCache {
-    /// Total active balance for the cached epoch (Gwei), when filled.
+    /// Epoch this cache was built for, when filled.
+    pub epoch: Option<Epoch>,
+    /// Total active balance for the cached epoch (Gwei).
     pub total_active_balance: Option<u64>,
-    /// Base reward per increment, when filled.
+    /// Base reward per increment (Gwei).
     pub base_reward_per_increment: Option<u64>,
+    /// Active validator indices at the current epoch.
+    pub current_active_indices: Option<Vec<ValidatorIndex>>,
+    /// Active validator indices at the previous epoch.
+    pub previous_active_indices: Option<Vec<ValidatorIndex>>,
+    /// Active validator indices at the next epoch.
+    pub next_active_indices: Option<Vec<ValidatorIndex>>,
 }
 
 impl fmt::Debug for EpochCache {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EpochCache")
+            .field("epoch", &self.epoch)
             .field("total_active_balance", &self.total_active_balance)
             .field("base_reward_per_increment", &self.base_reward_per_increment)
+            .field(
+                "current_active_len",
+                &self.current_active_indices.as_ref().map(Vec::len),
+            )
+            .field(
+                "previous_active_len",
+                &self.previous_active_indices.as_ref().map(Vec::len),
+            )
+            .field(
+                "next_active_len",
+                &self.next_active_indices.as_ref().map(Vec::len),
+            )
             .finish()
+    }
+}
+
+impl EpochCache {
+    /// Whether the cache is fully filled for `epoch`.
+    pub fn is_valid_for(&self, epoch: Epoch) -> bool {
+        self.epoch == Some(epoch)
+            && self.total_active_balance.is_some()
+            && self.base_reward_per_increment.is_some()
+            && self.current_active_indices.is_some()
+            && self.previous_active_indices.is_some()
+            && self.next_active_indices.is_some()
+    }
+
+    /// Drop all cached values (registry / effective-balance change).
+    pub fn invalidate(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Whether any field is populated.
+    pub fn is_empty(&self) -> bool {
+        self.epoch.is_none()
+            && self.total_active_balance.is_none()
+            && self.base_reward_per_increment.is_none()
+            && self.current_active_indices.is_none()
+            && self.previous_active_indices.is_none()
+            && self.next_active_indices.is_none()
     }
 }
 

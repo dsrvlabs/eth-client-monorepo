@@ -60,7 +60,8 @@ pub use sidecar::{
     PartialDataColumnHeader, PartialDataColumnPartsMetadata, PartialDataColumnSidecar,
 };
 pub use state::{
-    BeaconState, EpochCache, FieldRootCache, List, ListHashCache, PubkeyIndexMap, ShufflingCache,
+    BeaconState, EpochCache, FieldRootCache, List, ListHashCache, PubkeyIndexMap,
+    SHUFFLING_CACHE_DEFAULT_CAPACITY, ShuffledCommitteeEpoch, ShufflingCache, ShufflingCacheKey,
     StateAccessError, StateCaches, StateField, Vector, list_id,
 };
 

@@ -20,7 +20,8 @@ mod caches;
 pub use accessors::StateAccessError;
 pub use caches::{
     BEACON_STATE_FIELD_COUNT, EpochCache, FieldRootCache, ListHashCache, PubkeyIndexMap,
-    ShufflingCache, StateCaches, StateField, list_id,
+    SHUFFLING_CACHE_DEFAULT_CAPACITY, ShuffledCommitteeEpoch, ShufflingCache, ShufflingCacheKey,
+    StateCaches, StateField, list_id,
 };
 
 use std::fmt;
