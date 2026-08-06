@@ -179,7 +179,7 @@ impl fmt::Display for ForkDigest {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use ssz::{Decode, Encode};
@@ -188,9 +188,15 @@ mod tests {
     #[test]
     fn fork_name_roundtrip_str() {
         for name in ForkName::all() {
-            assert_eq!(ForkName::from_str(name.as_str()).unwrap(), name);
+            assert_eq!(
+                ForkName::from_str(name.as_str()).unwrap_or_else(|e| panic!("{e}")),
+                name
+            );
         }
-        assert_eq!(ForkName::from_str("fulu").unwrap(), ForkName::Fulu);
+        assert_eq!(
+            ForkName::from_str("fulu").unwrap_or_else(|e| panic!("{e}")),
+            ForkName::Fulu
+        );
     }
 
     #[test]
@@ -201,7 +207,10 @@ mod tests {
             epoch: Epoch::new(50688),
         };
         let bytes = fork.as_ssz_bytes();
-        assert_eq!(Fork::from_ssz_bytes(&bytes).unwrap(), fork);
+        assert_eq!(
+            Fork::from_ssz_bytes(&bytes).unwrap_or_else(|e| panic!("{e:?}")),
+            fork
+        );
         // Container root is non-zero for non-default content.
         assert_ne!(fork.tree_hash_root(), tree_hash::Hash256::ZERO);
     }
@@ -213,7 +222,10 @@ mod tests {
             genesis_validators_root: Root::ZERO,
         };
         let bytes = fd.as_ssz_bytes();
-        assert_eq!(ForkData::from_ssz_bytes(&bytes).unwrap(), fd);
+        assert_eq!(
+            ForkData::from_ssz_bytes(&bytes).unwrap_or_else(|e| panic!("{e:?}")),
+            fd
+        );
     }
 
     #[test]

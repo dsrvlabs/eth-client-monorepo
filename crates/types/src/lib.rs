@@ -28,24 +28,27 @@ pub use containers::{
 pub use execution::{ExecutionPayload, ExecutionPayloadHeader, Transaction};
 pub use fork::{Fork, ForkData, ForkDigest, ForkName, UnknownForkName};
 pub use light_client::{
-    LightClientBootstrap, LightClientFinalityUpdate, LightClientHeader, LightClientOptimisticUpdate,
-    LightClientUpdate,
+    LightClientBootstrap, LightClientFinalityUpdate, LightClientHeader,
+    LightClientOptimisticUpdate, LightClientUpdate,
 };
 pub use operations::{
     AggregateAndProof, Attestation, AttesterSlashing, BlsToExecutionChange, ConsolidationRequest,
-    ContributionAndProof, Deposit, DepositRequest, ExecutionRequests, IndexedAttestation,
-    PendingConsolidation, PendingDeposit, PendingPartialWithdrawal, ProposerSlashing,
-    SignedAggregateAndProof, SignedBlsToExecutionChange, SignedContributionAndProof,
-    SignedVoluntaryExit, SingleAttestation, SyncAggregatorSelectionData, SyncCommitteeContribution,
-    SyncCommitteeMessage, VoluntaryExit, Withdrawal, WithdrawalRequest, DEPOSIT_CONTRACT_TREE_DEPTH,
+    ContributionAndProof, DEPOSIT_CONTRACT_TREE_DEPTH, Deposit, DepositRequest, ExecutionRequests,
+    IndexedAttestation, PendingConsolidation, PendingDeposit, PendingPartialWithdrawal,
+    ProposerSlashing, SignedAggregateAndProof, SignedBlsToExecutionChange,
+    SignedContributionAndProof, SignedVoluntaryExit, SingleAttestation,
+    SyncAggregatorSelectionData, SyncCommitteeContribution, SyncCommitteeMessage, VoluntaryExit,
+    Withdrawal, WithdrawalRequest,
 };
 pub use preset::{Mainnet, Minimal, Preset, PresetUnsigned};
 pub use primitives::{
-    parse_hex_bytes, BlsPublicKey, BlsSignature, Cell, CommitteeIndex, Domain, DomainType, Epoch,
-    ExecutionAddress, ForkVersion, Gwei, Hash256, HexParseError, KzgCommitment, KzgProof, Root,
-    Slot, ValidatorIndex,
+    BlsPublicKey, BlsSignature, Cell, CommitteeIndex, Domain, DomainType, Epoch, ExecutionAddress,
+    ForkVersion, Gwei, Hash256, HexParseError, KzgCommitment, KzgProof, Root, Slot, ValidatorIndex,
+    parse_hex_bytes,
 };
-pub use registry::{ssz_static_handler, ssz_static_types, SszStaticHandler, SszStaticOutput, SSZ_STATIC_TYPE_NAMES};
+pub use registry::{
+    SSZ_STATIC_TYPE_NAMES, SszStaticHandler, SszStaticOutput, ssz_static_handler, ssz_static_types,
+};
 pub use sidecar::{
     DataColumnSidecar, DataColumnsByRootIdentifier, MatrixEntry, PartialDataColumnGroupID,
     PartialDataColumnHeader, PartialDataColumnPartsMetadata, PartialDataColumnSidecar,
@@ -123,7 +126,7 @@ pub fn __crypto_surface_markers() {
 
 #[cfg(test)]
 mod constants_tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
 

@@ -143,7 +143,7 @@ impl<P: Preset> Default for ExecutionPayloadHeader<P> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use crate::preset::Mainnet;
@@ -155,7 +155,7 @@ mod tests {
         let p = ExecutionPayload::<Mainnet>::default();
         let bytes = p.as_ssz_bytes();
         assert_eq!(
-            ExecutionPayload::<Mainnet>::from_ssz_bytes(&bytes).unwrap(),
+            ExecutionPayload::<Mainnet>::from_ssz_bytes(&bytes).unwrap_or_else(|e| panic!("{e:?}")),
             p
         );
         let _ = p.tree_hash_root();

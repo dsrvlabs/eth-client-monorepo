@@ -40,10 +40,7 @@ pub(crate) enum Error {
     /// Environment / path resolution failure.
     Env(String),
     /// Filesystem I/O.
-    Io {
-        path: PathBuf,
-        detail: String,
-    },
+    Io { path: PathBuf, detail: String },
     /// Manifest parse failure.
     Manifest { detail: String },
 }
@@ -190,10 +187,7 @@ fn parse_sequence(text: &str) -> Result<HoodiSequence, Error> {
                  slots: &mut Vec<SequenceSlot>|
      -> Result<(), Error> {
         if let Some(m) = cur.take() {
-            let empty = m
-                .get("empty")
-                .map(|v| v == "true")
-                .unwrap_or(false);
+            let empty = m.get("empty").map(|v| v == "true").unwrap_or(false);
             slots.push(SequenceSlot {
                 slot: req_u64(&m, "slot")?,
                 root: m.get("root").cloned().unwrap_or_default(),
@@ -276,17 +270,12 @@ pub(crate) fn resolve_cache_root() -> Result<PathBuf, Error> {
     if let Ok(p) = std::env::var(CACHE_ENV) {
         let p = p.trim();
         if p.is_empty() {
-            return Err(Error::Env(format!(
-                "{CACHE_ENV} is set but empty"
-            )));
+            return Err(Error::Env(format!("{CACHE_ENV} is set but empty")));
         }
         return Ok(PathBuf::from(p));
     }
-    let home = std::env::var("HOME").map_err(|_| {
-        Error::Env(format!(
-            "HOME is unset and {CACHE_ENV} was not provided"
-        ))
-    })?;
+    let home = std::env::var("HOME")
+        .map_err(|_| Error::Env(format!("HOME is unset and {CACHE_ENV} was not provided")))?;
     Ok(PathBuf::from(home)
         .join(".cache")
         .join(DEFAULT_CACHE_DIR_NAME))
@@ -450,11 +439,9 @@ fn req_u64(map: &std::collections::BTreeMap<String, String>, key: &str) -> Resul
 }
 
 fn req_str(map: &std::collections::BTreeMap<String, String>, key: &str) -> Result<String, Error> {
-    map.get(key)
-        .cloned()
-        .ok_or_else(|| Error::Manifest {
-            detail: format!("missing key `{key}`"),
-        })
+    map.get(key).cloned().ok_or_else(|| Error::Manifest {
+        detail: format!("missing key `{key}`"),
+    })
 }
 
 /// CI cache key form: `hoodi-fixtures-<slot>-<block_sha256>`.

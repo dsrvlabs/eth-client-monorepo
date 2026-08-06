@@ -8,9 +8,7 @@ use ssz_types::{BitList, BitVector, FixedVector, VariableList};
 use tree_hash_derive::TreeHash;
 use typenum::U33;
 
-use crate::containers::{
-    AttestationData, DepositData, SignedBeaconBlockHeader,
-};
+use crate::containers::{AttestationData, DepositData, SignedBeaconBlockHeader};
 use crate::preset::Preset;
 use crate::primitives::{
     BlsPublicKey, BlsSignature, CommitteeIndex, Epoch, ExecutionAddress, Gwei, Root, Slot,
@@ -104,9 +102,11 @@ impl<P: Preset> Default for Attestation<P> {
 ///
 /// `BitList` has no `Default`. `with_capacity(0)` fails only when `0 > N`, which
 /// is impossible for any `typenum::Unsigned` capacity used as a list bound.
-#[allow(clippy::expect_used)] // capacity 0 is an SSZ-stack invariant, not input data
 fn empty_bitlist<N: typenum::Unsigned + Clone>() -> BitList<N> {
-    BitList::with_capacity(0).expect("BitList::with_capacity(0) is infallible for Unsigned N")
+    match BitList::with_capacity(0) {
+        Ok(b) => b,
+        Err(_) => unreachable!("BitList::with_capacity(0) is infallible for Unsigned N"),
+    }
 }
 
 /// Spec `Deposit`.
@@ -416,7 +416,7 @@ pub struct SyncAggregatorSelectionData {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use crate::preset::{Mainnet, Minimal};
@@ -429,7 +429,7 @@ mod tests {
         // MAX_VALIDATORS_PER_COMMITTEE × MAX_COMMITTEES_PER_SLOT
         let expected = Mainnet::MAX_VALIDATORS_PER_COMMITTEE
             .checked_mul(Mainnet::MAX_COMMITTEES_PER_SLOT)
-            .expect("product fits u64");
+            .unwrap_or_else(|| panic!("product fits u64"));
         assert_eq!(Mainnet::MAX_VALIDATORS_PER_SLOT, expected);
         assert_eq!(
             <Mainnet as Preset>::MaxValidatorsPerSlot::to_u64(),
@@ -448,7 +448,7 @@ mod tests {
     fn attestation_aggregation_bits_capacity_minimal() {
         let expected = Minimal::MAX_VALIDATORS_PER_COMMITTEE
             .checked_mul(Minimal::MAX_COMMITTEES_PER_SLOT)
-            .expect("product fits u64");
+            .unwrap_or_else(|| panic!("product fits u64"));
         assert_eq!(Minimal::MAX_VALIDATORS_PER_SLOT, expected);
         assert_eq!(
             <Minimal as Preset>::MaxValidatorsPerSlot::to_usize(),
@@ -466,7 +466,10 @@ mod tests {
     fn attestation_ssz_roundtrip_default() {
         let a = Attestation::<Mainnet>::default();
         let bytes = a.as_ssz_bytes();
-        assert_eq!(Attestation::<Mainnet>::from_ssz_bytes(&bytes).unwrap(), a);
+        assert_eq!(
+            Attestation::<Mainnet>::from_ssz_bytes(&bytes).unwrap_or_else(|e| panic!("{e:?}")),
+            a
+        );
         let _ = a.tree_hash_root();
     }
 

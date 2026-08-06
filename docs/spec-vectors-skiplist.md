@@ -17,9 +17,6 @@ the entry (e.g. `CC-12e`).
 
 ## CC-10
 
-- `mainnet/fulu/ssz_generic` -- ssz_generic handlers land at CC-10f -- CC-10f
-- `minimal/fulu/ssz_generic` -- ssz_generic handlers land at CC-10f -- CC-10f
-
 ## CC-11
 
 ## CC-12

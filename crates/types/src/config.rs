@@ -9,7 +9,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::preset::Preset;
-use crate::primitives::{parse_hex_bytes, Epoch, ExecutionAddress, ForkVersion, HexParseError};
+use crate::primitives::{Epoch, ExecutionAddress, ForkVersion, HexParseError, parse_hex_bytes};
 
 /// Which compile-time preset a runtime config is based on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -54,9 +54,7 @@ pub struct BlobSchedule(Vec<BlobParameters>);
 
 impl BlobSchedule {
     /// Validating constructor: rejects empty, unsorted, and duplicate-epoch schedules.
-    pub fn try_from_entries(
-        entries: Vec<BlobParameters>,
-    ) -> Result<Self, BlobScheduleError> {
+    pub fn try_from_entries(entries: Vec<BlobParameters>) -> Result<Self, BlobScheduleError> {
         if entries.is_empty() {
             return Err(BlobScheduleError::Empty);
         }
@@ -319,7 +317,7 @@ struct RawBlobParameters {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use crate::preset::Mainnet;
@@ -353,11 +351,8 @@ mod tests {
     fn get_blob_parameters_hoodi_boundaries() {
         // Hoodi BPO: 52480 → 15, 54016 → 21; ELECTRA_FORK_EPOCH = 2048.
         let electra = Epoch::new(2_048);
-        let schedule = BlobSchedule::try_from_entries(vec![
-            entry(52_480, 15),
-            entry(54_016, 21),
-        ])
-        .unwrap();
+        let schedule = BlobSchedule::try_from_entries(vec![entry(52_480, 15), entry(54_016, 21)])
+            .unwrap_or_else(|e| panic!("{e:?}"));
 
         // Before first entry → (ELECTRA_FORK_EPOCH, MAX_BLOBS_PER_BLOCK_ELECTRA=9).
         let before = schedule.get_blob_parameters::<Mainnet>(Epoch::new(52_479), electra);
@@ -407,7 +402,8 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/hoodi-config.yaml"
         );
-        let hoodi = ChainConfig::from_yaml_file(hoodi_path).expect("parse hoodi-config.yaml");
+        let hoodi = ChainConfig::from_yaml_file(hoodi_path)
+            .unwrap_or_else(|e| panic!("parse hoodi-config.yaml: {e}"));
         assert_eq!(hoodi.config_name, "hoodi");
         assert_eq!(hoodi.preset_base, PresetName::Mainnet);
         assert_eq!(hoodi.fulu_fork_epoch, Epoch::new(50_688));
@@ -424,8 +420,8 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/mainnet-config.yaml"
         );
-        let mainnet =
-            ChainConfig::from_yaml_file(mainnet_path).expect("parse mainnet-config.yaml");
+        let mainnet = ChainConfig::from_yaml_file(mainnet_path)
+            .unwrap_or_else(|e| panic!("parse mainnet-config.yaml: {e}"));
         assert_eq!(mainnet.config_name, "mainnet");
         assert_eq!(mainnet.preset_base, PresetName::Mainnet);
         assert_eq!(mainnet.fulu_fork_epoch, Epoch::new(411_392));

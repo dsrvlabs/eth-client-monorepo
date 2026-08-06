@@ -6,7 +6,7 @@
 use ssz_derive::{Decode, Encode};
 use ssz_types::{BitList, FixedVector, VariableList};
 use tree_hash_derive::TreeHash;
-use typenum::{U1, U128, U4};
+use typenum::{U1, U4, U128};
 
 use crate::containers::SignedBeaconBlockHeader;
 use crate::preset::Preset;
@@ -152,14 +152,16 @@ impl<P: Preset> Default for PartialDataColumnSidecar<P> {
     }
 }
 
-#[allow(clippy::expect_used)] // capacity 0 is an SSZ-stack invariant
 fn empty_bitlist<N: typenum::Unsigned + Clone>() -> BitList<N> {
-    BitList::with_capacity(0).expect("BitList::with_capacity(0) is infallible for Unsigned N")
+    match BitList::with_capacity(0) {
+        Ok(b) => b,
+        Err(_) => unreachable!("BitList::with_capacity(0) is infallible for Unsigned N"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use crate::preset::Mainnet;
@@ -171,7 +173,8 @@ mod tests {
         let s = DataColumnSidecar::<Mainnet>::default();
         let bytes = s.as_ssz_bytes();
         assert_eq!(
-            DataColumnSidecar::<Mainnet>::from_ssz_bytes(&bytes).unwrap(),
+            DataColumnSidecar::<Mainnet>::from_ssz_bytes(&bytes)
+                .unwrap_or_else(|e| panic!("{e:?}")),
             s
         );
         let _ = s.tree_hash_root();

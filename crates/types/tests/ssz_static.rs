@@ -11,11 +11,11 @@
 
 use std::collections::BTreeSet;
 
-use cc_spec_tests::{assert_handler_coverage, Vectors};
-use cc_types::preset::{Mainnet, Minimal, Preset};
-use cc_types::primitives::{parse_hex_bytes, Root};
-use cc_types::registry::{ssz_static_handler, ssz_static_types, SSZ_STATIC_TYPE_NAMES};
+use cc_spec_tests::{Vectors, assert_handler_coverage};
 use cc_types::ForkName;
+use cc_types::preset::{Mainnet, Minimal, Preset};
+use cc_types::primitives::{Root, parse_hex_bytes};
+use cc_types::registry::{SSZ_STATIC_TYPE_NAMES, ssz_static_handler, ssz_static_types};
 use serde::Deserialize;
 
 /// Active fork directory segment under each preset's vector tree.
@@ -35,9 +35,8 @@ fn parse_root(hex: &str) -> Root {
 }
 
 fn run_container_cases<P: Preset>(container: &str) {
-    let vectors = Vectors::open().expect(
-        "spec vector cache must be present; run scripts/fetch-spec-vectors.sh",
-    );
+    let vectors = Vectors::open()
+        .expect("spec vector cache must be present; run scripts/fetch-spec-vectors.sh");
     let handler = ssz_static_handler::<P>(container)
         .unwrap_or_else(|| panic!("no handler registered for {container}"));
     let cases = vectors
@@ -60,7 +59,8 @@ fn run_container_cases<P: Preset>(container: &str) {
             )
         });
         assert_eq!(
-            out.serialized, bytes,
+            out.serialized,
+            bytes,
             "serialized round-trip mismatch for {}",
             case.rel_path()
         );
@@ -69,7 +69,8 @@ fn run_container_cases<P: Preset>(container: &str) {
             .unwrap_or_else(|e| panic!("roots.yaml {}: {e}", case.rel_path()));
         let expected = parse_root(&roots.root);
         assert_eq!(
-            out.root, expected,
+            out.root,
+            expected,
             "hash_tree_root mismatch for {}",
             case.rel_path()
         );
@@ -104,7 +105,10 @@ macro_rules! spec_suite {
             one!(consolidation_request, "ConsolidationRequest");
             one!(contribution_and_proof, "ContributionAndProof");
             one!(data_column_sidecar, "DataColumnSidecar");
-            one!(data_columns_by_root_identifier, "DataColumnsByRootIdentifier");
+            one!(
+                data_columns_by_root_identifier,
+                "DataColumnsByRootIdentifier"
+            );
             one!(deposit, "Deposit");
             one!(deposit_data, "DepositData");
             one!(deposit_message, "DepositMessage");
@@ -121,7 +125,10 @@ macro_rules! spec_suite {
             one!(light_client_bootstrap, "LightClientBootstrap");
             one!(light_client_finality_update, "LightClientFinalityUpdate");
             one!(light_client_header, "LightClientHeader");
-            one!(light_client_optimistic_update, "LightClientOptimisticUpdate");
+            one!(
+                light_client_optimistic_update,
+                "LightClientOptimisticUpdate"
+            );
             one!(light_client_update, "LightClientUpdate");
             one!(matrix_entry, "MatrixEntry");
             one!(partial_data_column_group_id, "PartialDataColumnGroupID");
@@ -145,7 +152,10 @@ macro_rules! spec_suite {
             one!(signing_data, "SigningData");
             one!(single_attestation, "SingleAttestation");
             one!(sync_aggregate, "SyncAggregate");
-            one!(sync_aggregator_selection_data, "SyncAggregatorSelectionData");
+            one!(
+                sync_aggregator_selection_data,
+                "SyncAggregatorSelectionData"
+            );
             one!(sync_committee, "SyncCommittee");
             one!(sync_committee_contribution, "SyncCommitteeContribution");
             one!(sync_committee_message, "SyncCommitteeMessage");
@@ -163,9 +173,8 @@ spec_suite!(minimal, Minimal);
 /// Set equality both directions for both presets (CC-10/1).
 #[test]
 fn container_coverage() {
-    let vectors = Vectors::open().expect(
-        "spec vector cache must be present; run scripts/fetch-spec-vectors.sh",
-    );
+    let vectors = Vectors::open()
+        .expect("spec vector cache must be present; run scripts/fetch-spec-vectors.sh");
 
     for preset in [Mainnet::NAME, Minimal::NAME] {
         let on_disk = vectors

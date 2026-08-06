@@ -5,11 +5,11 @@
 #![allow(dead_code, unused_imports, clippy::unwrap_used)]
 
 use cc_types::{
-    BlsPublicKey, BlsSignature, Cell, Domain, DomainType, Epoch, ExecutionAddress, Fork,
-    ForkData, ForkDigest, ForkName, ForkVersion, Hash256, KzgCommitment, KzgProof, Root, Slot,
-    ValidatorIndex, BYTES_PER_CELL, CELLS_PER_EXT_BLOB, CUSTODY_REQUIREMENT,
-    FIELD_ELEMENTS_PER_CELL, FIELD_ELEMENTS_PER_EXT_BLOB, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH,
-    NUMBER_OF_COLUMNS, NUMBER_OF_CUSTODY_GROUPS, SAMPLES_PER_SLOT,
+    BYTES_PER_CELL, BlsPublicKey, BlsSignature, CELLS_PER_EXT_BLOB, CUSTODY_REQUIREMENT, Cell,
+    Domain, DomainType, Epoch, ExecutionAddress, FIELD_ELEMENTS_PER_CELL,
+    FIELD_ELEMENTS_PER_EXT_BLOB, Fork, ForkData, ForkDigest, ForkName, ForkVersion, Hash256,
+    KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, KzgCommitment, KzgProof, NUMBER_OF_COLUMNS,
+    NUMBER_OF_CUSTODY_GROUPS, Root, SAMPLES_PER_SLOT, Slot, ValidatorIndex,
 };
 
 #[test]

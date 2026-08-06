@@ -16,8 +16,8 @@ use crate::containers::{
 use crate::execution::{ExecutionPayload, ExecutionPayloadHeader};
 use crate::fork::{Fork, ForkData};
 use crate::light_client::{
-    LightClientBootstrap, LightClientFinalityUpdate, LightClientHeader, LightClientOptimisticUpdate,
-    LightClientUpdate,
+    LightClientBootstrap, LightClientFinalityUpdate, LightClientHeader,
+    LightClientOptimisticUpdate, LightClientUpdate,
 };
 use crate::operations::{
     AggregateAndProof, Attestation, AttesterSlashing, BlsToExecutionChange, ConsolidationRequest,
@@ -112,7 +112,9 @@ pub const SSZ_STATIC_TYPE_NAMES: &[&str] = &[
     "WithdrawalRequest",
 ];
 
-fn handle_type<T: Decode + Encode + TreeHash>(bytes: &[u8]) -> Result<SszStaticOutput, DecodeError> {
+fn handle_type<T: Decode + Encode + TreeHash>(
+    bytes: &[u8],
+) -> Result<SszStaticOutput, DecodeError> {
     let value = T::from_ssz_bytes(bytes)?;
     let serialized = value.as_ssz_bytes();
     let root = Root::from_hash256(value.tree_hash_root());
@@ -138,7 +140,10 @@ pub fn ssz_static_types<P: Preset>() -> &'static [(&'static str, SszStaticHandle
         ("BeaconState", handle_type::<BeaconState<P>>),
         ("Checkpoint", handle_type::<Checkpoint>),
         ("ConsolidationRequest", handle_type::<ConsolidationRequest>),
-        ("ContributionAndProof", handle_type::<ContributionAndProof<P>>),
+        (
+            "ContributionAndProof",
+            handle_type::<ContributionAndProof<P>>,
+        ),
         ("DataColumnSidecar", handle_type::<DataColumnSidecar<P>>),
         (
             "DataColumnsByRootIdentifier",
@@ -160,7 +165,10 @@ pub fn ssz_static_types<P: Preset>() -> &'static [(&'static str, SszStaticHandle
         ("ForkData", handle_type::<ForkData>),
         ("HistoricalSummary", handle_type::<HistoricalSummary>),
         ("IndexedAttestation", handle_type::<IndexedAttestation<P>>),
-        ("LightClientBootstrap", handle_type::<LightClientBootstrap<P>>),
+        (
+            "LightClientBootstrap",
+            handle_type::<LightClientBootstrap<P>>,
+        ),
         (
             "LightClientFinalityUpdate",
             handle_type::<LightClientFinalityUpdate<P>>,
@@ -244,7 +252,7 @@ pub fn ssz_static_handler<P: Preset>(name: &str) -> Option<SszStaticHandler> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use crate::preset::{Mainnet, Minimal};
@@ -278,7 +286,9 @@ mod tests {
             epoch: Default::default(),
         };
         let bytes = ssz::Encode::as_ssz_bytes(&fork);
-        let out = ssz_static_handler::<Mainnet>("Fork").unwrap()(&bytes).unwrap();
+        let handler =
+            ssz_static_handler::<Mainnet>("Fork").unwrap_or_else(|| panic!("Fork handler missing"));
+        let out = handler(&bytes).unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(out.serialized, bytes);
     }
 }

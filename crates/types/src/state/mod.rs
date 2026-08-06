@@ -355,12 +355,14 @@ mod tests {
     fn default_ssz_roundtrip_and_tree_hash() {
         let state = BeaconState::<Minimal>::default();
         let bytes = state.as_ssz_bytes();
-        let decoded = BeaconState::<Minimal>::from_ssz_bytes(&bytes).unwrap();
+        let decoded =
+            BeaconState::<Minimal>::from_ssz_bytes(&bytes).unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(decoded, state);
         // Caches on decode are default (tag 0), independent of source tag.
         let mut tagged = state.clone();
         tagged.caches_mut().tag = 42;
-        let re = BeaconState::<Minimal>::from_ssz_bytes(&tagged.as_ssz_bytes()).unwrap();
+        let re = BeaconState::<Minimal>::from_ssz_bytes(&tagged.as_ssz_bytes())
+            .unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(re.caches().tag, 0);
         let _ = state.tree_hash_root();
     }
@@ -369,8 +371,8 @@ mod tests {
     fn from_ssz_bytes_with_fulu_ok() {
         let state = BeaconState::<Minimal>::default();
         let bytes = state.as_ssz_bytes();
-        let decoded =
-            BeaconState::<Minimal>::from_ssz_bytes_with(ForkName::Fulu, &bytes).unwrap();
+        let decoded = BeaconState::<Minimal>::from_ssz_bytes_with(ForkName::Fulu, &bytes)
+            .unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(decoded, state);
     }
 

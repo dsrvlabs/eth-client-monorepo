@@ -467,7 +467,7 @@ pub enum HexParseError {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use ssz::{Decode, Encode};
@@ -478,7 +478,7 @@ mod tests {
         let slot = Slot::new(42);
         let bytes = slot.as_ssz_bytes();
         assert_eq!(bytes, 42u64.to_le_bytes());
-        let decoded = Slot::from_ssz_bytes(&bytes).unwrap();
+        let decoded = Slot::from_ssz_bytes(&bytes).unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(decoded, slot);
     }
 
@@ -496,7 +496,7 @@ mod tests {
         let root = Root::from_array(arr);
         let bytes = root.as_ssz_bytes();
         assert_eq!(bytes, arr);
-        let decoded = Root::from_ssz_bytes(&bytes).unwrap();
+        let decoded = Root::from_ssz_bytes(&bytes).unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(decoded, root);
     }
 
@@ -512,14 +512,20 @@ mod tests {
         let fv = ForkVersion::from_array([0x70, 0x00, 0x09, 0x10]);
         let bytes = fv.as_ssz_bytes();
         assert_eq!(bytes, [0x70, 0x00, 0x09, 0x10]);
-        assert_eq!(ForkVersion::from_ssz_bytes(&bytes).unwrap(), fv);
+        assert_eq!(
+            ForkVersion::from_ssz_bytes(&bytes).unwrap_or_else(|e| panic!("{e:?}")),
+            fv
+        );
     }
 
     #[test]
     fn bls_pubkey_ssz_len() {
         let pk = BlsPublicKey::ZERO;
         assert_eq!(pk.as_ssz_bytes().len(), 48);
-        assert_eq!(BlsPublicKey::from_ssz_bytes(&pk.as_ssz_bytes()).unwrap(), pk);
+        assert_eq!(
+            BlsPublicKey::from_ssz_bytes(&pk.as_ssz_bytes()).unwrap_or_else(|e| panic!("{e:?}")),
+            pk
+        );
     }
 
     #[test]
@@ -567,7 +573,7 @@ mod tests {
 
     #[test]
     fn parse_hex_bytes_fork_version() {
-        let bytes = parse_hex_bytes::<4>("0x70000910").unwrap();
+        let bytes = parse_hex_bytes::<4>("0x70000910").unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(bytes, [0x70, 0x00, 0x09, 0x10]);
     }
 }

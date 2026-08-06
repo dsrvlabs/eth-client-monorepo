@@ -198,7 +198,7 @@ impl<P: Preset> Default for SyncAggregate<P> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use crate::preset::Mainnet;
@@ -212,7 +212,10 @@ mod tests {
             root: Root::from_array([0x11; 32]),
         };
         let bytes = c.as_ssz_bytes();
-        assert_eq!(Checkpoint::from_ssz_bytes(&bytes).unwrap(), c);
+        assert_eq!(
+            Checkpoint::from_ssz_bytes(&bytes).unwrap_or_else(|e| panic!("{e:?}")),
+            c
+        );
         let _ = c.tree_hash_root();
     }
 

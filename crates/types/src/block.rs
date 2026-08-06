@@ -161,7 +161,7 @@ mod tests {
         let body = BeaconBlockBody::<Mainnet>::default();
         let bytes = body.as_ssz_bytes();
         assert_eq!(
-            BeaconBlockBody::<Mainnet>::from_ssz_bytes(&bytes).unwrap(),
+            BeaconBlockBody::<Mainnet>::from_ssz_bytes(&bytes).unwrap_or_else(|e| panic!("{e:?}")),
             body
         );
         let _ = body.tree_hash_root();
@@ -182,8 +182,8 @@ mod tests {
     fn from_ssz_bytes_with_fulu_roundtrip() {
         let block = SignedBeaconBlock::<Mainnet>::default();
         let bytes = block.as_ssz_bytes();
-        let decoded =
-            SignedBeaconBlock::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, &bytes).unwrap();
+        let decoded = SignedBeaconBlock::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, &bytes)
+            .unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(decoded, block);
     }
 
@@ -191,8 +191,8 @@ mod tests {
     fn from_ssz_bytes_with_rejects_non_fulu() {
         let block = SignedBeaconBlock::<Mainnet>::default();
         let bytes = block.as_ssz_bytes();
-        let err =
-            SignedBeaconBlock::<Mainnet>::from_ssz_bytes_with(ForkName::Electra, &bytes).unwrap_err();
+        let err = SignedBeaconBlock::<Mainnet>::from_ssz_bytes_with(ForkName::Electra, &bytes)
+            .unwrap_err();
         match err {
             DecodeError::BytesInvalid(msg) => {
                 assert!(msg.contains("unsupported fork"), "{msg}");

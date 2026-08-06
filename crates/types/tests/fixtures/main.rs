@@ -16,8 +16,8 @@ use std::path::PathBuf;
 use cc_types::{BeaconState, ForkName, Mainnet, Preset, SignedBeaconBlock};
 
 use fixtures::{
-    cache_env_is_set, ci_cache_key, load_anchor, load_sequence, resolve_cache_root, Error,
-    HoodiFixtures, FETCH_HINT,
+    Error, FETCH_HINT, HoodiFixtures, cache_env_is_set, ci_cache_key, load_anchor, load_sequence,
+    resolve_cache_root,
 };
 
 /// Parent-linked sequence over the committed manifest alone — no network, no cache.
@@ -128,10 +128,7 @@ fn sequence_parent_linked_manifest_only() {
 
 #[test]
 fn helper_absent_cache_contains_fetch_hint() {
-    let dir = std::env::temp_dir().join(format!(
-        "cc-hoodi-fixtures-absent-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("cc-hoodi-fixtures-absent-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("mkdir");
 
@@ -150,10 +147,8 @@ fn helper_corrupt_artifact_names_expected_and_actual_sha256() {
     let anchor = load_anchor().expect("anchor");
     let sequence = load_sequence().expect("sequence");
 
-    let dir = std::env::temp_dir().join(format!(
-        "cc-hoodi-fixtures-corrupt-{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("cc-hoodi-fixtures-corrupt-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     let slot_dir = dir.join(anchor.slot.to_string());
     fs::create_dir_all(slot_dir.join("sequence")).expect("mkdir");
@@ -195,7 +190,9 @@ fn helper_corrupt_artifact_names_expected_and_actual_sha256() {
     // Also exercise the typed variant.
     match err {
         Error::Sha256Mismatch {
-            expected, actual: a, ..
+            expected,
+            actual: a,
+            ..
         } => {
             assert_eq!(expected, anchor.block_sha256);
             assert_eq!(a, actual);
@@ -305,11 +302,7 @@ fn open_real_cache_when_env_set() {
     let path = fixtures
         .sequence_block_ssz(nonempty[0].slot)
         .expect("path for nonempty slot");
-    assert!(
-        path.is_file(),
-        "sequence SSZ missing at {}",
-        path.display()
-    );
+    assert!(path.is_file(), "sequence SSZ missing at {}", path.display());
 }
 
 /// Manifests directory contains no SSZ / large blobs (git hygiene).

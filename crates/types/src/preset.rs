@@ -6,15 +6,18 @@
 use std::fmt::Debug;
 
 use typenum::{
-    Unsigned, U1, U1048576, U1073741824, U1099511627776, U128, U131072, U134217728, U16, U16777216,
-    U2, U2048, U256, U262144, U32, U4, U4096, U512, U64, U65536, U8, U8192,
+    U1, U2, U4, U8, U16, U32, U64, U128, U256, U512, U2048, U4096, U8192, U65536, U131072, U262144,
+    U1048576, U16777216, U134217728, U1073741824, U1099511627776, Unsigned,
 };
 
 /// Bound shared by every capacity associated type on [`Preset`].
 ///
 /// `Eq` is required so container `#[derive(Eq)]` does not demand bounds on every
 /// `P::Max*` associated type at each use site (Architecture §3.2).
-pub trait PresetUnsigned: Unsigned + Clone + Sync + Send + Debug + PartialEq + Eq + 'static {}
+pub trait PresetUnsigned:
+    Unsigned + Clone + Sync + Send + Debug + PartialEq + Eq + 'static
+{
+}
 impl<T> PresetUnsigned for T where
     T: Unsigned + Clone + Sync + Send + Debug + PartialEq + Eq + 'static
 {
@@ -370,4 +373,3 @@ impl Preset for Minimal {
     type Eth1DataVotesLength = U32;
     type SyncSubcommitteeSize = U8;
 }
-
