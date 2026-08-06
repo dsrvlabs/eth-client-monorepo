@@ -96,6 +96,128 @@ bash scripts/check-no-remodelling.sh
 
 ---
 
+## ChainService (CC-18a)
+
+Additive RPCs on the existing `eth.chain.v1.ChainService` (Architecture §7.7). Adding RPCs
+to an existing service is **not** a `FILE`-category break — `buf breaking` must pass with **no**
+`buf skip breaking` label (CC-18/5).
+
+| RPC | Kind | Purpose |
+|---|---|---|
+| `ImportBlock` | unary | Import a `SignedBeaconBlock` (SSZ bytes) and return a first-class verdict |
+| `GetHead` | unary | Head root/slot plus justified/finalized checkpoints (served from `ArcSwap` in CC-18b) |
+| `SubscribeEvents` | server-streaming | Event bus with resume cursor; consumers must be idempotent |
+
+CC-1E (`ApplyAttestations`) and CC-1F (`GetCommitteeShuffling`, `GetValidatorPubkeys`) land in
+their own issues — not pre-declared here.
+
+### `ImportBlock`
+
+**Request** — parent plan shape, verbatim (re-plan §Contracts):
+
+| Field | Type | Notes |
+|---|---|---|
+| `ssz` | `bytes` | `SignedBeaconBlock`, SSZ-encoded. Consensus bodies never re-modelled as proto. |
+| `fork` | `uint32` | Fork version tag |
+| `root` | `bytes` | Pre-computed `hash_tree_root` — **dedup probe only**; server recomputes on miss (ADR-P1-10) |
+| `source` | `eth.common.v1.Source` | `GOSSIP` / `REQRESP` / `API` |
+
+**Response** — `ImportBlockVerdict` + `reason` string:
+
+| Verdict | Meaning |
+|---|---|
+| `IMPORTED` | New block accepted into the store / fork-choice path |
+| `DUPLICATE` | Root already known; transition **not** re-run |
+| `DEFERRED_DA` | Parent known but data-availability gate not yet satisfied (Phase 2 fills this in) |
+| `UNKNOWN_PARENT` | First-class **verdict**, not an error — drives the driver walk-back (CC-1A/1) |
+| `INVALID` | Failed validation; `reason` carries a short explanation |
+
+gRPC status errors (not verdicts) used by the implementation issues:
+
+| Status | When |
+|---|---|
+| `INVALID_ARGUMENT` | Supplied `root` ≠ true `hash_tree_root` after decode |
+| `RESOURCE_EXHAUSTED` | Import command channel full after `send_timeout` |
+| `FAILED_PRECONDITION` + `NOT_BOOTSTRAPPED` | Called before checkpoint bootstrap completes (CC-19) |
+
+### `GetHead`
+
+| Field | Type |
+|---|---|
+| `head_root` | `bytes` |
+| `head_slot` | `uint64` |
+| `justified` | `Checkpoint { epoch, root }` |
+| `finalized` | `Checkpoint { epoch, root }` |
+
+`Checkpoint` here is the fork-choice checkpoint **identity** (epoch + root), not a re-model of a
+consensus body. Blocks still cross service boundaries only as `bytes ssz`.
+
+### `SubscribeEvents`
+
+**Request cursor** (`Cursor`, optional — unset means "start live, no replay"):
+
+| Field | Type | Role |
+|---|---|---|
+| `session_id` | `uint64` | Per-process random id; a stale session is rejected (ADR-P1-11) |
+| `seq` | `uint64` | Authoritative resume point (replay from `seq + 1`) |
+| `slot` | `uint64` | Validated against the ring entry; human-readable identity |
+| `root` | `bytes` | Validated against the ring entry; **idempotency key** for consumers |
+
+**Event**:
+
+| Field | Type |
+|---|---|
+| `seq` | `uint64` |
+| `slot` | `uint64` |
+| `root` | `bytes` — carries identity; consumers must be idempotent |
+| `kind` | `EventKind` — `HEAD`, `CHAIN_REORG`, `FINALIZED_CHECKPOINT`, `BLOCK_IMPORTED` |
+| `payload` | `bytes` — kind-specific, opaque to the bus |
+
+**Bounds** (config defaults; CC-18c implements):
+
+| Bound | Default | Behaviour on breach |
+|---|---|---|
+| Event ring | **1024** events | Older entries evicted; resubscribe with that cursor → `CURSOR_TOO_OLD` |
+| Per-subscriber queue | **256** deep | Slow consumer: stream terminated with `RESOURCE_EXHAUSTED`; reconnect + cursor replay |
+
+**`FAILED_PRECONDITION` + `google.rpc.ErrorInfo` reasons** (Architecture §7.3 / §7.6):
+
+| `reason` | Condition | Consumer action |
+|---|---|---|
+| `CURSOR_TOO_OLD` | `cursor.seq + 1 < ring.front().seq` (evicted) | Fall back to `GetHead`, resubscribe with no cursor |
+| `CURSOR_UNKNOWN_SESSION` | `cursor.session_id != ring.session_id` (server restarted) | Same, plus re-bootstrap assumptions |
+
+Domain convention: `"eth.chain.v1"`. Construction helper and the tonic 0.14 detail-attachment
+shape live in `cc-proto` (`status_with_error_info` / `error_info_from_status`):
+
+1. `ErrorInfo { reason, domain, … }`
+2. `prost_types::Any { type_url: "type.googleapis.com/google.rpc.ErrorInfo", value: encode }`
+3. `google.rpc.Status { code, message, details: [any] }` → `encode_to_vec`
+4. `tonic::Status::with_details(code, message, bytes)` → `grpc-status-details-bin` trailer
+
+### Vendored `google.rpc` (ADR-P1-14)
+
+| Path | Role |
+|---|---|
+| `proto/third_party/google/rpc/status.proto` | `google.rpc.Status` wire envelope for details |
+| `proto/third_party/google/rpc/error_details.proto` | `ErrorInfo` and kin |
+| `proto/third_party/google/rpc/README.md` | Provenance: upstream, **commit**, fetch date, license |
+
+`buf.yaml` lists `third_party` under both `lint.ignore` and `breaking.ignore` — these files are
+not our contract and fail `DEFAULT`/`FILE` by design. The ignore is path-scoped: a deliberate
+violation under `eth/` still fails `buf lint` (negative check; re-run any time):
+
+```bash
+# Temporary camelCase field under eth/ must fail lint (ignore is not over-broad).
+# Do not commit the violation.
+cd proto && buf lint   # expect FIELD_LOWER_SNAKE_CASE on eth/… only; third_party silent
+```
+
+`crates/proto/build.rs` adds `proto/third_party` to the `protox` include path so imports resolve
+as `google/rpc/…`. Well-known types (`google/protobuf/*`) come from `protox`'s built-in resolver.
+
+---
+
 ## Milestone-gate flow (R-1)
 
 **Chosen flow:** the pipeline lands work on the **`develop` integration branch** (direct push of green

@@ -769,7 +769,9 @@ dependencies = [
 name = "cc-proto"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "prost",
+ "prost-types",
  "protox",
  "tonic",
  "tonic-prost",

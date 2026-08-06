@@ -1,11 +1,23 @@
 # CC-03/1 — buf workspace root (Architecture §3.3).
 # No buf.lock (no BSR deps in Phase 0). No buf.gen.yaml (codegen is build.rs).
+# CC-18a: third_party holds vendored google/rpc protos (ADR-P1-14) — excluded from
+# lint/breaking; they are not our contract surface.
+# RPC_RESPONSE_STANDARD_NAME is ignored only for chain.proto so the event bus
+# message can stay `Event` (Architecture §7.3 / re-plan §Contracts), not
+# `SubscribeEventsResponse`.
 version: v2
 modules:
   - path: .
 lint:
   use:
     - DEFAULT
+  ignore:
+    - third_party
+  ignore_only:
+    RPC_RESPONSE_STANDARD_NAME:
+      - eth/chain/v1/chain.proto
 breaking:
   use:
     - FILE
+  ignore:
+    - third_party

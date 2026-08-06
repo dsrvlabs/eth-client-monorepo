@@ -12,10 +12,90 @@ import "eth/common/v1/common.proto";
 // Phase 2 (CC-27) adds: the bidirectional p2p stream (blocks/columns down, verdicts up).
 service ChainService {
   rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+  rpc ImportBlock(ImportBlockRequest) returns (ImportBlockResponse);
+  rpc GetHead(GetHeadRequest) returns (GetHeadResponse);
+  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream Event);
 }
 
 message GetInfoRequest {}
 
 message GetInfoResponse {
   eth.common.v1.BuildInfo build_info = 1;
+}
+
+// Parent-plan shape, verbatim (re-plan §Contracts / CC-18a):
+//   bytes ssz + uint32 fork + bytes root + eth.common.v1.Source source.
+// Consensus body crosses as SSZ bytes only — never re-modelled as a proto message.
+message ImportBlockRequest {
+  bytes ssz = 1; // SignedBeaconBlock, SSZ-encoded
+  uint32 fork = 2; // fork version tag
+  bytes root = 3; // pre-computed hash_tree_root (dedup probe only; server recomputes on miss)
+  eth.common.v1.Source source = 4; // GOSSIP | REQRESP | API
+}
+
+// Import outcome. UNKNOWN_PARENT is a first-class verdict (not an error) so the driver
+// walk-back can count and act on it (CC-1A/1, Architecture §7.2).
+enum ImportBlockVerdict {
+  IMPORT_BLOCK_VERDICT_UNSPECIFIED = 0;
+  IMPORT_BLOCK_VERDICT_IMPORTED = 1;
+  IMPORT_BLOCK_VERDICT_DUPLICATE = 2;
+  IMPORT_BLOCK_VERDICT_DEFERRED_DA = 3;
+  IMPORT_BLOCK_VERDICT_UNKNOWN_PARENT = 4;
+  IMPORT_BLOCK_VERDICT_INVALID = 5;
+}
+
+message ImportBlockResponse {
+  ImportBlockVerdict verdict = 1;
+  string reason = 2; // human-readable; empty on success paths
+}
+
+message GetHeadRequest {}
+
+// Checkpoint pair for justified / finalized (epoch + root). This is the fork-choice
+// checkpoint identity used by GetHead — not a re-model of a consensus body (blocks still
+// cross as bytes ssz).
+message Checkpoint {
+  uint64 epoch = 1;
+  bytes root = 2;
+}
+
+message GetHeadResponse {
+  bytes head_root = 1;
+  uint64 head_slot = 2;
+  Checkpoint justified = 3;
+  Checkpoint finalized = 4;
+}
+
+// Resume cursor for SubscribeEvents (Architecture §7.3).
+// seq is authoritative; slot/root are validated against the ring entry and carry identity
+// for idempotent consumers. session_id is a per-process random u64 so a cursor from a
+// previous incarnation cannot silently match after a restart (ADR-P1-11).
+message Cursor {
+  uint64 session_id = 1;
+  uint64 seq = 2;
+  uint64 slot = 3;
+  bytes root = 4;
+}
+
+// Empty cursor (unset) means "start live from the current tip, no replay".
+// A set cursor means "replay from seq+1, then live".
+message SubscribeEventsRequest {
+  Cursor cursor = 1;
+}
+
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  EVENT_KIND_HEAD = 1;
+  EVENT_KIND_CHAIN_REORG = 2;
+  EVENT_KIND_FINALIZED_CHECKPOINT = 3;
+  EVENT_KIND_BLOCK_IMPORTED = 4;
+}
+
+// Consumers must be idempotent; root carries the identity (re-plan §Contracts).
+message Event {
+  uint64 seq = 1;
+  uint64 slot = 2;
+  bytes root = 3;
+  EventKind kind = 4;
+  bytes payload = 5; // kind-specific; opaque to the bus
 }

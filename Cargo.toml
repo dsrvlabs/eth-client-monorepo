@@ -61,6 +61,7 @@ tonic-prost-build = "0.14.6"
 tonic-health = "0.14.6"
 tonic-reflection = "0.14.6"
 prost = "0.14.4"
+prost-types = "0.14.4"
 protox = "0.9.1"
 
 # Config loader (Architecture §5 / ADR-12, CC-09a)

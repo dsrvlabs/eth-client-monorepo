@@ -1,6 +1,11 @@
 //! Codegen for `proto/` via pure-Rust `protox` + `tonic-prost-build` (Architecture §3.4, ADR-04).
 //!
 //! No `protoc` binary is required anywhere: Docker, CI, or dev machines.
+//!
+//! Include path is `proto/` (workspace packages) plus `proto/third_party/` so the
+//! vendored `google/rpc/{status,error_details}.proto` resolve as `google/rpc/…`
+//! (CC-18a / ADR-P1-14). Well-known types (`google/protobuf/*`) come from
+//! `protox`'s built-in `GoogleFileResolver`.
 
 use std::env;
 use std::fs;
@@ -10,10 +15,13 @@ use prost::Message;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proto_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../proto");
+    let third_party = proto_root.join("third_party");
     let files = walk_protos(&proto_root)?;
     let out = PathBuf::from(env::var("OUT_DIR")?);
 
-    let fds = protox::compile(&files, [&proto_root])?;
+    // third_party first so vendored google/rpc files are named `google/rpc/…`
+    // rather than `third_party/google/rpc/…`.
+    let fds = protox::compile(&files, [&third_party, &proto_root])?;
 
     // `compile_fds` does not honour `file_descriptor_set_path` (that path is for the
     // protoc-driven path). Write the descriptor ourselves for tonic-reflection (CC-05b).
@@ -22,6 +30,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_prost_build::configure()
         .build_server(true)
         .build_client(true) // peer prober (CC-05b) and Phase 1 both need clients
+        // Default method bodies return `UNIMPLEMENTED` so additive RPCs (CC-18a+)
+        // do not force every service stub to grow empty handlers. Real logic still
+        // overrides the default in the owning issue (CC-18b/c for chain).
+        .generate_default_stubs(true)
         .out_dir(&out)
         .compile_fds(fds)?;
 
