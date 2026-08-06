@@ -7,5 +7,12 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+# External only — zero workspace path edges (Architecture §1.2 / check-crate-dag).
+snap = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+ethereum_ssz = { workspace = true }
+
 [lints]
 workspace = true
