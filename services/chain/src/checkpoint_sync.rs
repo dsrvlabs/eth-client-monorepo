@@ -18,16 +18,16 @@
 //! subjectivity source; treat `checkpoint_providers` as highly privileged
 //! config (same class as network YAML).
 //!
-//! Full anchor lifecycle / health (CC-19b) is out of scope: this module returns
-//! a verified [`FetchedCheckpoint`] that callers may seed into
-//! [`cc_fork_choice::get_forkchoice_store`] and [`crate::spawn_core_thread`].
+//! Anchor store construction (warm `canonical_root`, wall-clock `on_tick`) lives
+//! in [`spawn_core_from_checkpoint`] (CC-19b). Aggregate health / bind order
+//! remain in `main.rs`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use cc_fork_choice::{AlwaysAvailable, Store, get_forkchoice_store};
+use cc_fork_choice::{AlwaysAvailable, Store, get_forkchoice_store, on_tick};
 use cc_state_transition::{BlockSignatureStrategy, StubOptimisticEngine};
 use cc_types::config::{BlobParameters, BlobSchedule, BlobScheduleError, ChainConfig};
 use cc_types::preset::Preset;
@@ -41,7 +41,7 @@ use tree_hash::TreeHash;
 use crate::core::{CoreConfig, CoreThread, spawn_core_thread};
 use crate::events::EventInput;
 use crate::head::HeadSnapshotStore;
-use crate::metrics::{BootstrapResult, ChainMetrics};
+use crate::metrics::{BootstrapResult, ChainMetrics, HashPath};
 
 /// Required `Eth-Consensus-Version` on SSZ checkpoint responses (Phase 1 is Fulu-only).
 pub const REQUIRED_CONSENSUS_VERSION: &str = "fulu";
@@ -1079,21 +1079,45 @@ async fn fetch_and_verify_triple<P: Preset>(
     })
 }
 
-// ── core spawn helper (partial wiring for CC-19a) ───────────────────────────
+// ── core spawn helper (CC-19b anchor store) ─────────────────────────────────
+
+/// Warm state hash caches by computing [`BeaconState::canonical_root`] once.
+///
+/// A decoded state starts cold by construction (§3.4). Paying the full root
+/// here keeps the first post-bootstrap import off the cold path (§8.3).
+/// Records `cc_chain_state_hash_tree_root_seconds{path="cold"}` for the warm-up.
+pub fn warm_canonical_root<P: Preset>(
+    state: &mut BeaconState<P>,
+    metrics: &ChainMetrics,
+) -> Root {
+    metrics.time_state_hash_tree_root(HashPath::Cold, || state.canonical_root())
+}
 
 /// Build a fork-choice store from a verified checkpoint and spawn the core.
 ///
-/// Does **not** implement full anchor lifecycle / health (CC-19b): no warm
-/// `canonical_root` cache policy beyond store seeding, no aggregate health flip.
+/// CC-19b:
+/// - warms `canonical_root()` caches on the fetched state before store seed
+/// - seeds proto-array / justified / finalized / blocks via `get_forkchoice_store`
+/// - advances store time from wall clock via `on_tick` (genesis + slot already set)
+///
+/// Aggregate health flip and bind-before-bootstrap ordering live in `main.rs`.
 pub fn spawn_core_from_checkpoint<P: Preset + 'static>(
-    fetched: FetchedCheckpoint<P>,
+    mut fetched: FetchedCheckpoint<P>,
     chain_config: ChainConfig,
     head: HeadSnapshotStore,
     event_tx: tokio::sync::mpsc::Sender<EventInput>,
     metrics: ChainMetrics,
     core_cfg: CoreConfig,
 ) -> Result<CoreThread, CheckpointError> {
-    let store: Store<P> = get_forkchoice_store(
+    // §8.3: warm caches once so the first import does not pay a cold full root.
+    let warm_root = warm_canonical_root(&mut fetched.state, &metrics);
+    tracing::info!(
+        state_root = %warm_root,
+        slot = fetched.signed_block.message.slot.as_u64(),
+        "anchor state caches warmed via canonical_root"
+    );
+
+    let mut store: Store<P> = get_forkchoice_store(
         fetched.state,
         &fetched.signed_block.message,
         Arc::new(StubOptimisticEngine),
@@ -1101,6 +1125,18 @@ pub fn spawn_core_from_checkpoint<P: Preset + 'static>(
         chain_config.seconds_per_slot,
     )
     .map_err(|e| CheckpointError::Store(e.to_string()))?;
+
+    // Wall-clock catch-up: store was seeded to genesis_time + slot * seconds_per_slot.
+    // Advance to now so the first import sees a realistic current slot (§7.4 / issue notes).
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if now > store.time()
+        && let Err(e) = on_tick(&mut store, now)
+    {
+        tracing::warn!(error = %e, now, "on_tick during anchor seed failed; continuing");
+    }
 
     // CoreConfig.verify defaults to NoVerification; soak/prod may raise later.
     let _ = BlockSignatureStrategy::NoVerification;
@@ -1127,10 +1163,10 @@ pub struct BootstrapSummary {
     pub slot: u64,
 }
 
-/// End-to-end: fetch → spawn core when providers are configured.
+/// End-to-end: fetch → warm caches → spawn core when providers are configured.
 ///
 /// Returns the running core and a summary (state is owned by the core store).
-/// Full anchor lifecycle / health remains CC-19b.
+/// Health / local-ready flip is the caller's responsibility (CC-19b `main`).
 pub async fn bootstrap_core_from_providers<P: Preset + 'static>(
     cfg: &CheckpointBootstrapConfig,
     head: HeadSnapshotStore,

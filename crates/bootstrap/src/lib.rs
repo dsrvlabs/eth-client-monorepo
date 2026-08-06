@@ -31,7 +31,9 @@ pub use metrics::{
 pub use metrics_server::{serve_metrics, spawn_metrics_server};
 pub use prober::{FAIL_THRESHOLD, PROBE_INTERVAL, PROBE_TIMEOUT};
 pub use serve::{
-    AGGREGATE_HEALTH, DRAIN_TIMEOUT, PeerSpec, ServiceSpec, serve, serve_with_shutdown,
+    AGGREGATE_HEALTH, DRAIN_TIMEOUT, LocalReadyHandle, PeerSpec, PreDrainHook, ServeOptions,
+    ServiceSpec, SignalTrigger, serve, serve_with_options, serve_with_shutdown,
+    serve_with_shutdown_options,
 };
 
 use std::collections::HashSet;

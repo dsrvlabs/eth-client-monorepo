@@ -7,11 +7,12 @@
 //! - **CC-19a**: checkpoint fetch, provider fallback, verification
 //! - **CC-1G**: `/eth/v1/config/spec` as a `BLOB_SCHEDULE` source
 //!
-//! The binary (`main.rs`) serves gRPC. When `checkpoint_providers` is configured
-//! the core is spawned from a verified anchor (CC-19a); full lifecycle/health
-//! is CC-19b. Without providers the core is absent and `ImportBlock` /
-//! `ApplyAttestations` return `NOT_BOOTSTRAPPED`. Tests construct a store and
-//! spawn the core directly via [`core::spawn_core_thread`].
+//! The binary (`main.rs`) binds first, then checkpoint-bootstraps when
+//! `checkpoint_providers` is configured (CC-19b): self health SERVING while
+//! aggregate `""` stays NOT_SERVING until bootstrap installs the core.
+//! Without providers the core is absent and fork-choice RPCs return
+//! `NOT_BOOTSTRAPPED`. Tests construct a store and spawn the core via
+//! [`core::spawn_core_thread`].
 
 #![allow(missing_docs)]
 
@@ -33,6 +34,7 @@ pub use checkpoint_sync::{
     REQUIRED_CONSENSUS_VERSION, TRIPLE_ATTEMPTS, blob_schedule_from_spec,
     blob_schedule_from_spec_map, bootstrap_core_from_providers, cross_check_spec, fetch_checkpoint,
     parse_optional_root, spawn_core_from_checkpoint, validate_provider_base, verify_checkpoint,
+    warm_canonical_root,
 };
 pub use core::{
     COMMAND_CHANNEL_CAPACITY, CoreCommand, CoreConfig, CoreHandle, CoreThread, IMPORT_SEND_TIMEOUT,

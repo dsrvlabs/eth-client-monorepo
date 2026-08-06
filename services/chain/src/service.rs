@@ -1,4 +1,4 @@
-//! gRPC `ChainService` implementation (CC-18b / CC-1E / CC-1F).
+//! gRPC `ChainService` implementation (CC-18b / CC-1E / CC-1F / CC-19b).
 //!
 //! - `ImportBlock` → core command channel (`send_timeout` 2 s)
 //! - `ApplyAttestations` → core command channel (batched `on_attestation`, CC-1E)
@@ -6,12 +6,14 @@
 //! - `SubscribeEvents` → events task (CC-18c)
 //! - `GetCommitteeShuffling` / `GetValidatorPubkeys` → core [`Query`] (CC-1F)
 //!
-//! Until CC-19 checkpoint bootstrap lands, a service constructed without a
-//! [`CoreHandle`] returns `FAILED_PRECONDITION` / `NOT_BOOTSTRAPPED` for
-//! `ImportBlock` / `ApplyAttestations` (and optionally `GetHead` when no
-//! snapshot has been published).
+//! Before checkpoint bootstrap completes the core slot is empty and RPCs return
+//! `FAILED_PRECONDITION` / `NOT_BOOTSTRAPPED` (§7.4). [`Self::install_core`] is
+//! called from the bootstrap task after the gRPC server has already bound
+//! (bind-before-bootstrap; CC-19b). All `ErrorInfo` construction goes through
+//! the shared helper below so call sites never hand-assemble trailers (§7.6).
 
 use std::pin::Pin;
+use std::sync::{Arc, RwLock};
 
 use bytes::Bytes;
 use cc_proto::chain::chain_service_server::ChainService;
@@ -43,9 +45,12 @@ pub const ERROR_DOMAIN: &str = "eth.chain.v1";
 const SERVICE: &str = "chain";
 
 /// Fully wired chain service.
+///
+/// The core handle is behind [`RwLock`] so the bootstrap task can install it
+/// after bind without rebuilding the tonic service.
 #[derive(Debug, Clone)]
 pub struct ChainServiceImpl {
-    core: Option<CoreHandle>,
+    core: Arc<RwLock<Option<CoreHandle>>>,
     head: HeadSnapshotStore,
     events: EventsHandle,
     #[allow(dead_code)]
@@ -61,10 +66,25 @@ impl ChainServiceImpl {
         metrics: ChainMetrics,
     ) -> Self {
         Self {
-            core,
+            core: Arc::new(RwLock::new(core)),
             head,
             events,
             metrics,
+        }
+    }
+
+    /// Install the core handle after checkpoint bootstrap (CC-19b).
+    ///
+    /// Idempotent replace: later installs overwrite (tests only; production
+    /// installs once).
+    pub fn install_core(&self, handle: CoreHandle) {
+        match self.core.write() {
+            Ok(mut guard) => {
+                *guard = Some(handle);
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = Some(handle);
+            }
         }
     }
 
@@ -78,11 +98,28 @@ impl ChainServiceImpl {
         &self.events
     }
 
-    /// Core handle if bootstrapped.
-    pub fn core(&self) -> Option<&CoreHandle> {
-        self.core.as_ref()
+    /// Whether a core handle has been installed (bootstrap complete).
+    pub fn is_bootstrapped(&self) -> bool {
+        self.core
+            .read()
+            .map(|g| g.is_some())
+            .unwrap_or_else(|p| p.into_inner().is_some())
     }
 
+    /// Clone the core handle if bootstrapped.
+    pub fn core_handle(&self) -> Option<CoreHandle> {
+        self.core
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_else(|p| p.into_inner().clone())
+    }
+
+    /// Core handle if bootstrapped (borrow via clone — handle is cheap).
+    pub fn core(&self) -> Option<CoreHandle> {
+        self.core_handle()
+    }
+
+    /// Shared `ErrorInfo` constructor for pre-bootstrap RPCs (§7.6).
     fn not_bootstrapped(message: &str) -> Status {
         status_with_error_info(
             Code::FailedPrecondition,
@@ -113,7 +150,7 @@ impl ChainService for ChainServiceImpl {
         &self,
         request: Request<ImportBlockRequest>,
     ) -> Result<Response<ImportBlockResponse>, Status> {
-        let Some(core) = self.core.as_ref() else {
+        let Some(core) = self.core_handle() else {
             return Err(Self::not_bootstrapped(
                 "chain core not bootstrapped; ImportBlock unavailable until checkpoint sync",
             ));
@@ -137,7 +174,7 @@ impl ChainService for ChainServiceImpl {
                 "ApplyAttestations batch size {n} exceeds bound of {MAX_APPLY_ATTESTATIONS}"
             )));
         }
-        let Some(core) = self.core.as_ref() else {
+        let Some(core) = self.core_handle() else {
             return Err(Self::not_bootstrapped(
                 "chain core not bootstrapped; ApplyAttestations unavailable until checkpoint sync",
             ));
@@ -154,7 +191,7 @@ impl ChainService for ChainServiceImpl {
         // When no core is present and the snapshot is still the zero default,
         // surface NOT_BOOTSTRAPPED so clients do not treat zeros as a real head.
         let snap = self.head.load();
-        if self.core.is_none()
+        if !self.is_bootstrapped()
             && snap.sequence == 0
             && snap.head_root == cc_types::primitives::Root::ZERO
         {
@@ -210,7 +247,7 @@ impl ChainService for ChainServiceImpl {
         &self,
         request: Request<GetCommitteeShufflingRequest>,
     ) -> Result<Response<GetCommitteeShufflingResponse>, Status> {
-        let Some(core) = self.core.as_ref() else {
+        let Some(core) = self.core_handle() else {
             return Err(Self::not_bootstrapped(
                 "chain core not bootstrapped; GetCommitteeShuffling unavailable until checkpoint sync",
             ));
@@ -241,7 +278,7 @@ impl ChainService for ChainServiceImpl {
         &self,
         request: Request<GetValidatorPubkeysRequest>,
     ) -> Result<Response<GetValidatorPubkeysResponse>, Status> {
-        let Some(core) = self.core.as_ref() else {
+        let Some(core) = self.core_handle() else {
             return Err(Self::not_bootstrapped(
                 "chain core not bootstrapped; GetValidatorPubkeys unavailable until checkpoint sync",
             ));

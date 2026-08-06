@@ -235,15 +235,26 @@ impl CoreHandle {
         Ok(())
     }
 
-    /// Ask the core thread to exit and wait up to [`SHUTDOWN_JOIN_TIMEOUT`].
-    pub async fn shutdown(&self) {
+    /// Enqueue [`CoreCommand::Shutdown`] and return the done receiver (no wait).
+    ///
+    /// Prefer [`CoreThread::shutdown_and_join`] for production teardown so the
+    /// oneshot wait and OS join share a **single** [`SHUTDOWN_JOIN_TIMEOUT`].
+    pub async fn begin_shutdown(&self) -> Option<oneshot::Receiver<()>> {
         let (done, rx) = oneshot::channel();
-        if self
-            .cmd_tx
-            .send(CoreCommand::Shutdown { done })
-            .await
-            .is_ok()
-        {
+        match self.cmd_tx.send(CoreCommand::Shutdown { done }).await {
+            Ok(()) => Some(rx),
+            Err(_) => None,
+        }
+    }
+
+    /// Ask the core thread to exit and wait up to [`SHUTDOWN_JOIN_TIMEOUT`] for
+    /// the done oneshot only (does **not** join the OS thread).
+    ///
+    /// Production pre-drain uses [`CoreThread::shutdown_and_join`] so Shutdown
+    /// and OS join share one 2 s envelope under the 5 s SIGTERM process budget.
+    /// This method remains for tests that join separately.
+    pub async fn shutdown(&self) {
+        if let Some(rx) = self.begin_shutdown().await {
             let _ = tokio::time::timeout(SHUTDOWN_JOIN_TIMEOUT, rx).await;
         }
     }
@@ -257,10 +268,60 @@ pub struct CoreThread {
 }
 
 impl CoreThread {
-    /// Join the OS thread (after [`CoreHandle::shutdown`]).
+    /// Join the OS thread (after [`CoreHandle::shutdown`] / [`Self::shutdown_and_join`]).
     pub fn join(mut self) {
         if let Some(j) = self.join.take() {
             let _ = j.join();
+        }
+    }
+
+    /// Enqueue `Shutdown` and join the OS thread under a **single**
+    /// [`SHUTDOWN_JOIN_TIMEOUT`] (Architecture §7.4).
+    ///
+    /// Avoids stacking two 2 s waits (oneshot + join) that would push SIGTERM
+    /// past the 5 s process budget when combined with the 3 s drain.
+    pub async fn shutdown_and_join(mut self) {
+        use std::time::Instant;
+
+        let deadline = Instant::now() + SHUTDOWN_JOIN_TIMEOUT;
+        let rx = self.handle.begin_shutdown().await;
+        let join = self.join.take();
+
+        if let Some(rx) = rx {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if !remaining.is_zero() {
+                let _ = tokio::time::timeout(remaining, rx).await;
+            }
+        }
+
+        if let Some(j) = join {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                tracing::warn!(
+                    timeout_secs = SHUTDOWN_JOIN_TIMEOUT.as_secs(),
+                    "chain-core Shutdown oneshot exhausted budget; abandoning OS join"
+                );
+                // Detach: JoinHandle drop does not abort the OS thread; process
+                // exit reaps it. Prefer not to block drain past the envelope.
+                return;
+            }
+            let join_task = tokio::task::spawn_blocking(move || {
+                let _ = j.join();
+            });
+            match tokio::time::timeout(remaining, join_task).await {
+                Ok(Ok(())) => {
+                    tracing::info!("chain-core thread joined");
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "chain-core join task failed");
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        timeout_secs = SHUTDOWN_JOIN_TIMEOUT.as_secs(),
+                        "chain-core join timed out within single Shutdown+join budget; continuing drain"
+                    );
+                }
+            }
         }
     }
 }

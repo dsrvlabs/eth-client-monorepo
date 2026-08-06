@@ -1,19 +1,26 @@
-//! `chain` service — Architecture §4.1 / §7.1, CC-18b / CC-19a.
+//! `chain` service — Architecture §4.1 / §7.1 / §7.4, CC-18b / CC-19a / CC-19b.
 //!
-//! Wires the events task (CC-18c), timing metrics (CC-1C), the core-thread
-//! import path (CC-18b), and optional checkpoint bootstrap (CC-19a).
+//! Lifecycle (CC-19b):
+//! 1. Bind gRPC (`eth.chain.v1.ChainService` → SERVING immediately).
+//! 2. Aggregate `""` stays NOT_SERVING while checkpoint bootstrap runs.
+//! 3. Bootstrap completes → install core → mark local ready → aggregate SERVING
+//!    (also requires peers SERVING when configured).
+//! 4. Shutdown: aggregate NOT_SERVING → core `Shutdown` + join under a single
+//!    2 s envelope → drain (total SIGTERM budget remains 5 s with Phase 0 drain).
 //!
-//! When `checkpoint_providers` is non-empty and `network_config` points at a
-//! chain YAML, the process fetches a verified finalized anchor and spawns the
-//! core before serve. Full lifecycle / aggregate health during bootstrap is
-//! CC-19b — this path is the partial wire so the core *can* be spawned from a
-//! fetched anchor when config enables it.
+//! Empty `checkpoint_providers` keeps Phase 0 compose healthy: no local-ready
+//! gate, core absent, RPCs return `NOT_BOOTSTRAPPED`.
 
-use cc_bootstrap::{PeerSpec, ServiceSpec, TelemetrySettings};
+use std::sync::{Arc, Mutex};
+
+use cc_bootstrap::{
+    LocalReadyHandle, PeerSpec, ServeOptions, ServiceSpec, SignalTrigger, TelemetrySettings,
+    serve_with_options,
+};
 use cc_chain::checkpoint_sync::{
     CheckpointBootstrapConfig, bootstrap_core_from_providers, parse_optional_root,
 };
-use cc_chain::core::CoreConfig;
+use cc_chain::core::{CoreConfig, CoreThread};
 use cc_chain::service::ChainServiceImpl;
 use cc_chain::{ChainMetrics, EventsConfig, EventsHandle, HeadSnapshotStore};
 use cc_config::ServiceConfig;
@@ -22,6 +29,46 @@ use cc_types::config::ChainConfig as NetworkChainConfig;
 use cc_types::preset::Mainnet;
 use serde::Deserialize;
 use tonic::service::Routes;
+
+/// Owns the core OS join handle and coordinates bootstrap install vs pre-drain
+/// (SEC-19b-2). Lock order: this mutex first, then `ChainServiceImpl` core
+/// `RwLock` inside `install_core` — never the reverse while holding service.
+#[derive(Debug, Default)]
+struct CoreJoinOwner {
+    thread: Option<CoreThread>,
+    /// Set by pre-drain before `take`; bootstrap must not install without
+    /// joining locally when this is true.
+    shutting_down: bool,
+}
+
+impl CoreJoinOwner {
+    /// Install core into the service and take join ownership.
+    ///
+    /// Returns the `core` unchanged if drain already started (caller joins it).
+    /// Holds `self` only for the synchronous install/store step (no await).
+    ///
+    /// `Option` rather than `Result` so the large `CoreThread` is not an Err variant.
+    fn try_install(
+        &mut self,
+        svc: &ChainServiceImpl,
+        core: CoreThread,
+    ) -> Option<CoreThread> {
+        if self.shutting_down {
+            return Some(core);
+        }
+        // install_core before store so RPCs never see a core we cannot join
+        // unless we also own the JoinHandle.
+        svc.install_core(core.handle.clone());
+        self.thread = Some(core);
+        None
+    }
+
+    /// Begin drain: seal further installs and take the join handle if present.
+    fn take_for_shutdown(&mut self) -> Option<CoreThread> {
+        self.shutting_down = true;
+        self.thread.take()
+    }
+}
 
 /// Process name and config slug (`config/chain.toml`, `CC_CHAIN_*`).
 const SERVICE: &str = "chain";
@@ -124,10 +171,12 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let head = HeadSnapshotStore::new();
+    let needs_bootstrap = !cfg.checkpoint_providers.is_empty();
     tracing::debug!(
         max_resident_states = cfg.max_resident_states,
         body_ring_capacity = cfg.body_ring_capacity,
         checkpoint_providers = cfg.checkpoint_providers.len(),
+        needs_bootstrap,
         "residency + checkpoint config loaded"
     );
 
@@ -135,13 +184,14 @@ async fn main() -> anyhow::Result<()> {
     let _kzg_kind = cc_crypto::KzgBackendKind::default();
     tracing::info!(kzg_backend = %_kzg_kind, "chain KZG backend selection (CC-11d default)");
 
-    // CC-19a: optional checkpoint bootstrap → spawn core from verified anchor.
-    // Empty providers keep the Phase-0/1 NOT_BOOTSTRAPPED surface (compose default).
-    // Full bind-before-bootstrap health lifecycle is CC-19b.
-    let core_handle = if cfg.checkpoint_providers.is_empty() {
-        tracing::info!("checkpoint_providers empty; core spawn deferred (NOT_BOOTSTRAPPED)");
-        None
-    } else {
+    // Core starts absent; bootstrap task installs it after bind (CC-19b).
+    let svc = ChainServiceImpl::new(None, head.clone(), events.clone(), chain_metrics.clone());
+    let core_owner: Arc<Mutex<CoreJoinOwner>> = Arc::new(Mutex::new(CoreJoinOwner::default()));
+
+    // Local-ready channel: serve hands us the handle once health is initialised.
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+    if needs_bootstrap {
         let network_path = cfg.network_config.as_deref().ok_or_else(|| {
             anyhow::anyhow!(
                 "network_config is required when checkpoint_providers is non-empty \
@@ -167,36 +217,120 @@ async fn main() -> anyhow::Result<()> {
             body_ring_capacity: cfg.body_ring_capacity,
             ..CoreConfig::default()
         };
+        let svc_boot = svc.clone();
+        let head_boot = head;
+        let events_boot = events.event_sender();
+        let metrics_boot = chain_metrics;
+        let core_owner_boot = Arc::clone(&core_owner);
+
+        // Concurrent with serve: wait for LocalReadyHandle (health up), then
+        // fetch+spawn, install core, mark aggregate ready. Fail-fast on error.
+        tokio::spawn(async move {
+            let gate: LocalReadyHandle = match ready_rx.await {
+                Ok(g) => g,
+                Err(_) => {
+                    tracing::error!("local-ready handle dropped before bootstrap; aborting");
+                    std::process::exit(1);
+                }
+            };
+            tracing::info!(
+                providers = boot_cfg.providers.len(),
+                "starting checkpoint bootstrap after health init (CC-19b; bind races multi-minute fetch)"
+            );
+            match bootstrap_core_from_providers::<Mainnet>(
+                &boot_cfg,
+                head_boot,
+                events_boot,
+                metrics_boot,
+                core_cfg,
+            )
+            .await
+            {
+                Ok((core, summary)) => {
+                    tracing::info!(
+                        provider = %summary.provider,
+                        block_root = %summary.block_root,
+                        slot = summary.slot,
+                        genesis_time = summary.genesis.genesis_time,
+                        genesis_validators_root = %summary.genesis.genesis_validators_root,
+                        "checkpoint bootstrap complete; installing core"
+                    );
+                    // SEC-19b-2: under core_owner lock — install + store, or
+                    // join locally if pre-drain already sealed installs.
+                    let orphan = {
+                        let mut guard = core_owner_boot
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner());
+                        guard.try_install(&svc_boot, core)
+                    };
+                    if let Some(core) = orphan {
+                        tracing::warn!(
+                            "pre-drain already active; shutting down late-spawned core without mark_ready"
+                        );
+                        core.shutdown_and_join().await;
+                        return;
+                    }
+                    gate.mark_ready().await;
+                    tracing::info!("aggregate local-ready set; bootstrap lifecycle complete");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "checkpoint bootstrap failed");
+                    std::process::exit(1);
+                }
+            }
+        });
+    } else {
         tracing::info!(
-            providers = boot_cfg.providers.len(),
-            "starting checkpoint bootstrap (CC-19a)"
+            "checkpoint_providers empty; core absent (NOT_BOOTSTRAPPED); aggregate ready without gate"
         );
-        let (core, summary) = bootstrap_core_from_providers::<Mainnet>(
-            &boot_cfg,
-            head.clone(),
-            events.event_sender(),
-            chain_metrics.clone(),
-            core_cfg,
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("checkpoint bootstrap failed: {e}"))?;
-        tracing::info!(
-            provider = %summary.provider,
-            block_root = %summary.block_root,
-            slot = summary.slot,
-            genesis_time = summary.genesis.genesis_time,
-            genesis_validators_root = %summary.genesis.genesis_validators_root,
-            "checkpoint bootstrap complete; core thread running"
-        );
-        // CoreThread must live for the process; leak the join handle into a
-        // static-ish owner. CC-19b will join on shutdown.
-        let handle = core.handle.clone();
-        std::mem::forget(core);
-        Some(handle)
+        // Drop unused receiver so serve does not need to send when gate off.
+        drop(ready_rx);
+    }
+
+    let core_owner_shutdown = Arc::clone(&core_owner);
+    let options = ServeOptions {
+        // When bootstrapping: aggregate stays NOT_SERVING until mark_ready.
+        // Empty providers: Phase 0 compose — aggregate SERVING as soon as bound.
+        require_local_ready: needs_bootstrap,
+        local_ready_tx: if needs_bootstrap {
+            Some(ready_tx)
+        } else {
+            // Avoid hanging if someone still holds the sender.
+            drop(ready_tx);
+            None
+        },
+        on_pre_drain: Some(Box::new(move || {
+            Box::pin(async move {
+                // Seal installs then take join ownership (SEC-19b-2).
+                let core = {
+                    let mut guard = core_owner_shutdown
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    guard.take_for_shutdown()
+                };
+                if let Some(core) = core {
+                    tracing::info!(
+                        "pre-drain: shutting down chain-core (single {}s Shutdown+join budget)",
+                        cc_chain::SHUTDOWN_JOIN_TIMEOUT.as_secs()
+                    );
+                    // Single 2 s envelope for oneshot + OS join; Phase 0 drain
+                    // (3 s) + notify pause still fit under the 5 s SIGTERM budget
+                    // when the core stops promptly (Architecture §7.4).
+                    core.shutdown_and_join().await;
+                }
+            })
+        })),
     };
 
-    let svc = ChainServiceImpl::new(core_handle, head, events, chain_metrics);
     let routes = Routes::default().add_service(ChainServiceServer::new(svc));
-    cc_bootstrap::serve(bs, cfg.service_spec(), routes).await?;
+    // Production path: Unix signals + lifecycle options (local-ready + core join).
+    serve_with_options(
+        bs,
+        cfg.service_spec(),
+        routes,
+        options,
+        SignalTrigger::UnixSignals,
+    )
+    .await?;
     Ok(())
 }

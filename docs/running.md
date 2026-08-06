@@ -141,6 +141,16 @@ attestations, or storage. `services/storage` stores nothing yet. A
 **not restartable across restarts** in any meaningful consensus sense until
 Phase 4 persistence work. Treat every `up` as a fresh hello-world topology.
 
+### Chain restart and checkpoint sync (Phase 1)
+
+`chain` has **no durable storage** in Phase 1. A process restart discards the
+in-memory fork-choice store, residency pins, and event ring. On the next start,
+when `checkpoint_providers` is configured, the node **re-checkpoint-syncs**
+from a provider (bind first, then bootstrap; aggregate health stays
+NOT_SERVING until bootstrap completes). There is no snapshot resume and no
+walk-forward from a prior head. Operators and the 24 h soak treat a restart as
+voiding the run — that is expected Phase 1 behaviour, not a defect.
+
 ## Configuration and environment reads
 
 `crates/config` is the **only** crate permitted to read the process

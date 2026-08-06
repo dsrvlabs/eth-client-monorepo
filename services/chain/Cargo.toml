@@ -51,4 +51,5 @@ hyper-util = { workspace = true }
 sha2 = { workspace = true }
 ssz_types = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+tonic-health = { workspace = true }
 tracing-subscriber = { workspace = true }

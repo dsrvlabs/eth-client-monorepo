@@ -585,6 +585,43 @@ impl ChainMetrics {
         out
     }
 
+    /// Encode a single `path` label's sample count via a throwaway registry
+    /// scrape (tests / CC-19b). `prometheus-client` gates `Histogram::count`
+    /// behind `test-util`, so we read the OpenMetrics text instead.
+    pub fn state_hash_tree_root_count(&self, path: HashPath) -> u64 {
+        // Ensure the series exists so the scrape includes it.
+        let _ = self.state_hash_tree_root.get_or_create(&HashPathLabels {
+            path: path.as_str().to_owned(),
+        });
+        let mut registry = Registry::default();
+        registry.register_with_unit(
+            "cc_chain_state_hash_tree_root",
+            "test scrape",
+            Unit::Seconds,
+            self.state_hash_tree_root.clone(),
+        );
+        let mut buf = String::new();
+        if prometheus_client::encoding::text::encode(&mut buf, &registry).is_err() {
+            return 0;
+        }
+        let needle = format!(
+            "cc_chain_state_hash_tree_root_seconds_count{{path=\"{}\"}}",
+            path.as_str()
+        );
+        for line in buf.lines() {
+            if let Some(rest) = line.strip_prefix(&needle) {
+                let n = rest.trim();
+                if let Ok(v) = n.parse::<u64>() {
+                    return v;
+                }
+                if let Ok(v) = n.parse::<f64>() {
+                    return v as u64;
+                }
+            }
+        }
+        0
+    }
+
     /// Record one import-stage duration.
     pub fn observe_import_stage(&self, stage: ImportStage, duration_secs: f64) {
         self.import_seconds

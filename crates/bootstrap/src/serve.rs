@@ -4,6 +4,11 @@
 //! `Routes::default()`, `Routes::new(svc)`, or `Routes::builder()`; chain services with
 //! consuming `Routes::add_service(self, svc) -> Self`. Hand the finished routes to
 //! `Server::builder().layer(…).add_routes(routes).serve_with_shutdown(addr, signal)`.
+//!
+//! Phase 1 `chain` extends aggregate health with a **local readiness** gate (CC-19b /
+//! §7.4 / §15/5): `""` additionally requires bootstrap complete. Optional
+//! [`ServeOptions::on_pre_drain`] joins the core thread after NOT_SERVING and before
+//! the drain release.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -35,6 +40,10 @@ pub(crate) const NOT_SERVING_NOTIFY_PAUSE: Duration = Duration::from_millis(150)
 
 /// Aggregate health service name (empty string). Read by `grpc-health-probe` with no `-service`.
 pub const AGGREGATE_HEALTH: &str = "";
+
+/// Boxed async hook run after aggregate NOT_SERVING and before the drain release.
+pub type PreDrainHook =
+    Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + 'static>;
 
 /// One required peer for the aggregate health prober (Architecture §4.2).
 #[derive(Debug, Clone)]
@@ -68,15 +77,54 @@ pub struct ServiceSpec {
     pub known_methods: Vec<String>,
 }
 
+/// Optional Phase 1 extensions to [`serve`] (CC-19b lifecycle).
+///
+/// Defaults preserve Phase 0 behaviour: aggregate flips with peers only, no
+/// pre-drain hook, no local-ready gate.
+#[derive(Default)]
+#[allow(missing_debug_implementations)] // holds non-Debug `PreDrainHook` / oneshot
+pub struct ServeOptions {
+    /// When true, aggregate `""` stays **NOT_SERVING** until
+    /// [`LocalReadyHandle::mark_ready`] even if every peer is up (and even
+    /// with an empty peer set). Used by `chain` so `wait-healthy.sh` waits
+    /// for checkpoint bootstrap to finish (§7.4 / §15/5).
+    pub require_local_ready: bool,
+    /// Receives the [`LocalReadyHandle`] once health is initialised (before
+    /// bind). Dropped if `None`.
+    pub local_ready_tx: Option<tokio::sync::oneshot::Sender<LocalReadyHandle>>,
+    /// Invoked after aggregate goes NOT_SERVING and before the drain release
+    /// (core-thread join for `chain`).
+    pub on_pre_drain: Option<PreDrainHook>,
+}
+
+/// Handle that flips the local-readiness bit on the aggregate health gate.
+///
+/// Cloned freely; the first `mark_ready` wins, subsequent calls recompute.
+#[derive(Clone)]
+#[allow(missing_debug_implementations)] // wraps non-Debug health reporter internals
+pub struct LocalReadyHandle {
+    peer_state: PeerHealthState,
+}
+
+impl LocalReadyHandle {
+    /// Mark local work (e.g. checkpoint bootstrap) complete and recompute
+    /// aggregate health. Idempotent.
+    pub async fn mark_ready(&self) {
+        self.peer_state.set_local_ready(true).await;
+    }
+}
+
 /// Bind, serve health + reflection + user routes, run the peer prober, drain on signal.
 ///
 /// Shutdown sequence (§4.5):
 /// 1. Install SIGTERM/SIGINT handlers **before** binding.
 /// 2. On signal: set aggregate `""` to **NOT_SERVING** first; log at `info`.
-/// 3. Drain in-flight requests under a **3 s** timeout; warn and proceed if it fires.
-/// 4. Stop prober, flush stdout, return `Ok(())`.
+/// 3. Optional pre-drain hook (CC-19b: core `Shutdown` + 2 s join).
+/// 4. Drain in-flight requests under a **3 s** timeout; warn and proceed if it fires.
+/// 5. Stop prober, flush stdout, return `Ok(())`.
 pub async fn serve(bs: Bootstrap, spec: ServiceSpec, routes: Routes) -> Result<(), Error> {
-    serve_with_trigger(bs, spec, routes, SignalTrigger::UnixSignals).await
+    serve_with_options(bs, spec, routes, ServeOptions::default(), SignalTrigger::UnixSignals)
+        .await
 }
 
 /// Like [`serve`], but completes the shutdown sequence when `trigger` resolves.
@@ -92,18 +140,62 @@ pub async fn serve_with_shutdown<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    serve_with_trigger(bs, spec, routes, SignalTrigger::External(Box::pin(trigger))).await
+    serve_with_options(
+        bs,
+        spec,
+        routes,
+        ServeOptions::default(),
+        SignalTrigger::External(Box::pin(trigger)),
+    )
+    .await
 }
 
-enum SignalTrigger {
+/// Convenience: external cancel trigger + [`ServeOptions`] (integration tests / chain).
+pub async fn serve_with_shutdown_options<F>(
+    bs: Bootstrap,
+    spec: ServiceSpec,
+    routes: Routes,
+    options: ServeOptions,
+    trigger: F,
+) -> Result<(), Error>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    serve_with_options(
+        bs,
+        spec,
+        routes,
+        options,
+        SignalTrigger::External(Box::pin(trigger)),
+    )
+    .await
+}
+
+/// Trigger that ends the serve loop (production signals or an external future).
+#[allow(missing_debug_implementations)] // External holds an opaque future
+pub enum SignalTrigger {
+    /// Production: wait for SIGTERM/SIGINT.
     UnixSignals,
+    /// Tests / fixtures: complete when the future resolves.
     External(Pin<Box<dyn Future<Output = ()> + Send>>),
 }
 
-async fn serve_with_trigger(
+/// [`serve`] with optional local-ready gate and pre-drain hook.
+pub async fn serve_with_options(
+    bs: Bootstrap,
+    spec: ServiceSpec,
+    routes: Routes,
+    options: ServeOptions,
+    trigger: SignalTrigger,
+) -> Result<(), Error> {
+    serve_with_options_inner(bs, spec, routes, options, trigger).await
+}
+
+async fn serve_with_options_inner(
     bs: Bootstrap,
     spec: ServiceSpec,
     mut routes: Routes,
+    mut options: ServeOptions,
     trigger: SignalTrigger,
 ) -> Result<(), Error> {
     // Extract everything from Bootstrap before moving `registry`.
@@ -123,13 +215,23 @@ async fn serve_with_trigger(
     // Health reporter lives for the process lifetime of this serve call.
     let (health_reporter, health_service) = health_reporter();
 
-    // Self-only health: bound and own RPCs servable.
+    // Self-only health: bound and own RPCs servable (set before bind; probes
+    // that race the accept loop still see SERVING once the port is open).
     health_reporter
         .set_service_status(spec.health_service_name, ServingStatus::Serving)
         .await;
 
-    // Aggregate: SERVING only when every required peer is up. No peers → SERVING.
-    let initial_aggregate = if spec.peers.is_empty() {
+    // Local-ready gate: when required, start not-ready so aggregate stays
+    // NOT_SERVING through bootstrap (CC-19b).
+    let initial_local_ready = !options.require_local_ready;
+    let peer_state = PeerHealthState::new(
+        &spec.peers,
+        health_reporter.clone(),
+        initial_local_ready,
+    );
+
+    // Aggregate: SERVING only when every required peer is up **and** local-ready.
+    let initial_aggregate = if initial_local_ready && spec.peers.is_empty() {
         ServingStatus::Serving
     } else {
         ServingStatus::NotServing
@@ -138,11 +240,18 @@ async fn serve_with_trigger(
         .set_service_status(AGGREGATE_HEALTH, initial_aggregate)
         .await;
 
-    let peer_state = PeerHealthState::new(&spec.peers, health_reporter.clone());
+    // Hand the local-ready handle to the caller before bind so bootstrap can
+    // race the accept loop (bind-before-bootstrap-complete, §7.4).
+    if let Some(tx) = options.local_ready_tx.take() {
+        let _ = tx.send(LocalReadyHandle {
+            peer_state: peer_state.clone(),
+        });
+    }
 
-    // Signal watcher: sets aggregate NOT_SERVING first, then unblocks serve_with_shutdown.
+    // Signal watcher: sets aggregate NOT_SERVING first, optional pre-drain, then unblocks.
     let health_for_signal = health_reporter.clone();
     let peer_state_for_signal = peer_state.clone();
+    let on_pre_drain = options.on_pre_drain.take();
     match trigger {
         SignalTrigger::UnixSignals => {
             spawn("shutdown-signal", async move {
@@ -151,6 +260,7 @@ async fn serve_with_trigger(
                     name,
                     &peer_state_for_signal,
                     &health_for_signal,
+                    on_pre_drain,
                     drain_tx,
                     cancel_tx_signal,
                 )
@@ -164,6 +274,7 @@ async fn serve_with_trigger(
                     "external",
                     &peer_state_for_signal,
                     &health_for_signal,
+                    on_pre_drain,
                     drain_tx,
                     cancel_tx_signal,
                 )
@@ -200,6 +311,7 @@ async fn serve_with_trigger(
         metrics = %spec.metrics_addr,
         health = spec.health_service_name,
         peers = spec.peers.len(),
+        require_local_ready = options.require_local_ready,
         "serving"
     );
 
@@ -250,11 +362,12 @@ async fn serve_with_trigger(
     Ok(())
 }
 
-/// Mark aggregate NOT_SERVING, pause so probes can observe it, then release drain.
+/// Mark aggregate NOT_SERVING, run optional pre-drain hook, pause, then release drain.
 async fn begin_shutdown(
     signal_name: &'static str,
     peer_state: &PeerHealthState,
     health: &tonic_health::server::HealthReporter,
+    on_pre_drain: Option<PreDrainHook>,
     drain_tx: tokio::sync::oneshot::Sender<()>,
     cancel_tx: watch::Sender<bool>,
 ) {
@@ -264,6 +377,10 @@ async fn begin_shutdown(
     health
         .set_service_status(AGGREGATE_HEALTH, ServingStatus::NotServing)
         .await;
+    // CC-19b: join core after NOT_SERVING and before the drain release (§7.4).
+    if let Some(hook) = on_pre_drain {
+        hook().await;
+    }
     tokio::time::sleep(NOT_SERVING_NOTIFY_PAUSE).await;
     let _ = drain_tx.send(());
     let _ = cancel_tx.send(true);

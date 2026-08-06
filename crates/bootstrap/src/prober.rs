@@ -27,16 +27,26 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 pub const FAIL_THRESHOLD: u32 = 2;
 
 /// Shared peer-up map; prober tasks update it and recompute aggregate `""`.
+///
+/// Aggregate SERVING requires every peer up **and** [`Self::local_ready`]
+/// (CC-19b: chain bootstrap complete).
 #[derive(Debug, Clone)]
 pub(crate) struct PeerHealthState {
     inner: Arc<Mutex<HashMap<String, bool>>>,
     reporter: HealthReporter,
     /// When true, aggregate recompute is suppressed (shutdown in progress).
     draining: Arc<std::sync::atomic::AtomicBool>,
+    /// Local readiness gate (default true). When gated, chain starts false and
+    /// sets true only after bootstrap installs the core (CC-19b).
+    local_ready: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl PeerHealthState {
-    pub(crate) fn new(peers: &[PeerSpec], reporter: HealthReporter) -> Self {
+    pub(crate) fn new(
+        peers: &[PeerSpec],
+        reporter: HealthReporter,
+        initial_local_ready: bool,
+    ) -> Self {
         let mut map = HashMap::with_capacity(peers.len());
         for p in peers {
             map.insert(p.name.clone(), false);
@@ -45,12 +55,24 @@ impl PeerHealthState {
             inner: Arc::new(Mutex::new(map)),
             reporter,
             draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            local_ready: Arc::new(std::sync::atomic::AtomicBool::new(initial_local_ready)),
         }
     }
 
     pub(crate) fn mark_draining(&self) {
         self.draining
             .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Update the local-ready bit and recompute aggregate (CC-19b).
+    pub(crate) async fn set_local_ready(&self, ready: bool) {
+        let prev = self
+            .local_ready
+            .swap(ready, std::sync::atomic::Ordering::SeqCst);
+        if prev != ready {
+            info!(ready, "local readiness transition");
+        }
+        self.recompute_aggregate().await;
     }
 
     /// Set one peer's up-flag and recompute aggregate health.
@@ -61,17 +83,39 @@ impl PeerHealthState {
         if prev != Some(up) {
             info!(peer, up, "peer health transition");
         }
+        drop(guard);
+        self.recompute_aggregate().await;
+    }
+
+    async fn recompute_aggregate(&self) {
+        // SEC-19b-1: never publish SERVING after drain begins. Check before
+        // reading peer map and again immediately before set_service_status so a
+        // concurrent mark_draining cannot be overwritten by a late recompute.
         if self.draining.load(std::sync::atomic::Ordering::SeqCst) {
             return;
         }
-        let all_up = guard.values().all(|&v| v);
+        let guard = self.inner.lock().await;
+        let peers_up = guard.values().all(|&v| v);
         drop(guard);
-        let status = if all_up {
+        let local = self.local_ready.load(std::sync::atomic::Ordering::SeqCst);
+        let status = if peers_up && local {
             ServingStatus::Serving
         } else {
             ServingStatus::NotServing
         };
+        if self.draining.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         self.reporter.set_service_status("", status).await;
+        // Final seal: if drain started during the await above, force NOT_SERVING
+        // so a stale SERVING publish cannot stick (SEC-19b-1).
+        if self.draining.load(std::sync::atomic::Ordering::SeqCst)
+            && status == ServingStatus::Serving
+        {
+            self.reporter
+                .set_service_status("", ServingStatus::NotServing)
+                .await;
+        }
     }
 }
 
