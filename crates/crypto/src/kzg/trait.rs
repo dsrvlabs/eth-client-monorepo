@@ -120,7 +120,7 @@ pub enum KzgError {
     /// Trusted setup failed to load or parse.
     #[error("KZG trusted setup error: {0}")]
     TrustedSetup(String),
-    /// Backend is not available (feature off or stub until CC-11c).
+    /// Backend is not available (feature disabled at compile time).
     #[error("KZG backend unavailable: {0}")]
     BackendUnavailable(String),
     /// Underlying backend error not covered above.

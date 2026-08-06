@@ -35,7 +35,7 @@ pub use kzg::{Blob, CellKzg, CellProofs, Cells, CellsAndProofs, KzgError, BYTES_
 pub use kzg::CKzgBackend;
 
 #[cfg(feature = "kzg-rust-eth-kzg")]
-pub use kzg::RustEthKzgBackend;
+pub use kzg::{RustEthKzgBackend, UsePrecomp, DEFAULT_USE_PRECOMP};
 
 #[cfg(any(
     all(feature = "kzg-c-kzg", not(feature = "kzg-rust-eth-kzg")),

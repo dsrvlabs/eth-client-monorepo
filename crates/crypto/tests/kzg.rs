@@ -1,4 +1,4 @@
-//! CC-11b CellKzg + c-kzg backend unit tests.
+//! CC-11b / CC-11c CellKzg backend unit tests.
 //!
 //! # Spec vectors
 //!
@@ -6,7 +6,8 @@
 //! `spec-vectors-layout.md` OQ-2). Acceptance criteria that require the general
 //! KZG walker are therefore **not claimed green** on this pin — unit tests
 //! cover the trait contract, trusted-setup load, constant agreement, recover
-//! path, and `Ok(false)` vs `Err` verdicts instead.
+//! path, dual-backend commitment identity, and `Ok(false)` vs `Err` verdicts
+//! **per backend** instead.
 //!
 //! When a future pin ships `tests/general/fulu/kzg/**`, add a handler walker
 //! here (and remove any CC-11 skip-list entries). Do not invent false green.
@@ -14,23 +15,21 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use cc_crypto::kzg::setup::{TrustedSetupBytes, NUM_G1_POINTS, NUM_G2_POINTS};
-use cc_crypto::{Blob, CellKzg, CKzgBackend, KzgError, BYTES_PER_BLOB};
+use cc_crypto::{Blob, CellKzg, KzgError, BYTES_PER_BLOB};
 use cc_types::{
     Cell, KzgCommitment, KzgProof, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL, NUMBER_OF_COLUMNS,
 };
 
-/// Known-blob commitment (CC-11/5). Structured so CC-11c can assert the
-/// **identical** commitment from backend B against the same setup.
+/// Known-blob commitment (CC-11/5). Both backends must produce this identical
+/// value from the same committed trusted setup.
 ///
 /// Blob: every byte `0x01`. Commitment recorded from c-kzg 2.1.8 + committed
-/// `trusted_setup.json` at CC-11b.
+/// `trusted_setup.json` at CC-11b; re-checked under rust_eth_kzg 0.10.0 at CC-11c.
 fn known_blob() -> Blob {
     Blob::filled(0x01)
 }
 
-/// Commitment for [`known_blob`] under the committed mainnet setup (c-kzg 2.1.8).
-///
-/// CC-11c must produce the **identical** value from backend B.
+/// Commitment for [`known_blob`] under the committed mainnet setup.
 const KNOWN_BLOB_COMMITMENT_HEX: &str =
     "aa1a1c26055a329817a5759d877a2795f9499b97d6056edde0eea39512f24e8bc874b4471f0501127abb1ea0d9f68ac1";
 
@@ -43,8 +42,18 @@ fn parse_commitment_hex(hex: &str) -> KzgCommitment {
     KzgCommitment::from_array(out)
 }
 
-fn backend() -> CKzgBackend {
-    CKzgBackend::load_default().expect("load c-kzg trusted setup")
+// ---------------------------------------------------------------------------
+// Backend constructors (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "kzg-c-kzg")]
+fn c_kzg_backend() -> cc_crypto::CKzgBackend {
+    cc_crypto::CKzgBackend::load_default().expect("load c-kzg trusted setup")
+}
+
+#[cfg(feature = "kzg-rust-eth-kzg")]
+fn rust_eth_kzg_backend() -> cc_crypto::RustEthKzgBackend {
+    cc_crypto::RustEthKzgBackend::load_default().expect("load rust_eth_kzg trusted setup")
 }
 
 // ---------------------------------------------------------------------------
@@ -56,22 +65,50 @@ fn trusted_setup_loads_from_committed_json() {
     let bytes = TrustedSetupBytes::from_committed().expect("parse");
     assert_eq!(bytes.g1_monomial.len(), NUM_G1_POINTS * 48);
     assert_eq!(bytes.g2_monomial.len(), NUM_G2_POINTS * 96);
-    let _ = backend();
 }
 
+#[cfg(feature = "kzg-c-kzg")]
 #[test]
-fn known_blob_commitment_is_stable() {
-    let b = backend();
+fn c_kzg_known_blob_commitment_is_stable() {
+    let b = c_kzg_backend();
     let expected = parse_commitment_hex(KNOWN_BLOB_COMMITMENT_HEX);
     let got = b.blob_to_kzg_commitment(&known_blob()).unwrap();
-    assert_eq!(got, expected, "CC-11/5 known-blob commitment drift");
+    assert_eq!(got, expected, "CC-11/5 known-blob commitment drift (c-kzg)");
     assert_ne!(got, KzgCommitment::ZERO);
+}
+
+#[cfg(feature = "kzg-rust-eth-kzg")]
+#[test]
+fn rust_eth_kzg_known_blob_commitment_is_stable() {
+    let b = rust_eth_kzg_backend();
+    let expected = parse_commitment_hex(KNOWN_BLOB_COMMITMENT_HEX);
+    let got = b.blob_to_kzg_commitment(&known_blob()).unwrap();
+    assert_eq!(
+        got, expected,
+        "CC-11/5 known-blob commitment drift (rust_eth_kzg)"
+    );
+    assert_ne!(got, KzgCommitment::ZERO);
+}
+
+/// CC-11/5 across backends: both produce an **identical** commitment for the
+/// same blob from the same committed trusted setup.
+#[cfg(all(feature = "kzg-c-kzg", feature = "kzg-rust-eth-kzg"))]
+#[test]
+fn both_backends_identical_known_blob_commitment() {
+    let a = c_kzg_backend();
+    let b = rust_eth_kzg_backend();
+    let blob = known_blob();
+    let ca = a.blob_to_kzg_commitment(&blob).unwrap();
+    let cb = b.blob_to_kzg_commitment(&blob).unwrap();
+    assert_eq!(ca, cb, "backends disagree on known-blob commitment");
+    assert_eq!(ca, parse_commitment_hex(KNOWN_BLOB_COMMITMENT_HEX));
 }
 
 // ---------------------------------------------------------------------------
 // Constants agreement with cc-types (Architecture §4.3)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "kzg-c-kzg")]
 #[test]
 fn c_kzg_constants_agree_with_cc_types() {
     assert_eq!(c_kzg::CELLS_PER_EXT_BLOB, CELLS_PER_EXT_BLOB);
@@ -82,24 +119,43 @@ fn c_kzg_constants_agree_with_cc_types() {
     assert_eq!(c_kzg::BYTES_PER_CELL, cc_types::BYTES_PER_CELL);
 }
 
+#[cfg(feature = "kzg-rust-eth-kzg")]
+#[test]
+fn rust_eth_kzg_constants_agree_with_cc_types() {
+    assert_eq!(
+        rust_eth_kzg::constants::CELLS_PER_EXT_BLOB,
+        CELLS_PER_EXT_BLOB
+    );
+    assert_eq!(
+        rust_eth_kzg::constants::FIELD_ELEMENTS_PER_CELL,
+        FIELD_ELEMENTS_PER_CELL
+    );
+    // rust_eth_kzg has no NUMBER_OF_COLUMNS; equals CELLS_PER_EXT_BLOB by spec.
+    assert_eq!(
+        rust_eth_kzg::constants::CELLS_PER_EXT_BLOB as u64,
+        NUMBER_OF_COLUMNS
+    );
+    assert_eq!(rust_eth_kzg::constants::BYTES_PER_BLOB, BYTES_PER_BLOB);
+    assert_eq!(
+        rust_eth_kzg::constants::BYTES_PER_CELL,
+        cc_types::BYTES_PER_CELL
+    );
+}
+
 // ---------------------------------------------------------------------------
-// Cell compute / recover / verify round-trip
+// Shared trait-contract helpers (work over any CellKzg)
 // ---------------------------------------------------------------------------
 
-#[test]
-fn compute_cells_and_verify_batch_ok_true() {
-    let b = backend();
+fn assert_compute_and_verify_ok(b: &impl CellKzg) {
     let blob = known_blob();
     let commitment = b.blob_to_kzg_commitment(&blob).unwrap();
     let (cells, proofs) = b.compute_cells_and_kzg_proofs(&blob).unwrap();
 
-    // Verify a single cell (column 0).
     let ok = b
         .verify_cell_kzg_proof_batch(&[commitment], &[0], &[cells[0]], &[proofs[0]])
         .unwrap();
     assert!(ok, "valid cell proof must return Ok(true)");
 
-    // Verify a small multi-cell batch.
     let indices: Vec<u64> = (0..8).collect();
     let batch_cells: Vec<Cell> = indices.iter().map(|&i| cells[i as usize]).collect();
     let batch_proofs: Vec<KzgProof> = indices.iter().map(|&i| proofs[i as usize]).collect();
@@ -110,13 +166,10 @@ fn compute_cells_and_verify_batch_ok_true() {
     assert!(ok);
 }
 
-#[test]
-fn recover_cells_and_kzg_proofs_roundtrip() {
-    let b = backend();
+fn assert_recover_roundtrip(b: &impl CellKzg) {
     let blob = known_blob();
     let (cells, proofs) = b.compute_cells_and_kzg_proofs(&blob).unwrap();
 
-    // Any CELLS_PER_EXT_BLOB/2 cells suffice for Reed-Solomon recovery.
     let half = CELLS_PER_EXT_BLOB / 2;
     let indices: Vec<u64> = (0..half as u64).collect();
     let subset: Vec<Cell> = indices.iter().map(|&i| cells[i as usize]).collect();
@@ -129,20 +182,12 @@ fn recover_cells_and_kzg_proofs_roundtrip() {
     assert_eq!(&recovered_proofs[..], &proofs[..]);
 }
 
-// ---------------------------------------------------------------------------
-// Verdict contract: Ok(false) vs Err
-// ---------------------------------------------------------------------------
-
-#[test]
-fn invalid_batch_returns_ok_false() {
-    let b = backend();
+/// Invalid-but-well-formed batch → `Ok(false)` (CC-11/2).
+fn assert_invalid_batch_ok_false(b: &impl CellKzg) {
     let blob = known_blob();
     let commitment = b.blob_to_kzg_commitment(&blob).unwrap();
     let (cells, proofs) = b.compute_cells_and_kzg_proofs(&blob).unwrap();
 
-    // Valid-but-wrong: correct cell/proof for column 0, commitment of a
-    // different blob. Encoding stays well-formed so the backend returns
-    // Ok(false) rather than Err (malformed).
     let other_commitment = b
         .blob_to_kzg_commitment(&Blob::filled(0x02))
         .expect("other blob commitment");
@@ -157,9 +202,8 @@ fn invalid_batch_returns_ok_false() {
     );
 }
 
-#[test]
-fn mismatched_slice_lengths_return_err() {
-    let b = backend();
+/// Malformed input (slice length mismatch) → `Err` (CC-11/2).
+fn assert_mismatched_lengths_err(b: &impl CellKzg) {
     let blob = known_blob();
     let commitment = b.blob_to_kzg_commitment(&blob).unwrap();
     let (cells, proofs) = b.compute_cells_and_kzg_proofs(&blob).unwrap();
@@ -178,9 +222,7 @@ fn mismatched_slice_lengths_return_err() {
     );
 }
 
-#[test]
-fn recover_mismatched_lengths_return_err() {
-    let b = backend();
+fn assert_recover_mismatched_lengths_err(b: &impl CellKzg) {
     let blob = known_blob();
     let (cells, _) = b.compute_cells_and_kzg_proofs(&blob).unwrap();
 
@@ -188,6 +230,89 @@ fn recover_mismatched_lengths_return_err() {
         .recover_cells_and_kzg_proofs(&[0, 1], &[cells[0]])
         .unwrap_err();
     assert!(matches!(err, KzgError::MismatchLength(_)));
+}
+
+// ---------------------------------------------------------------------------
+// Backend A (c-kzg) — unit suite
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "kzg-c-kzg")]
+#[test]
+fn c_kzg_compute_cells_and_verify_batch_ok_true() {
+    assert_compute_and_verify_ok(&c_kzg_backend());
+}
+
+#[cfg(feature = "kzg-c-kzg")]
+#[test]
+fn c_kzg_recover_cells_and_kzg_proofs_roundtrip() {
+    assert_recover_roundtrip(&c_kzg_backend());
+}
+
+#[cfg(feature = "kzg-c-kzg")]
+#[test]
+fn c_kzg_invalid_batch_returns_ok_false() {
+    assert_invalid_batch_ok_false(&c_kzg_backend());
+}
+
+#[cfg(feature = "kzg-c-kzg")]
+#[test]
+fn c_kzg_mismatched_slice_lengths_return_err() {
+    assert_mismatched_lengths_err(&c_kzg_backend());
+}
+
+#[cfg(feature = "kzg-c-kzg")]
+#[test]
+fn c_kzg_recover_mismatched_lengths_return_err() {
+    assert_recover_mismatched_lengths_err(&c_kzg_backend());
+}
+
+// ---------------------------------------------------------------------------
+// Backend B (rust_eth_kzg) — unit suite
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "kzg-rust-eth-kzg")]
+#[test]
+fn rust_eth_kzg_compute_cells_and_verify_batch_ok_true() {
+    assert_compute_and_verify_ok(&rust_eth_kzg_backend());
+}
+
+#[cfg(feature = "kzg-rust-eth-kzg")]
+#[test]
+fn rust_eth_kzg_recover_cells_and_kzg_proofs_roundtrip() {
+    assert_recover_roundtrip(&rust_eth_kzg_backend());
+}
+
+#[cfg(feature = "kzg-rust-eth-kzg")]
+#[test]
+fn rust_eth_kzg_invalid_batch_returns_ok_false() {
+    assert_invalid_batch_ok_false(&rust_eth_kzg_backend());
+}
+
+#[cfg(feature = "kzg-rust-eth-kzg")]
+#[test]
+fn rust_eth_kzg_mismatched_slice_lengths_return_err() {
+    assert_mismatched_lengths_err(&rust_eth_kzg_backend());
+}
+
+#[cfg(feature = "kzg-rust-eth-kzg")]
+#[test]
+fn rust_eth_kzg_recover_mismatched_lengths_return_err() {
+    assert_recover_mismatched_lengths_err(&rust_eth_kzg_backend());
+}
+
+/// CC-11/2 asserted **per backend, not once**: four assertions in one test
+/// so a single backend mis-mapping fails the whole case.
+#[cfg(all(feature = "kzg-c-kzg", feature = "kzg-rust-eth-kzg"))]
+#[test]
+fn both_backends_ok_false_vs_err_verdicts() {
+    let a = c_kzg_backend();
+    let b = rust_eth_kzg_backend();
+    // 1–2: invalid proof → Ok(false) on each backend
+    assert_invalid_batch_ok_false(&a);
+    assert_invalid_batch_ok_false(&b);
+    // 3–4: malformed input → Err on each backend
+    assert_mismatched_lengths_err(&a);
+    assert_mismatched_lengths_err(&b);
 }
 
 // ---------------------------------------------------------------------------
@@ -247,17 +372,4 @@ fn walk_for_kzg(root: &std::path::Path) -> Vec<std::path::PathBuf> {
         }
     }
     found
-}
-
-// ---------------------------------------------------------------------------
-// Both features compile (smoke for stub backend B)
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "kzg-rust-eth-kzg")]
-#[test]
-fn rust_eth_kzg_stub_returns_unavailable() {
-    use cc_crypto::RustEthKzgBackend;
-    let stub = RustEthKzgBackend::new();
-    let err = stub.blob_to_kzg_commitment(&known_blob()).unwrap_err();
-    assert!(matches!(err, KzgError::BackendUnavailable(_)));
 }

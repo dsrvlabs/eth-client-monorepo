@@ -2,8 +2,8 @@
 //!
 //! One committed [`TRUSTED_SETUP_JSON`] file is the source of truth. Backend A
 //! (`c-kzg`) loads via `KzgSettings::load_trusted_setup` after hex-decoding the
-//! G1/G2 points. Backend B (`rust_eth_kzg`, CC-11c) will parse the same JSON
-//! via `TrustedSetup::from_json`.
+//! G1/G2 points. Backend B (`rust_eth_kzg`) parses the same JSON via
+//! `TrustedSetup::from_json` inside the adapter (`rust_eth_kzg::RustEthKzgBackend::load`).
 
 use super::KzgError;
 use serde::Deserialize;
