@@ -277,6 +277,41 @@ impl<P: Preset> BeaconState<P> {
         self.pending_deposits.len()
     }
 
+    /// Get a pending deposit by index.
+    pub fn pending_deposits_get(&self, i: usize) -> Option<&PendingDeposit> {
+        self.pending_deposits.get(i)
+    }
+
+    /// Iterate pending deposits.
+    pub fn pending_deposits_iter(&self) -> impl Iterator<Item = &PendingDeposit> {
+        self.pending_deposits.iter()
+    }
+
+    /// Slashings vector length (fixed).
+    pub fn slashings_len(&self) -> usize {
+        self.slashings.len()
+    }
+
+    /// Get a slashings entry.
+    pub fn slashings_get(&self, i: usize) -> Option<Gwei> {
+        self.slashings.get(i).copied()
+    }
+
+    /// Deposit-requests start index (Electra EIP-6110).
+    pub fn deposit_requests_start_index(&self) -> u64 {
+        self.deposit_requests_start_index
+    }
+
+    /// Exit balance to consume (Electra EIP-7251).
+    pub fn exit_balance_to_consume(&self) -> Gwei {
+        self.exit_balance_to_consume
+    }
+
+    /// Earliest exit epoch (Electra EIP-7251).
+    pub fn earliest_exit_epoch(&self) -> Epoch {
+        self.earliest_exit_epoch
+    }
+
     /// Pending partial withdrawals length.
     pub fn pending_partial_withdrawals_len(&self) -> usize {
         self.pending_partial_withdrawals.len()
@@ -697,6 +732,53 @@ impl<P: Preset> BeaconState<P> {
             new_len,
         );
         Ok(())
+    }
+
+    /// Set a slashings entry (fixed vector).
+    pub fn slashings_set(&mut self, i: usize, v: Gwei) -> Result<(), StateAccessError> {
+        let len = self.slashings.len();
+        let slot = self
+            .slashings
+            .get_mut(i)
+            .ok_or(StateAccessError::OutOfBounds { index: i, len })?;
+        *slot = v;
+        self.caches.field_roots.mark_dirty(StateField::Slashings);
+        Ok(())
+    }
+
+    /// Append a pending deposit.
+    pub fn pending_deposits_push(&mut self, v: PendingDeposit) -> Result<(), StateAccessError> {
+        self.pending_deposits
+            .push(v)
+            .map_err(StateAccessError::from)?;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::PendingDeposits);
+        Ok(())
+    }
+
+    /// Set deposit-requests start index.
+    pub fn set_deposit_requests_start_index(&mut self, v: u64) {
+        self.deposit_requests_start_index = v;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::DepositRequestsStartIndex);
+    }
+
+    /// Set exit balance to consume.
+    pub fn set_exit_balance_to_consume(&mut self, v: Gwei) {
+        self.exit_balance_to_consume = v;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::ExitBalanceToConsume);
+    }
+
+    /// Set earliest exit epoch.
+    pub fn set_earliest_exit_epoch(&mut self, v: Epoch) {
+        self.earliest_exit_epoch = v;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::EarliestExitEpoch);
     }
 }
 

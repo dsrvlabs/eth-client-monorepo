@@ -6,6 +6,7 @@
 pub mod eth1_data;
 pub mod execution_payload;
 pub mod header;
+pub mod operations;
 pub mod randao;
 pub mod withdrawals;
 
@@ -26,6 +27,11 @@ use crate::BlockSignatureStrategy;
 pub use eth1_data::process_eth1_data;
 pub use execution_payload::process_execution_payload;
 pub use header::process_block_header;
+pub use operations::{
+    process_attestation, process_attester_slashing, process_bls_to_execution_change,
+    process_deposit, process_operations, process_proposer_slashing, process_voluntary_exit,
+    ProcessAttestationOpts,
+};
 pub use randao::process_randao;
 pub use withdrawals::{get_expected_withdrawals, process_withdrawals};
 
@@ -82,8 +88,9 @@ pub fn state_transition<P: Preset>(
     // Process slots (including those with no blocks) since the previous block.
     let pre_state_root = process_slots(state, message.slot)?;
 
-    // Verify signature(s).
-    verify_block_signatures(state, block, verify)?;
+    // Verify signature(s): proposer + RANDAO + CC-12c operation set (§5.2).
+    // process_operations then runs with verify_signatures=false.
+    verify_block_signatures(state, block, ctx.config, verify)?;
 
     // Process block.
     process_block(state, message, ctx, pre_state_root)?;
@@ -114,25 +121,16 @@ pub fn process_block<P: Preset>(
     process_execution_payload(state, block, ctx)?;
     process_randao(state, block)?;
     process_eth1_data(state, block)?;
-    process_operations(state, block, ctx)?;
+    // Signatures already verified in `state_transition` under the chosen strategy.
+    process_operations(state, block, ctx, false)?;
     process_sync_aggregate(state, block)?;
     state.commit();
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// Handler stubs remaining for CC-12c / CC-12d
+// Handler stubs remaining for CC-12d
 // ---------------------------------------------------------------------------
-
-/// CC-12c / CC-12d — `process_operations` (slashings, attestations, deposits,
-/// exits, BLS changes, execution requests).
-pub fn process_operations<P: Preset>(
-    _state: &mut BeaconState<P>,
-    _block: &BeaconBlock<P>,
-    _ctx: &TransitionContext<'_, P>,
-) -> Result<(), BlockError> {
-    Err(BlockError::NotYetImplemented("process_operations"))
-}
 
 /// CC-12d — `process_sync_aggregate`.
 pub fn process_sync_aggregate<P: Preset>(
@@ -245,9 +243,10 @@ mod tests {
         let engine = StubOptimisticEngine;
         let ctx = TransitionContext::<Minimal>::new(&config, &engine);
         let err = process_block(&mut state, &block, &ctx, pre).unwrap_err();
+        // CC-12c process_operations is implemented; next stub is sync_aggregate (CC-12d).
         assert!(
-            matches!(err, BlockError::NotYetImplemented("process_operations")),
-            "expected process_operations NYI, got {err:?}"
+            matches!(err, BlockError::NotYetImplemented("process_sync_aggregate")),
+            "expected process_sync_aggregate NYI, got {err:?}"
         );
     }
 

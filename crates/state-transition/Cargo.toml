@@ -15,6 +15,7 @@ cc-types = { workspace = true }
 cc-crypto = { workspace = true }
 thiserror = { workspace = true }
 tree_hash = { workspace = true }
+ssz_types = { workspace = true }
 
 [dev-dependencies]
 serde = { workspace = true }

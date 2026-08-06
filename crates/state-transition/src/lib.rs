@@ -15,9 +15,11 @@ pub mod signatures;
 pub mod slots;
 
 pub use block::{
-    get_expected_withdrawals, process_block, process_block_header, process_eth1_data,
-    process_execution_payload, process_operations, process_randao, process_sync_aggregate,
-    process_withdrawals, state_transition, TransitionContext,
+    get_expected_withdrawals, process_attestation, process_attester_slashing, process_block,
+    process_block_header, process_bls_to_execution_change, process_deposit, process_eth1_data,
+    process_execution_payload, process_operations, process_proposer_slashing, process_randao,
+    process_sync_aggregate, process_voluntary_exit, process_withdrawals, state_transition,
+    ProcessAttestationOpts, TransitionContext,
 };
 pub use engine_seam::{
     ExecutionEngine, NewPayloadRequest, PayloadStatus, StubOptimisticEngine, VersionedHash,
@@ -36,8 +38,8 @@ pub use root_measure::{
 };
 pub use signatures::{
     decode_block_pubkey, decode_pubkey, decode_signature, decode_state_pubkey,
-    push_block_proposer_signature, push_randao_signature, verify_block_signatures,
-    BlockSignatureSet, LabelledSignature,
+    push_block_proposer_signature, push_operation_signatures, push_randao_signature,
+    verify_block_signatures, BlockSignatureSet, LabelledSignature,
 };
 pub use slots::{process_slot, process_slots};
 

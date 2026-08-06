@@ -13,10 +13,10 @@ pub use misc::{
     compute_epoch_at_slot, execution_address_from_credentials, hash_signature_root,
     kzg_commitment_to_versioned_hash, xor_bytes32,
 };
-pub use mutators::{decrease_balance, increase_balance};
+pub use mutators::{decrease_balance, increase_balance, initiate_validator_exit, slash_validator};
 pub use predicates::{
     get_max_effective_balance, has_compounding_withdrawal_credential,
     has_eth1_withdrawal_credential, has_execution_withdrawal_credential,
-    is_compounding_withdrawal_credential, is_fully_withdrawable_validator,
-    is_partially_withdrawable_validator,
+    is_active_validator, is_compounding_withdrawal_credential, is_fully_withdrawable_validator,
+    is_partially_withdrawable_validator, is_slashable_attestation_data, is_slashable_validator,
 };
