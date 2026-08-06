@@ -55,3 +55,97 @@ run scripts/fetch-spec-vectors.sh
 Operators run the harness explicitly (locally or via the non-required `vectors`
 CI job). Layout of the on-disk tree is recorded in `spec-vectors-layout.md`
 (regenerate with `scripts/record-vector-layout.sh` after a pin bump).
+
+## Compose stack
+
+The six Phase 0 services (`chain`, `p2p`, `attestation`, `engine`, `beacon-api`,
+`storage`) run under `docker-compose.yml`. One multi-stage `Dockerfile` builds
+every binary; `ARG SERVICE` selects which image layer each compose service
+ships. Configuration reaches containers as `CC_<SERVICE>_<FIELD>` environment
+variables (see `docker-compose.yml`); `config/*.toml` holds local-dev defaults
+only.
+
+### Prerequisites
+
+- Docker with Compose v2 (`docker compose`)
+- `jq` (used by `scripts/wait-healthy.sh`)
+- Host-side `grpc-health-probe` (or `grpc_health_probe`) on `PATH` for
+  `scripts/prove-mutual-health.sh` — same tool the images embed at
+  `/usr/local/bin/grpc-health-probe` (pin: Dockerfile `HEALTH_PROBE_VERSION`)
+- Optional: free disk for the spec-vector cache (order **8–10 GB**; see
+  [Disk budget](#disk-budget) under Spec vectors)
+
+### Bring-up
+
+```bash
+export CC_GIT_SHA="$(git rev-parse --short HEAD)"   # so cc_build_info is not unknown
+docker compose build
+docker compose up -d
+bash scripts/wait-healthy.sh                        # all six healthy within 90 s
+```
+
+Published host ports follow Architecture §6.3 (gRPC `9001`–`9006`, metrics
+gRPC+100 → `9101`–`9106`). Services address each other by compose DNS name
+inside the `cc` network; host ports exist only for operator probes and the
+proof scripts.
+
+```bash
+curl -s localhost:9101/metrics | head
+grpc-health-probe -addr=127.0.0.1:9001              # aggregate "" health
+docker compose down                                 # no containers left
+```
+
+## Mutual-health proof
+
+Success-metric clause 2 is automated by `scripts/prove-mutual-health.sh`
+(Architecture §6.5). Against an already-healthy stack:
+
+```bash
+bash scripts/prove-mutual-health.sh
+```
+
+The script:
+
+1. Delegates the “all six healthy” precondition to `wait-healthy.sh`.
+2. Runs `docker compose stop chain`.
+3. Polls each of the five dependents from the **host** with
+   `grpc-health-probe` (aggregate `""`) and asserts **NOT_SERVING** within
+   **15 s**, cross-checking `cc_peer_health{peer="chain"} == 0` on each
+   service’s `/metrics`.
+4. Runs `docker compose start chain` and asserts all six **SERVING** and every
+   `cc_peer_health` gauge back to **1** within **30 s**.
+5. On any failure, exits non-zero and names the offending service and its
+   observed state.
+
+End-to-end from a clean checkout (the same sequence as the non-required
+`compose` CI job):
+
+```bash
+export CC_GIT_SHA="$(git rev-parse --short HEAD)"
+docker compose build
+docker compose up -d
+bash scripts/wait-healthy.sh
+bash scripts/prove-mutual-health.sh
+```
+
+The `compose` job in `.github/workflows/ci.yml` is **not** a required status
+check (deliberately outside the warm-CI ten-minute budget). It runs on push to
+`main`/`develop` and on PRs that touch `Dockerfile`, `docker-compose.yml`,
+`crates/bootstrap/**`, or `scripts/{wait-healthy,prove-mutual-health}.sh`.
+
+## Persistence
+
+Phase 0 services are **ephemeral**: there is no durable volume for chain state,
+attestations, or storage. `services/storage` stores nothing yet. A
+`docker compose down` (or a host reboot) loses process state; the stack is
+**not restartable across restarts** in any meaningful consensus sense until
+Phase 4 persistence work. Treat every `up` as a fresh hello-world topology.
+
+## Configuration and environment reads
+
+`crates/config` is the **only** crate permitted to read the process
+environment (Architecture §5). Services load `CC_<SERVICE>_*` through
+figment’s prefixed env layer on top of `config/<service>.toml`; they must not
+call `std::env::var` (or equivalent) directly. Compose injects topology via
+env; TOML remains the local-dev default path. Both routes go through
+`cc-config` so the CC-09/3 grep stays meaningful.
