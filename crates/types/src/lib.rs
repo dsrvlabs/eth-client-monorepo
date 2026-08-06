@@ -1,18 +1,36 @@
-//! Consensus types substrate (CC-10c): preset, runtime config, primitives, fork, KZG/DAS constants.
+//! Consensus types substrate: preset, config, primitives, fork, containers, operations,
+//! execution, and block (CC-10c / CC-10d).
 //!
-//! Containers (`CC-10d`), `BeaconState` (`CC-10e`), and caches (`CC-10g`) land in follow-on issues.
+//! `BeaconState` (`CC-10e`) and caches (`CC-10g`) land in follow-on issues.
 
 #![allow(missing_docs)] // public re-exports are documented at their definitions
 
+pub mod block;
 pub mod config;
+pub mod containers;
+pub mod execution;
 pub mod fork;
+pub mod operations;
 pub mod preset;
 pub mod primitives;
 
+pub use block::{BeaconBlock, BeaconBlockBody, SignedBeaconBlock};
 pub use config::{
     BlobParameters, BlobSchedule, BlobScheduleError, ChainConfig, ConfigError, PresetName,
 };
+pub use containers::{
+    AttestationData, BeaconBlockHeader, Checkpoint, DepositData, DepositMessage, Eth1Data,
+    HistoricalSummary, SignedBeaconBlockHeader, SigningData, SyncAggregate, SyncCommittee,
+    Validator,
+};
+pub use execution::{ExecutionPayload, ExecutionPayloadHeader, Transaction};
 pub use fork::{Fork, ForkData, ForkDigest, ForkName, UnknownForkName};
+pub use operations::{
+    Attestation, AttesterSlashing, BlsToExecutionChange, ConsolidationRequest, Deposit,
+    DepositRequest, ExecutionRequests, IndexedAttestation, PendingConsolidation, PendingDeposit,
+    PendingPartialWithdrawal, ProposerSlashing, SignedBlsToExecutionChange, SignedVoluntaryExit,
+    VoluntaryExit, Withdrawal, WithdrawalRequest, DEPOSIT_CONTRACT_TREE_DEPTH,
+};
 pub use preset::{Mainnet, Minimal, Preset, PresetUnsigned};
 pub use primitives::{
     parse_hex_bytes, BlsPublicKey, BlsSignature, Cell, CommitteeIndex, Domain, DomainType, Epoch,

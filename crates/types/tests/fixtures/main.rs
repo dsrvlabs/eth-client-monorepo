@@ -13,6 +13,8 @@ mod fixtures;
 use std::fs;
 use std::path::PathBuf;
 
+use cc_types::{ForkName, Mainnet, SignedBeaconBlock};
+
 use fixtures::{
     cache_env_is_set, ci_cache_key, load_anchor, load_sequence, resolve_cache_root, Error,
     HoodiFixtures, FETCH_HINT,
@@ -202,6 +204,51 @@ fn helper_corrupt_artifact_names_expected_and_actual_sha256() {
     }
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// CC-10d: decode a committed Hoodi `SignedBeaconBlock` via
+/// `from_ssz_bytes_with(ForkName::Fulu, …)` and check the block root.
+///
+/// Skips when `HOODI_FIXTURES_CACHE` is unset (same contract as other cache tests).
+#[test]
+fn signed_beacon_block_fulu_decode_matches_anchor_root() {
+    if !cache_env_is_set() {
+        eprintln!(
+            "skip: {env} unset — Hoodi SSZ cache not required for this run \
+             (see crates/types/tests/fixtures/README.md)",
+            env = fixtures::CACHE_ENV
+        );
+        return;
+    }
+
+    let root = resolve_cache_root().expect("resolve cache root");
+    let fixtures = HoodiFixtures::open_in(&root).unwrap_or_else(|e| {
+        panic!("{e}");
+    });
+
+    let bytes = fs::read(&fixtures.block_ssz).expect("read signed_beacon_block.ssz");
+    let signed = SignedBeaconBlock::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, &bytes)
+        .unwrap_or_else(|e| panic!("SSZ decode failed: {e:?}"));
+
+    assert_eq!(
+        signed.message.slot.as_u64(),
+        fixtures.anchor.slot,
+        "decoded slot must match anchor"
+    );
+
+    let block_root = signed.canonical_root();
+    let expected = fixtures.anchor.block_root.trim_start_matches("0x");
+    let actual = format!("{block_root:x}");
+    // Hash256 Display/Debug may vary; compare lower-hex of 32 bytes.
+    let actual_hex: String = block_root
+        .as_slice()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(
+        actual_hex, expected,
+        "canonical block root mismatch (display was {actual})"
+    );
 }
 
 /// Opens the real cache when `HOODI_FIXTURES_CACHE` is set; otherwise skips.

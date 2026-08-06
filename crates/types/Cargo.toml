@@ -11,6 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+alloy-primitives = { workspace = true }
 ethereum_ssz = { workspace = true }
 ethereum_ssz_derive = { workspace = true }
 serde = { workspace = true }

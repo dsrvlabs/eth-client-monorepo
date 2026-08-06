@@ -111,6 +111,9 @@ sha2 = "0.10.9"
 typenum = "1.20.1"
 thiserror = "2.0.17"
 
+# CC-10d ExecutionPayload base_fee_per_gas (uint256); also used by ethereum_ssz / tree_hash
+alloy-primitives = "1.6.1"
+
 [profile.release]
 opt-level = 3
 debug = 1
