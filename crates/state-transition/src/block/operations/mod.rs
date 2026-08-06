@@ -1,26 +1,30 @@
-//! Spec `process_operations` and per-operation handlers (CC-12c core).
-//!
-//! Execution-request handlers land in CC-12d; when those lists are non-empty
-//! this module returns [`BlockError::NotYetImplemented`].
+//! Spec `process_operations` and per-operation handlers (CC-12c core + CC-12d
+//! execution requests).
 
 mod attestation;
 mod attester_slashing;
 mod bls_to_execution_change;
+mod consolidation_request;
 mod deposit;
+mod deposit_request;
 mod proposer_slashing;
 mod voluntary_exit;
+mod withdrawal_request;
 
 pub use attestation::{
     get_attesting_indices_for_test, process_attestation, ProcessAttestationOpts,
 };
 pub use attester_slashing::process_attester_slashing;
 pub use bls_to_execution_change::{bls_to_execution_change_domain, process_bls_to_execution_change};
+pub use consolidation_request::process_consolidation_request;
 pub use deposit::{
     add_validator_to_registry, apply_deposit, get_validator_from_deposit,
     is_valid_deposit_signature, process_deposit,
 };
+pub use deposit_request::process_deposit_request;
 pub use proposer_slashing::process_proposer_slashing;
 pub use voluntary_exit::process_voluntary_exit;
+pub use withdrawal_request::process_withdrawal_request;
 
 use cc_types::config::ChainConfig;
 use cc_types::preset::Preset;
@@ -29,11 +33,9 @@ use cc_types::{BeaconBlock, BeaconState};
 use crate::block::TransitionContext;
 use crate::error::{BlockError, OperationError};
 
-/// Spec `process_operations` — count assertions + six core loops (Electra).
+/// Spec `process_operations` — count assertions + Electra loops (CC-12c + CC-12d).
 ///
-/// Execution-request loops are CC-12d: empty lists succeed; non-empty → NYI.
-///
-/// Signature verification: when `verify_signatures` is true, each handler
+/// Signature verification: when `verify_signatures` is true, each signed handler
 /// verifies its own BLS material (operations vectors / `bls_setting` ≠ 0).
 /// Full `state_transition` verifies the block signature set first and may
 /// pass `false` here.
@@ -47,7 +49,11 @@ pub fn process_operations<P: Preset>(
     let config = ctx.config;
 
     // Count assertions (list capacities are SSZ-enforced; deposit count is dynamic).
-    assert_op_count("proposer_slashings", body.proposer_slashings.len(), P::MAX_PROPOSER_SLASHINGS)?;
+    assert_op_count(
+        "proposer_slashings",
+        body.proposer_slashings.len(),
+        P::MAX_PROPOSER_SLASHINGS,
+    )?;
     assert_op_count(
         "attester_slashings",
         body.attester_slashings.len(),
@@ -118,14 +124,15 @@ pub fn process_operations<P: Preset>(
         process_bls_to_execution_change(state, change, config, verify_signatures)?;
     }
 
-    // CC-12d — execution requests.
-    if !body.execution_requests.deposits.is_empty()
-        || !body.execution_requests.withdrawals.is_empty()
-        || !body.execution_requests.consolidations.is_empty()
-    {
-        return Err(BlockError::NotYetImplemented(
-            "process_operations execution_requests",
-        ));
+    // CC-12d — execution requests (Electra).
+    for req in body.execution_requests.deposits.iter() {
+        process_deposit_request(state, req)?;
+    }
+    for req in body.execution_requests.withdrawals.iter() {
+        process_withdrawal_request(state, req)?;
+    }
+    for req in body.execution_requests.consolidations.iter() {
+        process_consolidation_request(state, req)?;
     }
 
     Ok(())

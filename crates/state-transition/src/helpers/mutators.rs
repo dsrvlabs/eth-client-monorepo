@@ -1,16 +1,20 @@
 //! Spec mutators (`increase_balance` / `decrease_balance` / exit / slash).
 
+use cc_crypto::INFINITY_SIGNATURE;
+use cc_types::operations::PendingDeposit;
 use cc_types::preset::Preset;
-use cc_types::primitives::{Epoch, Gwei, ValidatorIndex};
+use cc_types::primitives::{BlsSignature, Epoch, Gwei, Slot, ValidatorIndex};
 use cc_types::BeaconState;
 
 use crate::error::BlockError;
 use crate::helpers::accessors::{
-    get_activation_exit_churn_limit, get_beacon_proposer_index, get_current_epoch,
+    get_activation_exit_churn_limit, get_beacon_proposer_index, get_consolidation_churn_limit,
+    get_current_epoch,
 };
 use crate::helpers::constants::{
-    FAR_FUTURE_EPOCH, MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA, MIN_VALIDATOR_WITHDRAWABILITY_DELAY,
-    PROPOSER_WEIGHT, WEIGHT_DENOMINATOR, WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA,
+    COMPOUNDING_WITHDRAWAL_PREFIX, FAR_FUTURE_EPOCH, GENESIS_SLOT, MIN_ACTIVATION_BALANCE,
+    MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA, MIN_VALIDATOR_WITHDRAWABILITY_DELAY, PROPOSER_WEIGHT,
+    WEIGHT_DENOMINATOR, WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA,
 };
 use crate::helpers::misc::compute_activation_exit_epoch;
 
@@ -106,6 +110,87 @@ pub fn initiate_validator_exit<P: Preset>(
     v.exit_epoch = exit_queue_epoch;
     v.withdrawable_epoch = withdrawable;
     Ok(())
+}
+
+/// Spec `compute_consolidation_epoch_and_update_churn` (Electra).
+pub fn compute_consolidation_epoch_and_update_churn<P: Preset>(
+    state: &mut BeaconState<P>,
+    consolidation_balance: Gwei,
+) -> Result<Epoch, BlockError> {
+    let current_epoch = get_current_epoch(state);
+    let mut earliest_consolidation_epoch = state
+        .earliest_consolidation_epoch()
+        .as_u64()
+        .max(compute_activation_exit_epoch::<P>(current_epoch).as_u64());
+    let per_epoch_churn = get_consolidation_churn_limit(state)?;
+
+    let mut consolidation_balance_to_consume =
+        if state.earliest_consolidation_epoch().as_u64() < earliest_consolidation_epoch {
+            per_epoch_churn.as_u64()
+        } else {
+            state.consolidation_balance_to_consume().as_u64()
+        };
+
+    let consolidation_balance = consolidation_balance.as_u64();
+    if consolidation_balance > consolidation_balance_to_consume {
+        let balance_to_process = consolidation_balance - consolidation_balance_to_consume;
+        let additional_epochs = (balance_to_process.saturating_sub(1) / per_epoch_churn.as_u64())
+            .saturating_add(1);
+        earliest_consolidation_epoch = earliest_consolidation_epoch.saturating_add(additional_epochs);
+        consolidation_balance_to_consume = consolidation_balance_to_consume
+            .saturating_add(additional_epochs.saturating_mul(per_epoch_churn.as_u64()));
+    }
+
+    state.set_consolidation_balance_to_consume(Gwei::new(
+        consolidation_balance_to_consume.saturating_sub(consolidation_balance),
+    ));
+    state.set_earliest_consolidation_epoch(Epoch::new(earliest_consolidation_epoch));
+    Ok(Epoch::new(earliest_consolidation_epoch))
+}
+
+/// Spec `queue_excess_active_balance` (Electra).
+pub fn queue_excess_active_balance<P: Preset>(
+    state: &mut BeaconState<P>,
+    index: ValidatorIndex,
+) -> Result<(), BlockError> {
+    let i = index.as_u64() as usize;
+    let balance = state
+        .balances_get(i)
+        .ok_or(BlockError::ArithmeticOverflow)?;
+    if balance.as_u64() > MIN_ACTIVATION_BALANCE.as_u64() {
+        let excess = balance
+            .as_u64()
+            .saturating_sub(MIN_ACTIVATION_BALANCE.as_u64());
+        state.balances_set(i, MIN_ACTIVATION_BALANCE)?;
+        let validator = state
+            .validators_get(i)
+            .ok_or(BlockError::ArithmeticOverflow)?;
+        state.pending_deposits_push(PendingDeposit {
+            pubkey: validator.pubkey,
+            withdrawal_credentials: validator.withdrawal_credentials,
+            amount: Gwei::new(excess),
+            signature: BlsSignature::from_array(INFINITY_SIGNATURE),
+            slot: Slot::new(GENESIS_SLOT),
+        })?;
+    }
+    Ok(())
+}
+
+/// Spec `switch_to_compounding_validator` (Electra).
+pub fn switch_to_compounding_validator<P: Preset>(
+    state: &mut BeaconState<P>,
+    index: ValidatorIndex,
+) -> Result<(), BlockError> {
+    let i = index.as_u64() as usize;
+    {
+        let v = state
+            .validators_get_mut(i)
+            .ok_or(BlockError::ArithmeticOverflow)?;
+        let mut creds = *v.withdrawal_credentials.as_array();
+        creds[0] = COMPOUNDING_WITHDRAWAL_PREFIX;
+        v.withdrawal_credentials = cc_types::primitives::Root::from_array(creds);
+    }
+    queue_excess_active_balance(state, index)
 }
 
 /// Spec `slash_validator` (Electra).

@@ -510,18 +510,22 @@ impl FieldRootCache {
 #[derive(Clone, Default)]
 pub struct PubkeyIndexMap {
     map: HashMap<BlsPublicKey, ValidatorIndex>,
+    /// How many times a full-registry linear scan was performed as a map miss
+    /// fallback. Used by CC-12d to assert `process_sync_aggregate` never scans.
+    linear_scan_count: u64,
 }
 
 impl fmt::Debug for PubkeyIndexMap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PubkeyIndexMap")
             .field("len", &self.map.len())
+            .field("linear_scan_count", &self.linear_scan_count)
             .finish()
     }
 }
 
 impl PubkeyIndexMap {
-    /// Lookup.
+    /// Lookup without recording a registry scan.
     pub fn get(&self, key: &BlsPublicKey) -> Option<ValidatorIndex> {
         self.map.get(key).copied()
     }
@@ -539,6 +543,23 @@ impl PubkeyIndexMap {
     /// Empty map.
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+
+    /// Count of full-registry linear scans performed as map-miss fallbacks.
+    pub fn linear_scan_count(&self) -> u64 {
+        self.linear_scan_count
+    }
+
+    /// Record that a full-registry scan occurred (map miss fallback).
+    pub fn note_linear_scan(&mut self) {
+        self.linear_scan_count = self.linear_scan_count.saturating_add(1);
+    }
+
+    /// Reset the linear-scan counter (tests).
+    pub fn take_linear_scan_count(&mut self) -> u64 {
+        let n = self.linear_scan_count;
+        self.linear_scan_count = 0;
+        n
     }
 }
 

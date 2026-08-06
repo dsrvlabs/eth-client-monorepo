@@ -16,10 +16,11 @@ pub mod slots;
 
 pub use block::{
     get_expected_withdrawals, process_attestation, process_attester_slashing, process_block,
-    process_block_header, process_bls_to_execution_change, process_deposit, process_eth1_data,
-    process_execution_payload, process_operations, process_proposer_slashing, process_randao,
-    process_sync_aggregate, process_voluntary_exit, process_withdrawals, state_transition,
-    ProcessAttestationOpts, TransitionContext,
+    process_block_header, process_bls_to_execution_change, process_consolidation_request,
+    process_deposit, process_deposit_request, process_eth1_data, process_execution_payload,
+    process_operations, process_proposer_slashing, process_randao, process_sync_aggregate,
+    process_sync_aggregate_with_opts, process_voluntary_exit, process_withdrawal_request,
+    process_withdrawals, state_transition, ProcessAttestationOpts, TransitionContext,
 };
 pub use engine_seam::{
     ExecutionEngine, NewPayloadRequest, PayloadStatus, StubOptimisticEngine, VersionedHash,

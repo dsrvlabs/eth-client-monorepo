@@ -354,6 +354,26 @@ impl<P: Preset> BeaconState<P> {
         self.pending_consolidations.len()
     }
 
+    /// Get a pending consolidation by index.
+    pub fn pending_consolidations_get(&self, i: usize) -> Option<&PendingConsolidation> {
+        self.pending_consolidations.get(i)
+    }
+
+    /// Iterate pending consolidations.
+    pub fn pending_consolidations_iter(&self) -> impl Iterator<Item = &PendingConsolidation> {
+        self.pending_consolidations.iter()
+    }
+
+    /// Consolidation balance to consume (Electra EIP-7251).
+    pub fn consolidation_balance_to_consume(&self) -> Gwei {
+        self.consolidation_balance_to_consume
+    }
+
+    /// Earliest consolidation epoch (Electra EIP-7251).
+    pub fn earliest_consolidation_epoch(&self) -> Epoch {
+        self.earliest_consolidation_epoch
+    }
+
     /// Borrow caches.
     pub fn caches(&self) -> &StateCaches<P> {
         &self.caches
@@ -779,6 +799,50 @@ impl<P: Preset> BeaconState<P> {
         self.caches
             .field_roots
             .mark_dirty(StateField::EarliestExitEpoch);
+    }
+
+    /// Append a pending partial withdrawal.
+    pub fn pending_partial_withdrawals_push(
+        &mut self,
+        v: PendingPartialWithdrawal,
+    ) -> Result<(), StateAccessError> {
+        self.pending_partial_withdrawals
+            .push(v)
+            .map_err(StateAccessError::from)?;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::PendingPartialWithdrawals);
+        Ok(())
+    }
+
+    /// Append a pending consolidation.
+    pub fn pending_consolidations_push(
+        &mut self,
+        v: PendingConsolidation,
+    ) -> Result<(), StateAccessError> {
+        self.pending_consolidations
+            .push(v)
+            .map_err(StateAccessError::from)?;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::PendingConsolidations);
+        Ok(())
+    }
+
+    /// Set consolidation balance to consume.
+    pub fn set_consolidation_balance_to_consume(&mut self, v: Gwei) {
+        self.consolidation_balance_to_consume = v;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::ConsolidationBalanceToConsume);
+    }
+
+    /// Set earliest consolidation epoch.
+    pub fn set_earliest_consolidation_epoch(&mut self, v: Epoch) {
+        self.earliest_consolidation_epoch = v;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::EarliestConsolidationEpoch);
     }
 }
 

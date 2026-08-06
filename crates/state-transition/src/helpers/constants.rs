@@ -15,6 +15,12 @@ pub const GENESIS_EPOCH: Epoch = Epoch::new(0);
 /// `GENESIS_SLOT = 0`.
 pub const GENESIS_SLOT: u64 = 0;
 
+/// Electra `UNSET_DEPOSIT_REQUESTS_START_INDEX = 2**64 - 1`.
+pub const UNSET_DEPOSIT_REQUESTS_START_INDEX: u64 = u64::MAX;
+
+/// Electra `FULL_EXIT_REQUEST_AMOUNT = 0` (signals a full exit, not a partial).
+pub const FULL_EXIT_REQUEST_AMOUNT: u64 = 0;
+
 /// `MIN_ACTIVATION_BALANCE` (Electra) = 32 ETH in Gwei.
 pub const MIN_ACTIVATION_BALANCE: Gwei = Gwei::new(32_000_000_000);
 
@@ -60,6 +66,8 @@ pub const TIMELY_TARGET_WEIGHT: u64 = 26;
 pub const TIMELY_HEAD_WEIGHT: u64 = 14;
 /// Altair incentivization weights.
 pub const PROPOSER_WEIGHT: u64 = 8;
+/// Altair `SYNC_REWARD_WEIGHT = 2`.
+pub const SYNC_REWARD_WEIGHT: u64 = 2;
 /// Altair incentivization weights.
 pub const WEIGHT_DENOMINATOR: u64 = 64;
 

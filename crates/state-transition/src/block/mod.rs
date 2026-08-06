@@ -8,6 +8,7 @@ pub mod execution_payload;
 pub mod header;
 pub mod operations;
 pub mod randao;
+pub mod sync_aggregate;
 pub mod withdrawals;
 
 use std::marker::PhantomData;
@@ -29,10 +30,12 @@ pub use execution_payload::process_execution_payload;
 pub use header::process_block_header;
 pub use operations::{
     process_attestation, process_attester_slashing, process_bls_to_execution_change,
-    process_deposit, process_operations, process_proposer_slashing, process_voluntary_exit,
+    process_consolidation_request, process_deposit, process_deposit_request, process_operations,
+    process_proposer_slashing, process_voluntary_exit, process_withdrawal_request,
     ProcessAttestationOpts,
 };
 pub use randao::process_randao;
+pub use sync_aggregate::{process_sync_aggregate, process_sync_aggregate_with_opts};
 pub use withdrawals::{get_expected_withdrawals, process_withdrawals};
 
 // ---------------------------------------------------------------------------
@@ -128,18 +131,6 @@ pub fn process_block<P: Preset>(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Handler stubs remaining for CC-12d
-// ---------------------------------------------------------------------------
-
-/// CC-12d — `process_sync_aggregate`.
-pub fn process_sync_aggregate<P: Preset>(
-    _state: &mut BeaconState<P>,
-    _block: &BeaconBlock<P>,
-) -> Result<(), BlockError> {
-    Err(BlockError::NotYetImplemented("process_sync_aggregate"))
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -212,26 +203,32 @@ mod tests {
     }
 
     #[test]
-    fn process_block_stops_at_first_unimplemented_handler() {
+    fn process_block_completes_with_empty_ops_and_empty_sync() {
         let mut state = BeaconState::<Minimal>::default();
         seed(&mut state);
-        // Leave header/withdrawals/payload/randao/eth1 able to pass with defaults.
-        // After process_block_header, withdrawals will fail if empty expected
-        // mismatches — with empty registry seed we have 1 validator, no
-        // withdrawable balance → expected empty withdrawals → ok.
+        // Map default (zero) sync-committee pubkeys to the seeded validator so
+        // reward accounting can resolve indices without a registry scan.
+        state
+            .caches_mut()
+            .pubkeys
+            .insert(Default::default(), ValidatorIndex::new(0));
+        // eth1 deposits disabled (unset start index) so empty deposits list is ok.
+        state.set_deposit_requests_start_index(u64::MAX);
+
         let pre = process_slots(&mut state, Slot::new(1)).unwrap();
         let parent =
             Root::from_hash256(tree_hash::TreeHash::tree_hash_root(state.latest_block_header()));
-        // Align payload checks: parent_hash, prev_randao, timestamp.
         use crate::helpers::accessors::{get_current_epoch, get_randao_mix};
         let epoch = get_current_epoch(&state);
         let mix = get_randao_mix(&state, epoch).unwrap();
         let mut body = cc_types::BeaconBlockBody::<Minimal>::default();
         body.execution_payload.prev_randao = mix;
-        body.execution_payload.timestamp = state.genesis_time()
-            + state.slot().as_u64() * 6; // minimal seconds_per_slot in test config
+        body.execution_payload.timestamp =
+            state.genesis_time() + state.slot().as_u64() * 6; // minimal seconds_per_slot
         body.execution_payload.parent_hash = state.latest_execution_payload_header().block_hash;
-        // randao reveal hash will mix zeros — fine for this test.
+        // Empty participant set requires the infinity signature (eth_fast_aggregate_verify).
+        body.sync_aggregate.sync_committee_signature =
+            cc_types::primitives::BlsSignature::from_array(cc_crypto::INFINITY_SIGNATURE);
         let block = BeaconBlock {
             slot: Slot::new(1),
             proposer_index: ValidatorIndex::new(0),
@@ -242,12 +239,7 @@ mod tests {
         let config = minimal_test_config();
         let engine = StubOptimisticEngine;
         let ctx = TransitionContext::<Minimal>::new(&config, &engine);
-        let err = process_block(&mut state, &block, &ctx, pre).unwrap_err();
-        // CC-12c process_operations is implemented; next stub is sync_aggregate (CC-12d).
-        assert!(
-            matches!(err, BlockError::NotYetImplemented("process_sync_aggregate")),
-            "expected process_sync_aggregate NYI, got {err:?}"
-        );
+        process_block(&mut state, &block, &ctx, pre).expect("full process_block should complete");
     }
 
     fn minimal_test_config() -> ChainConfig {

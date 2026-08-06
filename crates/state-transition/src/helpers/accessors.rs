@@ -407,6 +407,42 @@ pub fn get_activation_exit_churn_limit<P: Preset>(
     ))
 }
 
+/// Spec `get_consolidation_churn_limit`.
+pub fn get_consolidation_churn_limit<P: Preset>(
+    state: &BeaconState<P>,
+) -> Result<Gwei, BlockError> {
+    let balance = get_balance_churn_limit(state)?;
+    let activation_exit = get_activation_exit_churn_limit(state)?;
+    Ok(Gwei::new(
+        balance.as_u64().saturating_sub(activation_exit.as_u64()),
+    ))
+}
+
+/// Resolve a validator index by pubkey via [`PubkeyIndexMap`], falling back to
+/// a linear registry scan that is counted on the map (CC-12d).
+///
+/// Prefer this when a miss is possible; `process_sync_aggregate` uses the map
+/// only (no scan).
+pub fn get_validator_index_by_pubkey<P: Preset>(
+    state: &mut BeaconState<P>,
+    pubkey: &cc_types::primitives::BlsPublicKey,
+) -> Option<ValidatorIndex> {
+    if let Some(idx) = state.caches().pubkeys.get(pubkey) {
+        return Some(idx);
+    }
+    // Full-registry scan fallback + backfill.
+    state.caches_mut().pubkeys.note_linear_scan();
+    let found = state
+        .validators_iter()
+        .enumerate()
+        .find(|(_, v)| v.pubkey == *pubkey)
+        .map(|(i, _)| ValidatorIndex::new(i as u64));
+    if let Some(idx) = found {
+        state.caches_mut().pubkeys.insert(*pubkey, idx);
+    }
+    found
+}
+
 /// Domain helper matching `get_domain(state, domain_type, epoch)`.
 pub fn state_get_domain<P: Preset>(
     state: &BeaconState<P>,

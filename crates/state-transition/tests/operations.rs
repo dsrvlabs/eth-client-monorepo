@@ -1,7 +1,7 @@
 //! `operations` runner — CC-12b (`execution_payload`, `withdrawals`) + CC-12c
-//! (`proposer_slashing`, `attester_slashing`, `attestation`, `voluntary_exit`,
-//! `bls_to_execution_change`). Deposit has no Fulu operations tree; covered by
-//! unit tests. `randao` / `eth1_data` are unit-tested only.
+//! (slashings / attestation / exit / bls-change) + CC-12d (execution requests +
+//! `sync_aggregate`). Deposit eth1-bridge has no Fulu operations tree; covered
+//! by unit tests. `randao` / `eth1_data` are unit-tested only.
 //!
 //! Does **not** depend on `cc-spec-tests` (crate DAG). Vector cache layout and
 //! readiness markers match Architecture §10.1 / the committed `spec-vectors.lock`.
@@ -14,14 +14,17 @@ use std::path::{Path, PathBuf};
 
 use cc_state_transition::{
     process_attestation, process_attester_slashing, process_bls_to_execution_change,
-    process_eth1_data, process_execution_payload, process_proposer_slashing, process_randao,
-    process_voluntary_exit, process_withdrawals, BlockError, EngineError, ExecutionEngine,
-    GossipClass, NewPayloadRequest, PayloadStatus, ProcessAttestationOpts, TransitionContext,
+    process_consolidation_request, process_deposit_request, process_eth1_data,
+    process_execution_payload, process_proposer_slashing, process_randao,
+    process_sync_aggregate_with_opts, process_voluntary_exit, process_withdrawal_request,
+    process_withdrawals, BlockError, EngineError, ExecutionEngine, GossipClass, NewPayloadRequest,
+    PayloadStatus, ProcessAttestationOpts, TransitionContext,
 };
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
+use cc_types::containers::SyncAggregate;
 use cc_types::operations::{
-    Attestation, AttesterSlashing, ProposerSlashing, SignedBlsToExecutionChange,
-    SignedVoluntaryExit,
+    Attestation, AttesterSlashing, ConsolidationRequest, DepositRequest, ProposerSlashing,
+    SignedBlsToExecutionChange, SignedVoluntaryExit, WithdrawalRequest,
 };
 use cc_types::preset::{Mainnet, Minimal, Preset};
 use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, KzgCommitment, Root, Slot};
@@ -35,7 +38,7 @@ const RUNNER: &str = "operations";
 const LOCKFILE: &str = include_str!("../../../spec-vectors.lock");
 const SKIPLIST: &str = include_str!("../../../docs/spec-vectors-skiplist.md");
 
-/// Handlers this runner owns (CC-12b + CC-12c).
+/// Handlers this runner owns (CC-12b + CC-12c + CC-12d).
 const HANDLERS: &[&str] = &[
     "execution_payload",
     "withdrawals",
@@ -44,6 +47,10 @@ const HANDLERS: &[&str] = &[
     "attestation",
     "voluntary_exit",
     "bls_to_execution_change",
+    "deposit_request",
+    "withdrawal_request",
+    "consolidation_request",
+    "sync_aggregate",
 ];
 
 // ---------------------------------------------------------------------------
@@ -483,6 +490,7 @@ fn execution_payload_mainnet() {
 fn run_single_op_handler<P: Preset, Op, F>(
     handler: &str,
     artifact: &str,
+    require_invalid: bool,
     decode_op: F,
 ) where
     Op: Decode,
@@ -544,11 +552,13 @@ fn run_single_op_handler<P: Preset, Op, F>(
     }
 
     assert!(ran > 0, "expected valid {handler} cases for {}", P::NAME);
-    assert!(
-        invalid_ok > 0,
-        "expected invalid {handler} cases for {}",
-        P::NAME
-    );
+    if require_invalid {
+        assert!(
+            invalid_ok > 0,
+            "expected invalid {handler} cases for {}",
+            P::NAME
+        );
+    }
 }
 
 #[test]
@@ -556,6 +566,7 @@ fn proposer_slashing_minimal() {
     run_single_op_handler::<Minimal, ProposerSlashing, _>(
         "proposer_slashing",
         "proposer_slashing.ssz_snappy",
+        true,
         |op, state, _cfg, verify| process_proposer_slashing(state, op, verify),
     );
 }
@@ -565,6 +576,7 @@ fn proposer_slashing_mainnet() {
     run_single_op_handler::<Mainnet, ProposerSlashing, _>(
         "proposer_slashing",
         "proposer_slashing.ssz_snappy",
+        true,
         |op, state, _cfg, verify| process_proposer_slashing(state, op, verify),
     );
 }
@@ -574,6 +586,7 @@ fn attester_slashing_minimal() {
     run_single_op_handler::<Minimal, AttesterSlashing<Minimal>, _>(
         "attester_slashing",
         "attester_slashing.ssz_snappy",
+        true,
         |op, state, _cfg, verify| process_attester_slashing(state, op, verify),
     );
 }
@@ -583,6 +596,7 @@ fn attester_slashing_mainnet() {
     run_single_op_handler::<Mainnet, AttesterSlashing<Mainnet>, _>(
         "attester_slashing",
         "attester_slashing.ssz_snappy",
+        true,
         |op, state, _cfg, verify| process_attester_slashing(state, op, verify),
     );
 }
@@ -592,6 +606,7 @@ fn attestation_minimal() {
     run_single_op_handler::<Minimal, Attestation<Minimal>, _>(
         "attestation",
         "attestation.ssz_snappy",
+        true,
         |op, state, _cfg, verify| {
             process_attestation(
                 state,
@@ -609,6 +624,7 @@ fn attestation_mainnet() {
     run_single_op_handler::<Mainnet, Attestation<Mainnet>, _>(
         "attestation",
         "attestation.ssz_snappy",
+        true,
         |op, state, _cfg, verify| {
             process_attestation(
                 state,
@@ -626,6 +642,7 @@ fn voluntary_exit_minimal() {
     run_single_op_handler::<Minimal, SignedVoluntaryExit, _>(
         "voluntary_exit",
         "voluntary_exit.ssz_snappy",
+        true,
         |op, state, cfg, verify| process_voluntary_exit(state, op, cfg, verify),
     );
 }
@@ -635,6 +652,7 @@ fn voluntary_exit_mainnet() {
     run_single_op_handler::<Mainnet, SignedVoluntaryExit, _>(
         "voluntary_exit",
         "voluntary_exit.ssz_snappy",
+        true,
         |op, state, cfg, verify| process_voluntary_exit(state, op, cfg, verify),
     );
 }
@@ -644,6 +662,7 @@ fn bls_to_execution_change_minimal() {
     run_single_op_handler::<Minimal, SignedBlsToExecutionChange, _>(
         "bls_to_execution_change",
         "address_change.ssz_snappy",
+        true,
         |op, state, cfg, verify| process_bls_to_execution_change(state, op, cfg, verify),
     );
 }
@@ -653,7 +672,92 @@ fn bls_to_execution_change_mainnet() {
     run_single_op_handler::<Mainnet, SignedBlsToExecutionChange, _>(
         "bls_to_execution_change",
         "address_change.ssz_snappy",
+        true,
         |op, state, cfg, verify| process_bls_to_execution_change(state, op, cfg, verify),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// CC-12d — execution requests + sync_aggregate
+// ---------------------------------------------------------------------------
+
+#[test]
+fn deposit_request_minimal() {
+    run_single_op_handler::<Minimal, DepositRequest, _>(
+        "deposit_request",
+        "deposit_request.ssz_snappy",
+        false, // all on-disk cases are valid (queue-only; no invalid/)
+        |op, state, _cfg, _v| process_deposit_request(state, op),
+    );
+}
+
+#[test]
+fn deposit_request_mainnet() {
+    run_single_op_handler::<Mainnet, DepositRequest, _>(
+        "deposit_request",
+        "deposit_request.ssz_snappy",
+        false,
+        |op, state, _cfg, _v| process_deposit_request(state, op),
+    );
+}
+
+#[test]
+fn withdrawal_request_minimal() {
+    run_single_op_handler::<Minimal, WithdrawalRequest, _>(
+        "withdrawal_request",
+        "withdrawal_request.ssz_snappy",
+        false, // incorrect_* cases are valid blocks (no-op), not rejections
+        |op, state, _cfg, _v| process_withdrawal_request(state, op),
+    );
+}
+
+#[test]
+fn withdrawal_request_mainnet() {
+    run_single_op_handler::<Mainnet, WithdrawalRequest, _>(
+        "withdrawal_request",
+        "withdrawal_request.ssz_snappy",
+        false,
+        |op, state, _cfg, _v| process_withdrawal_request(state, op),
+    );
+}
+
+#[test]
+fn consolidation_request_minimal() {
+    run_single_op_handler::<Minimal, ConsolidationRequest, _>(
+        "consolidation_request",
+        "consolidation_request.ssz_snappy",
+        false, // incorrect_* cases are valid blocks (no-op), not rejections
+        |op, state, _cfg, _v| process_consolidation_request(state, op),
+    );
+}
+
+#[test]
+fn consolidation_request_mainnet() {
+    run_single_op_handler::<Mainnet, ConsolidationRequest, _>(
+        "consolidation_request",
+        "consolidation_request.ssz_snappy",
+        false,
+        |op, state, _cfg, _v| process_consolidation_request(state, op),
+    );
+}
+
+#[test]
+fn sync_aggregate_minimal() {
+    run_single_op_handler::<Minimal, SyncAggregate<Minimal>, _>(
+        "sync_aggregate",
+        "sync_aggregate.ssz_snappy",
+        true,
+        |op, state, _cfg, verify| process_sync_aggregate_with_opts(state, op, verify),
+    );
+}
+
+#[test]
+fn sync_aggregate_mainnet() {
+    run_single_op_handler::<Mainnet, SyncAggregate<Mainnet>, _>(
+        "sync_aggregate",
+        "sync_aggregate.ssz_snappy",
+        true,
+        |op, state, _cfg, verify| process_sync_aggregate_with_opts(state, op, verify),
     );
 }
 
@@ -1265,4 +1369,201 @@ fn bls_to_execution_change_rejects_current_fork_version_domain() {
         state2.validators_get(0).unwrap().withdrawal_credentials.as_array()[0],
         0x01
     );
+}
+
+// ---------------------------------------------------------------------------
+// CC-12d acceptance criteria (unit)
+// ---------------------------------------------------------------------------
+
+/// Invalid withdrawal / consolidation requests are no-ops (state unchanged, Ok).
+#[test]
+fn invalid_withdrawal_and_consolidation_requests_are_noops() {
+    use cc_types::containers::Validator;
+    use cc_types::operations::{ConsolidationRequest, WithdrawalRequest};
+    use cc_types::primitives::{BlsPublicKey, Gwei, ValidatorIndex};
+
+    let mut state = BeaconState::<Minimal>::default();
+    state.set_slot(Slot::new(32));
+    // Active compounding validator with eth1-style address in credentials.
+    let mut creds = [0u8; 32];
+    creds[0] = 0x02;
+    creds[12..].copy_from_slice(&[0xAB; 20]);
+    let pk = BlsPublicKey::from_array([0x11; 48]);
+    state
+        .validators_push(Validator {
+            pubkey: pk,
+            withdrawal_credentials: Root::from_array(creds),
+            effective_balance: Gwei::new(32_000_000_000),
+            slashed: false,
+            activation_eligibility_epoch: Epoch::new(0),
+            activation_epoch: Epoch::new(0),
+            exit_epoch: Epoch::new(u64::MAX),
+            withdrawable_epoch: Epoch::new(u64::MAX),
+        })
+        .unwrap();
+    state.balances_push(Gwei::new(32_000_000_000)).unwrap();
+    state
+        .caches_mut()
+        .pubkeys
+        .insert(pk, ValidatorIndex::new(0));
+
+    let pre = state.clone();
+
+    // Wrong source address → no-op.
+    let bad_wd = WithdrawalRequest {
+        source_address: ExecutionAddress::from_array([0x00; 20]),
+        validator_pubkey: pk,
+        amount: Gwei::new(0),
+    };
+    process_withdrawal_request(&mut state, &bad_wd).unwrap();
+    assert_eq!(state, pre, "invalid withdrawal must leave state unchanged");
+
+    // Unknown target pubkey consolidation → no-op.
+    let bad_con = ConsolidationRequest {
+        source_address: ExecutionAddress::from_array([0xAB; 20]),
+        source_pubkey: pk,
+        target_pubkey: BlsPublicKey::from_array([0x22; 48]),
+    };
+    process_consolidation_request(&mut state, &bad_con).unwrap();
+    assert_eq!(state, pre, "invalid consolidation must leave state unchanged");
+}
+
+/// `process_deposit_request` appends pending deposits and sets start index once.
+#[test]
+fn deposit_request_sets_start_index_once_across_two_requests() {
+    use cc_types::operations::DepositRequest;
+    use cc_types::primitives::{BlsPublicKey, BlsSignature, Gwei};
+
+    let mut state = BeaconState::<Minimal>::default();
+    state.set_slot(Slot::new(10));
+    state.set_deposit_requests_start_index(u64::MAX);
+    assert_eq!(state.pending_deposits_len(), 0);
+
+    let r1 = DepositRequest {
+        pubkey: BlsPublicKey::from_array([1; 48]),
+        withdrawal_credentials: Root::from_array([0x01; 32]),
+        amount: Gwei::new(32_000_000_000),
+        signature: BlsSignature::default(),
+        index: 7,
+    };
+    let r2 = DepositRequest {
+        pubkey: BlsPublicKey::from_array([2; 48]),
+        withdrawal_credentials: Root::from_array([0x02; 32]),
+        amount: Gwei::new(1_000_000_000),
+        signature: BlsSignature::default(),
+        index: 8,
+    };
+
+    process_deposit_request(&mut state, &r1).unwrap();
+    assert_eq!(state.deposit_requests_start_index(), 7);
+    assert_eq!(state.pending_deposits_len(), 1);
+    assert_eq!(state.pending_deposits_get(0).unwrap().slot, Slot::new(10));
+
+    process_deposit_request(&mut state, &r2).unwrap();
+    assert_eq!(
+        state.deposit_requests_start_index(),
+        7,
+        "start index set exactly once"
+    );
+    assert_eq!(state.pending_deposits_len(), 2);
+    assert_eq!(state.pending_deposits_get(1).unwrap().amount.as_u64(), 1_000_000_000);
+}
+
+/// Empty sync participants + infinity signature passes via eth_fast_aggregate_verify.
+#[test]
+fn sync_aggregate_empty_participants_infinity_signature_passes() {
+    use cc_crypto::INFINITY_SIGNATURE;
+    use cc_types::containers::{BeaconBlockHeader, Validator};
+    use cc_types::primitives::{BlsPublicKey, BlsSignature, Gwei, ValidatorIndex};
+    use tree_hash::TreeHash;
+
+    let mut state = BeaconState::<Minimal>::default();
+    // One validator; map zero-pubkey committee members to index 0.
+    state
+        .validators_push(Validator {
+            pubkey: BlsPublicKey::default(),
+            withdrawal_credentials: Root::ZERO,
+            effective_balance: Gwei::new(32_000_000_000),
+            slashed: false,
+            activation_eligibility_epoch: Epoch::new(0),
+            activation_epoch: Epoch::new(0),
+            exit_epoch: Epoch::new(u64::MAX),
+            withdrawable_epoch: Epoch::new(u64::MAX),
+        })
+        .unwrap();
+    state.balances_push(Gwei::new(32_000_000_000)).unwrap();
+    state
+        .caches_mut()
+        .pubkeys
+        .insert(BlsPublicKey::default(), ValidatorIndex::new(0));
+    for i in 0..state.proposer_lookahead_len() {
+        state
+            .proposer_lookahead_set(i, ValidatorIndex::new(0))
+            .unwrap();
+    }
+    // Seed block root for previous slot.
+    state.set_slot(Slot::new(1));
+    let header = BeaconBlockHeader {
+        slot: Slot::new(0),
+        proposer_index: ValidatorIndex::new(0),
+        parent_root: Root::ZERO,
+        state_root: Root::ZERO,
+        body_root: Root::ZERO,
+    };
+    state.set_latest_block_header(header);
+    let br = Root::from_hash256(TreeHash::tree_hash_root(state.latest_block_header()));
+    state.block_roots_set(0, br).unwrap();
+
+    // All bits default false (empty participants) + infinity signature.
+    let agg = SyncAggregate::<Minimal> {
+        sync_committee_signature: BlsSignature::from_array(INFINITY_SIGNATURE),
+        ..Default::default()
+    };
+
+    let scans_before = state.caches().pubkeys.linear_scan_count();
+    process_sync_aggregate_with_opts(&mut state, &agg, true).expect("empty+infinity must pass");
+    assert_eq!(
+        state.caches().pubkeys.linear_scan_count(),
+        scans_before,
+        "process_sync_aggregate must not full-registry-scan"
+    );
+}
+
+/// PubkeyIndexMap resolves sync-committee members; no linear scan during process.
+#[test]
+fn sync_aggregate_uses_pubkey_index_map_no_registry_scan() {
+    // Covered by the empty-participants case above; also run a vector case with
+    // an explicit scan counter assertion.
+    let tests = tests_root();
+    let case = tests.join(
+        "minimal/fulu/operations/sync_aggregate/pyspec_tests/sync_committee_rewards_empty_participants",
+    );
+    assert!(case.is_dir(), "missing empty participants vector case");
+    let pre = snappy_decompress(&case.join("pre.ssz_snappy"));
+    let mut state = BeaconState::<Minimal>::from_ssz_bytes_with(ForkName::Fulu, &pre).unwrap();
+    let pk_entries: Vec<_> = state
+        .validators_iter()
+        .enumerate()
+        .map(|(i, v)| (v.pubkey, cc_types::primitives::ValidatorIndex::new(i as u64)))
+        .collect();
+    for (pk, idx) in pk_entries {
+        state.caches_mut().pubkeys.insert(pk, idx);
+    }
+    let _ = state.caches_mut().pubkeys.take_linear_scan_count();
+    let op = SyncAggregate::<Minimal>::from_ssz_bytes(&snappy_decompress(
+        &case.join("sync_aggregate.ssz_snappy"),
+    ))
+    .unwrap();
+    process_sync_aggregate_with_opts(&mut state, &op, true).unwrap();
+    assert_eq!(
+        state.caches().pubkeys.linear_scan_count(),
+        0,
+        "no full-registry scan during process_sync_aggregate"
+    );
+    let post = BeaconState::<Minimal>::from_ssz_bytes_with(
+        ForkName::Fulu,
+        &snappy_decompress(&case.join("post.ssz_snappy")),
+    )
+    .unwrap();
+    assert_eq!(state, post);
 }
