@@ -1,7 +1,5 @@
 //! Consensus types substrate: preset, config, primitives, fork, containers, operations,
-//! execution, and block (CC-10c / CC-10d).
-//!
-//! `BeaconState` (`CC-10e`) and caches (`CC-10g`) land in follow-on issues.
+//! execution, block, state, sidecars, light-client, and `ssz_static` registry (CC-10c–CC-10e).
 
 #![allow(missing_docs)] // public re-exports are documented at their definitions
 
@@ -10,26 +8,36 @@ pub mod config;
 pub mod containers;
 pub mod execution;
 pub mod fork;
+pub mod light_client;
 pub mod operations;
 pub mod preset;
 pub mod primitives;
+pub mod registry;
+pub mod sidecar;
+pub mod state;
 
 pub use block::{BeaconBlock, BeaconBlockBody, SignedBeaconBlock};
 pub use config::{
     BlobParameters, BlobSchedule, BlobScheduleError, ChainConfig, ConfigError, PresetName,
 };
 pub use containers::{
-    AttestationData, BeaconBlockHeader, Checkpoint, DepositData, DepositMessage, Eth1Data,
-    HistoricalSummary, SignedBeaconBlockHeader, SigningData, SyncAggregate, SyncCommittee,
-    Validator,
+    AttestationData, BeaconBlockHeader, Checkpoint, DepositData, DepositMessage, Eth1Block,
+    Eth1Data, HistoricalSummary, PowBlock, SignedBeaconBlockHeader, SigningData, SyncAggregate,
+    SyncCommittee, Validator,
 };
 pub use execution::{ExecutionPayload, ExecutionPayloadHeader, Transaction};
 pub use fork::{Fork, ForkData, ForkDigest, ForkName, UnknownForkName};
+pub use light_client::{
+    LightClientBootstrap, LightClientFinalityUpdate, LightClientHeader, LightClientOptimisticUpdate,
+    LightClientUpdate,
+};
 pub use operations::{
-    Attestation, AttesterSlashing, BlsToExecutionChange, ConsolidationRequest, Deposit,
-    DepositRequest, ExecutionRequests, IndexedAttestation, PendingConsolidation, PendingDeposit,
-    PendingPartialWithdrawal, ProposerSlashing, SignedBlsToExecutionChange, SignedVoluntaryExit,
-    VoluntaryExit, Withdrawal, WithdrawalRequest, DEPOSIT_CONTRACT_TREE_DEPTH,
+    AggregateAndProof, Attestation, AttesterSlashing, BlsToExecutionChange, ConsolidationRequest,
+    ContributionAndProof, Deposit, DepositRequest, ExecutionRequests, IndexedAttestation,
+    PendingConsolidation, PendingDeposit, PendingPartialWithdrawal, ProposerSlashing,
+    SignedAggregateAndProof, SignedBlsToExecutionChange, SignedContributionAndProof,
+    SignedVoluntaryExit, SingleAttestation, SyncAggregatorSelectionData, SyncCommitteeContribution,
+    SyncCommitteeMessage, VoluntaryExit, Withdrawal, WithdrawalRequest, DEPOSIT_CONTRACT_TREE_DEPTH,
 };
 pub use preset::{Mainnet, Minimal, Preset, PresetUnsigned};
 pub use primitives::{
@@ -37,6 +45,12 @@ pub use primitives::{
     ExecutionAddress, ForkVersion, Gwei, Hash256, HexParseError, KzgCommitment, KzgProof, Root,
     Slot, ValidatorIndex,
 };
+pub use registry::{ssz_static_handler, ssz_static_types, SszStaticHandler, SszStaticOutput, SSZ_STATIC_TYPE_NAMES};
+pub use sidecar::{
+    DataColumnSidecar, DataColumnsByRootIdentifier, MatrixEntry, PartialDataColumnGroupID,
+    PartialDataColumnHeader, PartialDataColumnPartsMetadata, PartialDataColumnSidecar,
+};
+pub use state::{BeaconState, List, StateCaches, Vector};
 
 // ---------------------------------------------------------------------------
 // KZG / DAS constants (Architecture §4.3, Fulu das-core / polynomial-commitments)
@@ -79,6 +93,9 @@ pub const KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH: u64 = 4;
 
 /// Data-column sidecar subnet count (Fulu config = 128).
 pub const DATA_COLUMN_SIDECAR_SUBNET_COUNT: u64 = 128;
+
+/// Justification bits length (`JUSTIFICATION_BITS_LENGTH = 4`).
+pub const JUSTIFICATION_BITS_LENGTH: usize = 4;
 
 // ---------------------------------------------------------------------------
 // Compile-only surface for Stream B (`cc-crypto`) — R-10 guard
@@ -125,5 +142,4 @@ mod constants_tests {
         assert_eq!(KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, 4);
         assert_eq!(Cell::LEN, BYTES_PER_CELL);
     }
-
 }

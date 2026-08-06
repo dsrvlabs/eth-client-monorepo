@@ -203,6 +203,33 @@ fn assert_preset_pairs<P: Preset>() {
         "{} ProposerLookaheadLen product",
         P::NAME
     );
+
+    assert_eq!(
+        P::Eth1DataVotesLength::U64,
+        P::ETH1_DATA_VOTES_LENGTH,
+        "{} Eth1DataVotesLength typenum",
+        P::NAME
+    );
+    assert_eq!(
+        P::ETH1_DATA_VOTES_LENGTH,
+        P::EPOCHS_PER_ETH1_VOTING_PERIOD * P::SLOTS_PER_EPOCH,
+        "{} Eth1DataVotesLength product",
+        P::NAME
+    );
+
+    assert_eq!(
+        P::SyncSubcommitteeSize::U64,
+        P::SYNC_SUBCOMMITTEE_SIZE,
+        "{} SyncSubcommitteeSize typenum",
+        P::NAME
+    );
+    assert_eq!(
+        P::SYNC_SUBCOMMITTEE_SIZE,
+        P::SYNC_COMMITTEE_SIZE / P::SYNC_COMMITTEE_SUBNET_COUNT,
+        "{} SyncSubcommitteeSize product",
+        P::NAME
+    );
+    assert_eq!(P::SYNC_COMMITTEE_SUBNET_COUNT, 4);
 }
 
 #[test]

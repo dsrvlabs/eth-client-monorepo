@@ -13,7 +13,8 @@ use crate::containers::{
 };
 use crate::preset::Preset;
 use crate::primitives::{
-    BlsPublicKey, BlsSignature, Epoch, ExecutionAddress, Gwei, Root, Slot, ValidatorIndex,
+    BlsPublicKey, BlsSignature, CommitteeIndex, Epoch, ExecutionAddress, Gwei, Root, Slot,
+    ValidatorIndex,
 };
 
 /// Merkle proof depth for the deposit contract tree (`DEPOSIT_CONTRACT_TREE_DEPTH = 32`).
@@ -267,6 +268,150 @@ pub struct PendingConsolidation {
     pub source_index: ValidatorIndex,
     /// Target validator index.
     pub target_index: ValidatorIndex,
+}
+
+// ---------------------------------------------------------------------------
+// Gossip / validator helper containers (Electra + Altair; listed in ssz_static)
+// ---------------------------------------------------------------------------
+
+/// Spec `SingleAttestation` (Electra gossip form).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode, TreeHash)]
+pub struct SingleAttestation {
+    /// Committee index within the slot.
+    pub committee_index: CommitteeIndex,
+    /// Attesting validator index.
+    pub attester_index: ValidatorIndex,
+    /// Attestation data.
+    pub data: AttestationData,
+    /// Attester signature.
+    pub signature: BlsSignature,
+}
+
+/// Spec `AggregateAndProof` (Electra-shaped aggregate).
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash)]
+pub struct AggregateAndProof<P: Preset> {
+    /// Aggregator validator index.
+    pub aggregator_index: ValidatorIndex,
+    /// Aggregate attestation.
+    pub aggregate: Attestation<P>,
+    /// Selection proof.
+    pub selection_proof: BlsSignature,
+}
+
+impl<P: Preset> Default for AggregateAndProof<P> {
+    fn default() -> Self {
+        Self {
+            aggregator_index: ValidatorIndex::default(),
+            aggregate: Attestation::default(),
+            selection_proof: BlsSignature::default(),
+        }
+    }
+}
+
+/// Spec `SignedAggregateAndProof`.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash)]
+pub struct SignedAggregateAndProof<P: Preset> {
+    /// Unsigned aggregate-and-proof.
+    pub message: AggregateAndProof<P>,
+    /// Aggregator signature over `message`.
+    pub signature: BlsSignature,
+}
+
+impl<P: Preset> Default for SignedAggregateAndProof<P> {
+    fn default() -> Self {
+        Self {
+            message: AggregateAndProof::default(),
+            signature: BlsSignature::default(),
+        }
+    }
+}
+
+/// Spec `SyncCommitteeMessage` (Altair+).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode, TreeHash)]
+pub struct SyncCommitteeMessage {
+    /// Slot of the message.
+    pub slot: Slot,
+    /// Beacon block root being attested.
+    pub beacon_block_root: Root,
+    /// Sync-committee member validator index.
+    pub validator_index: ValidatorIndex,
+    /// BLS signature.
+    pub signature: BlsSignature,
+}
+
+/// Spec `SyncCommitteeContribution` (Altair+).
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash)]
+pub struct SyncCommitteeContribution<P: Preset> {
+    /// Slot of the contribution.
+    pub slot: Slot,
+    /// Beacon block root.
+    pub beacon_block_root: Root,
+    /// Subcommittee index within the sync committee.
+    pub subcommittee_index: u64,
+    /// Participation bits for the subcommittee.
+    pub aggregation_bits: BitVector<P::SyncSubcommitteeSize>,
+    /// Aggregate signature.
+    pub signature: BlsSignature,
+}
+
+impl<P: Preset> Default for SyncCommitteeContribution<P> {
+    fn default() -> Self {
+        Self {
+            slot: Slot::default(),
+            beacon_block_root: Root::default(),
+            subcommittee_index: 0,
+            aggregation_bits: BitVector::default(),
+            signature: BlsSignature::default(),
+        }
+    }
+}
+
+/// Spec `ContributionAndProof`.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash)]
+pub struct ContributionAndProof<P: Preset> {
+    /// Aggregator validator index.
+    pub aggregator_index: ValidatorIndex,
+    /// Sync-committee contribution.
+    pub contribution: SyncCommitteeContribution<P>,
+    /// Selection proof.
+    pub selection_proof: BlsSignature,
+}
+
+impl<P: Preset> Default for ContributionAndProof<P> {
+    fn default() -> Self {
+        Self {
+            aggregator_index: ValidatorIndex::default(),
+            contribution: SyncCommitteeContribution::default(),
+            selection_proof: BlsSignature::default(),
+        }
+    }
+}
+
+/// Spec `SignedContributionAndProof`.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash)]
+pub struct SignedContributionAndProof<P: Preset> {
+    /// Unsigned contribution-and-proof.
+    pub message: ContributionAndProof<P>,
+    /// Aggregator signature over `message`.
+    pub signature: BlsSignature,
+}
+
+impl<P: Preset> Default for SignedContributionAndProof<P> {
+    fn default() -> Self {
+        Self {
+            message: ContributionAndProof::default(),
+            signature: BlsSignature::default(),
+        }
+    }
+}
+
+/// Spec `SyncAggregatorSelectionData`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode, TreeHash)]
+pub struct SyncAggregatorSelectionData {
+    /// Slot of the selection.
+    pub slot: Slot,
+    /// Subcommittee index.
+    pub subcommittee_index: u64,
 }
 
 #[cfg(test)]

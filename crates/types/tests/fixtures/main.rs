@@ -13,7 +13,7 @@ mod fixtures;
 use std::fs;
 use std::path::PathBuf;
 
-use cc_types::{ForkName, Mainnet, SignedBeaconBlock};
+use cc_types::{BeaconState, ForkName, Mainnet, Preset, SignedBeaconBlock};
 
 use fixtures::{
     cache_env_is_set, ci_cache_key, load_anchor, load_sequence, resolve_cache_root, Error,
@@ -234,6 +234,20 @@ fn signed_beacon_block_fulu_decode_matches_anchor_root() {
         signed.message.slot.as_u64(),
         fixtures.anchor.slot,
         "decoded slot must match anchor"
+    );
+
+    // CC-10e: BeaconState decode of the same anchor (root equality is CC-10g).
+    let state_bytes = fs::read(&fixtures.state_ssz).expect("read beacon_state.ssz");
+    assert!(
+        state_bytes.len() as u64 >= 150 * 1024 * 1024,
+        "state must be ≥ 150 MB"
+    );
+    let state = BeaconState::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, &state_bytes)
+        .unwrap_or_else(|e| panic!("BeaconState SSZ decode failed: {e:?}"));
+    assert_eq!(state.slot().as_u64(), fixtures.anchor.slot);
+    assert_eq!(
+        state.proposer_lookahead().len(),
+        Mainnet::PROPOSER_LOOKAHEAD_LEN as usize
     );
 
     let block_root = signed.canonical_root();

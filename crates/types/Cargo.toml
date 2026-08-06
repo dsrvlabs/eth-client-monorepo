@@ -24,3 +24,4 @@ typenum = { workspace = true }
 
 [dev-dependencies]
 sha2 = { workspace = true }
+cc-spec-tests = { workspace = true }

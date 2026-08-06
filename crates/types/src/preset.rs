@@ -6,8 +6,8 @@
 use std::fmt::Debug;
 
 use typenum::{
-    Unsigned, U1, U1048576, U1073741824, U1099511627776, U131072, U134217728, U16, U16777216, U2,
-    U2048, U256, U262144, U32, U4, U4096, U512, U64, U65536, U8, U8192,
+    Unsigned, U1, U1048576, U1073741824, U1099511627776, U128, U131072, U134217728, U16, U16777216,
+    U2, U2048, U256, U262144, U32, U4, U4096, U512, U64, U65536, U8, U8192,
 };
 
 /// Bound shared by every capacity associated type on [`Preset`].
@@ -108,6 +108,8 @@ pub trait Preset:
     /// Electra-era base blob bound; sole runtime consumer is the pre-schedule
     /// fallback inside `BlobSchedule::get_blob_parameters` (Architecture §5.6).
     const MAX_BLOBS_PER_BLOCK_BASE: u64;
+    /// `SYNC_COMMITTEE_SUBNET_COUNT` (Altair validator; always 4).
+    const SYNC_COMMITTEE_SUBNET_COUNT: u64;
 
     // --- derived scalars (hand-computed; asserted in tests) ------------------
 
@@ -115,6 +117,10 @@ pub trait Preset:
     const MAX_VALIDATORS_PER_SLOT: u64;
     /// `(MIN_SEED_LOOKAHEAD + 1) × SLOTS_PER_EPOCH`
     const PROPOSER_LOOKAHEAD_LEN: u64;
+    /// `EPOCHS_PER_ETH1_VOTING_PERIOD × SLOTS_PER_EPOCH`
+    const ETH1_DATA_VOTES_LENGTH: u64;
+    /// `SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT`
+    const SYNC_SUBCOMMITTEE_SIZE: u64;
 
     // --- typenum capacities (ssz_types generics) -----------------------------
 
@@ -178,6 +184,10 @@ pub trait Preset:
     type SlotsPerEpoch: PresetUnsigned;
     /// typenum of `EPOCHS_PER_ETH1_VOTING_PERIOD` (eth1 data votes list length uses slots product)
     type EpochsPerEth1VotingPeriod: PresetUnsigned;
+    /// typenum of `ETH1_DATA_VOTES_LENGTH` (derived, declared)
+    type Eth1DataVotesLength: PresetUnsigned;
+    /// typenum of `SYNC_SUBCOMMITTEE_SIZE` (derived, declared)
+    type SyncSubcommitteeSize: PresetUnsigned;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,10 +239,13 @@ impl Preset for Mainnet {
     const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64 = 2;
     // Electra base (`MAX_BLOBS_PER_BLOCK_ELECTRA` in network config.yaml).
     const MAX_BLOBS_PER_BLOCK_BASE: u64 = 9;
+    const SYNC_COMMITTEE_SUBNET_COUNT: u64 = 4;
 
     // Derived by hand (Architecture §2.2).
     const MAX_VALIDATORS_PER_SLOT: u64 = 2048 * 64; // 131_072
     const PROPOSER_LOOKAHEAD_LEN: u64 = (1 + 1) * 32; // 64
+    const ETH1_DATA_VOTES_LENGTH: u64 = 64 * 32; // 2048
+    const SYNC_SUBCOMMITTEE_SIZE: u64 = 512 / 4; // 128
 
     type SlotsPerEpoch = U32;
     type EpochsPerEth1VotingPeriod = U64;
@@ -264,6 +277,8 @@ impl Preset for Mainnet {
     type MaxDepositRequestsPerPayload = U8192;
     type MaxWithdrawalRequestsPerPayload = U16;
     type MaxConsolidationRequestsPerPayload = U2;
+    type Eth1DataVotesLength = U2048;
+    type SyncSubcommitteeSize = U128;
 }
 
 // ---------------------------------------------------------------------------
@@ -314,10 +329,13 @@ impl Preset for Minimal {
     const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64 = 16;
     const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64 = 2;
     const MAX_BLOBS_PER_BLOCK_BASE: u64 = 9;
+    const SYNC_COMMITTEE_SUBNET_COUNT: u64 = 4;
 
     // Derived by hand.
     const MAX_VALIDATORS_PER_SLOT: u64 = 2048 * 4; // 8192
     const PROPOSER_LOOKAHEAD_LEN: u64 = (1 + 1) * 8; // 16
+    const ETH1_DATA_VOTES_LENGTH: u64 = 4 * 8; // 32
+    const SYNC_SUBCOMMITTEE_SIZE: u64 = 32 / 4; // 8
 
     type SlotsPerEpoch = U8;
     type EpochsPerEth1VotingPeriod = U4;
@@ -349,5 +367,7 @@ impl Preset for Minimal {
     type MaxDepositRequestsPerPayload = U8192;
     type MaxWithdrawalRequestsPerPayload = U16;
     type MaxConsolidationRequestsPerPayload = U2;
+    type Eth1DataVotesLength = U32;
+    type SyncSubcommitteeSize = U8;
 }
 

@@ -745,6 +745,7 @@ name = "cc-types"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "cc-spec-tests",
  "ethereum_ssz",
  "ethereum_ssz_derive",
  "serde",

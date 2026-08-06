@@ -3,6 +3,7 @@
 //! Spec containers that do not belong to operations, execution, or block body
 //! groupings. Generic over [`Preset`] only where list/vector capacities appear.
 
+use alloy_primitives::U256;
 use ssz_derive::{Decode, Encode};
 use ssz_types::{BitVector, FixedVector};
 use tree_hash_derive::TreeHash;
@@ -111,6 +112,28 @@ pub struct HistoricalSummary {
     pub block_summary_root: Root,
     /// Root of a window of state roots.
     pub state_summary_root: Root,
+}
+
+/// Spec `Eth1Block` (phase0 deposit-contract helper; present in `ssz_static`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode, TreeHash)]
+pub struct Eth1Block {
+    /// Eth1 block timestamp.
+    pub timestamp: u64,
+    /// Deposit tree root at this block.
+    pub deposit_root: Root,
+    /// Deposit count at this block.
+    pub deposit_count: u64,
+}
+
+/// Spec `PowBlock` (Bellatrix merge helper; present in `ssz_static`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode, TreeHash)]
+pub struct PowBlock {
+    /// This PoW block's hash.
+    pub block_hash: Root,
+    /// Parent PoW block hash.
+    pub parent_hash: Root,
+    /// Cumulative difficulty (`uint256`).
+    pub total_difficulty: U256,
 }
 
 /// Spec `DepositMessage`.

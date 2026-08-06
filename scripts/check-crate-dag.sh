@@ -20,10 +20,11 @@ METADATA="$(cargo metadata --no-deps --format-version 1 --locked)"
 # Empty list = root with no workspace deps.
 # Services may take cc-types/cc-crypto only for chain and p2p (Phase 1 allowance).
 # cc-driver may depend only on {cc-proto, cc-config} (ADR-P1-13).
-# cc-spec-tests has no workspace edges.
+# cc-spec-tests has no workspace edges (zero outgoing); cc-types may take it as a
+# test-only harness edge for ssz_static / vector runners (dev-dependency).
 allowed_deps() {
   case "$1" in
-    cc-types)             echo "" ;;
+    cc-types)             echo "cc-spec-tests" ;;
     cc-config)            echo "" ;;
     cc-proto)             echo "" ;;
     cc-crypto)            echo "cc-types" ;;
