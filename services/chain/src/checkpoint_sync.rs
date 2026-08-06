@@ -29,9 +29,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use cc_fork_choice::{AlwaysAvailable, Store, get_forkchoice_store};
 use cc_state_transition::{BlockSignatureStrategy, StubOptimisticEngine};
-use cc_types::config::{BlobParameters, ChainConfig};
+use cc_types::config::{BlobParameters, BlobSchedule, BlobScheduleError, ChainConfig};
 use cc_types::preset::Preset;
-use cc_types::primitives::{ForkVersion, Root, parse_hex_bytes};
+use cc_types::primitives::{Epoch, ForkVersion, Root, parse_hex_bytes};
 use cc_types::{BeaconState, ForkName, SignedBeaconBlock};
 use futures::StreamExt;
 use serde::Deserialize;
@@ -140,6 +140,14 @@ pub enum CheckpointError {
     /// Store construction from a verified checkpoint failed.
     #[error("fork-choice store construction failed: {0}")]
     Store(String),
+    /// Remote `BLOB_SCHEDULE` could not be built through the validating constructor.
+    ///
+    /// Available for callers of [`blob_schedule_from_spec`] that want a
+    /// `CheckpointError`. Bootstrap **cross-check** folds parse/validation
+    /// failures into [`CheckpointError::ConfigMismatch`] instead (value and
+    /// shape disagreements share one abort path with named keys).
+    #[error("BLOB_SCHEDULE from config/spec: {0}")]
+    BlobSchedule(#[from] BlobScheduleFromSpecError),
 }
 
 impl CheckpointError {
@@ -265,7 +273,7 @@ pub fn verify_checkpoint<P: Preset>(
     Ok(block_root)
 }
 
-// ── config/spec cross-check ─────────────────────────────────────────────────
+// ── config/spec cross-check + BLOB_SCHEDULE source (CC-1G) ──────────────────
 
 /// Keys we implement and compare against `/eth/v1/config/spec` (§8.3).
 const CROSS_CHECK_FORK_VERSIONS: &[&str] = &[
@@ -278,10 +286,55 @@ const CROSS_CHECK_FORK_VERSIONS: &[&str] = &[
     "FULU_FORK_VERSION",
 ];
 
+/// Errors extracting `BLOB_SCHEDULE` from a `/eth/v1/config/spec` value.
+///
+/// Malformed JSON/shape fails here; non-monotonic / empty / duplicate schedules
+/// fail via the shared [`BlobSchedule::try_from_entries`] constructor so both
+/// the file source and the API source share one validation path (CC-1G).
+#[derive(Debug, Error)]
+pub enum BlobScheduleFromSpecError {
+    /// Value was not a JSON array of `{EPOCH, MAX_BLOBS_PER_BLOCK}` entries.
+    #[error("malformed: {0}")]
+    Malformed(String),
+    /// Schedule failed the shared validating constructor.
+    #[error(transparent)]
+    Validation(#[from] BlobScheduleError),
+}
+
+/// Build a validated [`BlobSchedule`] from a `/eth/v1/config/spec` `BLOB_SCHEDULE`
+/// value (CC-1G remainder).
+///
+/// Beacon-API clients flatten the nested array to a JSON string (via
+/// [`parse_spec_json`]); entries commonly carry stringified numbers
+/// (`"EPOCH": "52480"`). Both string and numeric forms are accepted. After
+/// edge normalisation the entries are passed through
+/// [`BlobSchedule::try_from_entries`] — the same constructor the YAML file
+/// source uses — so a malformed or non-monotonic schedule never becomes a
+/// usable [`BlobSchedule`] (Architecture §2.3 type-level fail-at-construction).
+/// Process bind ordering is owned by the service lifecycle (CC-19b).
+pub fn blob_schedule_from_spec(value: &str) -> Result<BlobSchedule, BlobScheduleFromSpecError> {
+    let entries = parse_blob_schedule_entries(value)?;
+    BlobSchedule::try_from_entries(entries).map_err(BlobScheduleFromSpecError::from)
+}
+
+/// Extract `BLOB_SCHEDULE` from a full `/eth/v1/config/spec` string map.
+pub fn blob_schedule_from_spec_map(
+    remote: &BTreeMap<String, String>,
+) -> Result<BlobSchedule, BlobScheduleFromSpecError> {
+    let value = remote.get("BLOB_SCHEDULE").ok_or_else(|| {
+        BlobScheduleFromSpecError::Malformed("BLOB_SCHEDULE key missing".into())
+    })?;
+    blob_schedule_from_spec(value)
+}
+
 /// Cross-check remote spec against the compiled [`ChainConfig`].
 ///
 /// Compares `FULU_FORK_EPOCH`, every `*_FORK_VERSION`, `SECONDS_PER_SLOT`, and
 /// `BLOB_SCHEDULE`. Unknown remote keys are logged at `debug` and ignored.
+///
+/// `BLOB_SCHEDULE` is compared after building both sides through the shared
+/// validating constructor (local already holds a [`BlobSchedule`]; remote is
+/// parsed via [`blob_schedule_from_spec`]).
 pub fn cross_check_spec(
     remote: &BTreeMap<String, String>,
     local: &ChainConfig,
@@ -331,15 +384,22 @@ pub fn cross_check_spec(
 
     let local_blob = format_blob_schedule(local.blob_schedule.entries());
     match remote.get("BLOB_SCHEDULE") {
-        Some(remote_v) => {
-            if !blob_schedule_eq(remote_v, local.blob_schedule.entries()) {
-                differing.push((
-                    "BLOB_SCHEDULE".into(),
-                    local_blob,
-                    remote_v.clone(),
-                ));
+        Some(remote_v) => match blob_schedule_from_spec(remote_v) {
+            Ok(remote_sched) => {
+                if remote_sched.entries() != local.blob_schedule.entries() {
+                    differing.push((
+                        "BLOB_SCHEDULE".into(),
+                        local_blob,
+                        format_blob_schedule(remote_sched.entries()),
+                    ));
+                }
             }
-        }
+            Err(e) => differing.push((
+                "BLOB_SCHEDULE".into(),
+                local_blob,
+                format!("<unparseable: {e}>"),
+            )),
+        },
         None => differing.push(("BLOB_SCHEDULE".into(), local_blob, "<missing>".into())),
     }
 
@@ -390,45 +450,63 @@ fn format_blob_schedule(entries: &[BlobParameters]) -> String {
     format!("[{}]", parts.join(","))
 }
 
-fn blob_schedule_eq(remote: &str, local: &[BlobParameters]) -> bool {
-    if let Ok(parsed) = parse_blob_schedule_json(remote) {
-        return parsed == local_as_pairs(local);
+/// Normalise a beacon-API `BLOB_SCHEDULE` string into entry structs.
+///
+/// Accepts JSON arrays whose fields are numbers or decimal strings, with either
+/// SCREAMING_SNAKE or lowercase keys — the shapes public providers emit after
+/// `Value::Array` → string flattening in [`parse_spec_json`].
+fn parse_blob_schedule_entries(
+    s: &str,
+) -> Result<Vec<BlobParameters>, BlobScheduleFromSpecError> {
+    let value: serde_json::Value = serde_json::from_str(s.trim()).map_err(|e| {
+        BlobScheduleFromSpecError::Malformed(format!("json: {e}"))
+    })?;
+    let arr = value.as_array().ok_or_else(|| {
+        BlobScheduleFromSpecError::Malformed("expected JSON array of schedule entries".into())
+    })?;
+    let mut entries = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        let obj = item.as_object().ok_or_else(|| {
+            BlobScheduleFromSpecError::Malformed(format!("entry {i} is not an object"))
+        })?;
+        let epoch = field_u64(obj, &["EPOCH", "epoch"], i, "EPOCH")?;
+        let max_blobs =
+            field_u64(obj, &["MAX_BLOBS_PER_BLOCK", "max_blobs_per_block"], i, "MAX_BLOBS_PER_BLOCK")?;
+        entries.push(BlobParameters {
+            epoch: Epoch::new(epoch),
+            max_blobs_per_block: max_blobs,
+        });
     }
-    // Loose string contains check for providers that stringify differently.
-    let local_s = format_blob_schedule(local);
-    normalize_blob_str(remote) == normalize_blob_str(&local_s)
+    Ok(entries)
 }
 
-fn local_as_pairs(local: &[BlobParameters]) -> Vec<(u64, u64)> {
-    local
+fn field_u64(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+    index: usize,
+    label: &str,
+) -> Result<u64, BlobScheduleFromSpecError> {
+    let raw = keys
         .iter()
-        .map(|e| (e.epoch.as_u64(), e.max_blobs_per_block))
-        .collect()
-}
-
-fn parse_blob_schedule_json(s: &str) -> Result<Vec<(u64, u64)>, ()> {
-    #[derive(Deserialize)]
-    struct Entry {
-        #[serde(alias = "EPOCH", alias = "epoch")]
-        epoch: u64,
-        #[serde(alias = "MAX_BLOBS_PER_BLOCK", alias = "max_blobs_per_block")]
-        max_blobs_per_block: u64,
+        .find_map(|k| obj.get(*k))
+        .ok_or_else(|| {
+            BlobScheduleFromSpecError::Malformed(format!("entry {index} missing {label}"))
+        })?;
+    match raw {
+        serde_json::Value::Number(n) => n.as_u64().ok_or_else(|| {
+            BlobScheduleFromSpecError::Malformed(format!(
+                "entry {index} {label} not a u64: {n}"
+            ))
+        }),
+        serde_json::Value::String(s) => s.trim().parse::<u64>().map_err(|e| {
+            BlobScheduleFromSpecError::Malformed(format!(
+                "entry {index} {label} parse {s:?}: {e}"
+            ))
+        }),
+        other => Err(BlobScheduleFromSpecError::Malformed(format!(
+            "entry {index} {label} unexpected type: {other}"
+        ))),
     }
-    // Try JSON array first.
-    if let Ok(entries) = serde_json::from_str::<Vec<Entry>>(s) {
-        return Ok(entries
-            .into_iter()
-            .map(|e| (e.epoch, e.max_blobs_per_block))
-            .collect());
-    }
-    Err(())
-}
-
-fn normalize_blob_str(s: &str) -> String {
-    s.chars()
-        .filter(|c| !c.is_whitespace() && *c != '"')
-        .collect::<String>()
-        .to_ascii_uppercase()
 }
 
 // ── HTTP client ─────────────────────────────────────────────────────────────
@@ -1316,6 +1394,175 @@ mod tests {
         let mut remote = local_spec_map(&cfg);
         remote.insert("SOME_FUTURE_FIELD".into(), "1".into());
         cross_check_spec(&remote, &cfg).unwrap();
+    }
+
+    // ── CC-1G: BLOB_SCHEDULE from /eth/v1/config/spec ───────────────────────
+
+    /// Hoodi / mainnet YAML fixtures live in `cc-types` (CC-10c file source).
+    fn types_fixture(name: &str) -> String {
+        format!(
+            "{}/../../crates/types/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        )
+    }
+
+    /// Beacon-API shape after `parse_spec_json` flattens a nested array: string
+    /// fields (public providers) or numeric fields (our local_spec_map).
+    fn hoodi_spec_blob_schedule_string_fields() -> String {
+        r#"[{"EPOCH":"52480","MAX_BLOBS_PER_BLOCK":"15"},{"EPOCH":"54016","MAX_BLOBS_PER_BLOCK":"21"}]"#
+            .to_owned()
+    }
+
+    fn mainnet_spec_blob_schedule_string_fields() -> String {
+        r#"[{"EPOCH":"412672","MAX_BLOBS_PER_BLOCK":"15"},{"EPOCH":"419072","MAX_BLOBS_PER_BLOCK":"21"}]"#
+            .to_owned()
+    }
+
+    #[test]
+    fn blob_schedule_from_spec_matches_file_hoodi_and_mainnet() {
+        let hoodi_file = ChainConfig::from_yaml_file(types_fixture("hoodi-config.yaml"))
+            .expect("hoodi yaml")
+            .blob_schedule;
+        let hoodi_api =
+            blob_schedule_from_spec(&hoodi_spec_blob_schedule_string_fields()).expect("hoodi api");
+        assert_eq!(
+            hoodi_api, hoodi_file,
+            "Hoodi file and /eth/v1/config/spec sources must yield identical BlobSchedule"
+        );
+        assert_eq!(hoodi_api.entries()[0].epoch, Epoch::new(52_480));
+        assert_eq!(hoodi_api.entries()[0].max_blobs_per_block, 15);
+        assert_eq!(hoodi_api.entries()[1].epoch, Epoch::new(54_016));
+        assert_eq!(hoodi_api.entries()[1].max_blobs_per_block, 21);
+
+        let mainnet_file = ChainConfig::from_yaml_file(types_fixture("mainnet-config.yaml"))
+            .expect("mainnet yaml")
+            .blob_schedule;
+        let mainnet_api = blob_schedule_from_spec(&mainnet_spec_blob_schedule_string_fields())
+            .expect("mainnet api");
+        assert_eq!(mainnet_api, mainnet_file);
+
+        // Numeric-field JSON (local_spec_map style) also round-trips.
+        let numeric = r#"[{"EPOCH":52480,"MAX_BLOBS_PER_BLOCK":15},{"EPOCH":54016,"MAX_BLOBS_PER_BLOCK":21}]"#;
+        assert_eq!(blob_schedule_from_spec(numeric).unwrap(), hoodi_file);
+    }
+
+    #[test]
+    fn blob_schedule_from_spec_rejects_malformed_and_non_monotonic() {
+        // Malformed JSON / shape — rejected at the edge, before constructor.
+        assert!(matches!(
+            blob_schedule_from_spec("not-json"),
+            Err(BlobScheduleFromSpecError::Malformed(_))
+        ));
+        assert!(matches!(
+            blob_schedule_from_spec(r#"{"EPOCH":1}"#),
+            Err(BlobScheduleFromSpecError::Malformed(_))
+        ));
+        assert!(matches!(
+            blob_schedule_from_spec(r#"[{"EPOCH":"x","MAX_BLOBS_PER_BLOCK":"1"}]"#),
+            Err(BlobScheduleFromSpecError::Malformed(_))
+        ));
+
+        // Empty array → Empty via the shared validating constructor.
+        let empty = blob_schedule_from_spec("[]").unwrap_err();
+        assert!(
+            matches!(
+                empty,
+                BlobScheduleFromSpecError::Validation(BlobScheduleError::Empty)
+            ),
+            "{empty:?}"
+        );
+
+        // Non-monotonic epochs → Unsorted via the same constructor the file path uses.
+        let unsorted = blob_schedule_from_spec(
+            r#"[{"EPOCH":"100","MAX_BLOBS_PER_BLOCK":"15"},{"EPOCH":"50","MAX_BLOBS_PER_BLOCK":"21"}]"#,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                unsorted,
+                BlobScheduleFromSpecError::Validation(BlobScheduleError::Unsorted { .. })
+            ),
+            "{unsorted:?}"
+        );
+
+        // Duplicate epochs.
+        let dup = blob_schedule_from_spec(
+            r#"[{"EPOCH":100,"MAX_BLOBS_PER_BLOCK":15},{"EPOCH":100,"MAX_BLOBS_PER_BLOCK":21}]"#,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                dup,
+                BlobScheduleFromSpecError::Validation(BlobScheduleError::DuplicateEpoch(_))
+            ),
+            "{dup:?}"
+        );
+    }
+
+    #[test]
+    fn blob_schedule_from_spec_map_and_cross_check_use_validating_constructor() {
+        let hoodi = ChainConfig::from_yaml_file(types_fixture("hoodi-config.yaml")).unwrap();
+        let mut remote = BTreeMap::new();
+        remote.insert(
+            "BLOB_SCHEDULE".into(),
+            hoodi_spec_blob_schedule_string_fields(),
+        );
+        let from_map = blob_schedule_from_spec_map(&remote).unwrap();
+        assert_eq!(from_map, hoodi.blob_schedule);
+
+        // Full cross-check with API-shaped (string-field) BLOB_SCHEDULE passes.
+        let mut remote_full = BTreeMap::new();
+        remote_full.insert(
+            "GENESIS_FORK_VERSION".into(),
+            format!("{}", hoodi.genesis_fork_version),
+        );
+        remote_full.insert(
+            "ALTAIR_FORK_VERSION".into(),
+            format!("{}", hoodi.altair_fork_version),
+        );
+        remote_full.insert(
+            "BELLATRIX_FORK_VERSION".into(),
+            format!("{}", hoodi.bellatrix_fork_version),
+        );
+        remote_full.insert(
+            "CAPELLA_FORK_VERSION".into(),
+            format!("{}", hoodi.capella_fork_version),
+        );
+        remote_full.insert(
+            "DENEB_FORK_VERSION".into(),
+            format!("{}", hoodi.deneb_fork_version),
+        );
+        remote_full.insert(
+            "ELECTRA_FORK_VERSION".into(),
+            format!("{}", hoodi.electra_fork_version),
+        );
+        remote_full.insert(
+            "FULU_FORK_VERSION".into(),
+            format!("{}", hoodi.fulu_fork_version),
+        );
+        remote_full.insert(
+            "FULU_FORK_EPOCH".into(),
+            hoodi.fulu_fork_epoch.as_u64().to_string(),
+        );
+        remote_full.insert(
+            "SECONDS_PER_SLOT".into(),
+            hoodi.seconds_per_slot.to_string(),
+        );
+        remote_full.insert(
+            "BLOB_SCHEDULE".into(),
+            hoodi_spec_blob_schedule_string_fields(),
+        );
+        cross_check_spec(&remote_full, &hoodi).expect("string-field API schedule must match file");
+
+        // Unparseable remote schedule → ConfigMismatch naming BLOB_SCHEDULE.
+        remote_full.insert("BLOB_SCHEDULE".into(), "[]".into());
+        let err = cross_check_spec(&remote_full, &hoodi).unwrap_err();
+        match err {
+            CheckpointError::ConfigMismatch { detail } => {
+                assert!(detail.contains("BLOB_SCHEDULE"), "{detail}");
+            }
+            other => panic!("expected ConfigMismatch, got {other:?}"),
+        }
     }
 
     // ── CC-19/2 + /5 + by-root fallback: HTTP fixture server ────────────────

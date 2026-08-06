@@ -5,6 +5,7 @@
 //! - **CC-18b**: dedicated core thread, import path, `ArcSwap<HeadSnapshot>`, residency
 //! - **CC-1E**: batched `ApplyAttestations` (weight observed through `GetHead`)
 //! - **CC-19a**: checkpoint fetch, provider fallback, verification
+//! - **CC-1G**: `/eth/v1/config/spec` as a `BLOB_SCHEDULE` source
 //!
 //! The binary (`main.rs`) serves gRPC. When `checkpoint_providers` is configured
 //! the core is spawned from a verified anchor (CC-19a); full lifecycle/health
@@ -26,10 +27,11 @@ pub mod service;
 
 pub use apply_attestations::MAX_APPLY_ATTESTATIONS;
 pub use checkpoint_sync::{
-    BootstrapSummary, CheckpointBootstrapConfig, CheckpointClient, CheckpointError,
-    FetchedCheckpoint, GenesisInfo, MAX_BLOCK_BYTES, MAX_JSON_BYTES, MAX_STATE_BYTES,
-    NETWORK_RETRIES, PROVIDER_CONNECT_TIMEOUT, PROVIDER_TOTAL_TIMEOUT, REQUIRED_CONSENSUS_VERSION,
-    TRIPLE_ATTEMPTS, bootstrap_core_from_providers, cross_check_spec, fetch_checkpoint,
+    BootstrapSummary, BlobScheduleFromSpecError, CheckpointBootstrapConfig, CheckpointClient,
+    CheckpointError, FetchedCheckpoint, GenesisInfo, MAX_BLOCK_BYTES, MAX_JSON_BYTES,
+    MAX_STATE_BYTES, NETWORK_RETRIES, PROVIDER_CONNECT_TIMEOUT, PROVIDER_TOTAL_TIMEOUT,
+    REQUIRED_CONSENSUS_VERSION, TRIPLE_ATTEMPTS, blob_schedule_from_spec,
+    blob_schedule_from_spec_map, bootstrap_core_from_providers, cross_check_spec, fetch_checkpoint,
     parse_optional_root, spawn_core_from_checkpoint, validate_provider_base, verify_checkpoint,
 };
 pub use core::{
