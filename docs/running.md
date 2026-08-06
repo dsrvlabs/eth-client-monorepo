@@ -214,3 +214,86 @@ bash scripts/probe-providers.sh
 | 2026-08-06 | `hoodi-checkpoint-sync.stakely.io` | yes | fulu | yes | by-root stream started (capped); state_root=0xbefe6e6db0911482… |
 | 2026-08-06 | `hoodi-checkpoint-sync.attestant.io` | yes | fulu | yes | by-root stream started (capped); state_root=0xbefe6e6db0911482… |
 
+## Soak
+
+Operating rules for the Phase 1 24 h Hoodi soak (Clause 2 + Clause 3). The
+measurement **rig** is CC-1Ac (`scripts/soak-sampler.sh`, `scripts/soak-report.sh`,
+`docs/phase-1-soak.md` skeletons); the rehearsal and the run itself are CC-1Ad.
+
+### No-CPU rule (R-1)
+
+**No compilation, no container builds, no test runs, and no other CPU-heavy
+process on the soak machine for the duration of the window.**
+
+A `cargo build` during the soak **invalidates Clause 3 without invalidating
+Clause 2**: the process never restarts, logs stay clean, head agreement stays
+green, and the timing histograms are quietly contaminated. Nothing surfaces it
+unless the mechanical guard fires.
+
+`scripts/soak-report.sh` reads the per-slot load-average series from the
+sampler and **refuses to emit a report** if a sustained load spike appears
+inside the steady-state window (threshold and window are config:
+`SOAK_LOAD_THRESHOLD` / `--load-threshold`, default `4.0`;
+`SOAK_LOAD_WINDOW_SAMPLES` / `--load-window-samples`, default `5`). A refused
+report is recoverable; a quietly wrong one is not.
+
+Also before starting: **disable sleep and automatic updates** (and prefer
+disabling thermal-throttling surprises where the OS allows).
+
+What may proceed in parallel:
+
+- Zero-CPU operator work (reading specs, drafting issues, reviewing PRs,
+  watching dashboards, filling the run-record skeleton).
+- M1.5 P1 tail **on a second machine only**. On one machine it lands after the run.
+- Nothing that requires the run to be paused. There is no pause.
+
+### Independent reference provider (Clause 2/2)
+
+The head-agreement sampler compares local `GetHead` against an **independent**
+beacon-API provider — not the same base URL the driver uses for its block feed.
+Both names go in the run record. `scripts/soak-sampler.sh` refuses to start if
+the two providers normalize equal.
+
+```bash
+bash scripts/soak-sampler.sh \
+  --driver-provider "$DRIVER_PROVIDER" \
+  --ref-provider    "$REF_PROVIDER" \
+  --out             soak-samples.csv
+```
+
+### Restart policy
+
+| Event | Verdict | Note |
+|---|---|---|
+| `chain` panics, OOMs, or exits | **Void.** Restart from zero after a fix. | Clause 2/1; Phases 0–2 are not restartable by design. |
+| Any code change, rebuild, or redeploy | **Void.** | Run record pins a git SHA; a binary swap means the 24 h was not one binary's 24 h. |
+| Machine sleep, reboot, thermal throttle, OS update | **Void.** | Disable sleep and automatic updates before starting. Throttling corrupts Clause 3 silently. |
+| Any build or heavy process on the soak machine | **Clause 3 void, Clause 2 intact.** | Treat as a void — a report you cannot defend is worth nothing. R-1's load guard refuses the report. |
+| **Driver** restart or crash | **Permitted; usually fatal in practice.** | Clause 2/1 binds `chain`, not the driver scaffold. Long outages typically fail Clause 2/2 or 2/3 — record either way. |
+| Provider outage, `429`, or rotation | **Not a void.** | Designed response (CC-1A/4, CC-19/5). Record rotation with timestamp. |
+| `cc_driver_gap_abandoned_total` increments | **Not a void; likely a failed proof.** | Driver keeps polling forward. Clause 2/3's post-run parent-linkage walk is the judgement. |
+
+### Report
+
+```bash
+# After catch-up: scrape start; at window end: scrape end + driver metrics.
+bash scripts/soak-report.sh \
+  --samples        soak-samples.csv \
+  --metrics-start  metrics-start.txt \
+  --metrics-end    metrics-end.txt \
+  --driver-metrics driver-metrics.txt \
+  --out            timing-fragment.md
+```
+
+Catch-up is excluded via `cc_driver_catchup_complete_timestamp` (metric present
+and non-zero required; absent/zero → refuse). Budget verdict is the **bucket
+fraction at the exact 0.4 / 1.0 boundaries** (Architecture §11.2), not a
+quantile interpolation. Numbers land in `docs/phase-1-soak.md` § Timing
+(CC-1Ad fill-in).
+
+Rig self-check (no live stack):
+
+```bash
+bash scripts/soak-report.sh --self-test
+```
+
