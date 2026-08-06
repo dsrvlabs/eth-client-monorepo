@@ -63,7 +63,77 @@ signals change. M1.2 may exit without landing CC-1H.
 
 ## OQ-3 — comptests
 
-*(CC-15a — empty until filled.)*
+**Date:** 2026-08-07  
+**Artifact:** `comptests.tar.gz` (pinned digest
+`a4319cd2e0253433022b3261ed53ee20c3bccb33517454ddce1a895280ac4e4e` in
+`spec-vectors.lock`, tag `v1.7.0-alpha.13`).  
+**Method:** list archive contents; inspect Fulu fork-choice material against
+the Clause 1 suite table (`mainnet.tar.gz` / `minimal.tar.gz` →
+`tests/<preset>/fulu/fork_choice/…`).
+
+### Directories inspected
+
+| Path in archive | Kind |
+|---|---|
+| `tests/minimal/fulu/fork_choice_compliance/` | **Pre-generated vector cases** (SSZ-snappy + `steps.yaml`) |
+| `tests/minimal/{altair,bellatrix,capella,deneb,electra,gloas}/fork_choice_compliance/` | Same suite for other forks (out of Phase 1 Fulu scope) |
+| `tests/formats/fork_choice/` | Shared step-format docs (same as standard `fork_choice`) |
+| `tests/generators/compliance_runners/fork_choice/` | Generator sources (MiniZinc models, yaml configs) |
+| `tests/core/pyspec/…/test/fulu/fork_choice/` | Pyspec *source* generators only (not runnable vectors) |
+| `tests/formats/fast_confirmation/` + phase0 pyspec | **Not** Fulu fork-choice (separate format; no Fulu emission) |
+
+No `tests/mainnet/**/fork_choice_compliance` paths exist in this artifact
+(minimal preset only).
+
+### Fulu emission under `fork_choice_compliance`
+
+Handlers and case counts (each case is a `pyspec_tests/<name>/` directory with
+`steps.yaml`, `anchor_state.ssz_snappy`, `anchor_block.ssz_snappy`, and step
+payloads):
+
+| Handler | Cases |
+|---|---:|
+| `attester_slashing_test` | 128 |
+| `block_cover_test` | 192 |
+| `block_tree_test` | 512 |
+| `block_weight_test` | 256 |
+| `invalid_message_test` | 128 |
+| `shuffling_test` | 256 |
+| **Total Fulu** | **1472** |
+
+**Case shape (for CC-15c's runner):** identical to standard
+`fork_choice` format (`tests/formats/fork_choice/README.md`): ordered
+`steps.yaml` with keys `tick`, `block` (+ optional `valid`), `attestation`,
+`attester_slashing`, and `checks` (head / justified / finalized /
+`proposer_boost_root` / time). Sample step keys observed across handlers:
+`tick`, `block`, `attestation`, `attester_slashing`, `checks`. No Fulu-only
+step kind beyond what the mainnet/minimal `fork_choice` runner already must
+dispatch.
+
+### Verdict
+
+**In scope for CC-15c's runner — Clause 1's suite table gains a row.**
+
+These are **additional** fork-choice cases the standard
+`tests/<preset>/fulu/fork_choice/…` walk (from `mainnet.tar.gz` /
+`minimal.tar.gz`) will **not** cover: different handler path
+(`fork_choice_compliance` vs `fork_choice`), different generation method
+(constraint-based compliance generator), and they live only in
+`comptests.tar.gz`. They are **not** mere duplicates of the pyspec
+`fork_choice` suite.
+
+**Consequence for Clause 1 / CC-15c:**
+
+| Suite | Artifact | Preset(s) | Owner | Notes |
+|---|---|---|---|---|
+| `fork_choice` | `mainnet.tar.gz`, `minimal.tar.gz` | both | CC-15c | existing Clause 1 row |
+| **`fork_choice_compliance`** | **`comptests.tar.gz`** | **minimal only** | **CC-15c** | **new row — same step runner, different suite root** |
+
+`fork_choice` may not be declared green (CC-15c) before this section is
+honoured: the runner must either execute `fork_choice_compliance` under Fulu
+minimal or explicitly skiplist it with a reviewed owner. Recommended path:
+one runner implementation, two suite roots
+(`…/fulu/fork_choice` and `…/fulu/fork_choice_compliance`).
 
 ## CC-1H mid gate
 

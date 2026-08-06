@@ -773,6 +773,8 @@ version = "0.1.0"
 dependencies = [
  "cc-state-transition",
  "cc-types",
+ "lru",
+ "thiserror",
 ]
 
 [[package]]

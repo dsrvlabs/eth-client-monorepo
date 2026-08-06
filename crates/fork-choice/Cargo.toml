@@ -13,3 +13,5 @@ workspace = true
 [dependencies]
 cc-types = { workspace = true }
 cc-state-transition = { workspace = true }
+thiserror = { workspace = true }
+lru = { workspace = true }
