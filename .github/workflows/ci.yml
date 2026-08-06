@@ -4,6 +4,8 @@ name: CI
 
 on:
   pull_request:
+    # labeled/unlabeled: re-run when the `buf skip breaking` escape hatch is applied/removed (CC-03).
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     # develop is this monorepo's integration branch (intentional deviation from Architecture §9 main-only).
     branches: [main, develop]
@@ -83,6 +85,39 @@ jobs:
         # R-9: nextest defaults to --no-tests=fail; workspace has no tests until CC-01b
         # (bootstrap shutdown integration test). Remove --no-tests=warn when CC-01b lands.
         run: cargo nextest run --workspace --locked --profile ci --no-tests=warn
+
+  # CC-03 — buf governance (Architecture §3.3, §9): lint + format + FILE-category
+  # breaking via the unified bufbuild/buf-action@v1 (not the deprecated trio), and
+  # the CC-02/4 re-modelling grep as a blocking step. Required once CC-07b lands.
+  proto:
+    name: proto
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # CC-03/3: local history for push-path ref=HEAD~1 breaking baseline.
+          fetch-depth: 2
+
+      - uses: bufbuild/buf-action@v1
+        with:
+          input: proto
+          lint: true
+          format: true
+          # Push: always break-check. PR: skip when the `buf skip breaking` label is present
+          # (do not force `breaking: true` — that defeats the label hatch).
+          breaking: ${{ github.event_name == 'push' || !contains(github.event.pull_request.labels.*.name, 'buf skip breaking') }}
+          # No BSR in Phase 0 — never push named modules.
+          push: false
+          # Workflow permissions are contents: read only.
+          pr_comment: false
+          # Push: parent of this push on the integration branch (develop).
+          # PR: tip of the PR base branch (usually develop), same subdir.
+          breaking_against: ${{ github.event_name == 'push' && format('https://github.com/dsrvlabs/eth-client-monorepo.git#branch=develop,ref={0},subdir=proto', github.event.before) || format('https://github.com/dsrvlabs/eth-client-monorepo.git#branch={0},subdir=proto', github.base_ref) }}
+
+      # CC-02/4 — consensus containers must not reappear as proto messages.
+      - name: check no consensus re-modelling
+        run: bash scripts/check-no-remodelling.sh
 
   # CC-06c — sanctioned Stream B cross-stream edit: adds this job only; does not
   # modify fmt/clippy/test (or later proto/deps/compose). Non-required in Phase 0

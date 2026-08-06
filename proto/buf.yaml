@@ -1,0 +1,11 @@
+# CC-03/1 — buf workspace root (Architecture §3.3).
+# No buf.lock (no BSR deps in Phase 0). No buf.gen.yaml (codegen is build.rs).
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - DEFAULT
+breaking:
+  use:
+    - FILE
