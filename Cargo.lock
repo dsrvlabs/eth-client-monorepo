@@ -789,6 +789,17 @@ dependencies = [
 [[package]]
 name = "cc-state-transition"
 version = "0.1.0"
+dependencies = [
+ "blst",
+ "cc-crypto",
+ "cc-types",
+ "ethereum_ssz",
+ "serde",
+ "serde_yaml",
+ "snap",
+ "thiserror",
+ "tree_hash",
+]
 
 [[package]]
 name = "cc-storage"

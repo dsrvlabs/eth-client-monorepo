@@ -9,3 +9,16 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+cc-types = { workspace = true }
+cc-crypto = { workspace = true }
+thiserror = { workspace = true }
+tree_hash = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+blst = { workspace = true }
+snap = { workspace = true }
+ethereum_ssz = { workspace = true }
