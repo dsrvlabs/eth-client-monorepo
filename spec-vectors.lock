@@ -1,0 +1,12 @@
+# CC-06 — pinned consensus-specs release and artifact digests.
+# Digests are COMPUTED on first fetch and committed (A-P0-2: upstream publishes no
+# checksum files). Verified against this file on every subsequent run.
+repo     = "ethereum/consensus-specs"
+tag      = "v1.7.0-alpha.13"
+base_url = "https://github.com/ethereum/consensus-specs/releases/download"
+
+[sha256]
+"general.tar.gz"   = "b98e5328037a84993254085700b8d9eae304beca81d0944fe05274ca3523ed8b"
+"mainnet.tar.gz"   = "bf69706c9cc2c423e3bbaeb5ae7eb53a9e5adfdef84e3731296bb646fe2e8149"
+"minimal.tar.gz"   = "94bafd73514385645404007e6ec8b47aed13ca443b8e75621f40fce5ce1f47a2"
+"comptests.tar.gz" = "a4319cd2e0253433022b3261ed53ee20c3bccb33517454ddce1a895280ac4e4e"
