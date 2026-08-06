@@ -16,6 +16,7 @@ COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
 COPY proto/ proto/
 COPY crates/ crates/
 COPY services/ services/
+COPY bin/ bin/
 # Local-dev TOML defaults (not required for cargo build; shipped to runtime below).
 COPY config/ config/
 
@@ -32,7 +33,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     cargo build --workspace --release --locked && \
     mkdir -p /out && \
-    for b in cc-chain cc-p2p cc-attestation cc-engine cc-beacon-api cc-storage; do \
+    for b in cc-chain cc-p2p cc-attestation cc-engine cc-beacon-api cc-storage cc-driver; do \
       cp "target/release/${b}" /out/; \
     done
 
