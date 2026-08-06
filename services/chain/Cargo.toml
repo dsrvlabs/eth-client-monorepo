@@ -33,7 +33,9 @@ ethereum_ssz = { workspace = true }
 futures = { workspace = true }
 getrandom = { workspace = true }
 prometheus-client = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { version = "0.1", features = ["sync"] }
@@ -46,7 +48,6 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
-serde_json = { workspace = true }
 sha2 = { workspace = true }
 ssz_types = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

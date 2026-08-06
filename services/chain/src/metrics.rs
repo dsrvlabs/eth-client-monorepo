@@ -79,6 +79,32 @@ pub struct BudgetOpLabels {
     pub op: String,
 }
 
+/// Labels for `cc_chain_bootstrap_attempts_total` (CC-19a / §8.1).
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct BootstrapLabels {
+    pub provider: String,
+    pub result: String,
+}
+
+/// `result` label values for `cc_chain_bootstrap_attempts_total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BootstrapResult {
+    /// Provider returned a verified checkpoint.
+    Success,
+    /// Provider failed (network, decode, verification, unsupported fork, …).
+    Failure,
+}
+
+impl BootstrapResult {
+    /// Prometheus label value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+        }
+    }
+}
+
 /// `path` label values for `cc_chain_state_hash_tree_root_seconds` (R-5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HashPath {
@@ -196,6 +222,8 @@ pub struct ChainMetrics {
     pub body_ring_len: Gauge,
     /// Events dropped because the events channel was full/closed (SEC-2).
     pub event_publish_dropped: Counter,
+    /// Checkpoint bootstrap attempts per provider (CC-19a / §8.1).
+    pub bootstrap_attempts: Family<BootstrapLabels, Counter>,
 }
 
 impl ChainMetrics {
@@ -228,6 +256,7 @@ impl ChainMetrics {
         let import_rejected_backpressure = Counter::default();
         let body_ring_len = Gauge::default();
         let event_publish_dropped = Counter::default();
+        let bootstrap_attempts = Family::<BootstrapLabels, Counter>::default();
 
         registry.register_with_unit(
             "cc_chain_process_block",
@@ -322,6 +351,12 @@ impl ChainMetrics {
             "Core-thread events dropped when the events channel is full or closed",
             event_publish_dropped.clone(),
         );
+        // OpenMetrics appends `_total` for counters — do not include it in the name.
+        registry.register(
+            "cc_chain_bootstrap_attempts",
+            "Checkpoint bootstrap attempts (provider URL, result=success|failure)",
+            bootstrap_attempts.clone(),
+        );
 
         let metrics = Self {
             process_block,
@@ -342,6 +377,7 @@ impl ChainMetrics {
             import_rejected_backpressure,
             body_ring_len,
             event_publish_dropped,
+            bootstrap_attempts,
         };
         metrics.seed_exposition();
         metrics
@@ -411,6 +447,21 @@ impl ChainMetrics {
         let _ = self.import_root_mismatch.get();
         let _ = self.import_rejected_backpressure.get();
         let _ = self.event_publish_dropped.get();
+        // Seed one series so HELP/TYPE always appear (provider is runtime-known).
+        let _ = self
+            .bootstrap_attempts
+            .get_or_create(&BootstrapLabels {
+                provider: "none".to_owned(),
+                result: BootstrapResult::Success.as_str().to_owned(),
+            })
+            .get();
+        let _ = self
+            .bootstrap_attempts
+            .get_or_create(&BootstrapLabels {
+                provider: "none".to_owned(),
+                result: BootstrapResult::Failure.as_str().to_owned(),
+            })
+            .get();
     }
 
     // ── process_block / process_epoch (budgeted) ───────────────────────────
@@ -648,6 +699,26 @@ impl ChainMetrics {
         self.budget_exceeded
             .get_or_create(&BudgetOpLabels {
                 op: op.as_str().to_owned(),
+            })
+            .get()
+    }
+
+    /// Increment checkpoint bootstrap attempt counter (CC-19a).
+    pub fn inc_bootstrap_attempt(&self, provider: &str, result: BootstrapResult) {
+        self.bootstrap_attempts
+            .get_or_create(&BootstrapLabels {
+                provider: provider.to_owned(),
+                result: result.as_str().to_owned(),
+            })
+            .inc();
+    }
+
+    /// Read bootstrap attempt counter (tests / CC-19/5).
+    pub fn bootstrap_attempt_count(&self, provider: &str, result: BootstrapResult) -> u64 {
+        self.bootstrap_attempts
+            .get_or_create(&BootstrapLabels {
+                provider: provider.to_owned(),
+                result: result.as_str().to_owned(),
             })
             .get()
     }

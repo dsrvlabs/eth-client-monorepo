@@ -375,20 +375,24 @@ fn make_next_block(
     let timestamp = compute_time_at_slot(st.genesis_time(), next_slot, config.seconds_per_slot);
     let parent_hash = st.latest_execution_payload_header().block_hash;
 
-    let mut payload = ExecutionPayload::<Mainnet>::default();
-    payload.parent_hash = parent_hash;
-    payload.prev_randao = prev_randao;
-    payload.timestamp = timestamp;
-    payload.block_number = st.latest_execution_payload_header().block_number + 1;
-    payload.gas_limit = st.latest_execution_payload_header().gas_limit;
-    payload.withdrawals = VariableList::new(withdrawals).expect("withdrawals list");
+    let payload = ExecutionPayload::<Mainnet> {
+        parent_hash,
+        prev_randao,
+        timestamp,
+        block_number: st.latest_execution_payload_header().block_number + 1,
+        gas_limit: st.latest_execution_payload_header().gas_limit,
+        withdrawals: VariableList::new(withdrawals).expect("withdrawals list"),
+        ..Default::default()
+    };
 
-    let mut body = BeaconBlockBody::<Mainnet>::default();
-    body.execution_payload = payload;
-    body.eth1_data = st.eth1_data();
-    body.sync_aggregate = SyncAggregate {
-        sync_committee_bits: Default::default(),
-        sync_committee_signature: BlsSignature::from_array(INFINITY_SIGNATURE),
+    let body = BeaconBlockBody::<Mainnet> {
+        execution_payload: payload,
+        eth1_data: st.eth1_data(),
+        sync_aggregate: SyncAggregate {
+            sync_committee_bits: Default::default(),
+            sync_committee_signature: BlsSignature::from_array(INFINITY_SIGNATURE),
+        },
+        ..Default::default()
     };
 
     let mut message = BeaconBlock {

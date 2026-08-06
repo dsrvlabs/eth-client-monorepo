@@ -14,5 +14,28 @@ body_ring_capacity = 64
 event_ring_capacity = 1024
 subscriber_queue_capacity = 256
 
+# CC-19a checkpoint bootstrap. Empty providers → core stays absent
+# (NOT_BOOTSTRAPPED) for local compose; set providers + network_config to
+# bootstrap from a live finalized checkpoint.
+checkpoint_providers = []
+# Optional weak-subjectivity pin (SEC-19a-1). When unset, assertion 1 is
+# skipped and the first self-consistent provider is trusted (warn-logged).
+# Set for prod/mainnet soak from an out-of-band source.
+# checkpoint_root = "0x…"
+# Path to consensus-specs YAML for /eth/v1/config/spec cross-check (required
+# when checkpoint_providers is non-empty). Example Hoodi fixture:
+# network_config = "crates/types/tests/fixtures/hoodi-config.yaml"
+#
+# Hoodi provider list (ordered; enable for soak / live bootstrap):
+# checkpoint_providers = [
+#   "https://checkpoint-sync.hoodi.ethpandaops.io",
+#   "https://hoodi.beaconstate.ethstaker.cc",
+#   "https://hoodi.checkpoint.sigp.io",
+#   "https://beaconstate-hoodi.chainsafe.io",
+#   "https://hoodi.beaconstate.info",
+#   "https://hoodi-checkpoint-sync.stakely.io",
+#   "https://hoodi-checkpoint-sync.attestant.io",
+# ]
+
 # No health peers — chain is the root of the acyclic health DAG.
 [peers]

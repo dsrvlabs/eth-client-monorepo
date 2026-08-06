@@ -101,7 +101,7 @@ snap = "1.1.2"
 arc-swap = "1.9.2"
 lru = "0.18.2"
 fixedbitset = "0.5.7"
-reqwest = "0.13.4"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
 serde_yaml = "0.9.34"
 ethereum_hashing = "0.8.0"
 criterion = "0.8.2"
