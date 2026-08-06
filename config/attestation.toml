@@ -1,0 +1,10 @@
+# Local-dev defaults for `attestation` (Architecture §6.3).
+# Compose overrides via CC_ATTESTATION_* environment variables.
+
+grpc_addr = "127.0.0.1:9003"
+metrics_addr = "127.0.0.1:9103"
+log_format = "json"
+log_filter = "info"
+
+[peers]
+chain = "http://127.0.0.1:9001"

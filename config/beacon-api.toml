@@ -1,0 +1,12 @@
+# Local-dev defaults for `beacon-api` (Architecture §6.3).
+# Compose overrides via CC_BEACON_API_* environment variables.
+
+grpc_addr = "127.0.0.1:9005"
+metrics_addr = "127.0.0.1:9105"
+log_format = "json"
+log_filter = "info"
+
+[peers]
+chain = "http://127.0.0.1:9001"
+attestation = "http://127.0.0.1:9003"
+storage = "http://127.0.0.1:9006"

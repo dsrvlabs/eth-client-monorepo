@@ -53,6 +53,11 @@ tonic-reflection = "0.14.6"
 prost = "0.14.4"
 protox = "0.9.1"
 
+# Config loader (Architecture §5 / ADR-12, CC-09a)
+figment = { version = "0.10.19", features = ["env", "toml"] }
+http = "1.5.0"
+serde = { version = "1.0.219", features = ["derive"] }
+
 [profile.release]
 opt-level = 3
 debug = 1

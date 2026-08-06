@@ -1,0 +1,10 @@
+# Local-dev defaults for `chain` (Architecture §6.3).
+# Compose overrides via CC_CHAIN_* environment variables.
+
+grpc_addr = "127.0.0.1:9001"
+metrics_addr = "127.0.0.1:9101"
+log_format = "json"
+log_filter = "info"
+
+# No health peers — chain is the root of the acyclic health DAG.
+[peers]

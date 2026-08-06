@@ -1,0 +1,10 @@
+# Local-dev defaults for `engine` (Architecture §6.3).
+# Compose overrides via CC_ENGINE_* environment variables.
+
+grpc_addr = "127.0.0.1:9004"
+metrics_addr = "127.0.0.1:9104"
+log_format = "json"
+log_filter = "info"
+
+[peers]
+chain = "http://127.0.0.1:9001"

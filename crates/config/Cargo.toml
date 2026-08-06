@@ -9,3 +9,8 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+figment = { workspace = true }
+http = { workspace = true }
+serde = { workspace = true }
