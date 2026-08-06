@@ -107,6 +107,10 @@ criterion = "0.8.2"
 # CC-10b Hoodi fixture SHA-256 verify (test harness)
 sha2 = "0.10.9"
 
+# CC-10c preset / config / primitives (Architecture §2, §3.1)
+typenum = "1.20.1"
+thiserror = "2.0.17"
+
 [profile.release]
 opt-level = 3
 debug = 1
