@@ -1,0 +1,22 @@
+syntax = "proto3";
+package eth.attestation.v1;
+
+import "eth/common/v1/common.proto";
+
+// Pool hub: attestations, aggregates, sync-committee messages, and operations.
+//
+// Phase 5 adds: pool/dedup, aggregation (bitfield OR + BLS aggregate), and the live
+//   feed into chain's batched on_attestation (CC-1E).
+// Phase 5 adds: sync-committee message pool + contribution building.
+// Phase 5 adds: operation pools (voluntary exits, proposer/attester slashings,
+//   BLS-to-execution changes) whose gossip validation started in Phase 2.
+// Phase 6/7 consume pool contents via beacon-api for VC duties and block production.
+service AttestationService {
+  rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+}
+
+message GetInfoRequest {}
+
+message GetInfoResponse {
+  eth.common.v1.BuildInfo build_info = 1;
+}

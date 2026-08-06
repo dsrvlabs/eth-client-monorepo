@@ -1,0 +1,21 @@
+syntax = "proto3";
+package eth.p2p.v1;
+
+import "eth/common/v1/common.proto";
+
+// libp2p stack: GossipSub, req/resp, discovery, column custody.
+//
+// Phase 2 (CC-27) adds: the bidirectional stream with chain (blocks/columns down,
+//   ACCEPT|REJECT|IGNORE verdicts up; outward publish for locally submitted blocks).
+// Phase 2 (CC-21d) adds: SetCustodyGroupCount (runtime CGC hook; Phase 6 caller).
+// Phase 5 adds: publish RPCs for attestation-pool contents (aggregates, subnet
+//   attestations, sync messages, exits/slashings).
+service P2pService {
+  rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+}
+
+message GetInfoRequest {}
+
+message GetInfoResponse {
+  eth.common.v1.BuildInfo build_info = 1;
+}

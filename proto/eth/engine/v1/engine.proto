@@ -1,0 +1,20 @@
+syntax = "proto3";
+package eth.engine.v1;
+
+import "eth/common/v1/common.proto";
+
+// Execution-layer bridge: Engine API client and payload validation.
+//
+// Phase 3 adds: NewPayload / ForkchoiceUpdated / GetPayload surface toward the EL,
+//   plus the payload-status feed consumed by chain fork choice.
+// Phase 0 stubs EL validation as optimistic; Phase 3 makes the node a fully
+//   verifying follower.
+service EngineService {
+  rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+}
+
+message GetInfoRequest {}
+
+message GetInfoResponse {
+  eth.common.v1.BuildInfo build_info = 1;
+}

@@ -1,0 +1,21 @@
+syntax = "proto3";
+package eth.chain.v1;
+
+import "eth/common/v1/common.proto";
+
+// The hot core: state transition, fork choice, BeaconState.
+//
+// Phase 1 (CC-18) adds: ImportBlock, GetHead, SubscribeEvents (server-streaming, with the
+//   resume-cursor semantics from the re-plan).
+// Phase 1 (CC-1E) adds: batched on_attestation weight updates.
+// Phase 1 (CC-1F) adds: unary shuffling + pubkey queries.
+// Phase 2 (CC-27) adds: the bidirectional p2p stream (blocks/columns down, verdicts up).
+service ChainService {
+  rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+}
+
+message GetInfoRequest {}
+
+message GetInfoResponse {
+  eth.common.v1.BuildInfo build_info = 1;
+}

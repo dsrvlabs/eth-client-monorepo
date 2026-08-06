@@ -1,0 +1,20 @@
+syntax = "proto3";
+package eth.common.v1;
+
+// Provenance of a consensus object crossing a service boundary.
+// Present in Phase 0 (unused) so Phase 1's ImportBlockRequest can take it without a
+// FILE-category breaking change on the shared package (Architecture §3.2, CC-02/3).
+enum Source {
+  SOURCE_UNSPECIFIED = 0;
+  SOURCE_GOSSIP = 1;
+  SOURCE_REQRESP = 2;
+  SOURCE_API = 3;
+}
+
+// Build identity — field set matches the cc_build_info metric labels (§4.4).
+message BuildInfo {
+  string service = 1; // process name: "chain", "p2p", …
+  string version = 2; // CARGO_PKG_VERSION
+  string git_sha = 3;
+  string rustc = 4;
+}

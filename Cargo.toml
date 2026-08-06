@@ -44,9 +44,14 @@ cc-proto = { path = "crates/proto" }
 cc-bootstrap = { path = "crates/bootstrap" }
 cc-config = { path = "crates/config" }
 
-# External pins (Architecture §2.3 / §10)
+# External pins (Architecture §2.3 / §3.4 / §10, CC-02)
 tonic = "0.14.6"
+tonic-prost = "0.14.6"
+tonic-prost-build = "0.14.6"
+tonic-health = "0.14.6"
+tonic-reflection = "0.14.6"
 prost = "0.14.4"
+protox = "0.9.1"
 
 [profile.release]
 opt-level = 3

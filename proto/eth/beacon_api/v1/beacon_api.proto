@@ -1,0 +1,22 @@
+syntax = "proto3";
+package eth.beacon_api.v1;
+
+import "eth/common/v1/common.proto";
+
+// External Beacon API boundary for the validator client (and operators).
+// Internal gRPC surface here; the HTTP/JSON Beacon REST API is served by this
+// process and fans in to chain / attestation / storage over these contracts.
+//
+// Phase 6 adds: beacon/validator/config/node REST routes backed by unary RPCs
+//   into chain, attestation (pools + duties), and storage (historical state).
+// Phase 7 adds: block-production routes (produceBlockV3, publishBlockV2) and
+//   the blind/unblind builder path.
+service BeaconApiService {
+  rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+}
+
+message GetInfoRequest {}
+
+message GetInfoResponse {
+  eth.common.v1.BuildInfo build_info = 1;
+}

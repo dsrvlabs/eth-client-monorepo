@@ -1,0 +1,20 @@
+syntax = "proto3";
+package eth.storage.v1;
+
+import "eth/common/v1/common.proto";
+
+// Persistence: BeaconState / block / blob-column history and cold queries.
+//
+// Phase 4 adds: state and block stores that make the node restartable, plus
+//   historical queries consumed by beacon-api (state at slot/root, block by root).
+// Phase 1–3 run without this service (in-memory / ephemeral); Phase 4 is the
+//   first phase that must survive a process restart.
+service StorageService {
+  rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+}
+
+message GetInfoRequest {}
+
+message GetInfoResponse {
+  eth.common.v1.BuildInfo build_info = 1;
+}
