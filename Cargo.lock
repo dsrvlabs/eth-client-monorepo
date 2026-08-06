@@ -695,9 +695,11 @@ name = "cc-chain"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "cc-bootstrap",
  "cc-config",
  "cc-proto",
+ "getrandom 0.3.4",
  "serde",
  "tokio",
  "tonic",

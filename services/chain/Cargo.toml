@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[lib]
+name = "cc_chain"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cc-chain"
 path = "src/main.rs"
@@ -16,9 +20,14 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+bytes = { workspace = true }
 cc-bootstrap = { workspace = true }
 cc-config = { workspace = true }
 cc-proto = { workspace = true }
+getrandom = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
