@@ -116,6 +116,9 @@ alloy-primitives = "1.6.1"
 # CC-11a BLS batch verification CSPRNG (Architecture §4.1)
 getrandom = "0.3.3"
 
+# CC-11b CellKzg trusted_setup.json parsing (Architecture §4.3)
+serde_json = "1.0.145"
+
 [profile.release]
 opt-level = 3
 debug = 1

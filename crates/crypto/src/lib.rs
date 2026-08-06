@@ -1,17 +1,19 @@
-//! Cryptography primitives for the consensus client (CC-11a).
+//! Cryptography primitives for the consensus client (CC-11a / CC-11b).
 //!
 //! - [`bls`]: thin owned wrapper over `blst` 0.3.17 `min_pk` (Architecture §4.1)
+//! - [`kzg`]: cell-KZG trait + backends (Architecture §4.2–4.3)
 //! - [`domain`]: fork-aware signing domains (Architecture §4.5)
 //! - [`hash`]: SHA-256 helpers
 //!
-//! KZG backends land in CC-11b/c. This crate depends only on [`cc_types`] in the
-//! workspace DAG — never on state-transition types above the crypto layer.
+//! This crate depends only on [`cc_types`] in the workspace DAG — never on
+//! state-transition types above the crypto layer.
 
 #![allow(missing_docs)]
 
 pub mod bls;
 pub mod domain;
 pub mod hash;
+pub mod kzg;
 
 pub use bls::{
     aggregate_public_keys, aggregate_signatures, aggregate_verify, eth_fast_aggregate_verify,
@@ -27,3 +29,16 @@ pub use domain::{
     DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF, DOMAIN_VOLUNTARY_EXIT,
 };
 pub use hash::{hash32_concat, hash_fixed};
+pub use kzg::{Blob, CellKzg, CellProofs, Cells, CellsAndProofs, KzgError, BYTES_PER_BLOB};
+
+#[cfg(feature = "kzg-c-kzg")]
+pub use kzg::CKzgBackend;
+
+#[cfg(feature = "kzg-rust-eth-kzg")]
+pub use kzg::RustEthKzgBackend;
+
+#[cfg(any(
+    all(feature = "kzg-c-kzg", not(feature = "kzg-rust-eth-kzg")),
+    all(feature = "kzg-rust-eth-kzg", not(feature = "kzg-c-kzg")),
+))]
+pub use kzg::DefaultKzg;

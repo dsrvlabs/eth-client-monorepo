@@ -10,6 +10,12 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["kzg-c-kzg"]
+# Architecture §4.3 — both may be on simultaneously; CI enables both for the vector job.
+kzg-c-kzg = ["dep:c-kzg"]
+kzg-rust-eth-kzg = ["dep:rust_eth_kzg"]
+
 [dependencies]
 blst = { workspace = true }
 cc-types = { workspace = true }
@@ -18,6 +24,10 @@ getrandom = { workspace = true }
 thiserror = { workspace = true }
 tree_hash = { workspace = true }
 tree_hash_derive = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+c-kzg = { workspace = true, optional = true }
+rust_eth_kzg = { workspace = true, optional = true }
 
 [dev-dependencies]
 sha2 = { workspace = true }
