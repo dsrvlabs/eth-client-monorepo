@@ -320,7 +320,8 @@ impl ListHashCache {
 
     fn propagate_dirty(&mut self) {
         // Collect dirty leaves and walk parents level by level.
-        let mut dirty_at_level: Vec<usize> = self.dirty.ones().filter(|&i| i < self.leaf_pow2).collect();
+        let mut dirty_at_level: Vec<usize> =
+            self.dirty.ones().filter(|&i| i < self.leaf_pow2).collect();
         dirty_at_level.sort_unstable();
         dirty_at_level.dedup();
 
@@ -365,7 +366,10 @@ fn log2_exact(pow2: usize) -> usize {
 }
 
 fn hash_concat(left: Hash256, right: Hash256) -> Hash256 {
-    Hash256::from(ethereum_hashing::hash32_concat(left.as_slice(), right.as_slice()))
+    Hash256::from(ethereum_hashing::hash32_concat(
+        left.as_slice(),
+        right.as_slice(),
+    ))
 }
 
 fn pad_root_to_limit(mut root: Hash256, compact_h: usize, limit_h: usize) -> Hash256 {
@@ -607,7 +611,14 @@ impl<P: crate::preset::Preset> fmt::Debug for StateCaches<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StateCaches")
             .field("tag", &self.tag)
-            .field("list_hashes_present", &self.list_hashes.iter().map(Option::is_some).collect::<Vec<_>>())
+            .field(
+                "list_hashes_present",
+                &self
+                    .list_hashes
+                    .iter()
+                    .map(Option::is_some)
+                    .collect::<Vec<_>>(),
+            )
             .field("field_roots", &self.field_roots)
             .field("pubkeys_len", &self.pubkeys.len())
             .finish_non_exhaustive()
@@ -640,8 +651,7 @@ impl<P: crate::preset::Preset> StateCaches<P> {
         max_len: usize,
         packing_factor: usize,
     ) -> &mut ListHashCache {
-        self.list_hashes[id]
-            .get_or_insert_with(|| ListHashCache::new(max_len, packing_factor))
+        self.list_hashes[id].get_or_insert_with(|| ListHashCache::new(max_len, packing_factor))
     }
 
     /// Mark a list element dirty and its field leaf dirty.
@@ -680,17 +690,13 @@ mod tests {
         let expected = list.tree_hash_root();
 
         let mut cache = ListHashCache::new(16, 4); // u64 packing factor 4
-        let got = cache.recompute_with(list.len(), |leaf| {
-            packed_basic_leaf(&list[..], 4, leaf)
-        });
+        let got = cache.recompute_with(list.len(), |leaf| packed_basic_leaf(&list[..], 4, leaf));
         assert_eq!(got, expected);
 
         // Mutate one element and recompute incrementally.
         list[3] = 99;
         cache.mark_element_dirty(3);
-        let got2 = cache.recompute_with(list.len(), |leaf| {
-            packed_basic_leaf(&list[..], 4, leaf)
-        });
+        let got2 = cache.recompute_with(list.len(), |leaf| packed_basic_leaf(&list[..], 4, leaf));
         assert_eq!(got2, list.tree_hash_root());
     }
 

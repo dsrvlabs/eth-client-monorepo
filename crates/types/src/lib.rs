@@ -1,5 +1,6 @@
 //! Consensus types substrate: preset, config, primitives, fork, containers, operations,
-//! execution, block, state, sidecars, light-client, and `ssz_static` registry (CC-10c–CC-10e).
+//! execution, block, state, sidecars, light-client, networking custody helpers, and
+//! `ssz_static` registry (CC-10c–CC-10e, CC-1B).
 
 #![allow(missing_docs)] // public re-exports are documented at their definitions
 
@@ -9,6 +10,7 @@ pub mod containers;
 pub mod execution;
 pub mod fork;
 pub mod light_client;
+pub mod networking;
 pub mod operations;
 pub mod preset;
 pub mod primitives;
@@ -30,6 +32,10 @@ pub use fork::{Fork, ForkData, ForkDigest, ForkName, UnknownForkName};
 pub use light_client::{
     LightClientBootstrap, LightClientFinalityUpdate, LightClientHeader,
     LightClientOptimisticUpdate, LightClientUpdate,
+};
+pub use networking::{
+    ColumnIndex, CustodyIndex, SubnetId, compute_columns_for_custody_group,
+    compute_subnet_for_data_column_sidecar, get_custody_groups, sampling_size,
 };
 pub use operations::{
     AggregateAndProof, Attestation, AttesterSlashing, BlsToExecutionChange, ConsolidationRequest,

@@ -10,12 +10,8 @@ use ssz_types::BitVector;
 use tree_hash::{Hash256, TreeHash};
 use typenum::Unsigned;
 
-use super::caches::{
-    StateField, container_leaf, list_id, packed_basic_leaf,
-};
-use super::{
-    BeaconState, JustificationBitsLength, List, ParticipationFlags, StateCaches, Vector,
-};
+use super::caches::{StateField, container_leaf, list_id, packed_basic_leaf};
+use super::{BeaconState, JustificationBitsLength, List, ParticipationFlags, StateCaches, Vector};
 use crate::containers::{
     BeaconBlockHeader, Checkpoint, Eth1Data, HistoricalSummary, SyncCommittee, Validator,
 };
@@ -445,11 +441,8 @@ impl<P: Preset> BeaconState<P> {
         if i >= len {
             return None;
         }
-        self.caches.mark_list_element_dirty(
-            list_id::VALIDATORS,
-            StateField::Validators,
-            i,
-        );
+        self.caches
+            .mark_list_element_dirty(list_id::VALIDATORS, StateField::Validators, i);
         self.validators.get_mut(i)
     }
 
@@ -461,11 +454,8 @@ impl<P: Preset> BeaconState<P> {
             .get_mut(i)
             .ok_or(StateAccessError::OutOfBounds { index: i, len })?;
         *slot = v;
-        self.caches.mark_list_element_dirty(
-            list_id::VALIDATORS,
-            StateField::Validators,
-            i,
-        );
+        self.caches
+            .mark_list_element_dirty(list_id::VALIDATORS, StateField::Validators, i);
         Ok(())
     }
 
@@ -666,9 +656,9 @@ impl<P: Preset> BeaconState<P> {
             let list = &self.balances;
             let list_len = list.len();
             match caches.list_hashes[list_id::BALANCES].as_mut() {
-                Some(c) => c.recompute_with(list_len, |leaf| {
-                    packed_basic_leaf(&list[..], packing, leaf)
-                }),
+                Some(c) => {
+                    c.recompute_with(list_len, |leaf| packed_basic_leaf(&list[..], packing, leaf))
+                }
                 None => list.tree_hash_root(),
             }
         };
@@ -679,9 +669,9 @@ impl<P: Preset> BeaconState<P> {
             let list = &self.previous_epoch_participation;
             let list_len = list.len();
             match caches.list_hashes[list_id::PREV_PARTICIPATION].as_mut() {
-                Some(c) => c.recompute_with(list_len, |leaf| {
-                    packed_basic_leaf(&list[..], packing, leaf)
-                }),
+                Some(c) => {
+                    c.recompute_with(list_len, |leaf| packed_basic_leaf(&list[..], packing, leaf))
+                }
                 None => list.tree_hash_root(),
             }
         };
@@ -692,9 +682,9 @@ impl<P: Preset> BeaconState<P> {
             let list = &self.current_epoch_participation;
             let list_len = list.len();
             match caches.list_hashes[list_id::CURR_PARTICIPATION].as_mut() {
-                Some(c) => c.recompute_with(list_len, |leaf| {
-                    packed_basic_leaf(&list[..], packing, leaf)
-                }),
+                Some(c) => {
+                    c.recompute_with(list_len, |leaf| packed_basic_leaf(&list[..], packing, leaf))
+                }
                 None => list.tree_hash_root(),
             }
         };
@@ -705,9 +695,9 @@ impl<P: Preset> BeaconState<P> {
             let list = &self.inactivity_scores;
             let list_len = list.len();
             match caches.list_hashes[list_id::INACTIVITY_SCORES].as_mut() {
-                Some(c) => c.recompute_with(list_len, |leaf| {
-                    packed_basic_leaf(&list[..], packing, leaf)
-                }),
+                Some(c) => {
+                    c.recompute_with(list_len, |leaf| packed_basic_leaf(&list[..], packing, leaf))
+                }
                 None => list.tree_hash_root(),
             }
         };
@@ -718,14 +708,12 @@ impl<P: Preset> BeaconState<P> {
         caches
             .field_roots
             .set_field_root(StateField::Balances, balances_root);
-        caches.field_roots.set_field_root(
-            StateField::PreviousEpochParticipation,
-            prev_part_root,
-        );
-        caches.field_roots.set_field_root(
-            StateField::CurrentEpochParticipation,
-            curr_part_root,
-        );
+        caches
+            .field_roots
+            .set_field_root(StateField::PreviousEpochParticipation, prev_part_root);
+        caches
+            .field_roots
+            .set_field_root(StateField::CurrentEpochParticipation, curr_part_root);
         caches
             .field_roots
             .set_field_root(StateField::InactivityScores, inactivity_root);

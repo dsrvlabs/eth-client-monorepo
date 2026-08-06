@@ -177,7 +177,12 @@ fn apply_mutation(state: &mut BeaconState<Minimal>, kind: MutationKind, rng: &mu
     }
 }
 
-fn assert_roots_agree(state: &mut BeaconState<Minimal>, seed: u64, step: usize, kind: MutationKind) {
+fn assert_roots_agree(
+    state: &mut BeaconState<Minimal>,
+    seed: u64,
+    step: usize,
+    kind: MutationKind,
+) {
     let cached = state.canonical_root();
     let cold = TreeHash::tree_hash_root(state);
     assert_eq!(
@@ -338,7 +343,10 @@ fn hoodi_state_root_matches_anchor() {
         std::env::consts::ARCH
     );
 
-    assert_eq!(cold_hex, expected_hex, "tree_hash_root != anchor state_root");
+    assert_eq!(
+        cold_hex, expected_hex,
+        "tree_hash_root != anchor state_root"
+    );
     assert_eq!(
         cached_hex, expected_hex,
         "canonical_root != anchor state_root"
