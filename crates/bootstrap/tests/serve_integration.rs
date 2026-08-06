@@ -4,7 +4,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::net::SocketAddr;
-use std::process::Command;
 use std::sync::Once;
 use std::time::Duration;
 
@@ -15,6 +14,7 @@ use cc_bootstrap::{
 use cc_proto::chain::chain_service_server::{ChainService, ChainServiceServer};
 use cc_proto::chain::{GetInfoRequest, GetInfoResponse};
 use cc_proto::common::BuildInfo;
+use futures::StreamExt;
 use tokio::sync::oneshot;
 use tonic::service::Routes;
 use tonic::transport::Endpoint;
@@ -22,6 +22,10 @@ use tonic::{Request, Response, Status};
 use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_check_response::ServingStatus as WireStatus;
 use tonic_health::pb::health_client::HealthClient;
+use tonic_reflection::pb::v1::ServerReflectionRequest;
+use tonic_reflection::pb::v1::server_reflection_client::ServerReflectionClient;
+use tonic_reflection::pb::v1::server_reflection_request::MessageRequest;
+use tonic_reflection::pb::v1::server_reflection_response::MessageResponse;
 
 static INIT: Once = Once::new();
 
@@ -302,9 +306,12 @@ async fn peer_prober_aggregate_and_self_health() {
     let _ = b_handle.await;
 }
 
-/// `grpcurl -plaintext <addr> list` lists the service via reflection.
+/// Reflection lists registered services (pure tonic client — no `grpcurl` binary).
+///
+/// CI runners do not ship `grpcurl`; use the v1 ServerReflection streaming API that
+/// grpcurl would call under the hood so the gate stays hermetic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reflection_lists_service_via_grpcurl() {
+async fn reflection_lists_registered_services() {
     ensure_tracing();
 
     let grpc = ephemeral();
@@ -333,23 +340,42 @@ async fn reflection_lists_service_via_grpcurl() {
     )
     .await;
 
-    let output = Command::new("grpcurl")
-        .args(["-plaintext", &grpc.to_string(), "list"])
-        .output()
-        .expect("grpcurl must be installed for this test");
+    let channel = Endpoint::from_shared(format!("http://{grpc}"))
+        .unwrap()
+        .connect()
+        .await
+        .expect("connect for reflection");
+    let mut client = ServerReflectionClient::new(channel);
+
+    let req = ServerReflectionRequest {
+        host: String::new(),
+        message_request: Some(MessageRequest::ListServices(String::new())),
+    };
+    let outbound = futures::stream::iter(vec![req]);
+
+    let mut stream = client
+        .server_reflection_info(Request::new(outbound))
+        .await
+        .expect("server_reflection_info")
+        .into_inner();
+
+    let resp = stream
+        .next()
+        .await
+        .expect("reflection stream item")
+        .expect("reflection ok");
+    let message = resp.message_response.expect("message_response");
+    let MessageResponse::ListServicesResponse(list) = message else {
+        panic!("expected ListServicesResponse, got {message:?}");
+    };
+    let names: Vec<_> = list.service.into_iter().map(|s| s.name).collect();
     assert!(
-        output.status.success(),
-        "grpcurl failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        names.iter().any(|n| n == "eth.chain.v1.ChainService"),
+        "missing ChainService in reflection list: {names:?}"
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("eth.chain.v1.ChainService"),
-        "grpcurl list missing ChainService:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("grpc.health.v1.Health"),
-        "grpcurl list missing Health:\n{stdout}"
+        names.iter().any(|n| n == "grpc.health.v1.Health"),
+        "missing Health in reflection list: {names:?}"
     );
 
     let _ = stop_tx.send(());

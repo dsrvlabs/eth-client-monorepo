@@ -96,7 +96,10 @@ aggregate_health() {
     echo "SERVING"
     return 0
   fi
-  if grep -qiE 'status:[[:space:]]*NOT_SERVING' <<<"${out}"; then
+  # grpc-health-probe v0.4.x: exit 4 = NOT_SERVING; message often:
+  #   service unhealthy (responded with "NOT_SERVING")
+  # (not the older "status: NOT_SERVING" form).
+  if [[ "${rc}" -eq 4 ]] || grep -qiE 'NOT_SERVING' <<<"${out}"; then
     echo "NOT_SERVING"
     return 0
   fi
