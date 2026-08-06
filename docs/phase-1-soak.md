@@ -137,7 +137,88 @@ one runner implementation, two suite roots
 
 ## CC-1H mid gate
 
-*(CC-18d — empty until filled.)*
+**Date:** 2026-08-07  
+**Machine:** Apple M4 Pro, 24 GB RAM, macOS aarch64 (dev machine)  
+**Method:** Re-run of the CC-13d early-gate measurement **with fork choice in
+the path**: `process_slots` across **5** epoch boundaries from the committed
+Hoodi anchor state (slot `3649472`), then a `BeaconState` clone +
+`process_justification_and_finalization` (the `compute_pulled_up_tip` /
+`integrate_block` pull-up body). Cache warmed with one `canonical_root()`
+before measurement. Hash share = wall time spent inside
+`measured_canonical_root` / epoch wall time. `fc_clone_ms` is the clone + J&F
+portion alone.
+
+**Command:**
+
+```text
+cargo test -p cc-chain --test offline_replay cc1h_mid_gate_with_fork_choice_clone -- --nocapture
+```
+
+| epoch | from → to | wall (ms) | hash (ms) | hash share | root calls | fc clone (ms) |
+|---:|---|---:|---:|---:|---:|---:|
+| 0 | 3649472 → 3649504 | 774.81 | 50.59 | 6.5 % | 32 | 109.55 |
+| 1 | 3649504 → 3649536 | 572.11 | 139.89 | 24.5 % | 32 | 68.22 |
+| 2 | 3649536 → 3649568 | 550.59 | 139.00 | 25.2 % | 32 | 51.52 |
+| 3 | 3649568 → 3649600 | 576.94 | 137.32 | 23.8 % | 32 | 51.44 |
+| 4 | 3649600 → 3649632 | 552.01 | 137.67 | 24.9 % | 32 | 52.08 |
+
+| Aggregate | Value |
+|---|---|
+| max wall | **774.81 ms** |
+| mean wall | 605.29 ms |
+| mean hash share | **21.0 %** |
+| max hash share | 25.2 % |
+| mean fc clone | 66.56 ms |
+| max fc clone | 109.55 ms |
+
+### Threshold verdict (mid gate bar = 1000 ms)
+
+**&lt; 1000 ms** (max epoch wall 774.81 ms). **CC-1H is not promoted** before
+M1.4. The mid gate is **closed**.
+
+### Early-gate flagged band (700–1500 ms)
+
+The early gate closed under **700 ms** (max 689.91 ms) and was never in the
+flagged band. Mid-gate max **774.81 ms** sits in the early gate's 700–1500 ms
+numeric range only because the FC state clone is now included (~50–110 ms); it
+remains **under the mid-gate 1000 ms bar**. The early-gate “flagged → re-measure
+at mid” contingency is **resolved without promoting CC-1H**.
+
+### Attribution
+
+Mean hash share **21.0 %** (&lt; 25 %). Epoch cost remains transition-side /
+clone-dominant rather than `canonical_root()`-bound. Milhouse is still not
+indicated; if a later gate regresses, profile per-handler plus CC-1I batching
+before a state-backing swap.
+
+### Explicit decision
+
+**CC-1H is not promoted.** Mid gate **closed**. Re-measure only at the late
+gate (CC-1Ad soak) if R-3 early-warning signals change.
+
+### Offline replay note (same issue) — AC adaptation
+
+**Written AC** (“import the CC-10b **recorded** 40-slot sequence”) is **fixture-
+topology impossible offline**: the pin is a 40-slot window *ending at* the
+anchor; only the anchor `BeaconState` is cached; providers return 500/501 for
+pre-sequence historical state. Forward `ImportBlock` of those past SSZs against
+an anchor-seeded store is not the M1.4 path.
+
+**Accepted amendment (CC-18d):**
+
+| Path | What is exercised |
+|---|---|
+| Recorded `sequence/*.ssz` | Parent-link walk, SSZ decode, tree-hash vs pin, **file SHA-256** digests for anchor + non-empty sequence SSZ |
+| gRPC `ImportBlock` | **40 post-anchor** full-ST blocks built from the digest-verified Hoodi anchor state |
+
+`cargo test -p cc-chain --test offline_replay offline_replay_40_slots_via_grpc`
+asserts `IMPORTED` / mid-replay `DUPLICATE`, parent-linked head advance, and
+head-event ordering. Residual risk (first production historical/live block SSZ
+with blobs / real ops / FFG movement) is owned by M1.4 / CC-19.
+
+**Finalized-epoch AC:** empty synthetic blocks do not advance FFG; gauge is
+asserted non-decreasing from the seeded finalized epoch (explicit waiver of
+“advances ≥ once” for this offline path).
 
 ## Run record
 
