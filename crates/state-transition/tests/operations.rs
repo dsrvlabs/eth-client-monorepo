@@ -1256,7 +1256,12 @@ fn deposit_new_validator_appends_registry_and_pubkey_map() {
         withdrawal_credentials: creds,
         amount,
     };
-    let domain = compute_domain(DOMAIN_DEPOSIT, None, None);
+    // Minimal genesis fork version is 0x00000001 (matches is_valid_deposit_signature).
+    let domain = compute_domain(
+        DOMAIN_DEPOSIT,
+        Some(cc_types::primitives::ForkVersion::from_array([0, 0, 0, 1])),
+        None,
+    );
     let root = compute_signing_root(&msg, domain);
     let sig = sk.sign(root.as_slice(), BLS_SIGNATURE_DST, &[]);
     let signature = BlsSignature::from_array(sig.compress());

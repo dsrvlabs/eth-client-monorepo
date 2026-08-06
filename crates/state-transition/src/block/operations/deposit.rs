@@ -25,7 +25,10 @@ fn invalid(detail: impl Into<String>) -> BlockError {
 }
 
 /// Spec `is_valid_deposit_signature`.
-pub fn is_valid_deposit_signature(
+///
+/// Domain uses the preset's `GENESIS_FORK_VERSION` (mainnet zero / minimal
+/// `0x00000001`) so minimal vectors verify correctly.
+pub fn is_valid_deposit_signature<P: Preset>(
     pubkey: &cc_types::primitives::BlsPublicKey,
     withdrawal_credentials: &Root,
     amount: Gwei,
@@ -36,7 +39,11 @@ pub fn is_valid_deposit_signature(
         withdrawal_credentials: *withdrawal_credentials,
         amount,
     };
-    let domain = cc_crypto::compute_domain(DOMAIN_DEPOSIT, None, None);
+    let domain = cc_crypto::compute_domain(
+        DOMAIN_DEPOSIT,
+        Some(crate::helpers::constants::network::genesis_fork_version::<P>()),
+        None,
+    );
     let message = *compute_signing_root(&deposit_message, domain).as_array();
     // Block-carried material → Reject on bad encoding.
     let pk = match decode_block_pubkey(pubkey) {
@@ -119,7 +126,12 @@ pub fn apply_deposit<P: Preset>(
 
     if existing.is_none() {
         // Proof-of-possession; invalid signature → silently drop (spec).
-        if is_valid_deposit_signature(&pubkey, &withdrawal_credentials, amount, &signature)? {
+        if is_valid_deposit_signature::<P>(
+            &pubkey,
+            &withdrawal_credentials,
+            amount,
+            &signature,
+        )? {
             // New validator with balance 0; pending deposit carries amount.
             add_validator_to_registry(state, pubkey, withdrawal_credentials, Gwei::new(0))?;
         } else {

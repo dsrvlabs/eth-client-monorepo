@@ -9,10 +9,11 @@ use cc_types::preset::Preset;
 use cc_types::primitives::{Gwei, ValidatorIndex};
 use cc_types::BeaconState;
 
-use crate::error::{BlockError, EpochError};
+use crate::error::EpochError;
 use crate::epoch_cache::{
     base_reward_per_increment_cached, rebuild_epoch_cache, total_active_balance_cached,
 };
+use super::block_to_epoch;
 use crate::helpers::accessors::{
     get_base_reward, get_current_epoch, get_eligible_validator_indices, get_previous_epoch,
     get_total_balance, get_unslashed_participating_indices, is_in_inactivity_leak,
@@ -193,12 +194,4 @@ pub fn process_rewards_and_penalties<P: Preset>(
     }
 
     Ok(())
-}
-
-fn block_to_epoch(err: BlockError) -> EpochError {
-    match err {
-        BlockError::ArithmeticOverflow => EpochError::ArithmeticOverflow,
-        BlockError::StateAccess(e) => EpochError::StateAccess(e),
-        _ => EpochError::ArithmeticOverflow,
-    }
 }

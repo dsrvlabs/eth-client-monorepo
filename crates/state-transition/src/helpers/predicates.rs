@@ -4,8 +4,8 @@ use cc_types::containers::{AttestationData, Validator};
 use cc_types::primitives::{Epoch, Gwei, Root};
 
 use crate::helpers::constants::{
-    COMPOUNDING_WITHDRAWAL_PREFIX, ETH1_ADDRESS_WITHDRAWAL_PREFIX, MAX_EFFECTIVE_BALANCE_ELECTRA,
-    MIN_ACTIVATION_BALANCE,
+    COMPOUNDING_WITHDRAWAL_PREFIX, ETH1_ADDRESS_WITHDRAWAL_PREFIX, FAR_FUTURE_EPOCH,
+    MAX_EFFECTIVE_BALANCE_ELECTRA, MIN_ACTIVATION_BALANCE,
 };
 
 /// Spec `is_compounding_withdrawal_credential`.
@@ -70,6 +70,20 @@ pub fn is_partially_withdrawable_validator(validator: &Validator, balance: Gwei)
 pub fn is_active_validator(validator: &Validator, epoch: Epoch) -> bool {
     validator.activation_epoch.as_u64() <= epoch.as_u64()
         && epoch.as_u64() < validator.exit_epoch.as_u64()
+}
+
+/// Spec `is_eligible_for_activation_queue` (Electra: `MIN_ACTIVATION_BALANCE`).
+#[inline]
+pub fn is_eligible_for_activation_queue(validator: &Validator) -> bool {
+    validator.activation_eligibility_epoch == FAR_FUTURE_EPOCH
+        && validator.effective_balance.as_u64() >= MIN_ACTIVATION_BALANCE.as_u64()
+}
+
+/// Spec `is_eligible_for_activation`.
+#[inline]
+pub fn is_eligible_for_activation(finalized_epoch: Epoch, validator: &Validator) -> bool {
+    validator.activation_eligibility_epoch.as_u64() <= finalized_epoch.as_u64()
+        && validator.activation_epoch == FAR_FUTURE_EPOCH
 }
 
 /// Spec `is_slashable_validator`.

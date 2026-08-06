@@ -102,6 +102,24 @@ pub const WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA: u64 = 4096;
 /// `MIN_VALIDATOR_WITHDRAWABILITY_DELAY = 256` (mainnet and minimal).
 pub const MIN_VALIDATOR_WITHDRAWABILITY_DELAY: u64 = 256;
 
+/// Network `EJECTION_BALANCE` = 16 ETH in Gwei (mainnet and minimal).
+pub const EJECTION_BALANCE: Gwei = Gwei::new(16_000_000_000);
+
+/// Phase0 `HYSTERESIS_QUOTIENT = 4`.
+pub const HYSTERESIS_QUOTIENT: u64 = 4;
+
+/// Phase0 `HYSTERESIS_DOWNWARD_MULTIPLIER = 1`.
+pub const HYSTERESIS_DOWNWARD_MULTIPLIER: u64 = 1;
+
+/// Phase0 `HYSTERESIS_UPWARD_MULTIPLIER = 5`.
+pub const HYSTERESIS_UPWARD_MULTIPLIER: u64 = 5;
+
+/// Bellatrix `PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX = 3`.
+pub const PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX: u64 = 3;
+
+/// Electra `MAX_PENDING_DEPOSITS_PER_EPOCH = 16`.
+pub const MAX_PENDING_DEPOSITS_PER_EPOCH: u64 = 16;
+
 /// `UINT64_MAX_SQRT` for integer square root of `u64::MAX`.
 pub const UINT64_MAX_SQRT: u64 = 4_294_967_295;
 
@@ -139,6 +157,16 @@ pub mod network {
         match P::NAME {
             "minimal" => 32,
             _ => 65_536,
+        }
+    }
+
+    /// `GENESIS_FORK_VERSION` (mainnet `0x00000000`, minimal `0x00000001`).
+    ///
+    /// Used for deposit-domain computation (`compute_domain(DOMAIN_DEPOSIT, …)`).
+    pub fn genesis_fork_version<P: Preset>() -> cc_types::primitives::ForkVersion {
+        match P::NAME {
+            "minimal" => cc_types::primitives::ForkVersion::from_array([0, 0, 0, 1]),
+            _ => cc_types::primitives::ForkVersion::from_array([0, 0, 0, 0]),
         }
     }
 }

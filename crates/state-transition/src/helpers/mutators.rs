@@ -52,6 +52,9 @@ pub fn decrease_balance<P: Preset>(
 }
 
 /// Spec `compute_exit_epoch_and_update_churn` (Electra).
+///
+/// Uses checked arithmetic so pathological pre-states (e.g. `earliest_exit_epoch`
+/// near `u64::MAX`) yield [`BlockError::ArithmeticOverflow`] rather than wrapping.
 pub fn compute_exit_epoch_and_update_churn<P: Preset>(
     state: &mut BeaconState<P>,
     exit_balance: Gwei,
@@ -73,10 +76,18 @@ pub fn compute_exit_epoch_and_update_churn<P: Preset>(
     if exit_balance > exit_balance_to_consume {
         let balance_to_process = exit_balance - exit_balance_to_consume;
         let additional_epochs = (balance_to_process.saturating_sub(1) / per_epoch_churn.as_u64())
-            .saturating_add(1);
-        earliest_exit_epoch = earliest_exit_epoch.saturating_add(additional_epochs);
+            .checked_add(1)
+            .ok_or(BlockError::ArithmeticOverflow)?;
+        earliest_exit_epoch = earliest_exit_epoch
+            .checked_add(additional_epochs)
+            .ok_or(BlockError::ArithmeticOverflow)?;
         exit_balance_to_consume = exit_balance_to_consume
-            .saturating_add(additional_epochs.saturating_mul(per_epoch_churn.as_u64()));
+            .checked_add(
+                additional_epochs
+                    .checked_mul(per_epoch_churn.as_u64())
+                    .ok_or(BlockError::ArithmeticOverflow)?,
+            )
+            .ok_or(BlockError::ArithmeticOverflow)?;
     }
 
     state.set_exit_balance_to_consume(Gwei::new(
@@ -103,7 +114,8 @@ pub fn initiate_validator_exit<P: Preset>(
     let withdrawable = Epoch::new(
         exit_queue_epoch
             .as_u64()
-            .saturating_add(MIN_VALIDATOR_WITHDRAWABILITY_DELAY),
+            .checked_add(MIN_VALIDATOR_WITHDRAWABILITY_DELAY)
+            .ok_or(BlockError::ArithmeticOverflow)?,
     );
     let v = state
         .validators_get_mut(i)

@@ -382,6 +382,31 @@ impl<P: Preset> BeaconState<P> {
         self.earliest_consolidation_epoch
     }
 
+    /// Deposit balance to consume (Electra EIP-7251 pending-deposit churn).
+    pub fn deposit_balance_to_consume(&self) -> Gwei {
+        self.deposit_balance_to_consume
+    }
+
+    /// Historical summaries length.
+    pub fn historical_summaries_len(&self) -> usize {
+        self.historical_summaries.len()
+    }
+
+    /// Get a historical summary by index.
+    pub fn historical_summaries_get(&self, i: usize) -> Option<&HistoricalSummary> {
+        self.historical_summaries.get(i)
+    }
+
+    /// Tree-hash root of the fixed `block_roots` vector.
+    pub fn block_roots_tree_hash_root(&self) -> Root {
+        Root::from_hash256(TreeHash::tree_hash_root(&self.block_roots))
+    }
+
+    /// Tree-hash root of the fixed `state_roots` vector.
+    pub fn state_roots_tree_hash_root(&self) -> Root {
+        Root::from_hash256(TreeHash::tree_hash_root(&self.state_roots))
+    }
+
     /// Borrow caches.
     pub fn caches(&self) -> &StateCaches<P> {
         &self.caches
@@ -851,6 +876,98 @@ impl<P: Preset> BeaconState<P> {
         self.caches
             .field_roots
             .mark_dirty(StateField::EarliestConsolidationEpoch);
+    }
+
+    /// Set deposit balance to consume.
+    pub fn set_deposit_balance_to_consume(&mut self, v: Gwei) {
+        self.deposit_balance_to_consume = v;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::DepositBalanceToConsume);
+    }
+
+    /// Replace the pending-deposits queue (epoch drain + postpone).
+    pub fn pending_deposits_replace(
+        &mut self,
+        deposits: Vec<PendingDeposit>,
+    ) -> Result<(), StateAccessError> {
+        self.pending_deposits = List::new(deposits).map_err(StateAccessError::from)?;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::PendingDeposits);
+        Ok(())
+    }
+
+    /// Drop the first `n` pending consolidations (epoch queue advance).
+    pub fn pending_consolidations_drain_prefix(
+        &mut self,
+        n: usize,
+    ) -> Result<(), StateAccessError> {
+        let len = self.pending_consolidations.len();
+        if n > len {
+            return Err(StateAccessError::OutOfBounds { index: n, len });
+        }
+        if n == 0 {
+            return Ok(());
+        }
+        let old = std::mem::take(&mut self.pending_consolidations);
+        let mut remaining: Vec<PendingConsolidation> = old.to_vec();
+        remaining.drain(..n);
+        self.pending_consolidations = List::new(remaining).map_err(StateAccessError::from)?;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::PendingConsolidations);
+        Ok(())
+    }
+
+    /// Append a historical summary (Capella accumulator).
+    pub fn historical_summaries_push(
+        &mut self,
+        v: HistoricalSummary,
+    ) -> Result<(), StateAccessError> {
+        self.historical_summaries
+            .push(v)
+            .map_err(StateAccessError::from)?;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::HistoricalSummaries);
+        Ok(())
+    }
+
+    /// Set current sync committee.
+    pub fn set_current_sync_committee(&mut self, v: SyncCommittee<P>) {
+        self.current_sync_committee = v;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::CurrentSyncCommittee);
+    }
+
+    /// Set next sync committee.
+    pub fn set_next_sync_committee(&mut self, v: SyncCommittee<P>) {
+        self.next_sync_committee = v;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::NextSyncCommittee);
+    }
+
+    /// Spec `process_participation_flag_updates` list rotation:
+    /// previous ← current, current ← zeros (same length).
+    pub fn participation_flag_rotate(&mut self) {
+        let n = self.current_epoch_participation.len();
+        let current = std::mem::take(&mut self.current_epoch_participation);
+        self.previous_epoch_participation = current;
+        // Zero current-epoch flags for the next epoch.
+        self.current_epoch_participation =
+            List::new(vec![0u8; n]).unwrap_or_else(|_| List::default());
+        // Full content replace: drop list-hash caches so recompute rebuilds.
+        self.caches.list_hashes[list_id::PREV_PARTICIPATION] = None;
+        self.caches.list_hashes[list_id::CURR_PARTICIPATION] = None;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::PreviousEpochParticipation);
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::CurrentEpochParticipation);
     }
 }
 

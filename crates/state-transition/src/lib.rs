@@ -28,9 +28,14 @@ pub use engine_seam::{
     ExecutionEngine, NewPayloadRequest, PayloadStatus, StubOptimisticEngine, VersionedHash,
 };
 pub use epoch::{
-    get_flag_index_deltas, get_inactivity_penalty_deltas, process_epoch,
-    process_inactivity_updates, process_justification_and_finalization,
-    process_rewards_and_penalties, weigh_justification_and_finalization, RewardPenalties,
+    apply_pending_deposit, get_flag_index_deltas, get_inactivity_penalty_deltas,
+    process_effective_balance_updates, process_epoch, process_eth1_data_reset,
+    process_historical_summaries_update, process_inactivity_updates,
+    process_justification_and_finalization, process_participation_flag_updates,
+    process_pending_consolidations, process_pending_deposits, process_proposer_lookahead,
+    process_randao_mixes_reset, process_registry_updates, process_rewards_and_penalties,
+    process_slashings, process_slashings_reset, process_sync_committee_updates,
+    weigh_justification_and_finalization, RewardPenalties,
 };
 pub use error::{
     BlockError, EngineError, EpochError, GossipClass, OperationError, SignatureKind,

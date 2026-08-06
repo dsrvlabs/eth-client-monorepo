@@ -17,6 +17,7 @@ pub use mutators::{decrease_balance, increase_balance, initiate_validator_exit, 
 pub use predicates::{
     get_max_effective_balance, has_compounding_withdrawal_credential,
     has_eth1_withdrawal_credential, has_execution_withdrawal_credential,
-    is_active_validator, is_compounding_withdrawal_credential, is_fully_withdrawable_validator,
+    is_active_validator, is_compounding_withdrawal_credential, is_eligible_for_activation,
+    is_eligible_for_activation_queue, is_fully_withdrawable_validator,
     is_partially_withdrawable_validator, is_slashable_attestation_data, is_slashable_validator,
 };
