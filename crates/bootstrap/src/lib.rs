@@ -1,10 +1,16 @@
-//! Shared service runtime — telemetry half (Architecture §4.1, §4.3, §4.4; CC-05a).
+//! Shared service runtime — telemetry + serve (Architecture §4.1–§4.5; CC-05a/b).
 //!
-//! Phase 1 of 2: `init` installs tracing, builds the metric registry, and returns
-//! a [`Bootstrap`] whose `registry` services can extend before CC-05b's `serve`.
+//! Two-phase construction:
+//! 1. [`init`] installs tracing, builds the metric registry, returns [`Bootstrap`].
+//! 2. [`serve`] binds gRPC (health, reflection, user routes), runs the peer prober
+//!    and `/metrics`, and drains on SIGTERM/SIGINT.
 //!
 //! **D-2:** `init` takes resolved [`TelemetrySettings`]; it never reads the
 //! environment. `RUST_LOG` / `LOG_FORMAT` are resolved by `cc-config`.
+//!
+//! **R-8:** `tonic::service::Routes` on 0.14.6 supports `Default`, `Routes::new`,
+//! `Routes::builder`, and consuming `add_service`; `serve` uses
+//! `Server::builder().layer(…).add_routes(routes).serve_with_shutdown(…)`.
 
 #![allow(missing_docs)]
 
@@ -12,7 +18,9 @@ mod error;
 mod grpc_metrics;
 mod metrics;
 mod metrics_server;
+mod prober;
 mod process;
+mod serve;
 
 pub use error::Error;
 pub use grpc_metrics::{GrpcMetricsLayer, GrpcMetricsService};
@@ -21,6 +29,10 @@ pub use metrics::{
     PeerHealthLabels,
 };
 pub use metrics_server::{serve_metrics, spawn_metrics_server};
+pub use prober::{FAIL_THRESHOLD, PROBE_INTERVAL, PROBE_TIMEOUT};
+pub use serve::{
+    AGGREGATE_HEALTH, DRAIN_TIMEOUT, PeerSpec, ServiceSpec, serve, serve_with_shutdown,
+};
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -152,7 +164,18 @@ impl Bootstrap {
 /// Use [`spawn`] so tasks inherit it.
 pub fn init(service: &'static str, telemetry: TelemetrySettings) -> Result<Bootstrap, Error> {
     install_tracing(&telemetry)?;
+    Ok(bootstrap_inner(service))
+}
 
+/// Build a [`Bootstrap`] without installing the global tracing subscriber.
+///
+/// For multi-service in-process tests where [`init`] has already claimed the
+/// process-global subscriber. Production always uses [`init`].
+pub fn bootstrap_without_tracing(service: &'static str) -> Bootstrap {
+    bootstrap_inner(service)
+}
+
+fn bootstrap_inner(service: &'static str) -> Bootstrap {
     let root_span = info_span!("service", service);
     // Best-effort store for `spawn`. Ignore if a prior init already set it
     // (should not happen in production; tests may re-enter carefully).
@@ -161,12 +184,12 @@ pub fn init(service: &'static str, telemetry: TelemetrySettings) -> Result<Boots
     let mut registry = Registry::default();
     let metrics = Metrics::register(&mut registry, service, VERSION, GIT_SHA, RUSTC);
 
-    Ok(Bootstrap {
+    Bootstrap {
         registry,
         service,
         metrics,
         root_span,
-    })
+    }
 }
 
 /// Spawn a Tokio task that inherits the service's root tracing span.
