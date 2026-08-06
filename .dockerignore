@@ -1,0 +1,33 @@
+# Build context exclusions (Architecture §6.1, CC-04).
+# .git/ is excluded so CC_GIT_SHA must be passed as a build arg.
+
+# Rust build artifacts
+target/
+**/target/
+
+# VCS (bootstrap build.rs reads CC_GIT_SHA env instead)
+.git/
+.gitignore
+
+# Spec-vector cache (if ever placed under the tree) and Phase 2+ generated outputs
+.devnet/
+devnet/out/
+**/.cache/
+**/eth-consensus-spec-vectors/
+
+# Docs, plans, IDE, CI — not needed to compile the workspace
+docs/
+*.md
+!Cargo.toml
+.github/
+.config/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local secrets must never enter the image (A7 / A-P0-5)
+secrets/
+**/*.pem
+**/*.key
+**/jwt.hex

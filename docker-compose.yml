@@ -1,0 +1,153 @@
+# Six-service topology (Architecture §6.2–§6.3, CC-04).
+# Configuration via CC_<SERVICE>_<FIELD> env vars; config/*.toml is local-dev only.
+
+x-cc-env: &cc-env
+  RUST_LOG: ${RUST_LOG:-info}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+
+x-cc-runtime: &cc-runtime
+  restart: unless-stopped
+  stop_signal: SIGTERM
+  stop_grace_period: 5s # matches CC-01/3's budget, not the 10s default
+  networks: [cc]
+
+x-hc: &hc
+  interval: 5s
+  timeout: 2s
+  retries: 12
+  start_period: 10s
+
+services:
+  chain:
+    <<: *cc-runtime
+    build:
+      context: .
+      args:
+        SERVICE: cc-chain
+        CC_GIT_SHA: ${CC_GIT_SHA:-unknown}
+    environment:
+      <<: *cc-env
+      CC_CHAIN_GRPC_ADDR: 0.0.0.0:9001
+      CC_CHAIN_METRICS_ADDR: 0.0.0.0:9101
+    ports: ["9001:9001", "9101:9101"]
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "/usr/local/bin/grpc-health-probe", "-addr=:9001"]
+
+  p2p:
+    <<: *cc-runtime
+    build:
+      context: .
+      args:
+        SERVICE: cc-p2p
+        CC_GIT_SHA: ${CC_GIT_SHA:-unknown}
+    environment:
+      <<: *cc-env
+      CC_P2P_GRPC_ADDR: 0.0.0.0:9002
+      CC_P2P_METRICS_ADDR: 0.0.0.0:9102
+      CC_P2P_PEERS__CHAIN: http://chain:9001
+    ports: ["9002:9002", "9102:9102"]
+    depends_on:
+      chain:
+        condition: service_healthy
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "/usr/local/bin/grpc-health-probe", "-addr=:9002"]
+
+  attestation:
+    <<: *cc-runtime
+    build:
+      context: .
+      args:
+        SERVICE: cc-attestation
+        CC_GIT_SHA: ${CC_GIT_SHA:-unknown}
+    environment:
+      <<: *cc-env
+      CC_ATTESTATION_GRPC_ADDR: 0.0.0.0:9003
+      CC_ATTESTATION_METRICS_ADDR: 0.0.0.0:9103
+      CC_ATTESTATION_PEERS__CHAIN: http://chain:9001
+    ports: ["9003:9003", "9103:9103"]
+    depends_on:
+      chain:
+        condition: service_healthy
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "/usr/local/bin/grpc-health-probe", "-addr=:9003"]
+
+  engine:
+    <<: *cc-runtime
+    build:
+      context: .
+      args:
+        SERVICE: cc-engine
+        CC_GIT_SHA: ${CC_GIT_SHA:-unknown}
+    environment:
+      <<: *cc-env
+      CC_ENGINE_GRPC_ADDR: 0.0.0.0:9004
+      CC_ENGINE_METRICS_ADDR: 0.0.0.0:9104
+      CC_ENGINE_PEERS__CHAIN: http://chain:9001
+    ports: ["9004:9004", "9104:9104"]
+    depends_on:
+      chain:
+        condition: service_healthy
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "/usr/local/bin/grpc-health-probe", "-addr=:9004"]
+
+  storage:
+    <<: *cc-runtime
+    build:
+      context: .
+      args:
+        SERVICE: cc-storage
+        CC_GIT_SHA: ${CC_GIT_SHA:-unknown}
+    environment:
+      <<: *cc-env
+      CC_STORAGE_GRPC_ADDR: 0.0.0.0:9006
+      CC_STORAGE_METRICS_ADDR: 0.0.0.0:9106
+      CC_STORAGE_PEERS__CHAIN: http://chain:9001
+    ports: ["9006:9006", "9106:9106"]
+    depends_on:
+      chain:
+        condition: service_healthy
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "/usr/local/bin/grpc-health-probe", "-addr=:9006"]
+
+  beacon-api:
+    <<: *cc-runtime
+    build:
+      context: .
+      args:
+        SERVICE: cc-beacon-api
+        CC_GIT_SHA: ${CC_GIT_SHA:-unknown}
+    environment:
+      <<: *cc-env
+      CC_BEACON_API_GRPC_ADDR: 0.0.0.0:9005
+      CC_BEACON_API_METRICS_ADDR: 0.0.0.0:9105
+      CC_BEACON_API_PEERS__CHAIN: http://chain:9001
+      CC_BEACON_API_PEERS__ATTESTATION: http://attestation:9003
+      CC_BEACON_API_PEERS__STORAGE: http://storage:9006
+    ports: ["9005:9005", "9105:9105"]
+    depends_on:
+      chain:
+        condition: service_healthy
+      attestation:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "/usr/local/bin/grpc-health-probe", "-addr=:9005"]
+
+  # ── Phase 3 (CC-3x) fills this slot. Deliberately commented, not absent, so the
+  #    port allocation and the JWT-volume gap are visible now. A7 / A-P0-5: no secrets
+  #    in Phases 0-2, so there is no jwt volume here yet.
+  # el:
+  #   image: ethereum/client-go:<pinned>
+  #   ports: ["8545:8545", "8551:8551", "30303:30303/tcp", "30303:30303/udp"]
+  #   volumes: [ "./secrets/jwt.hex:/jwt.hex:ro" ]      # Phase 3
+  #   networks: [cc]
+
+networks:
+  cc: {}
