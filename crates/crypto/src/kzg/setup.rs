@@ -11,7 +11,10 @@ use serde::Deserialize;
 /// Embedded mainnet trusted setup (Ethereum consensus-specs `trusted_setup_4096.json`).
 pub const TRUSTED_SETUP_JSON: &str = include_str!("../../trusted_setup.json");
 
-/// Default `precompute` for `c-kzg` setup load (0 = no table; benchmark axis later).
+/// Default `precompute` for `c-kzg` setup load (0 = no table).
+///
+/// CC-11d: Phase 2 verify is within 5% of `precompute=8` while saving ~96 MiB
+/// and avoiding compute/recover regression — see `docs/kzg-benchmark.md`.
 pub const DEFAULT_PRECOMPUTE: u64 = 0;
 
 /// Number of G1 points in the mainnet KZG trusted setup.

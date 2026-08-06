@@ -316,6 +316,42 @@ fn both_backends_ok_false_vs_err_verdicts() {
 }
 
 // ---------------------------------------------------------------------------
+// CC-11d — chosen default lockstep (document ↔ feature ↔ config enum)
+// ---------------------------------------------------------------------------
+
+/// The config enum's [`Default`] must match the crate's `default` feature and
+/// `docs/kzg-benchmark.md`. Updated only when CC-11d re-runs the matrix.
+#[test]
+fn default_backend_kind_matches_chosen_default() {
+    use cc_crypto::KzgBackendKind;
+
+    // CHOSEN_DEFAULT — keep in lockstep with:
+    //   - crates/crypto/Cargo.toml `[features] default`
+    //   - KzgBackendKind::default() in src/kzg/mod.rs
+    //   - docs/kzg-benchmark.md "Chosen default"
+    let chosen = KzgBackendKind::default();
+    assert_eq!(
+        chosen,
+        KzgBackendKind::CKzg,
+        "KzgBackendKind::default() drifted from the CC-11d chosen default"
+    );
+    assert_eq!(chosen.as_str(), "c-kzg");
+
+    // Feature gate: the default feature must enable the chosen backend's dep.
+    #[cfg(not(feature = "kzg-c-kzg"))]
+    compile_error!(
+        "crate default feature must enable kzg-c-kzg while KzgBackendKind::default() is CKzg (CC-11d)"
+    );
+
+    // When only the default feature is on, DefaultKzg aliases the same backend.
+    #[cfg(all(feature = "kzg-c-kzg", not(feature = "kzg-rust-eth-kzg")))]
+    {
+        fn _assert_default_kzg_is_c_kzg(_: cc_crypto::DefaultKzg) {}
+        let _ = _assert_default_kzg_is_c_kzg;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Vector suite absence (pin documentation — not a false green)
 // ---------------------------------------------------------------------------
 

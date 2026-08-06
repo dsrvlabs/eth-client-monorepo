@@ -28,8 +28,11 @@ use rust_eth_kzg::{
 pub use rust_eth_kzg::UsePrecomp;
 
 /// Default `UsePrecomp` (no precompute tables) — mirrors c-kzg
-/// [`DEFAULT_PRECOMPUTE = 0`](super::setup::DEFAULT_PRECOMPUTE). CC-11d may
-/// change the production default after measurement.
+/// [`DEFAULT_PRECOMPUTE = 0`](super::setup::DEFAULT_PRECOMPUTE).
+///
+/// CC-11d chose `c-kzg` as the crate default; when this backend is selected
+/// explicitly, keep precomp off unless a re-bench justifies the ~100 MiB table
+/// (`docs/kzg-benchmark.md`).
 pub const DEFAULT_USE_PRECOMP: UsePrecomp = UsePrecomp::No;
 
 /// `rust_eth_kzg` cell-KZG backend loaded from the committed trusted setup.

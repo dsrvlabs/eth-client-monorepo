@@ -29,7 +29,9 @@ pub use domain::{
     DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF, DOMAIN_VOLUNTARY_EXIT,
 };
 pub use hash::{hash32_concat, hash_fixed};
-pub use kzg::{Blob, CellKzg, CellProofs, Cells, CellsAndProofs, KzgError, BYTES_PER_BLOB};
+pub use kzg::{
+    Blob, CellKzg, CellProofs, Cells, CellsAndProofs, KzgBackendKind, KzgError, BYTES_PER_BLOB,
+};
 
 #[cfg(feature = "kzg-c-kzg")]
 pub use kzg::CKzgBackend;

@@ -11,6 +11,7 @@ publish.workspace = true
 workspace = true
 
 [features]
+# CHOSEN_DEFAULT (CC-11d): must match `KzgBackendKind::default()` and docs/kzg-benchmark.md.
 default = ["kzg-c-kzg"]
 # Architecture §4.3 — both may be on simultaneously; CI enables both for the vector job.
 kzg-c-kzg = ["dep:c-kzg"]
@@ -31,3 +32,8 @@ rust_eth_kzg = { workspace = true, optional = true }
 
 [dev-dependencies]
 sha2 = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "kzg"
+harness = false
