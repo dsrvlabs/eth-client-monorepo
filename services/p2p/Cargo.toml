@@ -13,3 +13,12 @@ path = "src/main.rs"
 
 [lints]
 workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+cc-bootstrap = { workspace = true }
+cc-config = { workspace = true }
+cc-proto = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }

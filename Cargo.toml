@@ -58,6 +58,9 @@ figment = { version = "0.10.19", features = ["env", "toml"] }
 http = "1.5.0"
 serde = { version = "1.0.219", features = ["derive"] }
 
+# Service binaries (CC-01b)
+anyhow = "1.0.100"
+
 # Bootstrap telemetry (Architecture §4 / ADR-06, CC-05a)
 prometheus-client = "0.25.0"
 tracing = "0.1.44"

@@ -82,9 +82,8 @@ jobs:
           tool: cargo-nextest
 
       - name: cargo nextest
-        # R-9: nextest defaults to --no-tests=fail; workspace has no tests until CC-01b
-        # (bootstrap shutdown integration test). Remove --no-tests=warn when CC-01b lands.
-        run: cargo nextest run --workspace --locked --profile ci --no-tests=warn
+        # R-9 retired by CC-01b: shutdown integration test + existing bootstrap/config/proto tests.
+        run: cargo nextest run --workspace --locked --profile ci
 
   # CC-03 — buf governance (Architecture §3.3, §9): lint + format + FILE-category
   # breaking via the unified bufbuild/buf-action@v1 (not the deprecated trio), and
