@@ -107,9 +107,10 @@ to an existing service is **not** a `FILE`-category break — `buf breaking` mus
 | `ImportBlock` | unary | Import a `SignedBeaconBlock` (SSZ bytes) and return a first-class verdict |
 | `GetHead` | unary | Head root/slot plus justified/finalized checkpoints (served from `ArcSwap` in CC-18b) |
 | `SubscribeEvents` | server-streaming | Event bus with resume cursor; consumers must be idempotent |
+| `GetCommitteeShuffling` | unary | Packed epoch shuffling + `dependent_root` from head state (CC-1F, **served**) |
+| `GetValidatorPubkeys` | unary | Registry pubkeys by index range/list, bound 256 (CC-1F, **served**) |
 
-CC-1E (`ApplyAttestations`) and CC-1F (`GetCommitteeShuffling`, `GetValidatorPubkeys`) land in
-their own issues — not pre-declared here.
+CC-1E (`ApplyAttestations`) lands in its own issue — not pre-declared here.
 
 ### `ImportBlock`
 
@@ -194,6 +195,83 @@ shape live in `cc-proto` (`status_with_error_info` / `error_info_from_status`):
 2. `prost_types::Any { type_url: "type.googleapis.com/google.rpc.ErrorInfo", value: encode }`
 3. `google.rpc.Status { code, message, details: [any] }` → `encode_to_vec`
 4. `tonic::Status::with_details(code, message, bytes)` → `grpc-status-details-bin` trailer
+
+### `GetCommitteeShuffling` (CC-1F)
+
+**Served** for the head state's **current and next epoch** only (Architecture §7.7 / §16/6). Both
+handlers read through the core thread's single FIFO `Query` command — no second copy of the state is
+held on the gRPC side (§7.1).
+
+**Request:**
+
+| Field | Type | Notes |
+|---|---|---|
+| `epoch` | `uint64` | Must be head `current` or `current + 1` |
+
+**Response:**
+
+| Field | Type | Notes |
+|---|---|---|
+| `shuffled_indices` | `repeated uint64` | Packed committee assignment — active validators in shuffled order; committees are contiguous slices of this list (same layout as the head state's `ShufflingCache`) |
+| `dependent_root` | `bytes` | Decision root used as the **cache key** (§5.4). See stability rules below. |
+| `epoch` | `uint64` | Echo of the served epoch |
+| `committees_per_slot` | `uint64` | So the caller can slice committees without a second query |
+
+**`dependent_root` stability (Phase 5 caching):**
+
+| Case | Value | Stable within epoch? |
+|---|---|---|
+| **Current** epoch (and any epoch whose `start_slot(epoch) − 1` is historical) | Block root at `start_slot(epoch) − 1` (true decision root) | Yes |
+| **Next** epoch mid-epoch (dependent slot still current/future) | **Current** epoch's true decision root (`start_slot(current) − 1`) — provisional but **stable** for the whole current epoch on a branch | Yes — does **not** advance with head slot |
+
+Using the current-epoch decision root as the mid-window next-epoch key avoids per-slot cache
+thrash while remaining branch-distinguishing for forks that diverged before the current epoch.
+The assignment itself is seed-determined (RANDAO / `MIN_SEED_LOOKAHEAD`) and matches
+`compute_shuffled_active_indices`; mid-epoch forks that share current-epoch history correctly share
+the same next-epoch assignment and the same provisional key.
+
+**gRPC statuses:**
+
+| Status | When |
+|---|---|
+| `FAILED_PRECONDITION` | Requested epoch is outside `{current, current+1}` |
+| `FAILED_PRECONDITION` + `NOT_BOOTSTRAPPED` | Called before checkpoint bootstrap |
+| `INTERNAL` | Shuffling / decision-root computation failed on the head state |
+
+**Caching contract:** the `attestation` service (Phase 5) must key its cache by
+`(epoch, dependent_root)`. Two competing branches in the same epoch produce different
+`dependent_root` values and different assignments — that is why the field exists.
+
+### `GetValidatorPubkeys` (CC-1F)
+
+**Served** unconditionally as a registry read through the head state's validator list
+(`PubkeyIndexMap` is the reverse direction; this RPC is index → pubkey).
+
+**Request** — either a contiguous range **or** an explicit list:
+
+| Field | Type | Notes |
+|---|---|---|
+| `start_index` | `uint64` | Range start (used when `indices` is empty) |
+| `count` | `uint64` | Range length (used when `indices` is empty) |
+| `indices` | `repeated uint64` | When non-empty, overrides `start_index`/`count` |
+
+**Bound:** at most **256** indices per request. Over that — or a zero-count empty request — is
+`INVALID_ARGUMENT`, **never a truncated response** (same discipline as CC-1E's 128-attestation batch
+bound and Phase 2's `GetValidatorRecords`).
+
+**Response:**
+
+| Field | Type | Notes |
+|---|---|---|
+| `indices` | `repeated uint64` | Echo of the resolved indices |
+| `pubkeys` | `repeated bytes` | 48-byte BLS public keys, parallel to `indices` |
+
+**gRPC statuses:**
+
+| Status | When |
+|---|---|
+| `INVALID_ARGUMENT` | Empty request, `count == 0` with empty `indices`, more than 256 indices, or any index out of registry range |
+| `FAILED_PRECONDITION` + `NOT_BOOTSTRAPPED` | Called before checkpoint bootstrap |
 
 ### Vendored `google.rpc` (ADR-P1-14)
 

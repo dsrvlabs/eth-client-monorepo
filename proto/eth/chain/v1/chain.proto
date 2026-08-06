@@ -15,6 +15,13 @@ service ChainService {
   rpc ImportBlock(ImportBlockRequest) returns (ImportBlockResponse);
   rpc GetHead(GetHeadRequest) returns (GetHeadResponse);
   rpc SubscribeEvents(SubscribeEventsRequest) returns (stream Event);
+  // CC-1F: packed epoch shuffling from the head state's cache (current + next
+  // epoch only). Other epochs → FAILED_PRECONDITION. Response carries
+  // dependent_root so callers cache by decision root (§5.4).
+  rpc GetCommitteeShuffling(GetCommitteeShufflingRequest) returns (GetCommitteeShufflingResponse);
+  // CC-1F: registry pubkeys by index range or explicit index list. Bounded at
+  // 256 indices per request; over that is INVALID_ARGUMENT (never truncation).
+  rpc GetValidatorPubkeys(GetValidatorPubkeysRequest) returns (GetValidatorPubkeysResponse);
 }
 
 message GetInfoRequest {}
@@ -98,4 +105,54 @@ message Event {
   bytes root = 3;
   EventKind kind = 4;
   bytes payload = 5; // kind-specific; opaque to the bus
+}
+
+// ── CC-1F: GetCommitteeShuffling ─────────────────────────────────────────────
+//
+// Served for the head state's **current and next epoch** only (Architecture
+// §7.7 / §16/6). The packed assignment is the shuffled active-validator list
+// for the epoch — the same layout `get_beacon_committee` slices. Callers must
+// cache by `dependent_root` (block root at start_slot(epoch) − 1), not epoch
+// alone: two branches in the same epoch with different decision roots must not
+// share a shuffling (§5.4).
+
+message GetCommitteeShufflingRequest {
+  // Target epoch. Must be head current or current+1; otherwise FAILED_PRECONDITION.
+  uint64 epoch = 1;
+}
+
+message GetCommitteeShufflingResponse {
+  // Active validators in shuffled order for `epoch` (packed committee assignment).
+  // Committees are contiguous slices of this list.
+  repeated uint64 shuffled_indices = 1;
+  // Decision root: block root at start_slot(epoch) − 1. Cache key for the caller.
+  bytes dependent_root = 2;
+  // Echo of the served epoch (same as the request when accepted).
+  uint64 epoch = 3;
+  // Committees per slot for the epoch so the caller can slice without a second query.
+  uint64 committees_per_slot = 4;
+}
+
+// ── CC-1F: GetValidatorPubkeys ───────────────────────────────────────────────
+//
+// Registry read through the head state's validator list / PubkeyIndexMap.
+// Request either a contiguous range (`start_index` + `count`) **or** an explicit
+// `indices` list. If `indices` is non-empty it takes precedence over the range.
+// Bound: at most **256** indices per request; over that is INVALID_ARGUMENT.
+// An empty/zero-count request (no indices, count == 0) is also INVALID_ARGUMENT.
+
+message GetValidatorPubkeysRequest {
+  // Start of a contiguous range (used when `indices` is empty).
+  uint64 start_index = 1;
+  // Length of the contiguous range (used when `indices` is empty).
+  uint64 count = 2;
+  // Explicit index list; when non-empty, overrides start_index/count.
+  repeated uint64 indices = 3;
+}
+
+message GetValidatorPubkeysResponse {
+  // Validator indices (same order as requested).
+  repeated uint64 indices = 1;
+  // 48-byte BLS public keys, parallel to `indices`.
+  repeated bytes pubkeys = 2;
 }

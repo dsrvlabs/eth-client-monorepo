@@ -7,6 +7,10 @@
 //! ```text
 //! loop { recv(); handle(); /* snapshot + events inside import */ }
 //! ```
+//!
+//! CC-1F state-requiring reads (`GetCommitteeShuffling`, `GetValidatorPubkeys`)
+//! go through the single FIFO [`CoreCommand::Query`] path (§7.1) — no second
+//! copy of the head state is held on the gRPC side.
 
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -14,10 +18,14 @@ use std::time::Duration;
 
 use cc_fork_choice::Store;
 use cc_proto::chain::{ImportBlockRequest, ImportBlockResponse};
-use cc_state_transition::BlockSignatureStrategy;
+use cc_state_transition::{
+    BlockSignatureStrategy, compute_shuffled_active_indices, decision_root_for_epoch,
+    get_committee_count_per_slot, get_current_epoch, get_or_compute_shuffling,
+};
+use cc_types::BeaconState;
 use cc_types::config::ChainConfig;
 use cc_types::preset::Preset;
-use cc_types::primitives::Root;
+use cc_types::primitives::{Epoch, Root};
 use tokio::sync::{mpsc, oneshot};
 use tonic::Status;
 
@@ -35,6 +43,10 @@ pub const IMPORT_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 /// Shutdown join timeout (Architecture §7.4).
 pub const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Max indices accepted by `GetValidatorPubkeys` (CC-1F; same discipline as
+/// Phase 2's 256-bound `GetValidatorRecords`).
+pub const MAX_VALIDATOR_PUBKEYS_PER_REQUEST: u64 = 256;
+
 /// Commands handled by the core thread.
 #[derive(Debug)]
 pub enum CoreCommand {
@@ -43,9 +55,11 @@ pub enum CoreCommand {
         request: ImportBlockRequest,
         reply: oneshot::Sender<Result<ImportBlockResponse, Status>>,
     },
-    /// State-requiring read placeholder (Phase 1 builds the command; priority
-    /// lane is Phase 6). Currently returns head root from the store.
+    /// State-requiring read (single FIFO queue in Phase 1; priority lane is Phase 6).
+    ///
+    /// Used by CC-1F (`GetCommitteeShuffling`, `GetValidatorPubkeys`) and head probes.
     Query {
+        request: QueryRequest,
         reply: oneshot::Sender<Result<QueryReply, Status>>,
     },
     /// Block the core thread for `duration` (tests: GetHead bypass).
@@ -57,11 +71,34 @@ pub enum CoreCommand {
     Shutdown { done: oneshot::Sender<()> },
 }
 
+/// Request variants for [`CoreCommand::Query`].
+#[derive(Debug, Clone)]
+pub enum QueryRequest {
+    /// Head root / slot from the store (diagnostic / tests).
+    Head,
+    /// Packed committee shuffling for `epoch` from the head state (CC-1F).
+    CommitteeShuffling { epoch: u64 },
+    /// Validator pubkeys by resolved index list (CC-1F). Indices already bound-checked.
+    ValidatorPubkeys { indices: Vec<u64> },
+}
+
 /// Reply for the Phase-1 `Query` command.
 #[derive(Debug, Clone)]
-pub struct QueryReply {
-    pub head_root: Root,
-    pub head_slot: u64,
+pub enum QueryReply {
+    /// Head probe.
+    Head { head_root: Root, head_slot: u64 },
+    /// Served shuffling for one epoch.
+    CommitteeShuffling {
+        shuffled_indices: Vec<u64>,
+        dependent_root: Root,
+        epoch: u64,
+        committees_per_slot: u64,
+    },
+    /// Served pubkeys (parallel to the requested indices).
+    ValidatorPubkeys {
+        indices: Vec<u64>,
+        pubkeys: Vec<Vec<u8>>,
+    },
 }
 
 /// Configuration for spawning the core thread.
@@ -140,10 +177,10 @@ impl CoreHandle {
     }
 
     /// `Query` command (single FIFO queue in Phase 1).
-    pub async fn query(&self) -> Result<QueryReply, Status> {
+    pub async fn query(&self, request: QueryRequest) -> Result<QueryReply, Status> {
         let (reply, rx) = oneshot::channel();
         self.cmd_tx
-            .send(CoreCommand::Query { reply })
+            .send(CoreCommand::Query { request, reply })
             .await
             .map_err(|_| Status::unavailable("chain core thread is shut down"))?;
         rx.await
@@ -244,6 +281,145 @@ pub fn spawn_core_thread<P: Preset + 'static>(
     }
 }
 
+/// Resolve the head block root from the store.
+fn head_root_of<P: Preset>(store: &Store<P>) -> Root {
+    store
+        .last_head_root()
+        .or_else(|| store.head_cache().map(|c| c.head_root))
+        .unwrap_or_else(|| store.justified_checkpoint().root)
+}
+
+/// Head state for Query handlers: store block_states (seeded at bootstrap and
+/// kept in sync with residency pins on every import).
+fn head_state<'a, P: Preset>(
+    store: &'a Store<P>,
+    _residency: &'a Residency<P>,
+    head_root: Root,
+) -> Result<&'a BeaconState<P>, Status> {
+    store.block_state(&head_root).ok_or_else(|| {
+        Status::failed_precondition("head state not resident; chain not ready for state queries")
+    })
+}
+
+/// Decision root returned to callers for the served epoch window.
+///
+/// - When `start_slot(epoch) − 1` is already historical: the true decision root
+///   (same as [`decision_root_for_epoch`] / `get_or_compute_shuffling`).
+/// - When serving **next** epoch mid-epoch (dependent slot still current/future):
+///   the **current** epoch's true decision root — stable for the whole epoch on
+///   a branch, branch-distinguishing across forks, and never thrashing per slot.
+///   Next-epoch seed is already fixed from RANDAO (`MIN_SEED_LOOKAHEAD`); the
+///   assignment does not change as head advances within the epoch.
+fn dependent_root_for_epoch_served<P: Preset>(
+    state: &BeaconState<P>,
+    epoch: Epoch,
+) -> Result<Root, Status> {
+    match decision_root_for_epoch(state, epoch) {
+        Ok(root) => Ok(root),
+        Err(_) => {
+            // Next-epoch mid-window: stable provisional = current epoch decision root.
+            let current = get_current_epoch(state);
+            decision_root_for_epoch(state, current).map_err(|e| {
+                Status::internal(format!(
+                    "stable provisional dependent root (current epoch {}) for next epoch {}: {e}",
+                    current.as_u64(),
+                    epoch.as_u64()
+                ))
+            })
+        }
+    }
+}
+
+/// Packed shuffling for `epoch`.
+///
+/// When the strict decision root is available, uses [`get_or_compute_shuffling`]
+/// so the head-state [`cc_types::ShufflingCache`] key matches in-process
+/// `get_beacon_committee`. When only a provisional root is available, computes
+/// without inserting under a foreign key (avoids duplicate/orphan cache entries).
+fn shuffled_for_epoch<P: Preset>(state: &BeaconState<P>, epoch: Epoch) -> Result<Vec<u64>, Status> {
+    if decision_root_for_epoch(state, epoch).is_ok() {
+        let shuffling = get_or_compute_shuffling(state, epoch).map_err(|e| {
+            Status::internal(format!(
+                "compute shuffling for epoch {}: {e}",
+                epoch.as_u64()
+            ))
+        })?;
+        return Ok(shuffling.shuffled.iter().map(|vi| vi.as_u64()).collect());
+    }
+    // Provisional next-epoch path: seed-only compute; do not warm ShufflingCache
+    // under a non-strict key (that would never match get_or_compute_shuffling).
+    let computed = compute_shuffled_active_indices(state, epoch).map_err(|e| {
+        Status::internal(format!(
+            "compute shuffling for epoch {}: {e}",
+            epoch.as_u64()
+        ))
+    })?;
+    Ok(computed.shuffled.iter().map(|vi| vi.as_u64()).collect())
+}
+
+fn handle_query<P: Preset>(
+    store: &Store<P>,
+    residency: &Residency<P>,
+    request: QueryRequest,
+) -> Result<QueryReply, Status> {
+    let head_root = head_root_of(store);
+    match request {
+        QueryRequest::Head => {
+            let head_slot = store
+                .blocks()
+                .get(&head_root)
+                .map(|h| h.slot.as_u64())
+                .unwrap_or(0);
+            Ok(QueryReply::Head {
+                head_root,
+                head_slot,
+            })
+        }
+        QueryRequest::CommitteeShuffling { epoch } => {
+            let state = head_state(store, residency, head_root)?;
+            let current = get_current_epoch(state).as_u64();
+            let next = current.saturating_add(1);
+            if epoch != current && epoch != next {
+                return Err(Status::failed_precondition(format!(
+                    "GetCommitteeShuffling serves only head current and next epoch \
+                     (current={current}, next={next}, requested={epoch})"
+                )));
+            }
+            let epoch_ty = Epoch::new(epoch);
+            let dependent_root = dependent_root_for_epoch_served(state, epoch_ty)?;
+            let shuffled_indices = shuffled_for_epoch(state, epoch_ty)?;
+            let committees_per_slot = get_committee_count_per_slot(state, epoch_ty);
+            Ok(QueryReply::CommitteeShuffling {
+                shuffled_indices,
+                dependent_root,
+                epoch,
+                committees_per_slot,
+            })
+        }
+        QueryRequest::ValidatorPubkeys { indices } => {
+            if indices.len() as u64 > MAX_VALIDATOR_PUBKEYS_PER_REQUEST {
+                return Err(Status::invalid_argument(format!(
+                    "GetValidatorPubkeys bound is {MAX_VALIDATOR_PUBKEYS_PER_REQUEST} indices; \
+                     got {}",
+                    indices.len()
+                )));
+            }
+            let state = head_state(store, residency, head_root)?;
+            let mut pubkeys = Vec::with_capacity(indices.len());
+            for &idx in &indices {
+                let v = state.validators_get(idx as usize).ok_or_else(|| {
+                    Status::invalid_argument(format!(
+                        "validator index {idx} out of range (registry len {})",
+                        state.validators_len()
+                    ))
+                })?;
+                pubkeys.push(v.pubkey.as_slice().to_vec());
+            }
+            Ok(QueryReply::ValidatorPubkeys { indices, pubkeys })
+        }
+    }
+}
+
 fn publish_initial_snapshot<P: Preset>(store: &Store<P>, head: &HeadSnapshotStore) {
     let justified = store.justified_checkpoint();
     let finalized = store.finalized_checkpoint();
@@ -314,20 +490,9 @@ fn core_loop<P: Preset>(
                 );
                 let _ = reply.send(outcome.map(|o| o.response));
             }
-            CoreCommand::Query { reply } => {
-                let head_root = store
-                    .last_head_root()
-                    .or_else(|| store.head_cache().map(|c| c.head_root))
-                    .unwrap_or_else(|| store.justified_checkpoint().root);
-                let head_slot = store
-                    .blocks()
-                    .get(&head_root)
-                    .map(|h| h.slot.as_u64())
-                    .unwrap_or(0);
-                let _ = reply.send(Ok(QueryReply {
-                    head_root,
-                    head_slot,
-                }));
+            CoreCommand::Query { request, reply } => {
+                let outcome = handle_query(&store, &residency, request);
+                let _ = reply.send(outcome);
             }
             CoreCommand::BlockFor { duration, reply } => {
                 thread::sleep(duration);
@@ -431,8 +596,17 @@ mod tests {
             metrics,
             CoreConfig::default(),
         );
-        let q = core.handle.query().await.unwrap();
-        assert_eq!(q.head_root, anchor);
+        let q = core.handle.query(QueryRequest::Head).await.unwrap();
+        let head_root = match q {
+            QueryReply::Head {
+                head_root,
+                head_slot: _,
+            } => head_root,
+            QueryReply::CommitteeShuffling { .. } | QueryReply::ValidatorPubkeys { .. } => {
+                unreachable!("Head request must yield Head reply")
+            }
+        };
+        assert_eq!(head_root, anchor);
         // GetHead snapshot was seeded.
         assert_eq!(head.load().head_root, anchor);
         core.handle.shutdown().await;

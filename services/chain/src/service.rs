@@ -1,8 +1,9 @@
-//! gRPC `ChainService` implementation (CC-18b).
+//! gRPC `ChainService` implementation (CC-18b / CC-1F).
 //!
 //! - `ImportBlock` → core command channel (`send_timeout` 2 s)
 //! - `GetHead` → [`HeadSnapshotStore`] pointer load (no core interaction)
 //! - `SubscribeEvents` → events task (CC-18c)
+//! - `GetCommitteeShuffling` / `GetValidatorPubkeys` → core [`Query`] (CC-1F)
 //!
 //! Until CC-19 checkpoint bootstrap lands, a service constructed without a
 //! [`CoreHandle`] returns `FAILED_PRECONDITION` / `NOT_BOOTSTRAPPED` for
@@ -13,8 +14,9 @@ use std::pin::Pin;
 use bytes::Bytes;
 use cc_proto::chain::chain_service_server::ChainService;
 use cc_proto::chain::{
-    Checkpoint as ProtoCheckpoint, GetHeadRequest, GetHeadResponse, GetInfoRequest,
-    GetInfoResponse, ImportBlockRequest, ImportBlockResponse, SubscribeEventsRequest,
+    Checkpoint as ProtoCheckpoint, GetCommitteeShufflingRequest, GetCommitteeShufflingResponse,
+    GetHeadRequest, GetHeadResponse, GetInfoRequest, GetInfoResponse, GetValidatorPubkeysRequest,
+    GetValidatorPubkeysResponse, ImportBlockRequest, ImportBlockResponse, SubscribeEventsRequest,
 };
 use cc_proto::common::BuildInfo;
 use cc_proto::status_with_error_info;
@@ -22,7 +24,7 @@ use futures::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Response, Status};
 
-use crate::core::CoreHandle;
+use crate::core::{CoreHandle, MAX_VALIDATOR_PUBKEYS_PER_REQUEST, QueryReply, QueryRequest};
 use crate::events::EventsHandle;
 use crate::head::HeadSnapshotStore;
 use crate::metrics::ChainMetrics;
@@ -175,6 +177,102 @@ impl ChainService for ChainServiceImpl {
         let stream = ReceiverStream::new(rx);
         Ok(Response::new(Box::pin(stream) as BoxStreamEvent))
     }
+
+    async fn get_committee_shuffling(
+        &self,
+        request: Request<GetCommitteeShufflingRequest>,
+    ) -> Result<Response<GetCommitteeShufflingResponse>, Status> {
+        let Some(core) = self.core.as_ref() else {
+            return Err(Self::not_bootstrapped(
+                "chain core not bootstrapped; GetCommitteeShuffling unavailable until checkpoint sync",
+            ));
+        };
+        let epoch = request.into_inner().epoch;
+        let reply = core
+            .query(QueryRequest::CommitteeShuffling { epoch })
+            .await?;
+        match reply {
+            QueryReply::CommitteeShuffling {
+                shuffled_indices,
+                dependent_root,
+                epoch,
+                committees_per_slot,
+            } => Ok(Response::new(GetCommitteeShufflingResponse {
+                shuffled_indices,
+                dependent_root: dependent_root.as_slice().to_vec(),
+                epoch,
+                committees_per_slot,
+            })),
+            other => Err(Status::internal(format!(
+                "unexpected query reply for GetCommitteeShuffling: {other:?}"
+            ))),
+        }
+    }
+
+    async fn get_validator_pubkeys(
+        &self,
+        request: Request<GetValidatorPubkeysRequest>,
+    ) -> Result<Response<GetValidatorPubkeysResponse>, Status> {
+        let Some(core) = self.core.as_ref() else {
+            return Err(Self::not_bootstrapped(
+                "chain core not bootstrapped; GetValidatorPubkeys unavailable until checkpoint sync",
+            ));
+        };
+        let req = request.into_inner();
+        let indices = resolve_pubkey_indices(&req)?;
+        let reply = core
+            .query(QueryRequest::ValidatorPubkeys { indices })
+            .await?;
+        match reply {
+            QueryReply::ValidatorPubkeys { indices, pubkeys } => {
+                Ok(Response::new(GetValidatorPubkeysResponse {
+                    indices,
+                    pubkeys,
+                }))
+            }
+            other => Err(Status::internal(format!(
+                "unexpected query reply for GetValidatorPubkeys: {other:?}"
+            ))),
+        }
+    }
+}
+
+/// Resolve the index list for `GetValidatorPubkeys`, enforcing the 256 bound
+/// **before** allocating the expanded index `Vec` (SEC-1F-1).
+///
+/// `indices` non-empty wins over `start_index`/`count`. Empty / zero-count /
+/// over-sized requests are `INVALID_ARGUMENT` (never a truncated response).
+fn resolve_pubkey_indices(req: &GetValidatorPubkeysRequest) -> Result<Vec<u64>, Status> {
+    if !req.indices.is_empty() {
+        // Bound check before clone (indices already allocated by prost decode,
+        // but reject before any further expansion / core work).
+        if req.indices.len() as u64 > MAX_VALIDATOR_PUBKEYS_PER_REQUEST {
+            return Err(Status::invalid_argument(format!(
+                "GetValidatorPubkeys bound is {MAX_VALIDATOR_PUBKEYS_PER_REQUEST} indices per request; \
+                 got {}",
+                req.indices.len()
+            )));
+        }
+        return Ok(req.indices.clone());
+    }
+    if req.count > 0 {
+        // SEC-1F-1: reject oversize *before* `(start..end).collect()`.
+        if req.count > MAX_VALIDATOR_PUBKEYS_PER_REQUEST {
+            return Err(Status::invalid_argument(format!(
+                "GetValidatorPubkeys bound is {MAX_VALIDATOR_PUBKEYS_PER_REQUEST} indices per request; \
+                 got {}",
+                req.count
+            )));
+        }
+        let end = req
+            .start_index
+            .checked_add(req.count)
+            .ok_or_else(|| Status::invalid_argument("GetValidatorPubkeys range overflows u64"))?;
+        return Ok((req.start_index..end).collect());
+    }
+    Err(Status::invalid_argument(
+        "GetValidatorPubkeys requires a non-empty indices list or count > 0",
+    ))
 }
 
 /// Server-streaming response type matching the generated trait (`BoxStream`).

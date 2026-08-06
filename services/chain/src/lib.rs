@@ -20,7 +20,8 @@ pub mod service;
 
 pub use core::{
     COMMAND_CHANNEL_CAPACITY, CoreCommand, CoreConfig, CoreHandle, CoreThread, IMPORT_SEND_TIMEOUT,
-    QueryReply, SHUTDOWN_JOIN_TIMEOUT, spawn_core_thread,
+    MAX_VALIDATOR_PUBKEYS_PER_REQUEST, QueryReply, QueryRequest, SHUTDOWN_JOIN_TIMEOUT,
+    spawn_core_thread,
 };
 pub use events::{
     DEFAULT_RING_CAPACITY, DEFAULT_SUBSCRIBER_QUEUE_CAPACITY, ERROR_DOMAIN, EventInput,
