@@ -27,8 +27,8 @@ the entry (e.g. `CC-12e`).
 
 - `mainnet/fulu/fork_choice` (`tick` step kind) -- `on_tick` structure landed; vector runner not wired -- CC-15c
 - `minimal/fulu/fork_choice` (`tick` step kind) -- `on_tick` structure landed; vector runner not wired -- CC-15c
-- `mainnet/fulu/fork_choice` (`block` step kind) -- `on_block` / `compute_pulled_up_tip` not implemented -- CC-15b
-- `minimal/fulu/fork_choice` (`block` step kind) -- `on_block` / `compute_pulled_up_tip` not implemented -- CC-15b
+- `mainnet/fulu/fork_choice` (`block` step kind) -- `on_block` / `compute_pulled_up_tip` landed; vector runner not wired -- CC-15c
+- `minimal/fulu/fork_choice` (`block` step kind) -- `on_block` / `compute_pulled_up_tip` landed; vector runner not wired -- CC-15c
 - `mainnet/fulu/fork_choice` (`attestation` step kind) -- `on_attestation` not implemented -- CC-16
 - `minimal/fulu/fork_choice` (`attestation` step kind) -- `on_attestation` not implemented -- CC-16
 - `mainnet/fulu/fork_choice` (`attester_slashing` step kind) -- `on_attester_slashing` not implemented -- CC-16

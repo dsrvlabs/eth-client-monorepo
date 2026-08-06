@@ -1,4 +1,4 @@
-//! Fork-choice [`Store`] skeleton (Architecture §6.2, CC-15a).
+//! Fork-choice [`Store`] (Architecture §6.2, CC-15a / CC-15b).
 //!
 //! Field set matches the architecture surface. Method names and argument order
 //! are the **spec's own** so the `fork_choice` vector steps map one-to-one.
@@ -6,20 +6,22 @@
 //! Critical mutable state is private so every write path that can move the head
 //! goes through methods that bump [`Store::mutation_counter`] (§6.4).
 //!
-//! Bodies of `on_block` / `on_attestation` / `on_attester_slashing` live in
-//! successor issues. The DA trait is owned by [`crate::da_seam`] (CC-17).
+//! `on_block` / `compute_pulled_up_tip` live in [`crate::on_block`]. The DA trait
+//! is owned by [`crate::da_seam`] (CC-17). Checkpoint contexts: [`crate::checkpoint_context`].
 
 use std::collections::{BTreeSet, HashMap};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use cc_state_transition::ExecutionEngine;
+use cc_types::BeaconState;
 use cc_types::containers::{BeaconBlockHeader, Checkpoint};
 use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, Root, Slot, ValidatorIndex};
 use lru::LruCache;
 use thiserror::Error;
 
+use crate::checkpoint_context::{CheckpointContext, checkpoint_context_key};
 use crate::da_seam::DataAvailability;
 use crate::proto_array::ProtoArray;
 
@@ -50,20 +52,6 @@ pub struct CachedHead {
     pub computed_at_mutation: u64,
 }
 
-/// Derived data for a checkpoint (Architecture §6.6 / ADR-P1-08).
-///
-/// Phase 1 stores this instead of a full `BeaconState` per checkpoint. Field
-/// bodies (`committee_cache`, balances, fork) are filled by CC-15b / CC-16.
-#[derive(Debug, Clone)]
-pub struct CheckpointContext {
-    /// Checkpoint epoch.
-    pub epoch: Epoch,
-    /// Effective balances snapshot for `compute_deltas` (filled later).
-    pub effective_balances: Vec<u64>,
-    /// Total active balance at the checkpoint (filled later).
-    pub total_active_balance: u64,
-}
-
 /// Store construction / query errors.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum StoreError {
@@ -74,8 +62,11 @@ pub enum StoreError {
 
 /// Spec-shaped fork-choice store (Architecture §6.2).
 ///
-/// `blocks` stores **headers, not blocks**. `latest_messages` is a dense
-/// `Vec<Option<LatestMessage>>` so `compute_deltas` is a linear scan.
+/// `blocks` stores **headers, not blocks**. Post-states for unfinalized roots
+/// live in `block_states` so `on_block` can run `state_transition` and
+/// `compute_pulled_up_tip` (residency pruning is owned by the chain service,
+/// CC-18b). `latest_messages` is a dense `Vec<Option<LatestMessage>>` so
+/// `compute_deltas` is a linear scan.
 ///
 /// # Mutation discipline
 ///
@@ -96,8 +87,9 @@ pub struct Store<P: Preset> {
     proposer_boost_root: Root,
     equivocating_indices: BTreeSet<ValidatorIndex>,
     blocks: HashMap<Root, BeaconBlockHeader>,
-    /// Checkpoint-context LRU (Architecture §6.6 — capacity 8). Populated by CC-15b/16.
-    #[allow(dead_code)] // inserted/read by on_attestation / on_block (CC-15b/CC-16)
+    /// Post-states keyed by block root (parent lookup + pulled-up tip).
+    block_states: HashMap<Root, BeaconState<P>>,
+    /// Checkpoint-context LRU (Architecture §6.6 — capacity 8). ADR-P1-08.
     checkpoint_contexts: LruCache<(Epoch, Root), Arc<CheckpointContext>>,
     latest_messages: Vec<Option<LatestMessage>>,
     proto_array: ProtoArray,
@@ -127,6 +119,8 @@ impl<P: Preset> std::fmt::Debug for Store<P> {
             .field("proposer_boost_root", &self.proposer_boost_root)
             .field("equivocating_indices_len", &self.equivocating_indices.len())
             .field("blocks_len", &self.blocks.len())
+            .field("block_states_len", &self.block_states.len())
+            .field("checkpoint_contexts_len", &self.checkpoint_contexts.len())
             .field("latest_messages_len", &self.latest_messages.len())
             .field("proto_array_len", &self.proto_array.len())
             .field("head_cache", &self.head_cache)
@@ -138,8 +132,7 @@ impl<P: Preset> std::fmt::Debug for Store<P> {
 impl<P: Preset> Store<P> {
     /// Construct a store at the anchor checkpoints with empty trees.
     ///
-    /// Full `get_forkchoice_store(anchor_state, anchor_block)` wiring lands with
-    /// CC-15b.
+    /// Prefer [`crate::on_block::get_forkchoice_store`] for a fully seeded store.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         time: u64,
@@ -151,8 +144,8 @@ impl<P: Preset> Store<P> {
         engine: Arc<dyn ExecutionEngine<P>>,
         da: Arc<dyn DataAvailability>,
     ) -> Self {
-        let capacity = NonZeroUsize::new(DEFAULT_CHECKPOINT_CONTEXT_CAPACITY)
-            .unwrap_or(NonZeroUsize::MIN);
+        let capacity =
+            NonZeroUsize::new(DEFAULT_CHECKPOINT_CONTEXT_CAPACITY).unwrap_or(NonZeroUsize::MIN);
         Self {
             time,
             genesis_time,
@@ -164,6 +157,7 @@ impl<P: Preset> Store<P> {
             proposer_boost_root: Root::ZERO,
             equivocating_indices: BTreeSet::new(),
             blocks: HashMap::new(),
+            block_states: HashMap::new(),
             checkpoint_contexts: LruCache::new(capacity),
             latest_messages: vec![None; validator_count],
             proto_array: ProtoArray::new(justified_checkpoint, finalized_checkpoint),
@@ -249,6 +243,18 @@ impl<P: Preset> Store<P> {
         &self.blocks
     }
 
+    /// Borrow post-state for `root`, if resident.
+    #[inline]
+    pub fn block_state(&self, root: &Root) -> Option<&BeaconState<P>> {
+        self.block_states.get(root)
+    }
+
+    /// Number of resident block states.
+    #[inline]
+    pub fn block_states_len(&self) -> usize {
+        self.block_states.len()
+    }
+
     /// Borrow latest-messages table (read-only).
     #[inline]
     pub fn latest_messages(&self) -> &[Option<LatestMessage>] {
@@ -267,14 +273,31 @@ impl<P: Preset> Store<P> {
         self.engine.as_ref()
     }
 
+    /// Shared engine handle for callers that need an `Arc` (e.g. transition context).
+    #[inline]
+    pub fn engine_arc(&self) -> &Arc<dyn ExecutionEngine<P>> {
+        &self.engine
+    }
+
+    /// Current number of checkpoint-context LRU entries.
+    #[inline]
+    pub fn checkpoint_contexts_len(&self) -> usize {
+        self.checkpoint_contexts.len()
+    }
+
+    /// Borrow a checkpoint context by checkpoint (promotes to MRU).
+    pub fn checkpoint_context(&mut self, checkpoint: Checkpoint) -> Option<Arc<CheckpointContext>> {
+        self.checkpoint_contexts
+            .get(&checkpoint_context_key(checkpoint))
+            .map(Arc::clone)
+    }
+
     // --- slot helpers --------------------------------------------------------
 
     /// Spec `get_slots_since_genesis`.
     #[inline]
     pub fn get_slots_since_genesis(&self) -> u64 {
-        self.time
-            .saturating_sub(self.genesis_time)
-            / self.seconds_per_slot
+        self.time.saturating_sub(self.genesis_time) / self.seconds_per_slot
     }
 
     /// Spec `get_current_slot`.
@@ -344,6 +367,26 @@ impl<P: Preset> Store<P> {
         self.unrealized_finalized_checkpoint = finalized;
     }
 
+    /// Insert a block header + post-state and bump the mutation counter.
+    pub fn insert_block(&mut self, root: Root, header: BeaconBlockHeader, state: BeaconState<P>) {
+        self.blocks.insert(root, header);
+        self.block_states.insert(root, state);
+        self.bump_mutation_counter();
+    }
+
+    /// Insert / refresh a [`CheckpointContext`] in the LRU (capacity 8).
+    ///
+    /// Does **not** bump `mutation_counter` by itself — callers that also change
+    /// justified balances should have already bumped via checkpoint updates.
+    pub fn insert_checkpoint_context(
+        &mut self,
+        checkpoint: Checkpoint,
+        context: Arc<CheckpointContext>,
+    ) {
+        self.checkpoint_contexts
+            .put(checkpoint_context_key(checkpoint), context);
+    }
+
     /// Spec `update_checkpoints` — promote justified/finalized when newer.
     pub fn update_checkpoints(
         &mut self,
@@ -394,8 +437,8 @@ impl<P: Preset> Store<P> {
 
     /// Mutable proto-array access for in-crate insert/weight paths (CC-15b+).
     ///
-    /// Callers that mutate must also call [`Self::bump_mutation_counter`].
-    #[allow(dead_code)] // consumed by on_block / get_head (CC-15b/c)
+    /// Callers that mutate must also call [`Self::bump_mutation_counter`] when
+    /// the mutation can move the head (insert already bumps via `insert_block`).
     pub(crate) fn proto_array_mut(&mut self) -> &mut ProtoArray {
         &mut self.proto_array
     }
@@ -414,33 +457,85 @@ mod tests {
 
     use cc_state_transition::StubOptimisticEngine;
     use cc_types::containers::Checkpoint;
+    use cc_types::fork::Fork;
     use cc_types::preset::Minimal;
-    use cc_types::primitives::{Epoch, Root};
+    use cc_types::primitives::{Epoch, Gwei, Root};
 
     use super::*;
+    use crate::checkpoint_context::{CheckpointContext, CommitteeCache};
     use crate::da_seam::AlwaysAvailable;
 
-    #[test]
-    fn checkpoint_context_lru_capacity_is_eight() {
-        let cp = Checkpoint {
-            epoch: Epoch::new(0),
-            root: Root::ZERO,
-        };
-        let store = Store::<Minimal>::new(
+    fn root(b: u8) -> Root {
+        let mut a = [0u8; 32];
+        a[0] = b;
+        Root::from_array(a)
+    }
+
+    fn cp(epoch: u64, r: Root) -> Checkpoint {
+        Checkpoint {
+            epoch: Epoch::new(epoch),
+            root: r,
+        }
+    }
+
+    fn empty_ctx(epoch: u64) -> Arc<CheckpointContext> {
+        Arc::new(CheckpointContext {
+            epoch: Epoch::new(epoch),
+            committee_cache: CommitteeCache::default(),
+            effective_balances: vec![Gwei::new(32_000_000_000)],
+            total_active_balance: Gwei::new(32_000_000_000),
+            fork: Fork {
+                previous_version: Default::default(),
+                current_version: Default::default(),
+                epoch: Epoch::new(0),
+            },
+            genesis_validators_root: Root::ZERO,
+        })
+    }
+
+    fn new_store() -> Store<Minimal> {
+        let anchor = cp(0, root(1));
+        Store::new(
             0,
             0,
             6,
-            cp,
-            cp,
+            anchor,
+            anchor,
             0,
             Arc::new(StubOptimisticEngine),
             Arc::new(AlwaysAvailable),
-        );
+        )
+    }
+
+    #[test]
+    fn checkpoint_context_lru_capacity_is_eight() {
+        let store = new_store();
         assert_eq!(
             store.checkpoint_context_capacity(),
             DEFAULT_CHECKPOINT_CONTEXT_CAPACITY
         );
         assert_eq!(DEFAULT_CHECKPOINT_CONTEXT_CAPACITY, 8);
     }
-}
 
+    /// Push 12 distinct checkpoints; map size never exceeds the bound of 8.
+    #[test]
+    fn checkpoint_context_lru_evicts_beyond_capacity() {
+        let mut store = new_store();
+        for i in 0u8..12 {
+            let checkpoint = cp(i as u64, root(i.wrapping_add(1)));
+            store.insert_checkpoint_context(checkpoint, empty_ctx(i as u64));
+            assert!(
+                store.checkpoint_contexts_len() <= DEFAULT_CHECKPOINT_CONTEXT_CAPACITY,
+                "len {} exceeded capacity after insert {i}",
+                store.checkpoint_contexts_len()
+            );
+        }
+        assert_eq!(
+            store.checkpoint_contexts_len(),
+            DEFAULT_CHECKPOINT_CONTEXT_CAPACITY
+        );
+        // Oldest entries (0..4) should be gone; newest (4..12) retained.
+        assert!(store.checkpoint_context(cp(0, root(1))).is_none());
+        assert!(store.checkpoint_context(cp(11, root(12))).is_some());
+    }
+}

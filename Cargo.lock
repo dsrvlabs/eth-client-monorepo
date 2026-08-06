@@ -775,6 +775,7 @@ dependencies = [
  "cc-types",
  "lru",
  "thiserror",
+ "tree_hash",
 ]
 
 [[package]]

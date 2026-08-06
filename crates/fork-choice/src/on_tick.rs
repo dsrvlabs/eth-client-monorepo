@@ -21,9 +21,7 @@ pub fn on_tick<P: Preset>(store: &mut Store<P>, time: u64) -> Result<(), StoreEr
         });
     }
 
-    let tick_slot = time
-        .saturating_sub(store.genesis_time())
-        / store.seconds_per_slot();
+    let tick_slot = time.saturating_sub(store.genesis_time()) / store.seconds_per_slot();
 
     while store.get_current_slot().as_u64() < tick_slot {
         let previous_time = store.genesis_time().saturating_add(

@@ -346,6 +346,23 @@ impl ProtoArray {
     pub(crate) fn nodes_mut(&mut self) -> &mut [ProtoNode] {
         &mut self.nodes
     }
+
+    /// Record unrealized checkpoints on a node after `compute_pulled_up_tip`.
+    pub fn set_unrealized_checkpoints(
+        &mut self,
+        root: Root,
+        unrealized_justified: Checkpoint,
+        unrealized_finalized: Checkpoint,
+    ) -> Result<(), ProtoArrayError> {
+        let idx = *self
+            .indices
+            .get(&root)
+            .ok_or(ProtoArrayError::UnknownRoot(root))?;
+        let node = &mut self.nodes[idx];
+        node.unrealized_justified_checkpoint = unrealized_justified;
+        node.unrealized_finalized_checkpoint = unrealized_finalized;
+        Ok(())
+    }
 }
 
 /// Genesis epoch (`GENESIS_EPOCH = 0`).
@@ -544,10 +561,7 @@ mod tests {
         // Out-of-range case: stale index past new length.
         let anchor = cp(0, root(1));
         let mut pa = ProtoArray::new(anchor, anchor);
-        insert_chain(
-            &mut pa,
-            &[(0, 1, None), (1, 2, Some(1)), (2, 3, Some(2))],
-        );
+        insert_chain(&mut pa, &[(0, 1, None), (1, 2, Some(1)), (2, 3, Some(2))]);
 
         let stale_index = pa.index_of(&root(3)).unwrap();
         assert_eq!(stale_index, 2);
