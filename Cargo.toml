@@ -6,12 +6,16 @@ members = [
   "crates/proto",
   "crates/bootstrap",
   "crates/config",
+  "crates/state-transition",
+  "crates/fork-choice",
+  "crates/spec-tests",
   "services/chain",
   "services/p2p",
   "services/attestation",
   "services/engine",
   "services/beacon-api",
   "services/storage",
+  "bin/driver",
 ]
 
 [workspace.package]
@@ -36,6 +40,9 @@ panic = "warn"
 todo = "warn"
 dbg_macro = "warn"
 
+# Append-only: unforeseen dependencies are appended to the end of this table by the
+# issue that needs them. Never re-sort existing entries so concurrent appends do not
+# conflict on the same line (CC-1K / Architecture §13).
 [workspace.dependencies]
 # Internal crates
 cc-types = { path = "crates/types" }
@@ -43,6 +50,9 @@ cc-crypto = { path = "crates/crypto" }
 cc-proto = { path = "crates/proto" }
 cc-bootstrap = { path = "crates/bootstrap" }
 cc-config = { path = "crates/config" }
+cc-state-transition = { path = "crates/state-transition" }
+cc-fork-choice = { path = "crates/fork-choice" }
+cc-spec-tests = { path = "crates/spec-tests" }
 
 # External pins (Architecture §2.3 / §3.4 / §10, CC-02)
 tonic = "0.14.6"
@@ -74,6 +84,26 @@ http-body-util = "0.1.4"
 bytes = "1.12.1"
 pin-project-lite = "0.2.17"
 futures = "0.3.33"
+
+# Consensus / SSZ / crypto pins (Architecture §13/1, CC-1K)
+ethereum_ssz = { version = "0.10.4", features = ["context_deserialize"] }
+ethereum_ssz_derive = "0.10.4"
+ssz_types = "0.14.1"
+tree_hash = "0.12.1"
+tree_hash_derive = "0.12.1"
+blst = "0.3.17"
+c-kzg = "2.1.8"
+rust_eth_kzg = "0.10.0"
+
+# Open §13/1 pins resolved at workspace admission (CC-1K)
+snap = "1.1.2"
+arc-swap = "1.9.2"
+lru = "0.18.2"
+fixedbitset = "0.5.7"
+reqwest = "0.13.4"
+serde_yaml = "0.9.34"
+ethereum_hashing = "0.8.0"
+criterion = "0.8.2"
 
 [profile.release]
 opt-level = 3

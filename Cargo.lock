@@ -195,6 +195,10 @@ name = "cc-crypto"
 version = "0.1.0"
 
 [[package]]
+name = "cc-driver"
+version = "0.1.0"
+
+[[package]]
 name = "cc-engine"
 version = "0.1.0"
 dependencies = [
@@ -206,6 +210,10 @@ dependencies = [
  "tokio",
  "tonic",
 ]
+
+[[package]]
+name = "cc-fork-choice"
+version = "0.1.0"
 
 [[package]]
 name = "cc-p2p"
@@ -230,6 +238,14 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
 ]
+
+[[package]]
+name = "cc-spec-tests"
+version = "0.1.0"
+
+[[package]]
+name = "cc-state-transition"
+version = "0.1.0"
 
 [[package]]
 name = "cc-storage"

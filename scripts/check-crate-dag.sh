@@ -16,22 +16,28 @@ fi
 
 METADATA="$(cargo metadata --no-deps --format-version 1 --locked)"
 
-# Allowed intra-workspace edges (Architecture §2.2).
+# Allowed intra-workspace edges (Architecture §2.2 / Phase 1 §1.2).
 # Empty list = root with no workspace deps.
 # Services may take cc-types/cc-crypto only for chain and p2p (Phase 1 allowance).
+# cc-driver may depend only on {cc-proto, cc-config} (ADR-P1-13).
+# cc-spec-tests has no workspace edges.
 allowed_deps() {
   case "$1" in
-    cc-types)       echo "" ;;
-    cc-config)      echo "" ;;
-    cc-proto)       echo "" ;;
-    cc-crypto)      echo "cc-types" ;;
-    cc-bootstrap)   echo "cc-proto cc-config" ;;
-    cc-chain)       echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto" ;;
-    cc-p2p)         echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto" ;;
-    cc-attestation) echo "cc-bootstrap cc-config cc-proto" ;;
-    cc-engine)      echo "cc-bootstrap cc-config cc-proto" ;;
-    cc-beacon-api)  echo "cc-bootstrap cc-config cc-proto" ;;
-    cc-storage)     echo "cc-bootstrap cc-config cc-proto" ;;
+    cc-types)             echo "" ;;
+    cc-config)            echo "" ;;
+    cc-proto)             echo "" ;;
+    cc-crypto)            echo "cc-types" ;;
+    cc-bootstrap)         echo "cc-proto cc-config" ;;
+    cc-state-transition)  echo "cc-types cc-crypto" ;;
+    cc-fork-choice)       echo "cc-state-transition cc-types cc-crypto" ;;
+    cc-spec-tests)        echo "" ;;
+    cc-driver)            echo "cc-proto cc-config" ;;
+    cc-chain)             echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-state-transition cc-fork-choice" ;;
+    cc-p2p)               echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto" ;;
+    cc-attestation)       echo "cc-bootstrap cc-config cc-proto" ;;
+    cc-engine)            echo "cc-bootstrap cc-config cc-proto" ;;
+    cc-beacon-api)        echo "cc-bootstrap cc-config cc-proto" ;;
+    cc-storage)           echo "cc-bootstrap cc-config cc-proto" ;;
     *)
       echo "error: unknown workspace member: $1" >&2
       return 1
