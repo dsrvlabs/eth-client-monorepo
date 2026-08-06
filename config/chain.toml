@@ -6,5 +6,13 @@ metrics_addr = "127.0.0.1:9101"
 log_format = "json"
 log_filter = "info"
 
+# CC-18b residency / body ring (Architecture §7.5).
+max_resident_states = 4
+body_ring_capacity = 64
+
+# CC-18c event bus bounds (Architecture §7.3).
+event_ring_capacity = 1024
+subscriber_queue_capacity = 256
+
 # No health peers — chain is the root of the acyclic health DAG.
 [peers]

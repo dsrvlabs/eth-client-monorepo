@@ -491,6 +491,23 @@ impl<P: Preset> Store<P> {
         self.bump_mutation_counter();
     }
 
+    /// Insert or replace a post-state without touching headers or the mutation counter.
+    ///
+    /// Used by chain residency (CC-18b) to re-materialise a pruned parent state
+    /// before `on_block` clones it. Does **not** bump — restoring a known state
+    /// cannot move the head.
+    pub fn put_block_state(&mut self, root: Root, state: BeaconState<P>) {
+        self.block_states.insert(root, state);
+    }
+
+    /// Drop post-states not selected by `keep` (headers remain).
+    ///
+    /// Residency pruning surface (CC-18b / ADR-P1-12): keep at most the pinned
+    /// roles; headers and proto-array stay so fork-choice identity is intact.
+    pub fn retain_block_states(&mut self, mut keep: impl FnMut(&Root) -> bool) {
+        self.block_states.retain(|root, _| keep(root));
+    }
+
     /// Insert / refresh a [`CheckpointContext`] in the LRU (capacity 8).
     ///
     /// Does **not** bump `mutation_counter` by itself — callers that also change

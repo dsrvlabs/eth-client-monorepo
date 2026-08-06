@@ -20,25 +20,33 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+arc-swap = { workspace = true }
 bytes = { workspace = true }
 cc-bootstrap = { workspace = true }
 cc-config = { workspace = true }
+cc-crypto = { workspace = true }
+cc-fork-choice = { workspace = true }
 cc-proto = { workspace = true }
+cc-state-transition = { workspace = true }
+cc-types = { workspace = true }
+ethereum_ssz = { workspace = true }
+futures = { workspace = true }
 getrandom = { workspace = true }
 prometheus-client = { workspace = true }
 serde = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
 tonic = { workspace = true }
 tracing = { workspace = true }
+tree_hash = { workspace = true }
 
 [dev-dependencies]
-cc-types = { workspace = true }
-ethereum_ssz = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 serde_json = { workspace = true }
+ssz_types = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
-tree_hash = { workspace = true }

@@ -169,6 +169,9 @@ pub const BUFFER_SUBSCRIBER: &str = "subscriber";
 /// All chain Phase-1 metric families (CC-1C / §11.1).
 ///
 /// Cheap to clone (each field is a handle into shared series storage).
+///
+/// CC-18b adds root-mismatch / backpressure counters and the body-ring gauge
+/// (Architecture §7.2 / §7.5); registration stays in this module.
 #[derive(Debug, Clone)]
 pub struct ChainMetrics {
     pub process_block: Histogram,
@@ -185,6 +188,14 @@ pub struct ChainMetrics {
     pub resident_states: Gauge,
     pub subscribers: Gauge,
     pub budget_exceeded: Family<BudgetOpLabels, Counter>,
+    /// Supplied `ImportBlockRequest.root` ≠ decoded `hash_tree_root` (CC-18b).
+    pub import_root_mismatch: Counter,
+    /// Command channel full after `send_timeout(2s)` (CC-18b).
+    pub import_rejected_backpressure: Counter,
+    /// Bodies retained for shallow-reorg replay (cap 64; CC-18b).
+    pub body_ring_len: Gauge,
+    /// Events dropped because the events channel was full/closed (SEC-2).
+    pub event_publish_dropped: Counter,
 }
 
 impl ChainMetrics {
@@ -213,6 +224,10 @@ impl ChainMetrics {
         let resident_states = Gauge::default();
         let subscribers = Gauge::default();
         let budget_exceeded = Family::<BudgetOpLabels, Counter>::default();
+        let import_root_mismatch = Counter::default();
+        let import_rejected_backpressure = Counter::default();
+        let body_ring_len = Gauge::default();
+        let event_publish_dropped = Counter::default();
 
         registry.register_with_unit(
             "cc_chain_process_block",
@@ -287,6 +302,26 @@ impl ChainMetrics {
             "Single observations over the production budget (op=block|epoch); never fatal",
             budget_exceeded.clone(),
         );
+        registry.register(
+            "cc_chain_import_root_mismatch",
+            "ImportBlock requests whose supplied root ≠ decoded hash_tree_root",
+            import_root_mismatch.clone(),
+        );
+        registry.register(
+            "cc_chain_import_rejected_backpressure",
+            "ImportBlock requests rejected after command-channel send_timeout",
+            import_rejected_backpressure.clone(),
+        );
+        registry.register(
+            "cc_chain_body_ring",
+            "SignedBeaconBlock bodies retained for shallow-reorg replay (cap 64)",
+            body_ring_len.clone(),
+        );
+        registry.register(
+            "cc_chain_event_publish_dropped",
+            "Core-thread events dropped when the events channel is full or closed",
+            event_publish_dropped.clone(),
+        );
 
         let metrics = Self {
             process_block,
@@ -303,6 +338,10 @@ impl ChainMetrics {
             resident_states,
             subscribers,
             budget_exceeded,
+            import_root_mismatch,
+            import_rejected_backpressure,
+            body_ring_len,
+            event_publish_dropped,
         };
         metrics.seed_exposition();
         metrics
@@ -368,6 +407,10 @@ impl ChainMetrics {
         self.import_queue_depth.set(0);
         self.resident_states.set(0);
         self.subscribers.set(0);
+        self.body_ring_len.set(0);
+        let _ = self.import_root_mismatch.get();
+        let _ = self.import_rejected_backpressure.get();
+        let _ = self.event_publish_dropped.get();
     }
 
     // ── process_block / process_epoch (budgeted) ───────────────────────────
@@ -524,6 +567,60 @@ impl ChainMetrics {
     /// Set resident state count.
     pub fn set_resident_states(&self, n: u64) {
         self.resident_states.set(n as i64);
+    }
+
+    /// Set body-ring occupancy (CC-18b).
+    pub fn set_body_ring_len(&self, n: u64) {
+        self.body_ring_len.set(n as i64);
+    }
+
+    /// Read resident-states gauge (tests / AC metrics assertion).
+    pub fn resident_states_value(&self) -> i64 {
+        self.resident_states.get()
+    }
+
+    /// Read body-ring gauge (tests / AC metrics assertion).
+    pub fn body_ring_len_value(&self) -> i64 {
+        self.body_ring_len.get()
+    }
+
+    /// Increment dropped-event counter (SEC-2 non-blocking publish).
+    pub fn inc_event_publish_dropped(&self) {
+        self.event_publish_dropped.inc();
+    }
+
+    /// Read dropped-event counter (tests).
+    pub fn event_publish_dropped_count(&self) -> u64 {
+        self.event_publish_dropped.get()
+    }
+
+    /// Increment root-mismatch counter (CC-18b).
+    pub fn inc_import_root_mismatch(&self) {
+        self.import_root_mismatch.inc();
+    }
+
+    /// Read root-mismatch counter (tests).
+    pub fn import_root_mismatch_count(&self) -> u64 {
+        self.import_root_mismatch.get()
+    }
+
+    /// Increment backpressure rejection counter (CC-18b).
+    pub fn inc_import_rejected_backpressure(&self) {
+        self.import_rejected_backpressure.inc();
+    }
+
+    /// Read backpressure rejection counter (tests).
+    pub fn import_rejected_backpressure_count(&self) -> u64 {
+        self.import_rejected_backpressure.get()
+    }
+
+    /// Read import outcome counter (tests).
+    pub fn import_result_count(&self, result: ImportResult) -> u64 {
+        self.import_total
+            .get_or_create(&ImportResultLabels {
+                result: result.as_str().to_owned(),
+            })
+            .get()
     }
 
     /// Set active subscriber count.
