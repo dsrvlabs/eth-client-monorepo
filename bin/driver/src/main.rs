@@ -1,28 +1,32 @@
-//! Integration driver — beacon-API → chain `ImportBlock` pipe (CC-1Aa / §9).
+//! Integration driver — beacon-API → chain `ImportBlock` pipe (CC-1A / §9).
 //!
 //! Populated in Phase 1; removed as a directory in CC-28. Dependency DAG is
 //! strictly `{cc-proto, cc-config}` plus HTTP/tokio (ADR-P1-13). **Never**
 //! depends on consensus types or crypto crates — SSZ is forwarded, never decoded.
 //!
-//! This issue (CC-1Aa) delivers the API client, catch-up (8-deep prefetch,
-//! sequential import), and metrics. Steady state / walk-back / politeness
-//! land in CC-1Ab.
+//! CC-1Aa: API client + catch-up. CC-1Ab: steady state (+4/+8/+11), walk-back,
+//! 429 backoff and provider rotation.
 //!
-//! Offline unit tests use a stub beacon HTTP server + `MockImporter` (see
-//! `catchup` module docs). Live binary path: real chain gRPC + configured
-//! beacon provider (HTTPS / loopback HTTP only — SEC-1Aa-3).
+//! Offline unit tests use a stub beacon HTTP server + `MockImporter`. Live
+//! binary path: real chain gRPC + configured beacon provider (HTTPS / loopback
+//! HTTP only — SEC-1Aa-3).
 
 mod api;
 mod catchup;
+mod ratelimit;
+mod steady;
+mod walkback;
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use bytes::Bytes;
 use catchup::{
-    CatchupConfig, ChainGrpcImporter, DEFAULT_PREFETCH_DEPTH, run_catchup, unix_now_secs,
+    CatchupConfig, ChainGrpcImporter, DEFAULT_PREFETCH_DEPTH, ImportResultCounts, run_catchup,
+    unix_now_secs,
 };
 use cc_config::ServiceConfig;
 use cc_proto::chain::ImportBlockVerdict;
@@ -38,19 +42,22 @@ use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::registry::Registry;
+use ratelimit::{DEFAULT_ROTATE_AFTER, ProviderPool, RateLimitMetrics};
 use serde::Deserialize;
+use steady::{SteadyConfig, fetch_genesis_time, run_steady_state};
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use walkback::{DEFAULT_MAX_WALKBACK_SLOTS, DEFAULT_SLOTS_PER_EPOCH, WalkbackConfig};
 
-use api::{BeaconApiClient, map_consensus_version, validate_provider_base};
+use api::{map_consensus_version, validate_provider_base};
 
 /// Process name and config slug (`config/driver.toml`, `CC_DRIVER_*`).
 const SERVICE: &str = "driver";
 
-/// Shared service fields plus driver-only catch-up config.
+/// Shared service fields plus driver-only config.
 #[derive(Debug, Deserialize)]
 struct DriverConfig {
     #[serde(flatten)]
@@ -64,6 +71,18 @@ struct DriverConfig {
     /// Prefetch window depth (§9.2). Default 8.
     #[serde(default = "default_prefetch_depth")]
     prefetch_depth: usize,
+    /// Seconds per slot for the steady-state clock (§9.3). Default 12.
+    #[serde(default = "default_seconds_per_slot")]
+    seconds_per_slot: u64,
+    /// Slots per epoch (walk-back escalation). Default 32.
+    #[serde(default = "default_slots_per_epoch")]
+    slots_per_epoch: u64,
+    /// First-attempt walk-back depth (§9.4). Default 64.
+    #[serde(default = "default_max_walkback_slots")]
+    max_walkback_slots: u64,
+    /// Consecutive provider failures before rotation (§9.5). Default 3.
+    #[serde(default = "default_rotate_after")]
+    provider_rotate_after: u32,
 }
 
 fn default_fork_name() -> String {
@@ -74,10 +93,33 @@ fn default_prefetch_depth() -> usize {
     DEFAULT_PREFETCH_DEPTH
 }
 
+fn default_seconds_per_slot() -> u64 {
+    steady::DEFAULT_SECONDS_PER_SLOT
+}
+
+fn default_slots_per_epoch() -> u64 {
+    DEFAULT_SLOTS_PER_EPOCH
+}
+
+fn default_max_walkback_slots() -> u64 {
+    DEFAULT_MAX_WALKBACK_SLOTS
+}
+
+fn default_rotate_after() -> u32 {
+    DEFAULT_ROTATE_AFTER
+}
+
 /// Labels for `cc_driver_import_result_total`.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct ImportResultLabels {
     result: String,
+}
+
+/// Labels for `cc_driver_provider_errors_total`.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct ProviderErrorLabels {
+    provider: String,
+    code: String,
 }
 
 /// Driver metrics registered into the process registry.
@@ -86,12 +128,17 @@ struct DriverMetrics {
     import_result_total: Family<ImportResultLabels, Counter>,
     /// Unix timestamp (seconds) when catch-up completed; 0 until then.
     catchup_complete_timestamp: Gauge,
+    /// Gaps abandoned after walk-back exhausted both limits (§9.4).
+    gap_abandoned_total: Counter,
+    /// Provider HTTP/transport errors by base URL and status code.
+    provider_errors_total: Family<ProviderErrorLabels, Counter>,
+    /// Index of the active beacon provider (0-based).
+    active_provider: Gauge,
 }
 
 impl DriverMetrics {
     fn register(registry: &mut Registry) -> Self {
         let import_result_total = Family::<ImportResultLabels, Counter>::default();
-        // Pre-create known result labels so scrape shows zeros before traffic.
         for result in [
             "imported",
             "duplicate",
@@ -109,6 +156,11 @@ impl DriverMetrics {
         let catchup_complete_timestamp = Gauge::default();
         catchup_complete_timestamp.set(0);
 
+        let gap_abandoned_total = Counter::default();
+        let provider_errors_total = Family::<ProviderErrorLabels, Counter>::default();
+        let active_provider = Gauge::default();
+        active_provider.set(0);
+
         registry.register(
             "cc_driver_import_result",
             "ImportBlock verdicts observed by the driver (total)",
@@ -119,10 +171,28 @@ impl DriverMetrics {
             "Unix seconds when catch-up completed (CC-1C/3 boundary); 0 until complete",
             catchup_complete_timestamp.clone(),
         );
+        registry.register(
+            "cc_driver_gap_abandoned",
+            "Walk-back gaps abandoned after depth limits (total)",
+            gap_abandoned_total.clone(),
+        );
+        registry.register(
+            "cc_driver_provider_errors",
+            "Beacon provider errors by provider base and HTTP/status code (total)",
+            provider_errors_total.clone(),
+        );
+        registry.register(
+            "cc_driver_active_provider",
+            "Index of the active beacon-API provider (0-based)",
+            active_provider.clone(),
+        );
 
         Self {
             import_result_total,
             catchup_complete_timestamp,
+            gap_abandoned_total,
+            provider_errors_total,
+            active_provider,
         }
     }
 
@@ -144,6 +214,23 @@ impl DriverMetrics {
 
     fn mark_catchup_complete(&self) {
         self.catchup_complete_timestamp.set(unix_now_secs());
+    }
+
+    fn inc_gap_abandoned(&self) {
+        self.gap_abandoned_total.inc();
+    }
+
+    fn inc_provider_error(&self, provider: &str, code: u16) {
+        self.provider_errors_total
+            .get_or_create(&ProviderErrorLabels {
+                provider: provider.to_owned(),
+                code: code.to_string(),
+            })
+            .inc();
+    }
+
+    fn set_active_provider(&self, idx: u64) {
+        self.active_provider.set(idx as i64);
     }
 
     fn unknown_parent_count(&self) -> u64 {
@@ -193,7 +280,6 @@ async fn main() -> anyhow::Result<()> {
     for base in &cfg.beacon_providers {
         validate_provider_base(base).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
-    let provider = cfg.beacon_providers[0].clone();
 
     let default_fork = map_consensus_version(&cfg.default_fork).ok_or_else(|| {
         anyhow::anyhow!(
@@ -208,16 +294,46 @@ async fn main() -> anyhow::Result<()> {
         cfg.prefetch_depth
     };
 
+    let rotate_after = if cfg.provider_rotate_after == 0 {
+        DEFAULT_ROTATE_AFTER
+    } else {
+        cfg.provider_rotate_after
+    };
+
     info!(
         %chain_uri,
-        %provider,
+        providers = ?cfg.beacon_providers,
         default_fork,
         prefetch_depth,
+        seconds_per_slot = cfg.seconds_per_slot,
+        max_walkback_slots = cfg.max_walkback_slots,
         metrics = %metrics_addr,
-        "driver starting (CC-1Aa catch-up)"
+        "driver starting (CC-1A catch-up + steady)"
     );
 
-    let api = BeaconApiClient::new(provider, default_fork)?;
+    // Provider pool for steady / walk-back / politeness; catch-up uses index 0.
+    let metrics_err = metrics.clone();
+    let metrics_active = metrics.clone();
+    let rate_metrics = RateLimitMetrics {
+        on_error: Some(Arc::new(move |provider, code| {
+            metrics_err.inc_provider_error(provider, code);
+        })),
+        on_active: Some(Arc::new(move |idx| {
+            metrics_active.set_active_provider(idx);
+        })),
+        request_attempts: Arc::new(AtomicU64::new(0)),
+    };
+    let mut pool = ProviderPool::new(
+        &cfg.beacon_providers,
+        default_fork,
+        rotate_after,
+        rate_metrics,
+    )
+    .map_err(|e| anyhow::anyhow!("provider pool: {e}"))?;
+
+    // Catch-up still uses a dedicated client on the first provider (CC-1Aa path).
+    let api = api::BeaconApiClient::new(cfg.beacon_providers[0].clone(), default_fork)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut importer = ChainGrpcImporter::connect(&chain_uri).await?;
 
     // Wait for chain checkpoint bootstrap; head_slot at that moment is the anchor.
@@ -242,7 +358,7 @@ async fn main() -> anyhow::Result<()> {
             anchor_slot,
             prefetch_depth,
         },
-        Some(on_result),
+        Some(Arc::clone(&on_result)),
         None,
     )
     .await
@@ -269,11 +385,70 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    // CC-1Aa ends after catch-up. Steady-state poll loop is CC-1Ab.
-    // Keep the process alive so `/metrics` remains scrapable for the soak rig.
-    info!("catch-up phase done; idling for metrics scrape (steady state = CC-1Ab)");
-    tokio::signal::ctrl_c().await?;
-    info!("shutdown signal received");
+    // ── Steady state (CC-1Ab) ────────────────────────────────────────────
+    let genesis_time = fetch_genesis_time(&mut pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("genesis fetch: {e}"))?;
+    info!(genesis_time, "genesis_time loaded for slot clock");
+
+    let metrics_gap = metrics.clone();
+    let on_gap: steady::OnGapAbandoned = Arc::new(move || {
+        metrics_gap.inc_gap_abandoned();
+    });
+
+    let mut steady_counts = ImportResultCounts::default();
+    let steady_cfg = SteadyConfig {
+        genesis_time,
+        seconds_per_slot: cfg.seconds_per_slot.max(1),
+        poll_offsets_secs: steady::DEFAULT_POLL_OFFSETS_SECS.to_vec(),
+        walkback: WalkbackConfig {
+            max_walkback_slots: cfg.max_walkback_slots.max(1),
+            slots_per_epoch: cfg.slots_per_epoch.max(1),
+        },
+        max_slots: None,
+        deadline: None,
+    };
+
+    // Run steady until ctrl-c. Spawn the loop and select on signal so metrics
+    // remain scrapable and shutdown is clean.
+    info!(
+        active_provider = pool.active_base(),
+        "entering steady state (+4/+8/+11 polls)"
+    );
+
+    tokio::select! {
+        result = run_steady_state(
+            &mut pool,
+            &mut importer,
+            steady_cfg,
+            &mut steady_counts,
+            Some(on_result),
+            Some(on_gap),
+            None,
+            None,
+            None,
+        ) => {
+            match result {
+                Ok(rep) => {
+                    info!(
+                        slots = rep.slots.len(),
+                        in_slot_ratio = rep.in_slot_ratio(),
+                        misses = ?rep.miss_list(),
+                        abandoned = rep.gaps_abandoned,
+                        "steady state exited"
+                    );
+                }
+                Err(e) => {
+                    error!(error = %e, "steady state failed");
+                    return Err(anyhow::anyhow!("steady state: {e}"));
+                }
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            info!("shutdown signal received");
+        }
+    }
+
     Ok(())
 }
 

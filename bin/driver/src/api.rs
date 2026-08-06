@@ -32,6 +32,14 @@ const MAX_JSON_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) enum ApiError {
     /// Transport / HTTP / decode failure.
     Provider { provider: String, reason: String },
+    /// HTTP 429 / 503 — politeness path (CC-1Ab §9.5).
+    RateLimited {
+        provider: String,
+        /// HTTP status (429 or 503).
+        status: u16,
+        /// Parsed `Retry-After` (seconds form), when present.
+        retry_after: Option<Duration>,
+    },
     /// Hex root could not be parsed.
     BadHex { field: String, value: String },
     /// Unexpected JSON shape.
@@ -44,6 +52,18 @@ impl std::fmt::Display for ApiError {
             Self::Provider { provider, reason } => {
                 write!(f, "provider {provider}: {reason}")
             }
+            Self::RateLimited {
+                provider,
+                status,
+                retry_after,
+            } => match retry_after {
+                Some(d) => write!(
+                    f,
+                    "provider {provider}: HTTP {status} rate-limited (Retry-After {}s)",
+                    d.as_secs()
+                ),
+                None => write!(f, "provider {provider}: HTTP {status} rate-limited"),
+            },
             Self::BadHex { field, value } => {
                 write!(f, "bad hex for {field}: {value}")
             }
@@ -53,6 +73,63 @@ impl std::fmt::Display for ApiError {
 }
 
 impl std::error::Error for ApiError {}
+
+impl ApiError {
+    /// True for failures that should drive backoff + rotation in [`crate::ratelimit::ProviderPool`].
+    ///
+    /// Retryable: `429`/`503` ([`Self::RateLimited`]), transport errors, and other
+    /// 5xx. **Not** retryable: terminal 4xx (404/400/…) so walk-back parent misses
+    /// surface to abandon instead of stalling the steady loop (SEC-1Ab-1).
+    pub(crate) fn is_retryable_provider(&self) -> bool {
+        match self {
+            Self::RateLimited { .. } => true,
+            Self::Provider { reason, .. } => match parse_http_status_from_reason(reason) {
+                // Permanent client errors — return to caller (walk-back / steady).
+                Some(code) if (400..500).contains(&code) => false,
+                // 5xx (except 503, which is RateLimited) and transport (no code).
+                Some(_) | None => true,
+            },
+            Self::BadHex { .. } | Self::Json { .. } => false,
+        }
+    }
+
+    /// True when the error is a terminal HTTP client error (e.g. 404) that must
+    /// not be infinite-retried by the provider pool.
+    pub(crate) fn is_terminal_http(&self) -> bool {
+        match self {
+            Self::Provider { reason, .. } => matches!(
+                parse_http_status_from_reason(reason),
+                Some(code) if (400..500).contains(&code)
+            ),
+            _ => false,
+        }
+    }
+
+    /// HTTP status code for metrics labels, when known.
+    pub(crate) fn status_code(&self) -> Option<u16> {
+        match self {
+            Self::RateLimited { status, .. } => Some(*status),
+            Self::Provider { reason, .. } => parse_http_status_from_reason(reason),
+            _ => None,
+        }
+    }
+
+    /// `Retry-After` when this is a rate-limit response.
+    pub(crate) fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::RateLimited { retry_after, .. } => *retry_after,
+            _ => None,
+        }
+    }
+}
+
+fn parse_http_status_from_reason(reason: &str) -> Option<u16> {
+    // Reasons look like `GET {url}: HTTP 502` or `GET {url}: HTTP 404`.
+    let idx = reason.rfind("HTTP ")?;
+    let rest = &reason[idx + 5..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
 
 /// Header metadata from `/eth/v1/beacon/headers/{id}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,13 +149,19 @@ pub(crate) struct FetchedBlock {
     pub slot: u64,
     /// Block root from the header response.
     pub root: Vec<u8>,
-    /// Parent root from the header response (walk-back; reserved for CC-1Ab).
-    #[allow(dead_code)]
+    /// Parent root from the header response (walk-back entry).
     pub parent_root: Vec<u8>,
     /// `SignedBeaconBlock` SSZ bytes, forwarded verbatim.
     pub ssz: Bytes,
     /// Mapped `Eth-Consensus-Version` (or config default).
     pub fork: u32,
+}
+
+/// Genesis payload from `/eth/v1/beacon/genesis` (slot clock only; no SSZ).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GenesisInfo {
+    /// Unix genesis time (seconds).
+    pub genesis_time: u64,
 }
 
 /// HTTP client against one beacon-API base URL.
@@ -124,6 +207,11 @@ impl BeaconApiClient {
         })
     }
 
+    /// Base URL this client targets (for metrics / rotation logs).
+    pub(crate) fn base(&self) -> &str {
+        &self.base
+    }
+
     /// `GET /eth/v1/beacon/headers/head`.
     pub(crate) async fn get_head_header(&self) -> Result<BlockHeader, ApiError> {
         self.get_header("head").await
@@ -137,6 +225,13 @@ impl BeaconApiClient {
         let url = join_url(&self.base, &format!("/eth/v1/beacon/headers/{block_id}"));
         let text = self.get_json(&url).await?;
         parse_header_json(&text)
+    }
+
+    /// `GET /eth/v1/beacon/genesis` — `genesis_time` for the slot clock (§9.3).
+    pub(crate) async fn get_genesis(&self) -> Result<GenesisInfo, ApiError> {
+        let url = join_url(&self.base, "/eth/v1/beacon/genesis");
+        let text = self.get_json(&url).await?;
+        parse_genesis_json(&text)
     }
 
     /// Fetch header + SSZ body for a slot.
@@ -181,6 +276,23 @@ impl BeaconApiClient {
         }))
     }
 
+    /// Fetch header + SSZ body by block id (slot string, `0x` root, or `head`).
+    ///
+    /// Used by walk-back (`parent_root`) and steady-state head import. Unlike
+    /// [`Self::fetch_slot`], does not require the id to be a slot number.
+    pub(crate) async fn fetch_by_id(&self, block_id: &str) -> Result<FetchedBlock, ApiError> {
+        let header = self.get_header(block_id).await?;
+        let (version, ssz) = self.get_block_ssz(block_id).await?;
+        let fork = map_consensus_version(&version).unwrap_or(self.default_fork);
+        Ok(FetchedBlock {
+            slot: header.slot,
+            root: header.root,
+            parent_root: header.parent_root,
+            ssz,
+            fork,
+        })
+    }
+
     /// `GET /eth/v2/beacon/blocks/{id}` as `application/octet-stream`.
     ///
     /// Returns `(Eth-Consensus-Version, body)`. Empty version string if the
@@ -204,17 +316,8 @@ impl BeaconApiClient {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_owned();
-        if status.as_u16() == 404 {
-            return Err(ApiError::Provider {
-                provider: self.base.clone(),
-                reason: format!("GET {url}: HTTP 404"),
-            });
-        }
-        if !status.is_success() {
-            return Err(ApiError::Provider {
-                provider: self.base.clone(),
-                reason: format!("GET {url}: HTTP {status}"),
-            });
+        if let Some(err) = classify_http_status(status, resp.headers(), &self.base, &url) {
+            return Err(err);
         }
         let bytes = read_body_capped(resp, MAX_BLOCK_BYTES, &self.base, &url).await?;
         Ok((version, bytes))
@@ -226,17 +329,8 @@ impl BeaconApiClient {
             reason: format!("GET {url}: {e}"),
         })?;
         let status = resp.status();
-        if status.as_u16() == 404 {
-            return Err(ApiError::Provider {
-                provider: self.base.clone(),
-                reason: format!("GET {url}: HTTP 404"),
-            });
-        }
-        if !status.is_success() {
-            return Err(ApiError::Provider {
-                provider: self.base.clone(),
-                reason: format!("GET {url}: HTTP {status}"),
-            });
+        if let Some(err) = classify_http_status(status, resp.headers(), &self.base, url) {
+            return Err(err);
         }
         let bytes = read_body_capped(resp, MAX_JSON_BYTES, &self.base, url).await?;
         String::from_utf8(bytes.to_vec()).map_err(|e| ApiError::Provider {
@@ -244,6 +338,72 @@ impl BeaconApiClient {
             reason: format!("GET {url} utf8: {e}"),
         })
     }
+}
+
+/// Map non-success HTTP status into [`ApiError`], honouring `Retry-After` on 429/503.
+fn classify_http_status(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    provider: &str,
+    url: &str,
+) -> Option<ApiError> {
+    if status.is_success() {
+        return None;
+    }
+    let code = status.as_u16();
+    if code == 429 || code == 503 {
+        return Some(ApiError::RateLimited {
+            provider: provider.to_owned(),
+            status: code,
+            retry_after: parse_retry_after(headers),
+        });
+    }
+    Some(ApiError::Provider {
+        provider: provider.to_owned(),
+        reason: format!("GET {url}: HTTP {status}"),
+    })
+}
+
+/// Parse `Retry-After` as delta-seconds (HTTP-date form is ignored → `None`).
+pub(crate) fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let raw = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .or_else(|| headers.get("retry-after"))?
+        .to_str()
+        .ok()?
+        .trim();
+    let secs: u64 = raw.parse().ok()?;
+    Some(Duration::from_secs(secs))
+}
+
+/// Encode a 32-byte root as `0x` + lowercase hex (block_id for walk-back).
+pub(crate) fn encode_root_hex(root: &[u8]) -> String {
+    let mut s = String::with_capacity(2 + root.len() * 2);
+    s.push_str("0x");
+    for b in root {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+fn parse_genesis_json(text: &str) -> Result<GenesisInfo, ApiError> {
+    let v: Value = serde_json::from_str(text).map_err(|e| ApiError::Json {
+        reason: format!("genesis decode: {e}"),
+    })?;
+    let data = v.get("data").ok_or_else(|| ApiError::Json {
+        reason: "genesis missing data".into(),
+    })?;
+    #[derive(Deserialize)]
+    struct GenesisWire {
+        #[serde(deserialize_with = "deserialize_u64_flexible")]
+        genesis_time: u64,
+    }
+    let wire: GenesisWire = serde_json::from_value(data.clone()).map_err(|e| ApiError::Json {
+        reason: format!("genesis fields: {e}"),
+    })?;
+    Ok(GenesisInfo {
+        genesis_time: wire.genesis_time,
+    })
 }
 
 /// Production providers must be HTTPS. Loopback HTTP is allowed for offline tests.
@@ -506,5 +666,42 @@ mod tests {
         // Client construction must apply the same gate.
         let err = BeaconApiClient::new("http://metadata.internal", 6).unwrap_err();
         assert!(err.to_string().contains("https"), "got {err}");
+    }
+
+    #[test]
+    fn retryable_classification_terminal_4xx_vs_transient() {
+        let not_found = ApiError::Provider {
+            provider: "http://127.0.0.1".into(),
+            reason: "GET http://x/headers/0xab: HTTP 404".into(),
+        };
+        assert!(!not_found.is_retryable_provider());
+        assert!(not_found.is_terminal_http());
+
+        let bad_req = ApiError::Provider {
+            provider: "http://127.0.0.1".into(),
+            reason: "GET http://x: HTTP 400".into(),
+        };
+        assert!(!bad_req.is_retryable_provider());
+
+        let bad_gateway = ApiError::Provider {
+            provider: "http://127.0.0.1".into(),
+            reason: "GET http://x: HTTP 502".into(),
+        };
+        assert!(bad_gateway.is_retryable_provider());
+        assert!(!bad_gateway.is_terminal_http());
+
+        let transport = ApiError::Provider {
+            provider: "http://127.0.0.1".into(),
+            reason: "GET http://x: connection refused".into(),
+        };
+        assert!(transport.is_retryable_provider());
+
+        let rate = ApiError::RateLimited {
+            provider: "http://127.0.0.1".into(),
+            status: 429,
+            retry_after: Some(Duration::from_secs(1)),
+        };
+        assert!(rate.is_retryable_provider());
+        assert!(!rate.is_terminal_http());
     }
 }

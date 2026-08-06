@@ -194,17 +194,7 @@ impl ChainGrpcImporter {
         }
     }
 
-    /// One-shot `GetHead` (steady-state / walk-back will use this in CC-1Ab).
-    #[allow(dead_code)]
-    pub(crate) async fn get_head(&mut self) -> Result<(u64, Vec<u8>), tonic::Status> {
-        let resp = self
-            .client
-            .get_head(cc_proto::chain::GetHeadRequest {})
-            .await?;
-        let inner = resp.into_inner();
-        Ok((inner.head_slot, inner.head_root))
     }
-}
 
 impl BlockImporter for ChainGrpcImporter {
     async fn import_block(
@@ -443,7 +433,8 @@ async fn catchup_window<I: BlockImporter>(
     Ok((blocks, empties))
 }
 
-async fn import_with_backpressure<I: BlockImporter>(
+/// Sequential `ImportBlock` with `RESOURCE_EXHAUSTED` retry (shared with walk-back / steady).
+pub(crate) async fn import_with_backpressure<I: BlockImporter>(
     importer: &mut I,
     block: &FetchedBlock,
     probe: Option<&Arc<CatchupProbe>>,

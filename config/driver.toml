@@ -1,4 +1,4 @@
-# Local-dev defaults for `driver` (Architecture §9, CC-1Aa).
+# Local-dev defaults for `driver` (Architecture §9, CC-1A).
 # Compose overrides via CC_DRIVER_* environment variables.
 # Scaffold removed with bin/driver/ at CC-28.
 
@@ -19,6 +19,16 @@ default_fork = "fulu"
 
 # Catch-up fetch pipeline depth (§9.2). Imports remain strictly sequential.
 prefetch_depth = 8
+
+# Steady-state slot clock (§9.3). genesis_time is fetched from the provider.
+seconds_per_slot = 12
+
+# Walk-back (§9.4): first attempt depth, escalation uses 4 × slots_per_epoch.
+max_walkback_slots = 64
+slots_per_epoch = 32
+
+# Politeness (§9.5): consecutive provider failures before rotation.
+provider_rotate_after = 3
 
 # gRPC peer: chain ImportBlock / GetHead.
 [peers]
