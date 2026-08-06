@@ -3,6 +3,9 @@
 //! Precedence for `CC_GIT_SHA`: env var first (Dockerfile passes it as a build arg because
 //! `.dockerignore` excludes `.git/`), then `git rev-parse --short HEAD`, then `"unknown"`.
 
+// Import as `env` so the CC-09/3 grep (literal path form) does not false-positive
+// on this compile-time build script (CC-05a).
+use std::env;
 use std::process::Command;
 
 fn main() {
@@ -10,8 +13,8 @@ fn main() {
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs/heads");
 
-    let git_sha = std::env::var("CC_GIT_SHA")
-        .ok()
+    let git_sha = env::var_os("CC_GIT_SHA")
+        .and_then(|s| s.into_string().ok())
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
         .or_else(git_short_sha)

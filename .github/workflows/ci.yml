@@ -64,6 +64,10 @@ jobs:
       - name: check crate DAG
         run: bash scripts/check-crate-dag.sh
 
+      # CC-09/3: no ad-hoc std::env::var outside crates/config (blocking; D-3 precedent).
+      - name: check no env reads outside crates/config
+        run: bash scripts/check-no-env-reads.sh
+
   test:
     name: test
     runs-on: ubuntu-latest
