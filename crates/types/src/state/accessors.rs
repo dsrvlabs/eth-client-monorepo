@@ -282,6 +282,38 @@ impl<P: Preset> BeaconState<P> {
         self.pending_partial_withdrawals.len()
     }
 
+    /// Get a pending partial withdrawal by index.
+    pub fn pending_partial_withdrawals_get(&self, i: usize) -> Option<&PendingPartialWithdrawal> {
+        self.pending_partial_withdrawals.get(i)
+    }
+
+    /// Iterate pending partial withdrawals.
+    pub fn pending_partial_withdrawals_iter(
+        &self,
+    ) -> impl Iterator<Item = &PendingPartialWithdrawal> {
+        self.pending_partial_withdrawals.iter()
+    }
+
+    /// Eth1 data votes length.
+    pub fn eth1_data_votes_len(&self) -> usize {
+        self.eth1_data_votes.len()
+    }
+
+    /// Get an eth1 data vote by index.
+    pub fn eth1_data_votes_get(&self, i: usize) -> Option<Eth1Data> {
+        self.eth1_data_votes.get(i).copied()
+    }
+
+    /// Iterate eth1 data votes.
+    pub fn eth1_data_votes_iter(&self) -> impl Iterator<Item = &Eth1Data> {
+        self.eth1_data_votes.iter()
+    }
+
+    /// Count of votes equal to `vote` in `eth1_data_votes`.
+    pub fn eth1_data_votes_count(&self, vote: &Eth1Data) -> usize {
+        self.eth1_data_votes.iter().filter(|v| *v == vote).count()
+    }
+
     /// Pending consolidations length.
     pub fn pending_consolidations_len(&self) -> usize {
         self.pending_consolidations.len()
@@ -373,6 +405,69 @@ impl<P: Preset> BeaconState<P> {
         self.caches
             .field_roots
             .mark_dirty(StateField::Eth1DepositIndex);
+    }
+
+    /// Append an eth1 data vote.
+    pub fn eth1_data_votes_push(&mut self, v: Eth1Data) -> Result<(), StateAccessError> {
+        self.eth1_data_votes
+            .push(v)
+            .map_err(StateAccessError::from)?;
+        self.caches.field_roots.mark_dirty(StateField::Eth1DataVotes);
+        Ok(())
+    }
+
+    /// Replace eth1 data votes (e.g. epoch reset).
+    pub fn eth1_data_votes_clear(&mut self) {
+        self.eth1_data_votes = List::default();
+        self.caches.field_roots.mark_dirty(StateField::Eth1DataVotes);
+    }
+
+    /// Set next withdrawal index.
+    pub fn set_next_withdrawal_index(&mut self, v: u64) {
+        self.next_withdrawal_index = v;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::NextWithdrawalIndex);
+    }
+
+    /// Set next withdrawal validator index.
+    pub fn set_next_withdrawal_validator_index(&mut self, v: ValidatorIndex) {
+        self.next_withdrawal_validator_index = v;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::NextWithdrawalValidatorIndex);
+    }
+
+    /// Set latest execution payload header.
+    pub fn set_latest_execution_payload_header(&mut self, v: ExecutionPayloadHeader<P>) {
+        self.latest_execution_payload_header = v;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::LatestExecutionPayloadHeader);
+    }
+
+    /// Drop the first `n` pending partial withdrawals (Electra queue advance).
+    pub fn pending_partial_withdrawals_drain_prefix(
+        &mut self,
+        n: usize,
+    ) -> Result<(), StateAccessError> {
+        let len = self.pending_partial_withdrawals.len();
+        if n > len {
+            return Err(StateAccessError::OutOfBounds { index: n, len });
+        }
+        if n == 0 {
+            return Ok(());
+        }
+        // Rebuild from the remaining tail — VariableList has no drain API.
+        let old = std::mem::take(&mut self.pending_partial_withdrawals);
+        let mut remaining: Vec<PendingPartialWithdrawal> = old.to_vec();
+        remaining.drain(..n);
+        self.pending_partial_withdrawals =
+            List::new(remaining).map_err(StateAccessError::from)?;
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::PendingPartialWithdrawals);
+        Ok(())
     }
 
     /// Set a RANDAO mix (fixed vector).

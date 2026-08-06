@@ -7,13 +7,14 @@
 
 use cc_crypto::{
     compute_signing_root, get_domain, verify, PublicKey, Signature, SignatureSet,
-    DOMAIN_BEACON_PROPOSER,
+    DOMAIN_BEACON_PROPOSER, DOMAIN_RANDAO,
 };
 use cc_types::preset::Preset;
 use cc_types::primitives::BlsPublicKey;
 use cc_types::{BeaconState, SignedBeaconBlock};
 
 use crate::error::{BlockError, SignatureKind};
+use crate::helpers::accessors::get_beacon_proposer_index;
 use crate::helpers::misc::compute_epoch_at_slot;
 use crate::BlockSignatureStrategy;
 
@@ -174,8 +175,49 @@ pub fn push_block_proposer_signature<P: Preset>(
     Ok(())
 }
 
-/// Assemble the block-level signature set (proposer only at CC-12a; handlers
-/// append in CC-12b–d) and verify under `strategy`.
+/// Push the RANDAO reveal into `set` (CC-12b).
+///
+/// Signing root is `compute_signing_root(epoch, DOMAIN_RANDAO)`. Pubkey is the
+/// proposer from state (state-resident → [`BlockError::StateBlsMaterial`]).
+/// Signature bytes are block-carried → [`BlockError::BlsMaterial`].
+pub fn push_randao_signature<P: Preset>(
+    set: &mut BlockSignatureSet,
+    state: &BeaconState<P>,
+    signed_block: &SignedBeaconBlock<P>,
+) -> Result<(), BlockError> {
+    let block = &signed_block.message;
+    // Spec uses get_beacon_proposer_index; after header checks this equals block.proposer_index.
+    let proposer_index = get_beacon_proposer_index(state).unwrap_or(block.proposer_index);
+    let idx = proposer_index.as_u64() as usize;
+    let validator = state
+        .validators_get(idx)
+        .ok_or(BlockError::ProposerUnknown {
+            index: proposer_index,
+            len: state.validators_len(),
+        })?;
+
+    let epoch = compute_epoch_at_slot::<P>(block.slot);
+    let domain = get_domain(
+        &state.fork(),
+        DOMAIN_RANDAO,
+        Some(epoch),
+        state.genesis_validators_root(),
+    );
+    let message = *compute_signing_root(&epoch, domain).as_array();
+    let pubkey = decode_state_pubkey(&validator.pubkey)?;
+    let signature = decode_signature(&block.body.randao_reveal)?;
+
+    set.push(LabelledSignature {
+        kind: SignatureKind::Randao,
+        pubkey,
+        message,
+        signature,
+    });
+    Ok(())
+}
+
+/// Assemble the block-level signature set (proposer + RANDAO; more in CC-12c–d)
+/// and verify under `strategy`.
 pub fn verify_block_signatures<P: Preset>(
     state: &BeaconState<P>,
     signed_block: &SignedBeaconBlock<P>,
@@ -186,6 +228,7 @@ pub fn verify_block_signatures<P: Preset>(
     }
     let mut set = BlockSignatureSet::new();
     push_block_proposer_signature(&mut set, state, signed_block)?;
+    push_randao_signature(&mut set, state, signed_block)?;
     set.verify(strategy)
 }
 

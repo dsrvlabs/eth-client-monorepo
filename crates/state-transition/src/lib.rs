@@ -15,9 +15,9 @@ pub mod signatures;
 pub mod slots;
 
 pub use block::{
-    process_block, process_block_header, process_eth1_data, process_execution_payload,
-    process_operations, process_randao, process_sync_aggregate, process_withdrawals,
-    state_transition, TransitionContext,
+    get_expected_withdrawals, process_block, process_block_header, process_eth1_data,
+    process_execution_payload, process_operations, process_randao, process_sync_aggregate,
+    process_withdrawals, state_transition, TransitionContext,
 };
 pub use engine_seam::{
     ExecutionEngine, NewPayloadRequest, PayloadStatus, StubOptimisticEngine, VersionedHash,
@@ -26,13 +26,18 @@ pub use epoch::process_epoch;
 pub use error::{
     BlockError, EngineError, EpochError, GossipClass, OperationError, SignatureKind,
 };
-pub use helpers::{compute_epoch_at_slot, get_beacon_proposer_index, get_current_epoch};
+pub use helpers::{
+    compute_epoch_at_slot, compute_time_at_slot, decrease_balance, get_beacon_proposer_index,
+    get_current_epoch, get_max_effective_balance, get_randao_mix, increase_balance,
+    kzg_commitment_to_versioned_hash,
+};
 pub use root_measure::{
     canonical_root_call_count, measured_canonical_root, take_canonical_root_call_count,
 };
 pub use signatures::{
     decode_block_pubkey, decode_pubkey, decode_signature, decode_state_pubkey,
-    push_block_proposer_signature, verify_block_signatures, BlockSignatureSet, LabelledSignature,
+    push_block_proposer_signature, push_randao_signature, verify_block_signatures,
+    BlockSignatureSet, LabelledSignature,
 };
 pub use slots::{process_slot, process_slots};
 

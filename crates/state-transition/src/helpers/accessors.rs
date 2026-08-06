@@ -3,7 +3,7 @@
 //! Fulu EIP-7917: `get_beacon_proposer_index` is a `proposer_lookahead` read.
 
 use cc_types::preset::Preset;
-use cc_types::primitives::{Epoch, ValidatorIndex};
+use cc_types::primitives::{Epoch, Root, ValidatorIndex};
 use cc_types::BeaconState;
 
 use crate::error::BlockError;
@@ -29,4 +29,19 @@ pub fn get_beacon_proposer_index<P: Preset>(
     state
         .proposer_lookahead_get(offset)
         .ok_or(BlockError::ArithmeticOverflow)
+}
+
+/// Spec `get_randao_mix(state, epoch)`.
+#[inline]
+pub fn get_randao_mix<P: Preset>(state: &BeaconState<P>, epoch: Epoch) -> Result<Root, BlockError> {
+    let i = (epoch.as_u64() % P::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
+    state
+        .randao_mixes_get(i)
+        .ok_or(BlockError::ArithmeticOverflow)
+}
+
+/// Spec `compute_time_at_slot(state, slot)` with runtime `seconds_per_slot`.
+#[inline]
+pub fn compute_time_at_slot(genesis_time: u64, slot: cc_types::primitives::Slot, seconds_per_slot: u64) -> u64 {
+    genesis_time.saturating_add(slot.as_u64().saturating_mul(seconds_per_slot))
 }

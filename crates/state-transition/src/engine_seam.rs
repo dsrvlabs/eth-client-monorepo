@@ -147,14 +147,23 @@ mod tests {
         }
     }
 
-    fn empty_block() -> BeaconBlock<Mainnet> {
-        BeaconBlock {
+    /// Block + state aligned so local payload checks pass (engine is the variable).
+    fn ready_state_and_block(config: &ChainConfig) -> (BeaconState<Mainnet>, BeaconBlock<Mainnet>) {
+        let mut state = BeaconState::<Mainnet>::default();
+        state.set_slot(Slot::new(1));
+        state.set_genesis_time(0);
+        let mut block = BeaconBlock {
             slot: Slot::new(1),
             proposer_index: ValidatorIndex::new(0),
             parent_root: Root::ZERO,
             state_root: Root::ZERO,
             body: Default::default(),
-        }
+        };
+        // parent_hash == latest header block_hash (both zero by default).
+        // prev_randao == randao mix at epoch 0 (zero by default).
+        block.body.execution_payload.timestamp =
+            state.genesis_time() + state.slot().as_u64() * config.seconds_per_slot;
+        (state, block)
     }
 
     /// CC-14/3: swap `RejectAllEngine` in via `dyn ExecutionEngine<Mainnet>` and
@@ -167,8 +176,7 @@ mod tests {
         let engine: &dyn ExecutionEngine<Mainnet> = &RejectAllEngine;
         let ctx = TransitionContext::<Mainnet>::new(&config, engine);
 
-        let mut state = BeaconState::<Mainnet>::default();
-        let block = empty_block();
+        let (mut state, block) = ready_state_and_block(&config);
 
         let err = process_execution_payload(&mut state, &block, &ctx).unwrap_err();
         assert!(
@@ -189,8 +197,7 @@ mod tests {
         let engine: &dyn ExecutionEngine<Mainnet> = &TransportFailEngine;
         let ctx = TransitionContext::<Mainnet>::new(&config, engine);
 
-        let mut state = BeaconState::<Mainnet>::default();
-        let block = empty_block();
+        let (mut state, block) = ready_state_and_block(&config);
 
         let err = process_execution_payload(&mut state, &block, &ctx).unwrap_err();
         assert!(
@@ -200,17 +207,41 @@ mod tests {
         assert_eq!(err.gossip_class(), GossipClass::Internal);
     }
 
-    /// Stub returns Valid; `process_execution_payload` accepts.
+    /// Stub returns Valid; `process_execution_payload` accepts when local checks pass.
     #[test]
     fn stub_optimistic_engine_accepts() {
         let config = test_config();
         let engine: &dyn ExecutionEngine<Mainnet> = &StubOptimisticEngine;
         let ctx = TransitionContext::<Mainnet>::new(&config, engine);
 
-        let mut state = BeaconState::<Mainnet>::default();
-        let block = empty_block();
+        let (mut state, block) = ready_state_and_block(&config);
 
         process_execution_payload(&mut state, &block, &ctx).expect("stub accepts");
+    }
+
+    /// Blob bound exceeded classifies as [`GossipClass::Reject`].
+    #[test]
+    fn blob_bound_exceeded_is_gossip_reject() {
+        let config = test_config(); // max 9 at epoch 0
+        let engine: &dyn ExecutionEngine<Mainnet> = &StubOptimisticEngine;
+        let ctx = TransitionContext::<Mainnet>::new(&config, engine);
+
+        let (mut state, mut block) = ready_state_and_block(&config);
+        // 10 commitments > max 9.
+        for _ in 0..10 {
+            block
+                .body
+                .blob_kzg_commitments
+                .push(Default::default())
+                .expect("10 < MAX_BLOB_COMMITMENTS");
+        }
+
+        let err = process_execution_payload(&mut state, &block, &ctx).unwrap_err();
+        assert!(
+            matches!(err, BlockError::BlobBoundExceeded { count: 10, max: 9 }),
+            "expected BlobBoundExceeded, got {err:?}"
+        );
+        assert_eq!(err.gossip_class(), GossipClass::Reject);
     }
 
     /// Direct classification of constructed errors (mirrors §5.3 mapping).

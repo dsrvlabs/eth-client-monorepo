@@ -1,11 +1,13 @@
 //! `state_transition` and `process_block` (Architecture §5.1–5.2).
 //!
 //! `process_block` is a **flat list of calls in spec order with no
-//! conditionals** — the order *is* the spec. Handler bodies after
-//! [`header::process_block_header`] land in CC-12b–d as stubs that return
-//! [`BlockError::NotYetImplemented`] until those issues fill them.
+//! conditionals** — the order *is* the spec.
 
+pub mod eth1_data;
+pub mod execution_payload;
 pub mod header;
+pub mod randao;
+pub mod withdrawals;
 
 use std::marker::PhantomData;
 
@@ -14,14 +16,18 @@ use cc_types::preset::Preset;
 use cc_types::primitives::Root;
 use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
 
-use crate::engine_seam::{ExecutionEngine, NewPayloadRequest, PayloadStatus};
-use crate::error::{BlockError, EngineError};
+use crate::engine_seam::ExecutionEngine;
+use crate::error::BlockError;
 use crate::root_measure::measured_canonical_root;
 use crate::signatures::verify_block_signatures;
 use crate::slots::process_slots;
 use crate::BlockSignatureStrategy;
 
+pub use eth1_data::process_eth1_data;
+pub use execution_payload::process_execution_payload;
 pub use header::process_block_header;
+pub use randao::process_randao;
+pub use withdrawals::{get_expected_withdrawals, process_withdrawals};
 
 // ---------------------------------------------------------------------------
 // TransitionContext (engine trait lives in `engine_seam.rs`, CC-14)
@@ -115,57 +121,8 @@ pub fn process_block<P: Preset>(
 }
 
 // ---------------------------------------------------------------------------
-// Handler stubs (CC-12b–d fill bodies; order is fixed here)
+// Handler stubs remaining for CC-12c / CC-12d
 // ---------------------------------------------------------------------------
-
-/// CC-12b — `process_withdrawals`.
-pub fn process_withdrawals<P: Preset>(
-    _state: &mut BeaconState<P>,
-    _block: &BeaconBlock<P>,
-) -> Result<(), BlockError> {
-    Err(BlockError::NotYetImplemented("process_withdrawals"))
-}
-
-/// Spec `process_execution_payload` — sole call site of the CC-14 engine seam.
-///
-/// Local checks (payload header match, timestamp, blob bound, versioned-hash
-/// derivation, `latest_execution_payload_header` update) land in CC-12b. This
-/// issue only wires the engine call so the seam is load-bearing and greppable
-/// (CC-14/1).
-pub fn process_execution_payload<P: Preset>(
-    _state: &mut BeaconState<P>,
-    block: &BeaconBlock<P>,
-    ctx: &TransitionContext<'_, P>,
-) -> Result<(), BlockError> {
-    // CC-12b fills versioned hashes from `body.blob_kzg_commitments`.
-    let request = NewPayloadRequest {
-        execution_payload: &block.body.execution_payload,
-        versioned_hashes: Vec::new(),
-        parent_beacon_block_root: block.parent_root,
-        execution_requests: &block.body.execution_requests,
-    };
-
-    match ctx.engine.verify_and_notify_new_payload(request)? {
-        PayloadStatus::Valid | PayloadStatus::Syncing => Ok(()),
-        PayloadStatus::Invalid { .. } => Err(BlockError::Engine(EngineError::InvalidPayload)),
-    }
-}
-
-/// CC-12b — `process_randao`.
-pub fn process_randao<P: Preset>(
-    _state: &mut BeaconState<P>,
-    _block: &BeaconBlock<P>,
-) -> Result<(), BlockError> {
-    Err(BlockError::NotYetImplemented("process_randao"))
-}
-
-/// CC-12b — `process_eth1_data`.
-pub fn process_eth1_data<P: Preset>(
-    _state: &mut BeaconState<P>,
-    _block: &BeaconBlock<P>,
-) -> Result<(), BlockError> {
-    Err(BlockError::NotYetImplemented("process_eth1_data"))
-}
 
 /// CC-12c / CC-12d — `process_operations` (slashings, attestations, deposits,
 /// exits, BLS changes, execution requests).
@@ -245,7 +202,6 @@ mod tests {
         // Simulate the post-state check that state_transition performs.
         let post = measured_canonical_root(&mut state);
         assert_eq!(canonical_root_call_count(), 2);
-        // post differs from pre once header was filled, but count is what matters.
         let _ = post;
 
         // Confirm process_slot itself is a single call.
@@ -261,25 +217,38 @@ mod tests {
     fn process_block_stops_at_first_unimplemented_handler() {
         let mut state = BeaconState::<Minimal>::default();
         seed(&mut state);
+        // Leave header/withdrawals/payload/randao/eth1 able to pass with defaults.
+        // After process_block_header, withdrawals will fail if empty expected
+        // mismatches — with empty registry seed we have 1 validator, no
+        // withdrawable balance → expected empty withdrawals → ok.
         let pre = process_slots(&mut state, Slot::new(1)).unwrap();
         let parent =
             Root::from_hash256(tree_hash::TreeHash::tree_hash_root(state.latest_block_header()));
+        // Align payload checks: parent_hash, prev_randao, timestamp.
+        use crate::helpers::accessors::{get_current_epoch, get_randao_mix};
+        let epoch = get_current_epoch(&state);
+        let mix = get_randao_mix(&state, epoch).unwrap();
+        let mut body = cc_types::BeaconBlockBody::<Minimal>::default();
+        body.execution_payload.prev_randao = mix;
+        body.execution_payload.timestamp = state.genesis_time()
+            + state.slot().as_u64() * 6; // minimal seconds_per_slot in test config
+        body.execution_payload.parent_hash = state.latest_execution_payload_header().block_hash;
+        // randao reveal hash will mix zeros — fine for this test.
         let block = BeaconBlock {
             slot: Slot::new(1),
             proposer_index: ValidatorIndex::new(0),
             parent_root: parent,
             state_root: Root::ZERO,
-            body: Default::default(),
+            body,
         };
-        // Minimal config for context.
         let config = minimal_test_config();
         let engine = StubOptimisticEngine;
         let ctx = TransitionContext::<Minimal>::new(&config, &engine);
         let err = process_block(&mut state, &block, &ctx, pre).unwrap_err();
-        assert!(matches!(
-            err,
-            BlockError::NotYetImplemented("process_withdrawals")
-        ));
+        assert!(
+            matches!(err, BlockError::NotYetImplemented("process_operations")),
+            "expected process_operations NYI, got {err:?}"
+        );
     }
 
     fn minimal_test_config() -> ChainConfig {
