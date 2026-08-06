@@ -18,8 +18,8 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use figment::providers::{Env, Format, Serialized, Toml};
 use figment::Figment;
+use figment::providers::{Env, Format, Serialized, Toml};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -107,9 +107,7 @@ pub fn load<T: DeserializeOwned>(service: &str) -> Result<T, Error> {
 /// directories are not walked.
 pub fn load_from<T: DeserializeOwned>(service: &str, path: &Path) -> Result<T, Error> {
     validate_service_name(service)?;
-    figment_for(service, path)
-        .extract()
-        .map_err(Error::from)
+    figment_for(service, path).extract().map_err(Error::from)
 }
 
 /// Build the layered [`Figment`] for `service` without extracting.
