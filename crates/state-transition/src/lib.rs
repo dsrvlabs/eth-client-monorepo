@@ -6,6 +6,7 @@
 #![allow(missing_docs)]
 
 pub mod block;
+pub mod engine_seam;
 pub mod epoch;
 pub mod error;
 pub mod helpers;
@@ -16,7 +17,10 @@ pub mod slots;
 pub use block::{
     process_block, process_block_header, process_eth1_data, process_execution_payload,
     process_operations, process_randao, process_sync_aggregate, process_withdrawals,
-    state_transition, ExecutionEngine, NoopExecutionEngine, TransitionContext,
+    state_transition, TransitionContext,
+};
+pub use engine_seam::{
+    ExecutionEngine, NewPayloadRequest, PayloadStatus, StubOptimisticEngine, VersionedHash,
 };
 pub use epoch::process_epoch;
 pub use error::{

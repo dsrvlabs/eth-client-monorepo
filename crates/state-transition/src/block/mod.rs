@@ -14,7 +14,8 @@ use cc_types::preset::Preset;
 use cc_types::primitives::Root;
 use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
 
-use crate::error::BlockError;
+use crate::engine_seam::{ExecutionEngine, NewPayloadRequest, PayloadStatus};
+use crate::error::{BlockError, EngineError};
 use crate::root_measure::measured_canonical_root;
 use crate::signatures::verify_block_signatures;
 use crate::slots::process_slots;
@@ -23,22 +24,8 @@ use crate::BlockSignatureStrategy;
 pub use header::process_block_header;
 
 // ---------------------------------------------------------------------------
-// TransitionContext + ExecutionEngine placeholder (engine field sequenced here;
-// CC-14 replaces the placeholder with the real trait in `engine_seam.rs`)
+// TransitionContext (engine trait lives in `engine_seam.rs`, CC-14)
 // ---------------------------------------------------------------------------
-
-/// Placeholder for CC-14's `ExecutionEngine` trait.
-///
-/// Sequenced into [`TransitionContext`] now so the API shape matches §5.2;
-/// CC-14 lands the real trait, `NewPayloadRequest`, and
-/// `StubOptimisticEngine` in `engine_seam.rs` and deletes this placeholder.
-pub trait ExecutionEngine<P: Preset>: Send + Sync {}
-
-/// No-op engine used by tests and by callers until CC-14's stub lands.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoopExecutionEngine;
-
-impl<P: Preset> ExecutionEngine<P> for NoopExecutionEngine {}
 
 /// Per-transition context (config + engine).
 pub struct TransitionContext<'a, P: Preset> {
@@ -139,13 +126,29 @@ pub fn process_withdrawals<P: Preset>(
     Err(BlockError::NotYetImplemented("process_withdrawals"))
 }
 
-/// CC-12b — `process_execution_payload` (sole CC-14 call site).
+/// Spec `process_execution_payload` — sole call site of the CC-14 engine seam.
+///
+/// Local checks (payload header match, timestamp, blob bound, versioned-hash
+/// derivation, `latest_execution_payload_header` update) land in CC-12b. This
+/// issue only wires the engine call so the seam is load-bearing and greppable
+/// (CC-14/1).
 pub fn process_execution_payload<P: Preset>(
     _state: &mut BeaconState<P>,
-    _block: &BeaconBlock<P>,
-    _ctx: &TransitionContext<'_, P>,
+    block: &BeaconBlock<P>,
+    ctx: &TransitionContext<'_, P>,
 ) -> Result<(), BlockError> {
-    Err(BlockError::NotYetImplemented("process_execution_payload"))
+    // CC-12b fills versioned hashes from `body.blob_kzg_commitments`.
+    let request = NewPayloadRequest {
+        execution_payload: &block.body.execution_payload,
+        versioned_hashes: Vec::new(),
+        parent_beacon_block_root: block.parent_root,
+        execution_requests: &block.body.execution_requests,
+    };
+
+    match ctx.engine.verify_and_notify_new_payload(request)? {
+        PayloadStatus::Valid | PayloadStatus::Syncing => Ok(()),
+        PayloadStatus::Invalid { .. } => Err(BlockError::Engine(EngineError::InvalidPayload)),
+    }
 }
 
 /// CC-12b — `process_randao`.
@@ -187,6 +190,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+    use crate::engine_seam::StubOptimisticEngine;
     use crate::root_measure::{canonical_root_call_count, take_canonical_root_call_count};
     use crate::slots::{process_slot, process_slots};
     use cc_types::containers::{BeaconBlockHeader, Validator};
@@ -269,7 +273,7 @@ mod tests {
         };
         // Minimal config for context.
         let config = minimal_test_config();
-        let engine = NoopExecutionEngine;
+        let engine = StubOptimisticEngine;
         let ctx = TransitionContext::<Minimal>::new(&config, &engine);
         let err = process_block(&mut state, &block, &ctx, pre).unwrap_err();
         assert!(matches!(
