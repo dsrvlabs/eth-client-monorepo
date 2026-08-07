@@ -18,3 +18,17 @@ message GetInfoRequest {}
 message GetInfoResponse {
   eth.common.v1.BuildInfo build_info = 1;
 }
+
+// Engine API `PayloadStatusV1` (CC-35a / Architecture §4.7).
+//
+// `latest_valid_hash` MUST be explicitly optional: absent and all-zeros are
+// different answers (null → InvalidateOne; 0x00…00 → first non-Irrelevant
+// ancestor). A bare `bytes` whose empty default conflates them is forbidden.
+message PayloadStatusV1 {
+  // VALID | INVALID | SYNCING | ACCEPTED | INVALID_BLOCK_HASH
+  string status = 1;
+  // Absent  ≜ JSON null (case 3). Present 32 zero bytes ≜ case 2 sentinel.
+  // Present 32 non-zero bytes ≜ case 1 execution block hash.
+  optional bytes latest_valid_hash = 2;
+  optional string validation_error = 3;
+}

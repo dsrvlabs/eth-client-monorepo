@@ -26,6 +26,8 @@ snap = { workspace = true }
 ethereum_ssz = { workspace = true }
 cc-crypto = { workspace = true }
 tracing-subscriber = { workspace = true }
+cc-proto = { workspace = true }
+prost = { workspace = true }
 
 [[bench]]
 name = "head"

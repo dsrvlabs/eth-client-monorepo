@@ -1,4 +1,4 @@
-//! Fork choice (Architecture §6, CC-15–CC-17, CC-34a, CC-34b).
+//! Fork choice (Architecture §6, CC-15–CC-17, CC-34a, CC-34b, CC-35a).
 //!
 //! - CC-15a: proto-array, [`Store`] skeleton, [`on_tick`]
 //! - CC-15b: [`on_block`], [`compute_pulled_up_tip`], [`CheckpointContext`] LRU
@@ -8,6 +8,7 @@
 //!   ([`PeerDasAvailability`] substitutes the deleted Phase-1 optimistic stub)
 //! - CC-34a: [`ExecutionStatus`] on [`ProtoNode`], score-branch, viability, outbox read
 //! - CC-34b: [`propagate_execution_payload_validation`] upward pass, §4.8 hard error
+//! - CC-35a: three `latestValidHash` cases + descendant invalidation in [`invalidation`]
 
 #![allow(missing_docs)]
 
@@ -15,6 +16,7 @@ pub mod checkpoint_context;
 pub mod da_seam;
 pub mod execution_status;
 pub mod head_cache;
+pub mod invalidation;
 pub mod on_attestation;
 pub mod on_block;
 pub mod on_tick;
@@ -33,6 +35,11 @@ pub use execution_status::{ExecutionStatus, is_optimistic, remove_invalidated_su
 pub use head_cache::{
     ChainReorg, GetHeadError, PROPOSER_SCORE_BOOST, compute_proposer_boost_score, get_head,
     get_proposer_head,
+};
+pub use invalidation::{
+    InvalidationError, InvalidationOperation, LatestValidHash, apply_invalidation,
+    chain_invalidated_nodes_total, invalidate_from_latest_valid_hash, invalidation_operation,
+    select_invalid_block,
 };
 pub use on_attestation::{
     OnAttestationError, apply_attestation_deltas, compute_deltas, compute_deltas_call_count,
