@@ -21,9 +21,9 @@ single reviewed source. Only `cc-libp2p` may declare a `libp2p*` dependency; the
 lives in `[workspace.dependencies]` and is consumed solely from `crates/libp2p`.
 
 **Feature set (workspace pin):** `identify`, `yamux`, `noise`, `dns`, `tcp`, `tokio`,
-`secp256k1`, `macros`, `metrics`, `gossipsub`, **`quic`**. QUIC is compiled from day one
-so enabling the transport later (CC-2F) is a config change, not a dependency change or
-rev re-review.
+`secp256k1`, `macros`, `metrics`, `gossipsub`, **`quic`**, `ping`, `request-response`.
+QUIC is compiled from day one so enabling the transport later (CC-2F) is a config change,
+not a dependency change or rev re-review.
 
 **Rev-change policy (OQ-7).** Any change to the 40-hex `rev` in root `Cargo.toml` is a
 supply-chain event: update `LIBP2P_GIT_REV`, this document, and the Phase 2 section of
@@ -76,4 +76,81 @@ section is the version gate only.
   `libp2p_identity::PeerId` type across the two graphs. Re-check on any discv5 version
   bump.
 
-<!-- CC-23b cgc-policy and §3.2 libp2p-ping vs Ethereum-ping naming notes append here. -->
+- **libp2p `ping` vs Ethereum `/eth2/beacon_chain/req/ping/1/` (Architecture §3.2 / CC-20a).**
+  Both remain. They do different jobs: libp2p `ping::Behaviour` is liveness/RTT for the
+  peer manager's latency scoring; Ethereum req/resp `ping` is the MetaData sequence-number
+  exchange (CC-23b). The name collision is a documentation annoyance only — do not drop
+  libp2p ping to avoid it, and do not conflate the two protocol handlers.
+
+- **No `upnp` / `kad` / `mdns` / `autonat` / `relay` in `CcBehaviour`.** Lighthouse enables
+  UPnP; we do not — soak hosts control their own port mappings; unrequested router
+  mappings are a surprise. Discovery is discv5 (CC-21c), not Kademlia.
+
+- **Yamux receive-window at pin.** Architecture §3.3 cites a 4 MiB receive window;
+  `libp2p_yamux::Config` at rev `6348a0be…` only exposes `set_max_num_streams` (default
+  set to **512**). The 4 MiB figure is not settable through the public wrapper; underlying
+  `yamux` crate defaults apply until a future pin surfaces the knob.
+
+<!-- CC-23b cgc-policy notes append here. -->
+
+## §14 resolved API shapes (CC-20a)
+
+Resolved against rust-libp2p **`6348a0be4aeb5b48eecf17a5d0aae15ff8239984`** (2026-08-07)
+and discv5 **0.11.0**. Written into `crates/libp2p` construction code; method spellings
+are load-bearing for consumers — a rev bump that renames them is an OQ-7 event.
+
+### §14/4 — `gossipsub::ConfigBuilder` (pin above)
+
+| Capability | Method on `gossipsub::ConfigBuilder` |
+|---|---|
+| Manual validation hold | `.validate_messages()` (flag setter, no bool arg) |
+| Message id function | `.message_id_fn(F)` where `F: Fn(&Message) -> MessageId + Send + Sync + 'static` |
+| Max transmit size | `.max_transmit_size(usize)` |
+| Heartbeat interval | `.heartbeat_interval(Duration)` |
+| Duplicate cache TTL | `.duplicate_cache_time(Duration)` |
+| Validation mode | `.validation_mode(ValidationMode)` |
+| IDONTWANT | `.idontwant_on_publish(bool)`, `.idontwant_message_size_threshold(usize)` |
+
+**`DataTransform` type parameter:** `gossipsub::Behaviour<D, F>` with
+`D: DataTransform` (default `IdentityTransform`) and
+`F: TopicSubscriptionFilter` (default `AllowAllSubscriptionFilter`). Construction:
+`Behaviour::new_with_subscription_filter_and_transform(authenticity, config, filter, transform)`.
+Trait methods: `inbound_transform(&self, RawMessage) -> Result<Message, io::Error>` and
+`outbound_transform(&self, &TopicHash, Vec<u8>) -> Result<Vec<u8>, io::Error>`.
+
+Ethereum gossip is **not** libp2p-signed: use `MessageAuthenticity::Anonymous` with
+`ValidationMode::Anonymous`. Architecture §5.3's "Strict" means application-level
+manual validation (`validate_messages()` + `report_message_validation_result`), **not**
+`ValidationMode::Strict` (which requires libp2p signatures).
+
+### §14/5 — discv5 0.11 `find_node_predicate`
+
+```rust
+// discv5 0.11.0
+pub fn find_node_predicate(
+    &self,
+    target_node: NodeId,
+    predicate: Box<dyn Fn(&Enr) -> bool + Send>,
+    target_peer_no: usize,
+) -> impl Future<Output = Result<Vec<Enr>, QueryError>> + 'static
+```
+
+Predicate is `Box<dyn Fn(&Enr) -> bool + Send>` (not a bare `fn` pointer). Consumer:
+CC-21c `discovery/predicate.rs`.
+
+### §14/6 — `request_response` multi-protocol registration
+
+```rust
+// One Behaviour, many protocols (codec dispatches on negotiated protocol name):
+request_response::Behaviour::with_codec(
+    codec,                                          // TCodec: Codec + Clone + Send + 'static
+    protocols: impl IntoIterator<Item = (TCodec::Protocol, ProtocolSupport)>,
+    request_response::Config::default(),
+)
+// ProtocolSupport::{Inbound, Outbound, Full}
+// Codec::{Protocol, Request, Response} + async read/write_{request,response}
+```
+
+`CcBehaviour` holds **one** `request_response::Behaviour<SszSnappyCodec>`; the nine
+Ethereum protocol strings and the SSZ+snappy body are CC-23a. At CC-20a the codec type
+is declared and the protocol list may be empty.

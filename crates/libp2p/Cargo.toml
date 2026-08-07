@@ -12,4 +12,10 @@ workspace = true
 
 [dependencies]
 # Sole workspace member allowed to declare a libp2p* dependency (CC-20/1, CC-2K).
+# Zero workspace (cc-*) dependencies permanently (Architecture §1.2 / D-9 freeze prep).
 libp2p = { workspace = true }
+snap = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1099,7 +1099,10 @@ dependencies = [
 name = "cc-libp2p"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "libp2p",
+ "snap",
+ "tokio",
 ]
 
 [[package]]
@@ -3541,7 +3544,9 @@ dependencies = [
  "libp2p-mdns",
  "libp2p-metrics",
  "libp2p-noise",
+ "libp2p-ping",
  "libp2p-quic",
+ "libp2p-request-response",
  "libp2p-swarm",
  "libp2p-tcp",
  "libp2p-upnp",
@@ -3727,6 +3732,7 @@ dependencies = [
  "libp2p-gossipsub",
  "libp2p-identify",
  "libp2p-identity 0.3.0",
+ "libp2p-ping",
  "libp2p-swarm",
  "pin-project",
  "prometheus-client",
@@ -3757,6 +3763,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "libp2p-ping"
+version = "0.48.0"
+source = "git+https://github.com/libp2p/rust-libp2p?rev=6348a0be4aeb5b48eecf17a5d0aae15ff8239984#6348a0be4aeb5b48eecf17a5d0aae15ff8239984"
+dependencies = [
+ "futures",
+ "futures-timer",
+ "libp2p-core",
+ "libp2p-identity 0.3.0",
+ "libp2p-swarm",
+ "rand 0.10.2",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
 name = "libp2p-quic"
 version = "0.14.0"
 source = "git+https://github.com/libp2p/rust-libp2p?rev=6348a0be4aeb5b48eecf17a5d0aae15ff8239984#6348a0be4aeb5b48eecf17a5d0aae15ff8239984"
@@ -3774,6 +3795,21 @@ dependencies = [
  "socket2",
  "thiserror 2.0.19",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "libp2p-request-response"
+version = "0.30.0"
+source = "git+https://github.com/libp2p/rust-libp2p?rev=6348a0be4aeb5b48eecf17a5d0aae15ff8239984#6348a0be4aeb5b48eecf17a5d0aae15ff8239984"
+dependencies = [
+ "futures",
+ "futures-bounded",
+ "libp2p-core",
+ "libp2p-identity 0.3.0",
+ "libp2p-swarm",
+ "rand 0.10.2",
+ "smallvec",
  "tracing",
 ]
 

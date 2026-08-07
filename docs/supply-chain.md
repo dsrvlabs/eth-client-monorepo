@@ -96,8 +96,8 @@ locally the same way the `deps` job fails in CI.
 
 - Official `libp2p/rust-libp2p` tip at the pin (commit 2026-08-04), not a private fork.
 - Feature set required by Architecture §3 / CC-20: `identify`, `yamux`, `noise`, `dns`,
-  `tcp`, `tokio`, `secp256k1`, `macros`, `metrics`, `gossipsub`, plus `quic` (compiled;
-  transport config-disabled until CC-2F).
+  `tcp`, `tokio`, `secp256k1`, `macros`, `metrics`, `gossipsub`, `ping`, `request-response`,
+  plus `quic` (compiled; transport config-disabled until CC-2F).
 - A-P2-3: resolved `libp2p-gossipsub` at this rev is **0.50.0** (≥ 0.48.0, `IDONTWANT`).
 - Source policy: pin listed in `allow-git`; no flip of `unknown-git`.
 - Declaration rule: only `cc-libp2p` may depend on `libp2p*` (`scripts/check-crate-dag.sh`
