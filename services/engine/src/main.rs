@@ -7,7 +7,10 @@
 
 use cc_bootstrap::{PeerSpec, ServiceSpec, TelemetrySettings};
 use cc_config::ServiceConfig;
+use cc_engine::config::EngineTransportConfig;
+use cc_engine::jwt::JwtSecret;
 use cc_engine::metrics::EngineMetrics;
+use cc_engine::transport::EngineTransport;
 use cc_proto::common::BuildInfo;
 use cc_proto::engine::engine_service_server::{EngineService, EngineServiceServer};
 use cc_proto::engine::{GetInfoRequest, GetInfoResponse};
@@ -24,11 +27,13 @@ const HEALTH_SERVICE_NAME: &str = "eth.engine.v1.EngineService";
 /// Full gRPC path for the Phase 0 RPC (metrics label normalisation).
 const GET_INFO_METHOD: &str = "/eth.engine.v1.EngineService/GetInfo";
 
-/// Per-service config: shared [`ServiceConfig`] plus future engine-only fields (D-1).
+/// Per-service config: shared [`ServiceConfig`] plus engine transport (CC-30a).
 #[derive(Debug, Deserialize)]
 struct EngineConfig {
     #[serde(flatten)]
     service: ServiceConfig,
+    #[serde(flatten)]
+    transport: EngineTransportConfig,
 }
 
 impl EngineConfig {
@@ -77,12 +82,22 @@ impl EngineService for EngineStub {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Fail before any bind (CC-09/2): load config, then telemetry, then serve.
+    // Fail before any bind (CC-09/2 / CC-30/1): load config, then JWT secret,
+    // then telemetry, then serve. A mis-mounted secret must not leave us
+    // listening while the EL 401s forever.
     let cfg = cc_config::load::<EngineConfig>(SERVICE)?;
+    // JWT secret: abort before any port bind (CC-30/1, §7). Load before init so
+    // a bad secret never opens metrics/gRPC listeners.
+    let jwt = JwtSecret::load(&cfg.transport.jwt_secret_path)
+        .map_err(|e| anyhow::anyhow!("JWT secret: {e}"))?;
     let mut bs = cc_bootstrap::init(SERVICE, TelemetrySettings::from(&cfg.service))?;
 
     // CC-3Aa: register §9.1 engine families between init and serve.
-    let _engine_metrics = EngineMetrics::register(&mut bs.registry);
+    let engine_metrics = EngineMetrics::register(&mut bs.registry);
+
+    // CC-30a: transport constructed before gRPC serve.
+    let _transport = EngineTransport::new(&cfg.transport, jwt, Some(engine_metrics))
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     let routes = Routes::default().add_service(EngineServiceServer::new(EngineStub));
     cc_bootstrap::serve(bs, cfg.service_spec(), routes).await?;

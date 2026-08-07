@@ -8,3 +8,25 @@ log_filter = "info"
 
 [peers]
 chain = "http://127.0.0.1:9001"
+
+# ── CC-30a Engine API transport (Architecture §3.6, §7) ─────────────────────
+# Authenticated JSON-RPC endpoint (compose: http://el:8551).
+el_endpoint = "http://127.0.0.1:8551"
+# Hex-encoded 32-byte JWT secret (optional 0x prefix). Override:
+#   CC_ENGINE_JWT_SECRET_PATH
+jwt_secret_path = "secrets/jwt.hex"
+
+# Soft-deadline inputs (Architecture §3.6 / delta 12).
+# soft_deadline_ms = ATTESTATION_DUE_BPS × SLOT_DURATION_MS / 10000
+# Never configure the soft deadline as a timeout; never use SECONDS_PER_SLOT.
+slot_duration_ms = 12000
+attestation_due_bps = 3333
+
+# Five transport timeouts (spec) + operator multiplier (scales these five only).
+[timeouts]
+new_payload_ms = 8000
+forkchoice_updated_ms = 8000
+get_blobs_ms = 1000
+exchange_capabilities_ms = 1000
+eth_syncing_ms = 1000
+multiplier = 1.0

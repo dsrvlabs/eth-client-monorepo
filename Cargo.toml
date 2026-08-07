@@ -154,6 +154,14 @@ clap = { version = "4.5.53", features = ["derive", "env"] }
 toml = "0.8.23"
 hex = "0.4.3"
 
+# Phase 3 Engine API transport (CC-30a / Architecture §12/1) — append-only.
+# Design's four pins: HTTP client (reqwest, already above), JSON-RPC hand-rolled
+# over serde_json (already above), HS256 signer, offline test double + crc32 log.
+jsonwebtoken = "9.3.1"
+wiremock = "0.6.5"
+crc32fast = "1.5.0"
+# proptest already pinned at CC-2K; hex already pinned (JWT secret decode).
+
 [profile.release]
 opt-level = 3
 debug = 1

@@ -14,6 +14,36 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
+# --- ADR P3-16 early manifest scan (before cargo metadata --locked) ----------
+# Pure filesystem grep so adding a forbidden dep names the offending
+# Cargo.toml even when the lockfile is not yet updated (negative-test shape).
+# Engine is exempt; chain/bootstrap may declare HTTP clients but never JWT
+# signers; workspace root may pin.
+EARLY_FAILED=0
+while IFS= read -r manifest; do
+  [[ -z "$manifest" || ! -f "$manifest" ]] && continue
+  rel="${manifest#"$ROOT"/}"
+  case "$rel" in
+    services/engine/Cargo.toml|Cargo.toml) continue ;;
+  esac
+  pat='reqwest|hyper|hyper-util|jsonwebtoken|hmac|sha2-jwt'
+  case "$rel" in
+    services/chain/Cargo.toml|crates/bootstrap/Cargo.toml)
+      pat='jsonwebtoken|hmac|sha2-jwt'
+      ;;
+  esac
+  while IFS= read -r hit; do
+    [[ -z "$hit" ]] && continue
+    echo "error: $rel: only cc-engine may declare an HTTP client or JWT signer (ADR P3-16; $hit)" >&2
+    EARLY_FAILED=1
+  done < <(grep -nE \
+    "^[[:space:]]*(${pat})[[:space:]]*=|^[[:space:]]*\[dependencies\.(${pat})\]" \
+    "$manifest" 2>/dev/null || true)
+done < <(find "$ROOT/services" "$ROOT/crates" "$ROOT/bin" -name Cargo.toml 2>/dev/null | sort)
+if [[ "$EARLY_FAILED" -ne 0 ]]; then
+  exit 1
+fi
+
 METADATA="$(cargo metadata --no-deps --format-version 1 --locked)"
 
 # Allowed intra-workspace edges (Architecture §2.2 / Phase 1 §1.2).
@@ -354,6 +384,87 @@ else
     FAILED=1
   fi
 fi
+
+# --- ADR P3-16 / CC-32/7: Engine API HTTP client + JWT signer isolation -------
+# Same shape as the libp2p rule: the project's first real credential and its
+# Engine API transport live in exactly one manifest, so "the JWT never enters
+# the consensus process" is a build failure, not a review comment.
+#
+# FORBIDDEN_OUTSIDE_ENGINE (Architecture §1.2):
+#   reqwest|hyper|hyper-util|jsonwebtoken|hmac|sha2-jwt
+#
+# Grandfathered (pre-Phase-3 legitimate uses; not Engine API transport):
+#   - cc-chain: checkpoint-sync HTTP (reqwest) + test hyper (CC-15 / CC-28)
+#   - cc-bootstrap: metrics/health HTTP server (hyper/hyper-util, Phase 0)
+#   - workspace root: [workspace.dependencies] pins only
+# JWT signers (jsonwebtoken|hmac|sha2-jwt) are engine-only with no grandfather.
+# `sha2` is deliberately not listed — cc-crypto legitimately uses hashing.
+# The rule is about *declaring* the dependency; transitive hyper under tonic
+# is unaffected (metadata walk selects direct edges).
+FORBIDDEN_OUTSIDE_ENGINE='^(reqwest|hyper|hyper-util|jsonwebtoken|hmac|sha2-jwt)$'
+FORBIDDEN_JWT_ONLY='^(jsonwebtoken|hmac|sha2-jwt)$'
+
+http_or_jwt_allowed() {
+  # $1 = package name, $2 = dependency name
+  local pkg="$1" dep="$2"
+  if [[ "$pkg" == "cc-engine" ]]; then
+    return 0
+  fi
+  if [[ "$dep" =~ $FORBIDDEN_JWT_ONLY ]]; then
+    return 1
+  fi
+  # HTTP client crates: grandfather chain + bootstrap.
+  case "$pkg" in
+    cc-chain|cc-bootstrap) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  pkg="${line%%$'\t'*}"
+  dep="${line#*$'\t'}"
+  if http_or_jwt_allowed "$pkg" "$dep"; then
+    continue
+  fi
+  echo "error: $pkg: only cc-engine may declare an HTTP client or JWT signer (ADR P3-16; found $dep)" >&2
+  FAILED=1
+done < <(echo "$METADATA" | jq -r --arg re "$FORBIDDEN_OUTSIDE_ENGINE" '
+  .packages[]
+  | select(.source == null)
+  | . as $p
+  | .dependencies[]?
+  | select(.name | test($re))
+  | "\($p.name)\t\(.name)"
+')
+
+# Manifest-scan backup (renamed keys / direct tables). Workspace root pin OK;
+# engine OK; chain/bootstrap may declare HTTP clients but never JWT signers.
+while IFS= read -r manifest; do
+  [[ -z "$manifest" ]] && continue
+  case "$manifest" in
+    */services/engine/Cargo.toml) continue ;;
+    "$ROOT/Cargo.toml") continue ;;
+  esac
+  # Grandfathered HTTP users: only flag JWT signers in the scan.
+  local_pat='reqwest|hyper|hyper-util|jsonwebtoken|hmac|sha2-jwt'
+  case "$manifest" in
+    */services/chain/Cargo.toml|*/crates/bootstrap/Cargo.toml)
+      local_pat='jsonwebtoken|hmac|sha2-jwt'
+      ;;
+  esac
+  while IFS= read -r hit; do
+    [[ -z "$hit" ]] && continue
+    echo "error: ${manifest#"$ROOT"/}: only cc-engine may declare an HTTP client or JWT signer (ADR P3-16; $hit)" >&2
+    FAILED=1
+  done < <(grep -nE \
+    "^[[:space:]]*(${local_pat})[[:space:]]*=|^[[:space:]]*\[dependencies\.(${local_pat})\]" \
+    "$manifest" 2>/dev/null || true)
+done < <(echo "$METADATA" | jq -r '
+  .packages[]
+  | select(.source == null)
+  | .manifest_path
+' | sort -u)
 
 if [[ "$FAILED" -ne 0 ]]; then
   exit 1
