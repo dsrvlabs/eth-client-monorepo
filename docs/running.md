@@ -344,3 +344,48 @@ node to a cold checkpoint bootstrap. The restart-policy table in the Phase 2
 plan is the long form of the same sentence. Treat every `docker compose up` as a
 fresh process lifetime for soak purposes.
 
+### Phase 2 Hoodi soak (CC-29c — clauses 1, 2, 3)
+
+Proof clauses 1–3 are **results**, not code. The instrument is CC-29b
+(`scripts/soak-sampler.sh`, `scripts/soak-report.sh --phase2`,
+`docs/phase-2-soak.md` template). The rehearsal, 24 h window, and filled
+numbers are **CC-29c**. Until a real window is measured, every cell stays
+`_NOT_RUN_` — do not invent margins.
+
+**Before the window opens** (entry checks; helper prints V-2 / V-4 tables and
+the full command recipe):
+
+```bash
+bash scripts/phase2-soak-entry-checks.sh           # live re-fetch
+bash scripts/phase2-soak-entry-checks.sh --offline # fixture-only smoke
+bash scripts/soak-report.sh --self-test            # rig self-check
+```
+
+| Step | What | Gate |
+|---|---|---|
+| V-2 | Re-read Hoodi `config.yaml`: any fork **or** BPO in next 48 h? `GLOAS_FORK_EPOCH` still absent? | Boundary in window → land CC-2A or move window |
+| V-4 | Re-fetch `bootstrap_nodes.yaml`; date the list | Stale list ≡ wrong digest at diagnosis time |
+| 60 min hold | `min_over_time` peers ≥ 25 and custody ≥ 8 on **today's** peer set | Fail → do not start soak (D-8, R-2) |
+| Machine | No self-devnet, no second `cc-p2p`, no builds; sleep/updates off | D-6, R-8 |
+| 2 h rehearsal | Peers hold ≥ 25; deferred non-pathological; `worker_panics` flat 0 | Dirty rehearsal → fix, do not open 24 h |
+| R-9 | Corpus from rehearsal Hoodi capture; hostile-input green | Before the 24 h attempt |
+| Steady-state | Window opens at **peer-set-stable** (sampler meta), not process start | Timestamp is unrecoverable later |
+
+**Report (after ≥ 24 h from peer-set-stable):**
+
+```bash
+curl -sS http://127.0.0.1:9102/metrics > p2p-metrics-start.txt   # after stable
+# … ≥ 24 h …
+curl -sS http://127.0.0.1:9102/metrics > p2p-metrics-end.txt
+bash scripts/soak-report.sh --phase2 \
+  --samples            soak-samples.csv \
+  --run-meta           soak-samples.meta \
+  --p2p-metrics-start  p2p-metrics-start.txt \
+  --p2p-metrics-end    p2p-metrics-end.txt \
+  --out                clause-table.md
+```
+
+Numbers land in `docs/phase-2-soak.md` § Run record and § Clause table. Full
+checklist, void/non-void table, and residual `NOT_RUN` fields: that file.
+Phase 1 no-CPU / R-1 load-guard rules still apply on the soak machine.
+
