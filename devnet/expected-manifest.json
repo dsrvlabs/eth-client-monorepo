@@ -1,0 +1,16 @@
+{
+  "seed": "cc2a000000000000000000000000000000000000000000000000000000000001",
+  "slot_count": 512,
+  "seconds_per_slot": 3,
+  "bpo_1_epoch": 5,
+  "bpo_2_epoch": 10,
+  "blobs_per_block_cycle": [
+    1,
+    2,
+    3,
+    1,
+    2
+  ],
+  "genesis_validators_root": "0x4d04ab2dc363bf4d5e09d605f2872f49edf76c0bc09bcd14ad875f11742d11d0",
+  "head_block_root": "0x29bd574879d1e748ef884529e7a373c6822e52b8c0c77738d959aa3a5b408a8d"
+}

@@ -11,9 +11,29 @@ publish.workspace = true
 name = "cc-devnet-gen"
 path = "src/main.rs"
 
+[lib]
+name = "cc_devnet_gen"
+path = "src/lib.rs"
+
 [lints]
 workspace = true
 
 [dependencies]
-# Allowed workspace edges (CC-2K / check-crate-dag.sh):
-# {cc-types, cc-crypto, cc-state-transition, cc-config}. Content is CC-2Ja.
+# Allowed workspace edges (CC-2K / check-crate-dag.sh) are a ceiling:
+# {cc-types, cc-crypto, cc-state-transition, cc-config}.
+# Network YAML loads via cc_types::ChainConfig (not service-TOML cc-config);
+# cc-config is intentionally omitted while unused.
+anyhow = { workspace = true }
+cc-crypto = { workspace = true, features = ["signing", "kzg-c-kzg"] }
+cc-state-transition = { workspace = true }
+cc-types = { workspace = true }
+clap = { workspace = true }
+ethereum_ssz = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+ssz_types = { workspace = true }
+toml = { workspace = true }
+tree_hash = { workspace = true }
+

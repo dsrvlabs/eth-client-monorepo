@@ -14,7 +14,9 @@ use blst::min_pk::{
 };
 use blst::BLST_ERROR;
 
-#[cfg(test)]
+// SecretKey is tooling-only (feature `signing` / unit tests). Keep the blst
+// import gated so default-feature service builds stay unused-import free.
+#[cfg(any(test, feature = "signing"))]
 use blst::min_pk::SecretKey as BlstSk;
 
 /// Ethereum BLS signature domain-separation tag (PoP ciphersuite).
@@ -290,36 +292,90 @@ pub fn eth_fast_aggregate_verify(pks: &[PublicKey], msg: &[u8; 32], sig: &Signat
 }
 
 // ---------------------------------------------------------------------------
-// Test-only signing helpers (SecretKey is not part of the public surface)
+// Tooling / generator signing surface (CC-2Ja)
 // ---------------------------------------------------------------------------
+//
+// Production consensus path remains verify-only. Keygen + sign live here for
+// offline generators (devnet-gen) and tests. Gated by feature `signing` or
+// always available under `cfg(test)`.
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-pub(crate) mod test_utils {
-    use super::*;
+/// BLS secret key for offline keygen / signing (tooling surface).
+///
+/// Not used by the live verify path. Available under feature `signing` or in
+/// unit tests.
+#[cfg(any(test, feature = "signing"))]
+#[derive(Clone)]
+pub struct SecretKey(BlstSk);
 
-    pub(crate) struct SecretKey(BlstSk);
-
-    impl SecretKey {
-        pub(crate) fn from_ikm(ikm: &[u8; 32]) -> Self {
-            Self(BlstSk::key_gen(ikm.as_slice(), &[]).expect("key_gen"))
-        }
-
-        pub(crate) fn public_key(&self) -> PublicKey {
-            PublicKey(self.0.sk_to_pk())
-        }
-
-        pub(crate) fn sign(&self, msg: &[u8; 32]) -> Signature {
-            Signature(self.0.sign(msg.as_slice(), BLS_SIGNATURE_DST, &[]))
-        }
+#[cfg(any(test, feature = "signing"))]
+impl std::fmt::Debug for SecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretKey(..)")
     }
+}
+
+#[cfg(any(test, feature = "signing"))]
+impl SecretKey {
+    /// Derive a secret key from 32 bytes of IKM (`blst` `key_gen`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlsError`] when `blst` rejects the IKM.
+    pub fn from_ikm(ikm: &[u8; 32]) -> Result<Self, BlsError> {
+        let sk = BlstSk::key_gen(ikm.as_slice(), &[]).map_err(BlsError::from)?;
+        Ok(Self(sk))
+    }
+
+    /// Deterministic secret key from a seed and validator index (devnet keys).
+    ///
+    /// Mixes `seed || index_le` through SHA-256-style fixed hash then
+    /// [`Self::from_ikm`]. Uses [`crate::hash::hash_fixed`] so the monorepo
+    /// keeps one hash stack for key material.
+    pub fn from_seed_index(seed: &[u8; 32], index: u64) -> Result<Self, BlsError> {
+        let mut material = [0u8; 40];
+        material[..32].copy_from_slice(seed);
+        material[32..].copy_from_slice(&index.to_le_bytes());
+        let ikm = crate::hash::hash_fixed(&material);
+        Self::from_ikm(&ikm)
+    }
+
+    /// Corresponding public key.
+    pub fn public_key(&self) -> PublicKey {
+        PublicKey(self.0.sk_to_pk())
+    }
+
+    /// Sign a 32-byte message (signing root) under the Ethereum BLS DST.
+    pub fn sign(&self, msg: &[u8; 32]) -> Signature {
+        Signature(self.0.sign(msg.as_slice(), BLS_SIGNATURE_DST, &[]))
+    }
+
+    /// Serialize the secret key to 32 bytes (big-endian scalar).
+    pub fn serialize(&self) -> [u8; 32] {
+        self.0.to_bytes()
+    }
+
+    /// Deserialize a secret key from 32 bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlsError`] on invalid encoding.
+    pub fn deserialize(bytes: &[u8; 32]) -> Result<Self, BlsError> {
+        let sk = BlstSk::from_bytes(bytes.as_slice()).map_err(BlsError::from)?;
+        Ok(Self(sk))
+    }
+}
+
+/// Test-only alias kept for existing `pub(crate)` call sites.
+#[cfg(test)]
+pub(crate) mod test_utils {
+    pub(crate) use super::SecretKey;
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use super::test_utils::SecretKey;
+    use super::SecretKey;
     use super::*;
 
     #[test]
@@ -363,8 +419,8 @@ mod tests {
 
     #[test]
     fn verify_and_aggregate_roundtrip() {
-        let sk1 = SecretKey::from_ikm(&[1u8; 32]);
-        let sk2 = SecretKey::from_ikm(&[2u8; 32]);
+        let sk1 = SecretKey::from_ikm(&[1u8; 32]).unwrap();
+        let sk2 = SecretKey::from_ikm(&[2u8; 32]).unwrap();
         let pk1 = sk1.public_key();
         let pk2 = sk2.public_key();
         let m1 = [10u8; 32];
@@ -387,7 +443,7 @@ mod tests {
 
     #[test]
     fn altered_byte_fails_verify() {
-        let sk = SecretKey::from_ikm(&[3u8; 32]);
+        let sk = SecretKey::from_ikm(&[3u8; 32]).unwrap();
         let pk = sk.public_key();
         let msg = [9u8; 32];
         let mut bytes = sk.sign(&msg).serialize();
@@ -396,5 +452,16 @@ mod tests {
         if let Ok(sig) = Signature::deserialize(&bytes) {
             assert!(!verify(&pk, &msg, &sig));
         }
+    }
+
+    #[test]
+    fn seed_index_is_deterministic() {
+        let seed = [0x42u8; 32];
+        let a = SecretKey::from_seed_index(&seed, 7).unwrap();
+        let b = SecretKey::from_seed_index(&seed, 7).unwrap();
+        let c = SecretKey::from_seed_index(&seed, 8).unwrap();
+        assert_eq!(a.public_key(), b.public_key());
+        assert_ne!(a.public_key(), c.public_key());
+        assert_eq!(a.serialize(), b.serialize());
     }
 }

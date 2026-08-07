@@ -16,6 +16,8 @@ default = ["kzg-c-kzg"]
 # Architecture §4.3 — both may be on simultaneously; CI enables both for the vector job.
 kzg-c-kzg = ["dep:c-kzg"]
 kzg-rust-eth-kzg = ["dep:rust_eth_kzg"]
+# Offline keygen/sign for generators (CC-2Ja). Production verify path stays verify-only.
+signing = []
 
 [dependencies]
 blst = { workspace = true }

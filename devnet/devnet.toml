@@ -1,0 +1,35 @@
+# CC-2Ja self-devnet generator parameters.
+# Committed; regenerate with:
+#   cargo run -p cc-devnet-gen -- --config devnet/devnet.toml
+#
+# The fixture under devnet/out/ is gitignored (multi-GB with sidecars).
+# Reproducibility is anchored by this file + devnet/expected-manifest.json.
+
+# 32-byte seed (hex). Two runs with the same seed produce identical roots.
+seed = "cc2a000000000000000000000000000000000000000000000000000000000001"
+
+# Minimal preset: SLOTS_PER_EPOCH=8, faster KZG × chain generation.
+preset = "minimal"
+
+# Active validators at genesis (must cover SYNC_COMMITTEE_SIZE=32).
+validator_count = 64
+
+# ≥512 slots: covers 50-slot gap + 32-slot recovery and BPO epochs 5 & 10.
+slot_count = 512
+
+# Fast slots; MAXIMUM_GOSSIP_CLOCK_DISPARITY scales as 500 * 3 / 12 = 125 ms.
+seconds_per_slot = 3
+
+genesis_time = 1700000000
+
+# BPO schedule written into config.yaml BLOB_SCHEDULE.
+bpo_1_epoch = 5
+bpo_1_max_blobs = 6
+bpo_2_epoch = 10
+bpo_2_max_blobs = 9
+
+# Non-zero, varying blob counts (R-4). Cycled across slots; capped by BPO max.
+blobs_per_block_cycle = [1, 2, 3, 1, 2]
+
+config_name = "cc-devnet"
+output_dir = "devnet/out"

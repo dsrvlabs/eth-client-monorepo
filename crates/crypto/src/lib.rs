@@ -20,6 +20,9 @@ pub use bls::{
     fast_aggregate_verify, verify, AggregatePublicKey, AggregateSignature, BlsError, PublicKey,
     Signature, SignatureSet, BLS_SIGNATURE_DST, INFINITY_SIGNATURE,
 };
+
+#[cfg(any(test, feature = "signing"))]
+pub use bls::SecretKey;
 pub use domain::{
     compute_domain, compute_fork_data_root, compute_signing_root, get_domain, SigningData,
     DOMAIN_AGGREGATE_AND_PROOF, DOMAIN_BEACON_ATTESTER, DOMAIN_BEACON_BUILDER,

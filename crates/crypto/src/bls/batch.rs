@@ -232,8 +232,8 @@ mod tests {
 
     #[test]
     fn batch_verify_valid_set() {
-        let sk1 = SecretKey::from_ikm(&[11u8; 32]);
-        let sk2 = SecretKey::from_ikm(&[12u8; 32]);
+        let sk1 = SecretKey::from_ikm(&[11u8; 32]).unwrap();
+        let sk2 = SecretKey::from_ikm(&[12u8; 32]).unwrap();
         let m1 = [1u8; 32];
         let m2 = [2u8; 32];
         let mut set = SignatureSet::new();
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn batch_fresh_randomness_differs_across_calls() {
-        let sk = SecretKey::from_ikm(&[13u8; 32]);
+        let sk = SecretKey::from_ikm(&[13u8; 32]).unwrap();
         let msg = [3u8; 32];
         let mut set = SignatureSet::new();
         set.push(sk.public_key(), msg, sk.sign(&msg));
@@ -265,8 +265,8 @@ mod tests {
         // Algebraic forgery for coefficients (1, 1):
         //   s1' = s1 + s2,  s2' = infinity
         // verifies under r1 = r2 = 1 but not under independent random r_i.
-        let sk1 = SecretKey::from_ikm(&[21u8; 32]);
-        let sk2 = SecretKey::from_ikm(&[22u8; 32]);
+        let sk1 = SecretKey::from_ikm(&[21u8; 32]).unwrap();
+        let sk2 = SecretKey::from_ikm(&[22u8; 32]).unwrap();
         let m1 = [31u8; 32];
         let m2 = [32u8; 32];
         let s1 = sk1.sign(&m1);
@@ -298,8 +298,8 @@ mod tests {
 
     #[test]
     fn altered_entry_fails_batch() {
-        let sk1 = SecretKey::from_ikm(&[41u8; 32]);
-        let sk2 = SecretKey::from_ikm(&[42u8; 32]);
+        let sk1 = SecretKey::from_ikm(&[41u8; 32]).unwrap();
+        let sk2 = SecretKey::from_ikm(&[42u8; 32]).unwrap();
         let m1 = [51u8; 32];
         let m2 = [52u8; 32];
         let mut set = SignatureSet::new();
