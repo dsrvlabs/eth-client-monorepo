@@ -6,17 +6,16 @@
 use std::time::Duration;
 
 use cc_libp2p::reexport::{ConnectionLimits, DialOpts, Multiaddr, PeerId, Swarm, SwarmEvent};
-use cc_libp2p::{BehaviourConfig, CcBehaviour, Keypair, SwarmConfig, build_swarm, connection_limits};
+use cc_libp2p::{CcBehaviour, Keypair, SwarmConfig, build_swarm, connection_limits};
+use cc_p2p::gossip::ethereum_behaviour_config;
 use futures::StreamExt;
 use tokio::time::timeout;
 
 fn make_swarm(limits: ConnectionLimits) -> (PeerId, Swarm<CcBehaviour>) {
     let keypair = Keypair::generate_secp256k1();
     let peer_id = PeerId::from_public_key(&keypair.public());
-    let cfg = BehaviourConfig {
-        connection_limits: limits,
-        ..BehaviourConfig::default()
-    };
+    let mut cfg = ethereum_behaviour_config();
+    cfg.connection_limits = limits;
     let behaviour = CcBehaviour::new(&keypair, cfg).expect("behaviour");
     let swarm = build_swarm(keypair, behaviour, &SwarmConfig::default()).expect("swarm");
     (peer_id, swarm)

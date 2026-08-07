@@ -28,7 +28,7 @@ use cc_libp2p::reexport::futures::StreamExt;
 use cc_libp2p::reexport::gossipsub::{IdentTopic, MessageAcceptance, TopicHash};
 use cc_libp2p::reexport::identity::{self, Keypair};
 use cc_libp2p::reexport::{Multiaddr, PeerId, SwarmEvent};
-use cc_libp2p::{BehaviourConfig, CcBehaviour, CcBehaviourEvent, SwarmConfig, build_swarm};
+use cc_libp2p::{CcBehaviour, CcBehaviourEvent, SwarmConfig, build_swarm};
 use cc_types::{ChainConfig, Epoch, Root};
 use discv5::Enr;
 use discv5::enr::CombinedKey;
@@ -511,7 +511,7 @@ pub async fn run_devnet(
         }
     };
 
-    let behaviour = CcBehaviour::new(&keypair, BehaviourConfig::default())
+    let behaviour = CcBehaviour::new(&keypair, crate::gossip::ethereum_behaviour_config())
         .map_err(|e| anyhow::anyhow!("CcBehaviour: {e}"))?;
     let mut swarm = build_swarm(keypair, behaviour, &SwarmConfig::default())
         .map_err(|e| anyhow::anyhow!("build_swarm: {e}"))?;

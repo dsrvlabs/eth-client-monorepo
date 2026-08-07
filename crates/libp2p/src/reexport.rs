@@ -16,8 +16,10 @@ pub use libp2p::{
 pub use libp2p::allow_block_list::BlockedPeers;
 pub use libp2p::connection_limits::ConnectionLimits;
 
-// Hot gossipsub types used at every publish/validate call site.
-pub use libp2p::gossipsub::{IdentTopic, MessageAcceptance, MessageId, TopicHash};
+// Hot gossipsub types used at every publish/validate / message-id call site.
+pub use libp2p::gossipsub::{
+    IdentTopic, Message, MessageAcceptance, MessageId, TopicHash,
+};
 
 // request_response surfaces for the nine Ethereum protocols (codec body: CC-23a).
 pub use libp2p::request_response::{

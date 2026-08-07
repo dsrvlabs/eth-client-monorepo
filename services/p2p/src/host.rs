@@ -534,13 +534,22 @@ fn bump_depth(metrics: &P2pMetrics, q: QueueName, max_capacity: usize) {
 }
 
 /// Construct a swarm from identity material (helper for [`crate::service`]).
+///
+/// Installs the eth2 Altair+ `message_id_fn` (SEC C1 / CC-22b) via
+/// [`crate::gossip::ethereum_behaviour_config`].
 pub fn build_host_swarm(
     keypair: cc_libp2p::Keypair,
 ) -> Result<Swarm<CcBehaviour>, HostBuildError> {
-    build_host_swarm_with_config(keypair, cc_libp2p::BehaviourConfig::default())
+    build_host_swarm_with_config(keypair, crate::gossip::ethereum_behaviour_config())
 }
 
 /// Construct a swarm with an explicit [`cc_libp2p::BehaviourConfig`] (limits tests).
+///
+/// Callers that build their own config should still install an eth2 message-id
+/// (see [`crate::gossip::ethereum_behaviour_config`]); bare
+/// [`BehaviourConfig::default`](cc_libp2p::BehaviourConfig::default) already
+/// embeds a secure eth2 default inside `cc_libp2p`, but the p2p-owned function
+/// is the fixture source of truth.
 pub fn build_host_swarm_with_config(
     keypair: cc_libp2p::Keypair,
     behaviour_cfg: cc_libp2p::BehaviourConfig,

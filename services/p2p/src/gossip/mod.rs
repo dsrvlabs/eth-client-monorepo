@@ -2,10 +2,11 @@
 //!
 //! | Module | Issue | Role |
 //! |--------|-------|------|
-//! | [`topics`] | CC-22a | `(digest, name)` keys, Fulu name expansion, topic strings |
+//! | [`topics`] | CC-22a/b | `(digest, name)` keys, Fulu name expansion, topic strings, message-id |
 //! | [`registry`] | CC-22a | sole `subscribe` / `unsubscribe` / `set_topic_params` owner; Steady→Overlap→Drain skeleton |
+//! | [`validate`] | CC-22b | per-container SSZ maximum table and pre-decode size check |
 //!
-//! Later: `scoring` (CC-22c), validators (CC-22d), snappy transform (CC-22b).
+//! Later: `scoring` (CC-22c), per-topic validators (CC-22d / CC-2B/C/D).
 //!
 //! ## Spec delta 13 — `blob_sidecar_{subnet_id}`
 //!
@@ -19,14 +20,21 @@ use cc_types::{DATA_COLUMN_SIDECAR_SUBNET_COUNT, Mainnet, Preset};
 
 pub mod registry;
 pub mod topics;
+pub mod validate;
 
 pub use registry::{
     GossipCall, GossipControlError, GossipsubControl, RecordingGossipsub, RegistryError,
     SubscriptionPhase, TopicParams, TopicRegistry,
 };
 pub use topics::{
-    SubnetCounts, TopicKey, TopicName, expand_fulu_topic_names, expand_fulu_topic_strings,
-    expand_fulu_topics, format_topic_string,
+    MESSAGE_DOMAIN_INVALID_SNAPPY, MESSAGE_DOMAIN_VALID_SNAPPY, MESSAGE_ID_SIZE, SubnetCounts,
+    TopicKey, TopicName, compute_message_id, ethereum_behaviour_config, expand_fulu_topic_names,
+    expand_fulu_topic_strings, expand_fulu_topics, format_topic_string, gossipsub_message_id,
+    message_id_invalid_snappy, message_id_valid_snappy,
+};
+pub use validate::{
+    DecodeCounter, SizeError, check_payload_len, check_payload_len_counted, max_container_bytes,
+    ssz_max,
 };
 
 /// Mainnet / Hoodi `ATTESTATION_SUBNET_COUNT` (phase0 networking config).

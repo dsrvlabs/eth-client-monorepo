@@ -18,7 +18,8 @@ mod transport;
 pub mod reexport;
 
 pub use behaviour::{
-    BehaviourBuildError, BehaviourConfig, CcBehaviour, CcBehaviourEvent, SszSnappyCodec,
+    BehaviourBuildError, BehaviourConfig, CcBehaviour, CcBehaviourEvent, MessageIdFn,
+    SszSnappyCodec, default_eth2_message_id,
 };
 pub use limits::{
     DEFAULT_CONNECTION_TIMEOUT, DEFAULT_IDLE_CONNECTION_TIMEOUT, DEFAULT_MAX_ESTABLISHED_PER_PEER,

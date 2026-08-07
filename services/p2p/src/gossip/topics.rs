@@ -1,4 +1,4 @@
-//! Fulu gossip topic names and string construction — Architecture §5.1 / CC-22a.
+//! Fulu gossip topic names, string construction, and message-id — §5.1–§5.2 / CC-22a–b.
 //!
 //! A topic is `(digest, name)` with the wire form
 //! `/eth2/{fork_digest_hex}/{name}/ssz_snappy`. Subnet families expand from
@@ -7,10 +7,115 @@
 //! differently; mainnet/Hoodi values come from `cc_types` / preset constants
 //! via [`SubnetCounts::mainnet`]).
 //!
+//! **Message id** (Altair+ / Fulu preimage, §5.2):
+//! `SHA256(domain ‖ uint64_le(len(topic)) ‖ topic ‖ payload)[..20]`.
+//! With [`cc_libp2p::SnappyTransform`] installed, gossipsub runs the id function
+//! on **decompressed** bytes and the production path always uses
+//! [`MESSAGE_DOMAIN_VALID_SNAPPY`] via [`gossipsub_message_id`] /
+//! [`ethereum_behaviour_config`]. The invalid-snappy domain is retained for
+//! offline fixtures: transform failures drop the message **before** the id
+//! function runs, so the live path never hashes raw wire bytes.
+//!
 //! **Deprecated:** `blob_sidecar_{subnet_id}` is gone in Fulu (spec delta 13).
 //! There is no [`TopicName`] variant for it; enumeration tests assert absence.
 
+use sha2::{Digest, Sha256};
+
+use cc_libp2p::reexport::gossipsub::{Message, MessageId};
+use cc_libp2p::BehaviourConfig;
 use cc_types::ForkDigest;
+
+// ── Message-id domains (§14/1 scaffold read from specs/phase0/p2p-interface.md
+//    at v1.7.0-alpha.13; Altair extends the preimage with topic length + topic) ─
+
+/// `MESSAGE_DOMAIN_VALID_SNAPPY` = `DomainType('0x01000000')` (little-endian).
+///
+/// Used when snappy decompression succeeded; `payload` is the decompressed
+/// SSZ bytes (what gossipsub hands the id function after `SnappyTransform`).
+pub const MESSAGE_DOMAIN_VALID_SNAPPY: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
+
+/// `MESSAGE_DOMAIN_INVALID_SNAPPY` = `DomainType('0x00000000')` (little-endian).
+///
+/// Used when snappy decompression failed; `payload` is the raw wire bytes.
+pub const MESSAGE_DOMAIN_INVALID_SNAPPY: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
+
+/// Length of the gossipsub message-id (spec: first 20 bytes of SHA256).
+pub const MESSAGE_ID_SIZE: usize = 20;
+
+/// Compute the Altair+ gossipsub message-id for `(topic, payload, domain)`.
+///
+/// Preimage (specs/altair/p2p-interface.md, pin `v1.7.0-alpha.13`):
+/// `SHA256(domain ‖ uint_to_bytes(uint64(len(topic))) ‖ topic ‖ payload)[..20]`
+/// with little-endian length encoding.
+///
+/// When the inbound snappy transform succeeded, callers pass
+/// [`MESSAGE_DOMAIN_VALID_SNAPPY`] and the **decompressed** payload. When it
+/// failed, pass [`MESSAGE_DOMAIN_INVALID_SNAPPY`] and the raw bytes.
+#[must_use]
+pub fn compute_message_id(topic: &str, payload: &[u8], domain: [u8; 4]) -> [u8; MESSAGE_ID_SIZE] {
+    let topic_bytes = topic.as_bytes();
+    // uint_to_bytes(uint64(len(topic))) — little-endian, always 8 bytes.
+    let topic_len = (topic_bytes.len() as u64).to_le_bytes();
+
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    hasher.update(topic_len);
+    hasher.update(topic_bytes);
+    hasher.update(payload);
+    let digest = hasher.finalize();
+
+    let mut id = [0u8; MESSAGE_ID_SIZE];
+    id.copy_from_slice(&digest[..MESSAGE_ID_SIZE]);
+    id
+}
+
+/// Message-id for a successfully snappy-decoded gossip payload (production path).
+///
+/// `payload` must already be the **decompressed** SSZ bytes.
+#[must_use]
+pub fn message_id_valid_snappy(topic: &str, decompressed_payload: &[u8]) -> [u8; MESSAGE_ID_SIZE] {
+    compute_message_id(
+        topic,
+        decompressed_payload,
+        MESSAGE_DOMAIN_VALID_SNAPPY,
+    )
+}
+
+/// Message-id for a payload that failed snappy decompression (hostile / raw).
+///
+/// `raw_payload` is the undecoded wire bytes.
+///
+/// **Live path:** with `SnappyTransform` installed, gossipsub never calls the
+/// message-id function on a failed decompress (the transform returns `Err` and
+/// the message is dropped). This helper exists for the committed fixture and
+/// for any future path that evaluates raw wire bytes offline.
+#[must_use]
+pub fn message_id_invalid_snappy(topic: &str, raw_payload: &[u8]) -> [u8; MESSAGE_ID_SIZE] {
+    compute_message_id(topic, raw_payload, MESSAGE_DOMAIN_INVALID_SNAPPY)
+}
+
+/// Gossipsub `message_id_fn` for the production path (SEC C1 / CC-22b).
+///
+/// Reads `message.topic` + **decompressed** `message.data` (post-transform)
+/// under [`MESSAGE_DOMAIN_VALID_SNAPPY`]. Install via
+/// [`ethereum_behaviour_config`] or
+/// [`BehaviourConfig::with_message_id_fn`].
+#[must_use]
+pub fn gossipsub_message_id(message: &Message) -> MessageId {
+    let id = message_id_valid_snappy(message.topic.as_str(), &message.data);
+    MessageId::new(&id)
+}
+
+/// [`BehaviourConfig`] with the scaffold-owned eth2 message-id installed.
+///
+/// Prefer this over bare [`BehaviourConfig::default`] at every production and
+/// integration build site so the live path and the committed fixture share
+/// one implementation (`compute_message_id` in this module). The libp2p crate
+/// also defaults to the same preimage as a safety net.
+#[must_use]
+pub fn ethereum_behaviour_config() -> BehaviourConfig {
+    BehaviourConfig::default().with_message_id_fn(gossipsub_message_id)
+}
 
 /// Subnet-family cardinalities used to expand the three Fulu subnet topics.
 ///
@@ -168,6 +273,108 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+
+    #[test]
+    fn message_id_domains_match_spec_v1_7_0_alpha_13() {
+        // Scaffold-time read (§14/1): DomainType little-endian encoding.
+        assert_eq!(MESSAGE_DOMAIN_VALID_SNAPPY, [0x01, 0x00, 0x00, 0x00]);
+        assert_eq!(MESSAGE_DOMAIN_INVALID_SNAPPY, [0x00, 0x00, 0x00, 0x00]);
+        assert_eq!(MESSAGE_ID_SIZE, 20);
+    }
+
+    #[test]
+    fn message_id_uses_decompressed_payload_not_compressed() {
+        // Compressed and decompressed bytes differ; id must match the
+        // decompressed preimage (what SnappyTransform hands gossipsub).
+        let topic = "/eth2/c6ecb76c/beacon_block/ssz_snappy";
+        let decompressed = b"ssz-payload-bytes";
+        let compressed = b"\xffsnappy-looking-but-different";
+        assert_ne!(
+            decompressed.as_slice(),
+            compressed.as_slice(),
+            "fixture assumes distinct byte strings"
+        );
+
+        let id_from_decompressed = message_id_valid_snappy(topic, decompressed);
+        let id_if_wrongly_used_compressed = message_id_valid_snappy(topic, compressed);
+        assert_ne!(
+            id_from_decompressed, id_if_wrongly_used_compressed,
+            "id must change when payload bytes change"
+        );
+
+        // Explicit preimage: domain ‖ le64(len(topic)) ‖ topic ‖ decompressed.
+        let mut preimage = Vec::new();
+        preimage.extend_from_slice(&MESSAGE_DOMAIN_VALID_SNAPPY);
+        preimage.extend_from_slice(&(topic.len() as u64).to_le_bytes());
+        preimage.extend_from_slice(topic.as_bytes());
+        preimage.extend_from_slice(decompressed);
+        let expected = {
+            use sha2::{Digest, Sha256};
+            let d = Sha256::digest(&preimage);
+            let mut id = [0u8; 20];
+            id.copy_from_slice(&d[..20]);
+            id
+        };
+        assert_eq!(id_from_decompressed, expected);
+    }
+
+    #[test]
+    fn message_id_invalid_snappy_uses_raw_bytes() {
+        let topic = "/eth2/c6ecb76c/beacon_block/ssz_snappy";
+        let raw = b"\xffnot-snappy";
+        let id = message_id_invalid_snappy(topic, raw);
+        let via_compute = compute_message_id(topic, raw, MESSAGE_DOMAIN_INVALID_SNAPPY);
+        assert_eq!(id, via_compute);
+        // Distinct from the valid-domain id over the same bytes.
+        assert_ne!(id, message_id_valid_snappy(topic, raw));
+    }
+
+    #[test]
+    fn gossipsub_message_id_matches_valid_snappy_helper() {
+        use cc_libp2p::reexport::gossipsub::TopicHash;
+
+        let topic = "/eth2/c6ecb76c/beacon_block/ssz_snappy";
+        let data = b"decompressed-ssz";
+        let message = Message {
+            source: None,
+            data: data.to_vec(),
+            sequence_number: None,
+            topic: TopicHash::from_raw(topic),
+        };
+        let mid = gossipsub_message_id(&message);
+        let expected = message_id_valid_snappy(topic, data);
+        assert_eq!(mid.0.as_slice(), expected.as_slice());
+        // Agrees with the libp2p default eth2 id (same preimage).
+        let via_libp2p = cc_libp2p::default_eth2_message_id(&message);
+        assert_eq!(mid.0, via_libp2p.0);
+    }
+
+    #[test]
+    fn ethereum_behaviour_config_installs_p2p_message_id_fn() {
+        // SEC C1: production config carries a message_id_fn that matches the
+        // fixture-owned preimage (not libp2p's default seqno/from hash).
+        let cfg = ethereum_behaviour_config();
+        let topic = "/eth2/aabbccdd/voluntary_exit/ssz_snappy";
+        let data = b"payload";
+        let message = Message {
+            source: None,
+            data: data.to_vec(),
+            sequence_number: Some(99),
+            topic: cc_libp2p::reexport::gossipsub::TopicHash::from_raw(topic),
+        };
+        let id = (cfg.message_id_fn)(&message);
+        assert_eq!(id.0.len(), MESSAGE_ID_SIZE);
+        assert_eq!(
+            id.0.as_slice(),
+            message_id_valid_snappy(topic, data).as_slice()
+        );
+        // Sequence number must NOT enter the preimage (content-addressed).
+        let message2 = Message {
+            sequence_number: Some(1),
+            ..message
+        };
+        assert_eq!(id.0, (cfg.message_id_fn)(&message2).0);
+    }
 
     #[test]
     fn format_topic_string_matches_eth2_shape() {

@@ -1,0 +1,44 @@
+{
+  "spec_release": "v1.7.0-alpha.13",
+  "spec_paths": [
+    "specs/phase0/p2p-interface.md (MESSAGE_DOMAIN_* constants)",
+    "specs/altair/p2p-interface.md (topic-aware message-id preimage)"
+  ],
+  "constants_read_date": "2026-08-07",
+  "preimage": "SHA256(domain || uint64_le(len(topic)) || topic || payload)[:20]",
+  "domains": {
+    "MESSAGE_DOMAIN_VALID_SNAPPY": "0x01000000",
+    "MESSAGE_DOMAIN_INVALID_SNAPPY": "0x00000000"
+  },
+  "note": "Altair+ / Fulu use the topic-aware preimage. With SnappyTransform installed, the production path always hashes MESSAGE_DOMAIN_VALID_SNAPPY over the decompressed payload. The invalid-snappy case exercises the hostile / transform-failed branch over raw bytes.",
+  "cases": [
+    {
+      "name": "valid_snappy_hello",
+      "topic": "/eth2/c6ecb76c/beacon_block/ssz_snappy",
+      "payload_hex": "68656c6c6f2d657468322d676f73736970",
+      "domain": "valid",
+      "id_hex": "9b9039fa29976e02b56ad7cd24868f597711170d"
+    },
+    {
+      "name": "valid_snappy_32bytes",
+      "topic": "/eth2/c6ecb76c/beacon_block/ssz_snappy",
+      "payload_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "domain": "valid",
+      "id_hex": "391155f1424f816d3d4db4988280ff1ad91c3971"
+    },
+    {
+      "name": "invalid_snappy_raw",
+      "topic": "/eth2/c6ecb76c/beacon_block/ssz_snappy",
+      "payload_hex": "ff6e6f742d736e617070792d64617461",
+      "domain": "invalid",
+      "id_hex": "91341680da86a1f7f08bea5fa92802b33b57b66b"
+    },
+    {
+      "name": "valid_attestation_topic_empty_payload",
+      "topic": "/eth2/c6ecb76c/beacon_attestation_0/ssz_snappy",
+      "payload_hex": "",
+      "domain": "valid",
+      "id_hex": "8f2c96211c885da38545a24923690db41a5e4283"
+    }
+  ]
+}

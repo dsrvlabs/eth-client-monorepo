@@ -16,6 +16,8 @@ workspace = true
 libp2p = { workspace = true }
 snap = { workspace = true }
 futures = { workspace = true }
+# Message-id default (eth2 Altair+ preimage) — SEC C1; no cc-* deps.
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
