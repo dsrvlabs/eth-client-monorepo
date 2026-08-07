@@ -143,7 +143,7 @@ impl TokenBucket {
 }
 
 /// Outcome of an inbound rate-limit check for one chunk.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RateLimitOutcome {
     /// Chunk may be served; tokens debited.
     Allow,

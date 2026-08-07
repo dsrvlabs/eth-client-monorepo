@@ -1,4 +1,4 @@
-//! Req/resp — Architecture §7.1–§7.6 / CC-23a + CC-23b.
+//! Req/resp — Architecture §7.1–§7.6 / CC-23a + CC-23b + CC-23c.
 //!
 //! Stream R:
 //! - the nine protocol IDs and the exact-set test (CC-23/1)
@@ -6,17 +6,26 @@
 //! - inbound token buckets + outbound in-flight caps ([`limits`])
 //! - client-side [`RequestScheduler`] ([`client`])
 //! - **CC-23b:** [`status`], [`ping`], [`metadata`], [`handshake`] (incl. Goodbye)
+//! - **CC-23c:** [`blocks`] + [`server`] — ByRange / ByRoot / ByHead from the backfill cache
 //!
 //! Timeouts: [`TTFB_TIMEOUT`] 5 s / [`RESP_TIMEOUT`] 10 s (CC-23/6).
 
+pub mod blocks;
 pub mod client;
 pub mod codec;
 pub mod handshake;
 pub mod limits;
 pub mod metadata;
 pub mod ping;
+pub mod server;
 pub mod status;
 
+pub use blocks::{
+    compute_min_epochs_for_block_requests, plan_block_response, serve_blocks_by_head,
+    serve_blocks_by_range, serve_blocks_by_root, validate_block_count, validate_root_list_len,
+    BlockServeCtx, BlockServeError, BlocksByHeadRequest, BlocksByRangeRequest, BlocksByRootRequest,
+    PlannedBlocks, MAX_REQUEST_BLOCKS_DENEB, MIN_EPOCHS_FOR_BLOCK_REQUESTS,
+};
 pub use client::{
     Exhausted, PeerPredicate, Priority, RequestPayload, RequestScheduler, RequestSpec,
     ScheduleError, SchedulerConfig, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_PEERS,
@@ -43,6 +52,9 @@ pub use metadata::{
 pub use ping::{
     decode_ping_response_framed, decode_ping_ssz, encode_ping_request, encode_ping_response,
     seq_mismatch, Ping, PING_SSZ_LEN,
+};
+pub use server::{
+    is_block_serve_protocol, serve_block_protocol, BlockServeState, FramedServe, ServeResultLabel,
 };
 pub use status::{
     build_local_status, decode_status_response_framed, decode_status_ssz, encode_status_request,

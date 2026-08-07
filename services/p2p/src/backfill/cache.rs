@@ -303,6 +303,54 @@ impl<P: Preset> BackfillCache<P> {
             .is_some_and(|arr| arr[pos].is_some())
     }
 
+    /// First block stored at `slot` (canonical preference: insertion order).
+    ///
+    /// Used by `beacon_blocks_by_range` serve (CC-23c). Returns
+    /// `(root, arc, accounted_bytes)`.
+    #[must_use]
+    pub fn block_at_slot(
+        &self,
+        slot: Slot,
+    ) -> Option<(Root, Arc<SignedBeaconBlock<P>>, usize)> {
+        self.blocks
+            .get(&slot)
+            .and_then(|v| v.first())
+            .map(|(r, b, n)| (*r, Arc::clone(b), *n))
+    }
+
+    /// Look up a block by root (linear scan over the bounded cache).
+    ///
+    /// Used by `beacon_blocks_by_root` / `by_head` serve (CC-23c). Cache depth
+    /// is ≤ [`CACHE_BLOCK_COUNT_BOUND`], so a scan is acceptable.
+    #[must_use]
+    pub fn block_by_root(
+        &self,
+        root: &Root,
+    ) -> Option<(Slot, Arc<SignedBeaconBlock<P>>, usize)> {
+        for (slot, entries) in &self.blocks {
+            for (r, block, bytes) in entries {
+                if r == root {
+                    return Some((*slot, Arc::clone(block), *bytes));
+                }
+            }
+        }
+        None
+    }
+
+    /// SSZ-encode the block at `slot` if present (fresh encode for the wire).
+    #[must_use]
+    pub fn block_ssz_at_slot(&self, slot: Slot) -> Option<(Root, Vec<u8>)> {
+        let (root, block, _) = self.block_at_slot(slot)?;
+        Some((root, block.as_ssz_bytes()))
+    }
+
+    /// SSZ-encode the block identified by `root` if present.
+    #[must_use]
+    pub fn block_ssz_by_root(&self, root: &Root) -> Option<(Slot, Vec<u8>)> {
+        let (slot, block, _) = self.block_by_root(root)?;
+        Some((slot, block.as_ssz_bytes()))
+    }
+
     /// Insert a block; accounted size is the SSZ encoding length of `block`.
     pub fn insert_block(
         &mut self,

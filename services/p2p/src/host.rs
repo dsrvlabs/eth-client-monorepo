@@ -41,9 +41,11 @@ use crate::reqresp::codec::{ResponseChunk, ResponseCode, SszSnappyFraming};
 use crate::reqresp::handshake::{
     encode_goodbye_ssz, handle_inbound_goodbye, HandshakeBook, HandshakeDeps, OutboundAction,
 };
-use crate::reqresp::limits::{rate_limit_kind, InboundRateLimiter};
+use crate::reqresp::blocks::{plan_block_response, BlockServeCtx};
+use crate::reqresp::limits::{rate_limit_kind, ChunkBudgetResult, InboundRateLimiter, RateLimitKind};
 use crate::reqresp::metadata::{encode_metadata_response, LocalMetaData};
 use crate::reqresp::ping::{decode_ping_ssz, encode_ping_response, Ping};
+use crate::reqresp::server::{BlockServeState, ServeResultLabel};
 use crate::reqresp::status::{decode_status_ssz, encode_status_response, StatusV2};
 use crate::reqresp::Protocol;
 use crate::verdict::{to_message_acceptance, Verdict};
@@ -105,6 +107,9 @@ pub struct SwarmTask {
     pub inbound_limiter: InboundRateLimiter,
     /// Status / Ping / MetaData / Goodbye handshake (CC-23b).
     pub handshake: Option<HandshakeRuntime>,
+    /// Block ByRange / ByRoot / ByHead serve state (CC-23c). `None` until a
+    /// backfill cache is attached (still ResourceUnavailable stub).
+    pub block_serve: Option<BlockServeState>,
 }
 
 impl SwarmTask {
@@ -135,6 +140,7 @@ impl SwarmTask {
             stall_fired: false,
             inbound_limiter: InboundRateLimiter::new(),
             handshake: None,
+            block_serve: None,
         }
     }
 
@@ -142,6 +148,13 @@ impl SwarmTask {
     #[must_use]
     pub fn with_handshake(mut self, hs: HandshakeRuntime) -> Self {
         self.handshake = Some(hs);
+        self
+    }
+
+    /// Attach CC-23c block serve state (backfill cache).
+    #[must_use]
+    pub fn with_block_serve(mut self, state: BlockServeState) -> Self {
+        self.block_serve = Some(state);
         self
     }
 }
@@ -670,7 +683,30 @@ fn handle_inbound_request(
         return;
     }
 
-    // Fail-closed stub until CC-23c/d: ResourceUnavailable (code 3).
+    // CC-23c: BeaconBlocks ByRange / ByRoot / ByHead from the backfill cache.
+    if let Some(proto) = protocol.filter(|p| p.is_block_protocol()) {
+        let framed = handle_block_protocol(task, peer, proto, &request.ssz);
+        let (body, label, rate_limited) = framed;
+        if rate_limited {
+            emit_reqresp_penalty(task, peer, PeerPenaltyReason::RateLimit);
+        }
+        let ok = task
+            .swarm
+            .behaviour_mut()
+            .send_reqresp_response(channel, ReqRespResponse::from_framed(body))
+            .is_ok();
+        task.metrics.inc_reqresp_inbound(
+            proto_label,
+            if ok {
+                label
+            } else {
+                "channel_closed"
+            },
+        );
+        return;
+    }
+
+    // Fail-closed stub until CC-23d (columns): ResourceUnavailable (code 3).
     // Never drop the ResponseChannel (that looks like packet loss → retries).
     let framed = encode_resource_unavailable(protocol.unwrap_or(Protocol::StatusV2));
     let ok = task
@@ -686,6 +722,123 @@ fn handle_inbound_request(
             "channel_closed"
         },
     );
+}
+
+/// Serve ByRange / ByRoot / ByHead (CC-23c). Returns `(framed, result_label, rate_limited)`.
+///
+/// Planning (cache + fork_ctx) and rate-limiting (inbound_limiter) are sequenced
+/// so `SwarmTask` fields are never borrowed overlappingly.
+fn handle_block_protocol(
+    task: &mut SwarmTask,
+    peer: PeerId,
+    protocol: Protocol,
+    ssz: &[u8],
+) -> (Vec<u8>, &'static str, bool) {
+    if task.block_serve.is_none() || task.handshake.is_none() {
+        // Cache / fork context not attached — honest refuse, not empty success.
+        return (
+            encode_resource_unavailable(protocol),
+            "resource_unavailable",
+            false,
+        );
+    }
+
+    let Some(state) = task.block_serve.as_ref() else {
+        return (
+            encode_resource_unavailable(protocol),
+            "resource_unavailable",
+            false,
+        );
+    };
+    let cache_arc = std::sync::Arc::clone(&state.cache);
+    let slots_per_epoch = state.slots_per_epoch;
+    let fulu_fork_epoch = state.fulu_fork_epoch;
+
+    // Phase 1: plan success chunks from the cache (needs fork_ctx + cache).
+    let planned = {
+        let Ok(cache) = cache_arc.lock() else {
+            return (
+                encode_error_response(
+                    &ResponseChunk::Error {
+                        code: ResponseCode::ServerError.as_u8(),
+                        message: b"cache lock poisoned".to_vec(),
+                    },
+                    protocol,
+                ),
+                "failure",
+                false,
+            );
+        };
+        let Some(hs) = task.handshake.as_mut() else {
+            return (
+                encode_resource_unavailable(protocol),
+                "resource_unavailable",
+                false,
+            );
+        };
+        let current_epoch = hs.fork_ctx.current_epoch();
+        let mut ctx = BlockServeCtx {
+            cache: &*cache,
+            fork_ctx: &mut hs.fork_ctx,
+            slots_per_epoch,
+            current_epoch,
+            fulu_fork_epoch,
+        };
+        plan_block_response(protocol, ssz, &mut ctx)
+    };
+
+    let planned = match planned {
+        Ok(p) => p,
+        Err(e) => {
+            let label = match e.response_code() {
+                ResponseCode::InvalidRequest => ServeResultLabel::InvalidRequest,
+                ResponseCode::ResourceUnavailable => ServeResultLabel::ResourceUnavailable,
+                _ => ServeResultLabel::Failure,
+            };
+            return (
+                encode_error_response(&e.to_chunk(), protocol),
+                label.as_str(),
+                false,
+            );
+        }
+    };
+
+    // Phase 2: rate-limit truncation (needs inbound_limiter only).
+    let now = Instant::now();
+    match task
+        .inbound_limiter
+        .apply_chunk_budget(peer, RateLimitKind::Blocks, planned.chunks, now)
+    {
+        ChunkBudgetResult::Serve { chunks, limited } => {
+            let was_limited = limited.is_some();
+            if let Some(outcome) = limited {
+                crate::reqresp::limits::InboundRateLimiter::record_violation(
+                    &task.metrics,
+                    &mut 0.0,
+                    outcome,
+                    protocol,
+                );
+            }
+            let framed = match SszSnappyFraming::encode_response(&chunks, protocol) {
+                Ok(b) => b,
+                Err(_) => vec![ResponseCode::ServerError.as_u8()],
+            };
+            (framed, ServeResultLabel::Ok.as_str(), was_limited)
+        }
+        ChunkBudgetResult::Error { outcome, chunk } => {
+            crate::reqresp::limits::InboundRateLimiter::record_violation(
+                &task.metrics,
+                &mut 0.0,
+                outcome,
+                protocol,
+            );
+            (
+                encode_error_response(&chunk, protocol),
+                ServeResultLabel::RateLimited.as_str(),
+                true,
+            )
+        }
+    }
 }
 
 /// Serve Status / Ping / MetaData / Goodbye (CC-23b).
