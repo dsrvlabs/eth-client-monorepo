@@ -6,6 +6,7 @@
 //! - batch: Phase 1 = 1 column × 1 blob; Phase 2 = 8 columns × 21 blobs (Hoodi BPO max)
 //!
 //! Primary: `verify_cell_kzg_proof_batch`. Also: `compute_cells_and_kzg_proofs`,
+//! `compute_cells` at the **21-blob** Hoodi shape (CC-37b / extension-only),
 //! `recover_cells_and_kzg_proofs` (one size each), and setup-load timing.
 //!
 //! Compiles under each backend feature alone (empty groups for the missing
@@ -373,6 +374,65 @@ fn bench_compute(c: &mut Criterion) {
     group.finish();
 }
 
+/// CC-37b /4: extension-only `compute_cells` at the real 21-blob Hoodi shape.
+///
+/// Phase 1's `CC-11d` measured **verification**; this measures **extension** —
+/// a different number (R-14 cost model input; also Phase 7 `getPayloadV5`).
+fn bench_compute_cells_21(c: &mut Criterion) {
+    let mut group = c.benchmark_group("compute_cells");
+    configure_group(&mut group);
+    // 21 blobs × 128 cells = 2 688 cell extensions (Architecture §5.3 / §5.4).
+    group.throughput(Throughput::Elements(
+        (HOODI_BPO_MAX_BLOBS * CELLS_PER_EXT_BLOB) as u64,
+    ));
+
+    let blobs: Vec<Blob> = (0..HOODI_BPO_MAX_BLOBS)
+        .map(|b| blob_for((b as u8).wrapping_mul(3).saturating_add(1)))
+        .collect();
+
+    #[cfg(feature = "kzg-c-kzg")]
+    {
+        use cc_crypto::CKzgBackend;
+        for (precomp_label, precompute) in
+            [("precompute-0", 0u64), ("precompute-8", C_KZG_PRECOMP_ON)]
+        {
+            let backend = CKzgBackend::load(precompute).expect("load c-kzg");
+            group.bench_function(format!("c-kzg/{precomp_label}/21blob"), |b| {
+                b.iter(|| {
+                    for blob in &blobs {
+                        let _ = backend.compute_cells(black_box(blob)).expect("cells");
+                    }
+                })
+            });
+        }
+    }
+
+    #[cfg(feature = "kzg-rust-eth-kzg")]
+    {
+        use cc_crypto::{RustEthKzgBackend, UsePrecomp};
+        for (precomp_label, use_precomp) in [
+            ("precomp-off", UsePrecomp::No),
+            (
+                "precomp-on-w8",
+                UsePrecomp::Yes {
+                    width: PRECOMP_WIDTH,
+                },
+            ),
+        ] {
+            let backend = RustEthKzgBackend::load(use_precomp).expect("load rust_eth_kzg");
+            group.bench_function(format!("rust_eth_kzg/{precomp_label}/21blob"), |b| {
+                b.iter(|| {
+                    for blob in &blobs {
+                        let _ = backend.compute_cells(black_box(blob)).expect("cells");
+                    }
+                })
+            });
+        }
+    }
+
+    group.finish();
+}
+
 fn bench_recover(c: &mut Criterion) {
     let mut group = c.benchmark_group("recover_cells_and_kzg_proofs");
     configure_group(&mut group);
@@ -475,6 +535,7 @@ criterion_group!(
     bench_setup_load,
     bench_verify,
     bench_compute,
+    bench_compute_cells_21,
     bench_recover
 );
 criterion_main!(benches);

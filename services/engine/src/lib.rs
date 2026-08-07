@@ -17,6 +17,9 @@
 //! - **CC-37a**: `getBlobsV2` on the fastpath lane — two triggers (chain block /
 //!   p2p column), single-flight by `beacon_block_root`, null-is-miss classification,
 //!   runtime `max_blobs_per_block` bound (CC-1G), 1 s timeout off the ST thread
+//! - **CC-37b**: `CellKzg::compute_cells` on `spawn_blocking`, zip with EL proofs,
+//!   128-way transpose, inclusion proof from the block, subscribe-only filter
+//!   before the process boundary (inject is CC-38)
 
 #![allow(missing_docs)]
 
@@ -34,12 +37,20 @@ pub mod version;
 
 pub use fastpath::{
     COMPLETED_LOG_BOUND, EnqueueOutcome, FASTPATH_QUEUE_BOUND, FastpathLane, Trigger, TriggerOwner,
-    hoodi_blob_bound,
+    hoodi_blob_bound, reconstruct_and_filter, template_from_commitments,
+};
+pub use fastpath::cells::{
+    CellsError, ZippedBlobMaterial, compute_cells_zipped_with_el_proofs, parse_el_proofs,
 };
 pub use fastpath::fetch::{
     BlobBound, CountingSamplingTracker, FetchRequest, FetchResult, NullSamplingTracker,
     SamplingTrackerProbe, assert_request_length_within_bound, epoch_at_slot, fetch_blobs,
 };
+pub use fastpath::filter::{
+    FILTERED_PAYLOAD_SOFT_MAX_BYTES, FilterOutcome, SubscriptionSet, UNFILTERED_PAYLOAD_ORDER_BYTES,
+    filter_subscribed,
+};
+pub use fastpath::sidecars::{AssembleError, SidecarTemplate, transpose_to_sidecars};
 pub use methods::eth_syncing::{EthSyncingResult, eth_syncing};
 pub use methods::fcu::{
     FcuDroppedStale, FcuGatedError, FcuSequenceGate, build_fcu_params, decode_fcu_payload_status,

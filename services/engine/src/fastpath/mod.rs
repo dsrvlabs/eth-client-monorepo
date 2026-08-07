@@ -1,4 +1,5 @@
-//! Fast-path lane: triggers, single-flight, worker (CC-37a / Architecture §2.2, §5.1, §5.3).
+//! Fast-path lane: triggers, single-flight, worker, cells / transpose / filter
+//! (CC-37a + CC-37b / Architecture §2.2, §5.1, §5.3, §5.4).
 //!
 //! # Two triggers, two owners
 //!
@@ -9,29 +10,45 @@
 //!
 //! Both collapse to one `getBlobsV2` via single-flight on `beacon_block_root`.
 //!
-//! # Out of scope (this issue)
+//! # CC-37b pipeline (live on the worker)
 //!
-//! - Cells / transpose / subscribe filter → **CC-37b**
+//! On `getBlobsV2` Complete the worker runs:
+//! [`cells`] (bind + `compute_cells` on `spawn_blocking` + EL proof zip) →
+//! [`sidecars`] (128-way transpose) → [`filter`] (subscribe-only, before any
+//! process boundary). Inject of filtered sidecars is **CC-38**.
+//!
+//! # Out of scope
+//!
 //! - Ninth contract stream / inject → **CC-38a/b**
 //! - p2p stream client is **stubbed** here: column triggers are accepted on the
 //!   same [`FastpathLane`] API with [`TriggerOwner::P2pColumn`]; CC-38 wires the
 //!   gRPC edge.
 
+pub mod cells;
 pub mod fetch;
+pub mod filter;
+pub mod sidecars;
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
+use cc_crypto::CellKzg;
+use cc_types::primitives::{KzgCommitment, Root};
 use tokio::sync::{Mutex, Notify, mpsc};
 
-use crate::methods::get_blobs::{NullContext, versioned_hashes_from_commitments};
+use crate::methods::get_blobs::{
+    GetBlobsOutcome, NullContext, versioned_hashes_from_commitments,
+};
 use crate::metrics::EngineMetrics;
 use crate::transport::SharedTransport;
 
+use self::cells::compute_cells_zipped_with_el_proofs;
 use self::fetch::{
     BlobBound, FetchRequest, FetchResult, SamplingTrackerProbe, assert_request_length_within_bound,
     epoch_at_slot, fetch_blobs,
 };
+use self::filter::{SubscriptionSet, filter_subscribed};
+use self::sidecars::{SidecarTemplate, transpose_to_sidecars};
 
 /// Bound on the trigger queue (Architecture §2.3).
 pub const FASTPATH_QUEUE_BOUND: usize = 32;
@@ -85,8 +102,27 @@ pub struct Trigger {
     pub beacon_block_root: [u8; 32],
     pub slot: u64,
     pub versioned_hashes: Vec<[u8; 32]>,
+    /// Block/gossip template: commitments + inclusion proof + header.
+    /// Inclusion proof comes from the block (or gossiped column), never the EL.
+    pub template: SidecarTemplate,
     pub owner: TriggerOwner,
     pub null_ctx: NullContext,
+}
+
+/// Build a [`SidecarTemplate`] from raw 48-byte commitments (zero inclusion until
+/// chain/p2p supplies the real depth-4 branch — required for live reconstruction
+/// bind against template commitments).
+#[must_use]
+pub fn template_from_commitments(blob_kzg_commitments: &[[u8; 48]]) -> SidecarTemplate {
+    let kzg_commitments: Vec<KzgCommitment> = blob_kzg_commitments
+        .iter()
+        .map(|c| KzgCommitment::from_array(*c))
+        .collect();
+    SidecarTemplate::new(
+        cc_types::containers::SignedBeaconBlockHeader::default(),
+        kzg_commitments,
+        [Root::default(); 4],
+    )
 }
 
 /// Outcome of attempting to enqueue a trigger.
@@ -125,6 +161,11 @@ struct FastpathInner {
     bound: BlobBound,
     /// Optional sampling-tracker probe (tests; production is CC-38).
     tracker: Option<Arc<dyn SamplingTrackerProbe>>,
+    /// Cell-KZG backend for CC-37b reconstruction. `None` = fetch-only (tests).
+    kzg: Option<Arc<dyn CellKzg>>,
+    /// Subscribe-only publish set (custody-sampled indices from p2p / config).
+    /// Never defaulted to `0..8` — empty until the operator or CC-38 sets it.
+    subscription: Mutex<SubscriptionSet>,
     /// Shutdown flag.
     closed: Mutex<bool>,
     /// Test hook: completed fetch results (bounded).
@@ -140,12 +181,19 @@ impl std::fmt::Debug for FastpathInner {
 
 impl FastpathLane {
     /// Construct a lane. Spawn the worker with [`Self::spawn_worker`].
+    ///
+    /// - `kzg`: when `Some`, Complete fetches run bind + cells + transpose + filter.
+    /// - `subscription`: column indices to publish (custody-sampled). Use
+    ///   [`SubscriptionSet::empty`] until p2p supplies the real set — **never**
+    ///   invent `0..8`.
     #[must_use]
     pub fn new(
         transport: SharedTransport,
         metrics: Option<EngineMetrics>,
         bound: BlobBound,
         tracker: Option<Arc<dyn SamplingTrackerProbe>>,
+        kzg: Option<Arc<dyn CellKzg>>,
+        subscription: SubscriptionSet,
     ) -> Self {
         Self {
             inner: Arc::new(FastpathInner {
@@ -156,11 +204,24 @@ impl FastpathLane {
                 metrics,
                 bound,
                 tracker,
+                kzg,
+                subscription: Mutex::new(subscription),
                 closed: Mutex::new(false),
                 completed: Mutex::new(Vec::new()),
                 completed_tx: Mutex::new(None),
             }),
         }
+    }
+
+    /// Replace the subscribe-only set (CC-38 / config). Read before every
+    /// outbound filter — never invent indices here.
+    pub async fn set_subscription(&self, subscription: SubscriptionSet) {
+        *self.inner.subscription.lock().await = subscription;
+    }
+
+    /// Snapshot of the current subscription set.
+    pub async fn subscription(&self) -> SubscriptionSet {
+        self.inner.subscription.lock().await.clone()
     }
 
     /// Subscribe to fetch completions (tests).
@@ -192,14 +253,38 @@ impl FastpathLane {
         blob_kzg_commitments: &[[u8; 48]],
         null_ctx: NullContext,
     ) -> EnqueueOutcome {
-        if blob_kzg_commitments.is_empty() {
+        self.trigger_from_block_with_template(
+            beacon_block_root,
+            slot,
+            template_from_commitments(blob_kzg_commitments),
+            null_ctx,
+        )
+        .await
+    }
+
+    /// Chain-owned trigger with a full [`SidecarTemplate`] (inclusion proof from
+    /// the block body — preferred production entry once chain wires it).
+    pub async fn trigger_from_block_with_template(
+        &self,
+        beacon_block_root: [u8; 32],
+        slot: u64,
+        template: SidecarTemplate,
+        null_ctx: NullContext,
+    ) -> EnqueueOutcome {
+        if template.kzg_commitments.is_empty() {
             return EnqueueOutcome::SkippedNoCommitments;
         }
-        let versioned_hashes = versioned_hashes_from_commitments(blob_kzg_commitments);
+        let raw: Vec<[u8; 48]> = template
+            .kzg_commitments
+            .iter()
+            .map(|c| *c.as_array())
+            .collect();
+        let versioned_hashes = versioned_hashes_from_commitments(&raw);
         self.enqueue(Trigger {
             beacon_block_root,
             slot,
             versioned_hashes,
+            template,
             owner: TriggerOwner::ChainBlock,
             null_ctx,
         })
@@ -221,14 +306,37 @@ impl FastpathLane {
         kzg_commitments: &[[u8; 48]],
         null_ctx: NullContext,
     ) -> EnqueueOutcome {
-        if kzg_commitments.is_empty() {
+        self.trigger_from_column_with_template(
+            beacon_block_root,
+            slot,
+            template_from_commitments(kzg_commitments),
+            null_ctx,
+        )
+        .await
+    }
+
+    /// P2P-owned trigger with template fields from a gossiped column sidecar.
+    pub async fn trigger_from_column_with_template(
+        &self,
+        beacon_block_root: [u8; 32],
+        slot: u64,
+        template: SidecarTemplate,
+        null_ctx: NullContext,
+    ) -> EnqueueOutcome {
+        if template.kzg_commitments.is_empty() {
             return EnqueueOutcome::SkippedNoCommitments;
         }
-        let versioned_hashes = versioned_hashes_from_commitments(kzg_commitments);
+        let raw: Vec<[u8; 48]> = template
+            .kzg_commitments
+            .iter()
+            .map(|c| *c.as_array())
+            .collect();
+        let versioned_hashes = versioned_hashes_from_commitments(&raw);
         self.enqueue(Trigger {
             beacon_block_root,
             slot,
             versioned_hashes,
+            template,
             owner: TriggerOwner::P2pColumn,
             null_ctx,
         })
@@ -297,6 +405,35 @@ impl FastpathLane {
     }
 }
 
+/// Live CC-37b composition: bind → cells → transpose → filter.
+///
+/// Called from the worker on every `getBlobsV2` Complete when a KZG backend is
+/// configured. Filtered sidecars are returned; inject is CC-38.
+pub async fn reconstruct_and_filter(
+    kzg: Arc<dyn CellKzg>,
+    blobs: Vec<crate::methods::get_blobs::BlobAndProofV2>,
+    versioned_hashes: Vec<[u8; 32]>,
+    template: &SidecarTemplate,
+    subscription: &SubscriptionSet,
+    metrics: Option<&EngineMetrics>,
+) -> Result<crate::fastpath::filter::FilterOutcome, String> {
+    let n_blobs = blobs.len();
+    let material = compute_cells_zipped_with_el_proofs(
+        kzg,
+        blobs,
+        versioned_hashes,
+        template.kzg_commitments.clone(),
+        metrics,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let assembled = transpose_to_sidecars(&material, template, metrics).map_err(|e| e.to_string())?;
+    debug_assert_eq!(assembled.len(), 128);
+    let _ = n_blobs;
+    // Filter reads subscription **before** outbound construction (ADR P3-07).
+    Ok(filter_subscribed(assembled, subscription, metrics))
+}
+
 async fn worker_loop(inner: Arc<FastpathInner>) {
     loop {
         if *inner.closed.lock().await {
@@ -314,11 +451,11 @@ async fn worker_loop(inner: Arc<FastpathInner>) {
         let request = FetchRequest {
             beacon_block_root: trigger.beacon_block_root,
             slot: trigger.slot,
-            versioned_hashes: trigger.versioned_hashes,
+            versioned_hashes: trigger.versioned_hashes.clone(),
             null_ctx: trigger.null_ctx,
         };
         let tracker = inner.tracker.as_deref();
-        let result = fetch_blobs(
+        let wire = fetch_blobs(
             inner.transport.as_ref(),
             inner.metrics.as_ref(),
             &inner.bound,
@@ -326,6 +463,46 @@ async fn worker_loop(inner: Arc<FastpathInner>) {
             &request,
         )
         .await;
+
+        // CC-37b: compose reconstruction on the live Complete path when KZG is
+        // configured. Inject of published sidecars remains CC-38.
+        let result = match wire {
+            FetchResult::Complete(GetBlobsOutcome::Complete(blobs)) => {
+                if let Some(kzg) = inner.kzg.clone() {
+                    let subscription = inner.subscription.lock().await.clone();
+                    let n_blobs = blobs.len();
+                    match reconstruct_and_filter(
+                        kzg,
+                        blobs,
+                        trigger.versioned_hashes.clone(),
+                        &trigger.template,
+                        &subscription,
+                        inner.metrics.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok(outcome) => FetchResult::Assembled {
+                            n_blobs,
+                            published: outcome.published,
+                            dropped: outcome.dropped,
+                            published_bytes: outcome.published_bytes,
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                root = ?trigger.beacon_block_root,
+                                "fastpath reconstruction failed"
+                            );
+                            FetchResult::Error(e)
+                        }
+                    }
+                } else {
+                    // Fetch-only mode (tests without KZG): wire outcome only.
+                    FetchResult::Complete(GetBlobsOutcome::Complete(blobs))
+                }
+            }
+            other => other,
+        };
 
         // Release single-flight slot.
         {
@@ -437,6 +614,8 @@ mod tests {
             Some(m),
             hoodi_blob_bound(),
             None,
+            None,
+            SubscriptionSet::empty(),
         );
         let mut rx = lane.subscribe_completions().await;
         let worker = lane.spawn_worker();
@@ -483,6 +662,8 @@ mod tests {
             Some(m),
             hoodi_blob_bound(),
             None,
+            None,
+            SubscriptionSet::empty(),
         );
         let mut rx = lane.subscribe_completions().await;
         let worker = lane.spawn_worker();
@@ -537,6 +718,8 @@ mod tests {
             Some(m.clone()),
             hoodi_blob_bound(),
             None,
+            None,
+            SubscriptionSet::empty(),
         );
         let mut rx = lane.subscribe_completions().await;
         let worker = lane.spawn_worker();
@@ -590,6 +773,8 @@ mod tests {
             None,
             hoodi_blob_bound(),
             None,
+            None,
+            SubscriptionSet::empty(),
         );
         let worker = lane.spawn_worker();
 
@@ -635,7 +820,7 @@ mod tests {
             Duration::from_secs(60),
             Some(m.clone()),
         ));
-        let lane = FastpathLane::new(t, Some(m.clone()), hoodi_blob_bound(), None);
+        let lane = FastpathLane::new(t, Some(m.clone()), hoodi_blob_bound(), None, None, SubscriptionSet::empty());
         let mut rx = lane.subscribe_completions().await;
         let worker = lane.spawn_worker();
 
@@ -697,7 +882,7 @@ mod tests {
             .await;
 
         let t = transport(&server.uri(), None);
-        let lane = FastpathLane::new(Arc::clone(&t), None, hoodi_blob_bound(), None);
+        let lane = FastpathLane::new(Arc::clone(&t), None, hoodi_blob_bound(), None, None, SubscriptionSet::empty());
         let worker = lane.spawn_worker();
         let _ = lane
             .trigger_from_block([9u8; 32], 100, &[commitment(1)], NullContext::PrunedPool)
@@ -747,6 +932,8 @@ mod tests {
             None,
             hoodi_blob_bound(),
             None,
+            None,
+            SubscriptionSet::empty(),
         );
         let worker = lane.spawn_worker();
 
@@ -784,6 +971,8 @@ mod tests {
             Some(m.clone()),
             hoodi_blob_bound(),
             None,
+            None,
+            SubscriptionSet::empty(),
         );
         let worker = lane.spawn_worker();
 
@@ -842,6 +1031,8 @@ mod tests {
             None,
             hoodi_blob_bound(),
             None,
+            None,
+            SubscriptionSet::empty(),
         );
         let worker = lane.spawn_worker();
 
@@ -1148,5 +1339,170 @@ mod tests {
         assert_eq!(hashes.len(), 2);
         assert_eq!(hashes[0][0], VERSIONED_HASH_VERSION_KZG);
         assert_ne!(hashes[0], hashes[1]);
+    }
+
+    /// CC-37b live path: Complete → bind → cells → transpose → filter on the worker.
+    #[tokio::test]
+    async fn worker_composes_reconstruction_on_complete() {
+        use crate::methods::get_blobs::{BYTES_PER_BLOB, CELL_PROOFS_PER_BLOB};
+        use cc_crypto::{Blob, CellKzg, CKzgBackend};
+        use cc_types::primitives::KzgCommitment;
+        use hex;
+
+        let kzg: Arc<dyn CellKzg> = Arc::new(CKzgBackend::load_default().expect("kzg"));
+        // One real blob + proofs as the EL would return.
+        let mut blob_bytes = vec![0u8; BYTES_PER_BLOB];
+        for (i, chunk) in blob_bytes.chunks_mut(32).enumerate() {
+            chunk[1] = 9;
+            chunk[2] = (i as u8).wrapping_mul(3).wrapping_add(1);
+        }
+        let blob = Blob::from_slice(&blob_bytes).expect("blob");
+        let commitment = kzg.blob_to_kzg_commitment(&blob).expect("c");
+        let (_cells, proofs) = kzg.compute_cells_and_kzg_proofs(&blob).expect("p");
+        let vh = crate::methods::get_blobs::kzg_commitment_to_versioned_hash(commitment.as_array());
+
+        // Mock EL returns Complete with that blob+proofs.
+        let server = MockServer::start().await;
+        let blob_hex = format!("0x{}", hex::encode(blob.as_slice()));
+        let proof_hexes: Vec<String> = proofs
+            .iter()
+            .map(|p| format!("0x{}", hex::encode(p.as_slice())))
+            .collect();
+        assert_eq!(proof_hexes.len(), CELL_PROOFS_PER_BLOB);
+        Mock::given(http_method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": [{
+                    "blob": blob_hex,
+                    "proofs": proof_hexes,
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let m = metrics();
+        // Explicit subscription — not 0..8 default; first three columns only.
+        let sub = SubscriptionSet::from_indices([0u64, 1, 2], 4);
+        let lane = FastpathLane::new(
+            transport(&server.uri(), Some(m.clone())),
+            Some(m.clone()),
+            hoodi_blob_bound(),
+            None,
+            Some(Arc::clone(&kzg)),
+            sub,
+        );
+        let mut rx = lane.subscribe_completions().await;
+        let worker = lane.spawn_worker();
+
+        let raw = [*commitment.as_array()];
+        let outcome = lane
+            .trigger_from_block([0xaa; 32], 54_016 * 32, &raw, NullContext::PrunedPool)
+            .await;
+        assert_eq!(outcome, EnqueueOutcome::Enqueued);
+
+        let (root, result) = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+            .await
+            .expect("timeout")
+            .expect("closed");
+        assert_eq!(root, [0xaa; 32]);
+        match result {
+            FetchResult::Assembled {
+                n_blobs,
+                published,
+                dropped,
+                published_bytes,
+            } => {
+                assert_eq!(n_blobs, 1);
+                assert_eq!(published.len(), 3, "exactly subscribed columns");
+                assert_eq!(dropped, 125);
+                assert!(published_bytes > 0);
+                for sc in &published {
+                    assert!(sc.index < 3);
+                    assert_eq!(sc.column.len(), 1);
+                    assert_eq!(
+                        sc.kzg_commitments[0],
+                        KzgCommitment::from_array(*commitment.as_array())
+                    );
+                }
+                // Filter before boundary: no unsubscribed columns present.
+                assert!(published.iter().all(|s| s.index < 3));
+            }
+            other => panic!("expected Assembled, got {other:?}"),
+        }
+        // Hash bind used the request versioned hash (implicit in success path).
+        let _ = vh;
+
+        lane.close().await;
+        let _ = worker.await;
+    }
+
+    /// Empty subscription on Complete → Assembled with zero published (fail-closed).
+    #[tokio::test]
+    async fn empty_subscription_publishes_nothing() {
+        use crate::methods::get_blobs::{BYTES_PER_BLOB, CELL_PROOFS_PER_BLOB};
+        use cc_crypto::{Blob, CellKzg, CKzgBackend};
+
+        let kzg: Arc<dyn CellKzg> = Arc::new(CKzgBackend::load_default().expect("kzg"));
+        let mut blob_bytes = vec![0u8; BYTES_PER_BLOB];
+        for (i, chunk) in blob_bytes.chunks_mut(32).enumerate() {
+            chunk[1] = 3;
+            chunk[2] = (i as u8).wrapping_add(1);
+        }
+        let blob = Blob::from_slice(&blob_bytes).expect("blob");
+        let commitment = kzg.blob_to_kzg_commitment(&blob).expect("c");
+        let (_cells, proofs) = kzg.compute_cells_and_kzg_proofs(&blob).expect("p");
+
+        let server = MockServer::start().await;
+        let blob_hex = format!("0x{}", hex::encode(blob.as_slice()));
+        let proof_hexes: Vec<String> = proofs
+            .iter()
+            .map(|p| format!("0x{}", hex::encode(p.as_slice())))
+            .collect();
+        assert_eq!(proof_hexes.len(), CELL_PROOFS_PER_BLOB);
+        Mock::given(http_method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": [{"blob": blob_hex, "proofs": proof_hexes}]
+            })))
+            .mount(&server)
+            .await;
+
+        let lane = FastpathLane::new(
+            transport(&server.uri(), None),
+            None,
+            hoodi_blob_bound(),
+            None,
+            Some(kzg),
+            SubscriptionSet::empty(), // production-safe default
+        );
+        let mut rx = lane.subscribe_completions().await;
+        let worker = lane.spawn_worker();
+        let _ = lane
+            .trigger_from_block(
+                [0xbb; 32],
+                54_016 * 32,
+                &[*commitment.as_array()],
+                NullContext::PrunedPool,
+            )
+            .await;
+        let (_, result) = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+            .await
+            .expect("timeout")
+            .expect("closed");
+        match result {
+            FetchResult::Assembled {
+                published,
+                dropped,
+                ..
+            } => {
+                assert!(published.is_empty());
+                assert_eq!(dropped, 128);
+            }
+            other => panic!("expected Assembled empty, got {other:?}"),
+        }
+        lane.close().await;
+        let _ = worker.await;
     }
 }

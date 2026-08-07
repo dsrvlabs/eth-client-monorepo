@@ -7,13 +7,15 @@
 //! - observation of `cc_engine_fastpath_seconds{stage="fetch"}` and
 //!   `cc_engine_getblobs_total`
 //!
-//! Does **not** own cells / transpose (CC-37b) or inject (CC-38).
+//! On Complete, the lane worker composes CC-37b reconstruction (cells →
+//! transpose → filter). This module stays wire-only; inject is **CC-38**.
 
 use std::sync::Arc;
 
 use cc_types::config::{BlobParameters, BlobSchedule};
 use cc_types::preset::{Mainnet, Preset};
 use cc_types::primitives::Epoch;
+use cc_types::sidecar::DataColumnSidecar;
 
 use crate::errors::EngineError;
 use crate::methods::get_blobs::{
@@ -107,11 +109,20 @@ pub struct FetchRequest {
 /// Result of a fetch attempt (miss is success-shaped).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchResult {
+    /// Wire hit only (lane has no KZG backend — tests / fetch-only mode).
     Complete(GetBlobsOutcome),
+    /// Wire hit + bind + `compute_cells` + transpose + subscribe filter
+    /// (CC-37b live path). Inject of `published` is **CC-38**.
+    Assembled {
+        n_blobs: usize,
+        published: Vec<DataColumnSidecar<Mainnet>>,
+        dropped: usize,
+        published_bytes: usize,
+    },
     Miss {
         cause: NullCause,
     },
-    /// Transport / timeout / hard decode — counted as `result="error"`.
+    /// Transport / timeout / hard decode / reconstruction failure.
     Error(String),
     /// Request rejected before the wire (bound / empty) — no EL call.
     Skipped {
@@ -154,8 +165,9 @@ pub fn epoch_at_slot(slot: u64) -> Epoch {
 
 /// Run one `getBlobsV2` fetch: bound check → fastpath call → null-cause match.
 ///
-/// On miss, the sampling tracker is **not** touched. On complete, CC-37b would
-/// reconstruct cells; this issue stops at the wire outcome.
+/// On miss, the sampling tracker is **not** touched. On complete, the **lane
+/// worker** composes CC-37b reconstruction (bind → cells → transpose → filter);
+/// this function returns the wire outcome only.
 pub async fn fetch_blobs(
     transport: &EngineTransport,
     metrics: Option<&EngineMetrics>,
@@ -194,8 +206,8 @@ pub async fn fetch_blobs(
     .await
     {
         Ok(GetBlobsOutcome::Complete(blobs)) => {
-            // CC-37b would call compute_cells + inject here. Tracker interaction
-            // is deliberately not opened on this side of the issue boundary.
+            // Worker composes reconstruction when a KZG backend is configured.
+            // Tracker interaction stays closed here (CC-38 inject owns DA).
             let _ = tracker;
             FetchResult::Complete(GetBlobsOutcome::Complete(blobs))
         }

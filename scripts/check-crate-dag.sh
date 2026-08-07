@@ -71,8 +71,8 @@ allowed_deps() {
     # Phase 2: services/p2p may take cc-libp2p (CC-2K / Architecture §1.2).
     cc-p2p)               echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-libp2p" ;;
     cc-attestation)       echo "cc-bootstrap cc-config cc-proto" ;;
-    # CC-32b: append cc-types (never re-sort). cc-crypto is CC-37b's append.
-    cc-engine)            echo "cc-bootstrap cc-config cc-proto cc-types" ;;
+    # CC-32b: append cc-types (never re-sort). CC-37b: append cc-crypto (never re-sort).
+    cc-engine)            echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto" ;;
     cc-beacon-api)        echo "cc-bootstrap cc-config cc-proto" ;;
     cc-storage)           echo "cc-bootstrap cc-config cc-proto" ;;
     *)

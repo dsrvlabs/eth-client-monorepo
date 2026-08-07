@@ -1075,6 +1075,7 @@ dependencies = [
  "anyhow",
  "cc-bootstrap",
  "cc-config",
+ "cc-crypto",
  "cc-proto",
  "cc-types",
  "crc32fast",
@@ -1088,11 +1089,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "ssz_types",
  "tokio",
  "toml",
  "tonic",
  "tracing",
  "tracing-subscriber",
+ "tree_hash",
  "wiremock",
 ]
 

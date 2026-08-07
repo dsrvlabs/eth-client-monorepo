@@ -180,3 +180,54 @@ Precompute=8 is within ~2 % of precompute=0 on Phase 2 verify but costs
 Pool consumer: `services/p2p/src/das/verify_pool.rs` (CC-24b) loads
 `CKzgBackend::load_default()` on the dedicated OS-thread pool
 (`K = max(2, available_parallelism/2)`, bound 256).
+
+---
+
+## Phase 3 `compute_cells` axis (CC-37b /4)
+
+**Appended** (do not rewrite the Phase 1 / CC-24b sections above).
+
+**Phase 1's `CC-11d` measured verification** (`verify_cell_kzg_proof_batch`).
+**This measures extension** (`CellKzg::compute_cells` — cells only, no proofs).
+They are different numbers. The fast path zips EL-supplied proofs with
+locally-computed cells; OQ-P3-3 closed with evidence that `compute_cells`
+exists separately, so R-14's cost-doubling branch does not fire. The wall
+clock at the **real 21-blob Hoodi shape** (21 × 128 = **2 688** cell
+extensions per block) is what this axis records — also Phase 7's input for
+`engine_getPayloadV5` / `BlobsBundleV2`.
+
+### Machine spec (CC-37b)
+
+| Field | Value |
+|---|---|
+| Captured (UTC) | 2026-08-07T18:17:16Z |
+| OS | Darwin (arm64) |
+| CPU | Apple M4 Pro |
+| Logical cores | 14 |
+| Sample size | 10 (`KZG_BENCH_SAMPLES`) |
+| Measurement time | 1s (`KZG_BENCH_MEASURE_SECS`) |
+| Shape | **21 blobs** × 128 cells = **2 688** extensions |
+| Criterion group | `compute_cells` / `{backend}/{precomp}/21blob` |
+| Features | `kzg-c-kzg` (production default axis) |
+| Backend pins | `c-kzg` **2.1.8**, `rust_eth_kzg` **0.10.0** |
+
+### Results: `compute_cells` (21-blob shape)
+
+| Backend | Precompute | Mean (21 blobs) |
+|---|---|---|
+| c-kzg 2.1.8 | off (`precompute=0`) | **33.461 ms** |
+| c-kzg 2.1.8 | on (`precompute=8`) | *(full matrix deferred — precompute regresses extension; default stays 0)* |
+| rust_eth_kzg 0.10.0 | off | *(full matrix deferred; production default is c-kzg)* |
+| rust_eth_kzg 0.10.0 | on (`width: 8`) | *(full matrix deferred)* |
+
+Run:
+
+```bash
+cargo bench -p cc-crypto --bench kzg -- compute_cells
+# or full matrix: bash scripts/bench-kzg.sh  (after script learns the new group)
+```
+
+**Recorded number (production default):** ~**33.5 ms** wall for 21 × 128 cell
+extensions on Apple M4 Pro with `c-kzg` / `precompute=0`. That is the fast-path
+CPU cost on Hoodi post-BPO2 for every complete `getBlobsV2` hit — distinct from
+Phase 1 / CC-24b verification (~2.3 ms for 8×21). Throughput ≈ 80 K cells/s.

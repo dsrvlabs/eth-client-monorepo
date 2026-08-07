@@ -8,7 +8,8 @@
 //!   state machine.
 //! - A transport timeout is an **error** (`result="error"`), distinct from miss.
 //!
-//! Cell reconstruction / transpose is **CC-37b**. The ninth contract is **CC-38**.
+//! Cell reconstruction / transpose / subscribe filter is **CC-37b** (composed on
+//! the fastpath worker Complete path). The ninth contract inject is **CC-38**.
 
 use std::time::Instant;
 
@@ -118,8 +119,8 @@ pub fn classify_null(ctx: NullContext) -> NullCause {
 ///
 /// `VERSIONED_HASH_VERSION_KZG || sha256(commitment)[1:]`.
 ///
-/// Implemented locally so `cc-engine` stays off `cc-crypto` / `cc-state-transition`
-/// (DAG: `cc-crypto` is CC-37b's append).
+/// Implemented locally (sha2) so versioned-hash derivation does not require a
+/// KZG backend; CC-37b binds blobs via `blob_to_kzg_commitment` separately.
 #[must_use]
 pub fn kzg_commitment_to_versioned_hash(commitment: &[u8; 48]) -> [u8; 32] {
     use sha2::{Digest, Sha256};

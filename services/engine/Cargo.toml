@@ -26,6 +26,8 @@ cc-config = { workspace = true }
 cc-proto = { workspace = true }
 # CC-32b: SSZ decode of ExecutionPayload (Mainnet) — DAG row appends cc-types.
 cc-types = { workspace = true }
+# CC-37b: CellKzg::compute_cells (DAG row appends cc-crypto — never re-sort).
+cc-crypto = { workspace = true }
 crc32fast = { workspace = true }
 ethereum_ssz = { workspace = true }
 futures = { workspace = true }
@@ -35,8 +37,9 @@ prometheus-client = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# CC-37a: kzg_commitment_to_versioned_hash without taking cc-crypto (CC-37b's edge).
+# CC-37a: kzg_commitment_to_versioned_hash (kept; no longer the only hash path).
 sha2 = { workspace = true }
+ssz_types = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
@@ -46,4 +49,5 @@ proptest = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
 toml = { workspace = true }
 tracing-subscriber = { workspace = true }
+tree_hash = { workspace = true }
 wiremock = { workspace = true }
