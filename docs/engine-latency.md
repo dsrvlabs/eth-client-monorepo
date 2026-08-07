@@ -238,7 +238,24 @@ Epoch series (run 2, representative):
 
 **Trigger C (not yet decidable — re-read at M3.5 exit)** remains open for the production soft-deadline ratio over the acceptance window (`CC-3Ac`).
 
+### Trigger C — production-side re-read (CC-3Ac)
+
+**Date (UTC):** 2026-08-07  
+**Status:** **`NOT_RUN`** — the ≥ 6 h Hoodi acceptance window did not open
+(blockers: non-exclusive machine, no this-worktree synced EL, CC-36b live drills
+outstanding — see `docs/phase-3-acceptance.md` `## Run record`). Trigger C is
+production-side and **only the window can decide it**; CC-3C's Trigger A/B
+content above is **unmodified**.
+
+| Field | Value |
+|---|---|
+| Window start / end (UTC) | `_NOT_RUN_` |
+| Soft-deadline ratio over window | `_NOT_RUN_` |
+| `cc_engine_request_seconds` tail (production) | `_NOT_RUN_` |
+| Trigger C confirmed or excluded | **`NOT_RUN`** — re-run after a discharged CC-3Ac window and append numbers here (additions only) |
+
 ---
+
 
 ## OQ-P3-8 — is the `chain→engine` gRPC hop worth revisiting topology?
 

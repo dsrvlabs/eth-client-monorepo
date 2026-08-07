@@ -445,3 +445,47 @@ chain data (and that deleting `elstore` costs a large re-download). Snapshot
 restore procedure is CC-39b; until then, protect `elstore` deliberately.
 Full auth-trap and `-38002` lookup: `docs/el-runbook.md`.
 
+### Phase 3 run record (CC-3Ac)
+
+The M3.5 proof is **not** the compose bring-up above — it is a pinned continuous
+window recorded in `docs/phase-3-acceptance.md` (`## Run record` + `## Clauses 1,
+3, 4`). Shape:
+
+| Stage | Bar |
+|---|---|
+| Entry (CC-39b) | V-5 snapshot pin, stream-extract, `eth_syncing == false` |
+| Clause 2 drills (CC-36b) | both EL restart shapes **before** the window (D-11); fresh gate timestamp |
+| **1 h rehearsal** | report emits a number or explicit `NOT_RUN` in every cell; zero worker panics; metrics families present |
+| **≥ 6 h window** | ≥ 6 continuous hours **and** ≥ 20 finalized epochs from Phase A→B `window_start`; clauses **1, 3, 4 share one window** |
+| Bootstrap burst | Phase A only — **excluded** from clause 1 %; own report row |
+| Wire capture | ≥ 100 slots for CC-33 /3 + CC-31 /8 (`newPayload` before fcU; fcU in order; no `payloadAttributes`) |
+| Hit rate | `cc_engine_getblobs_total{result}` over the **same** window; low rate is PASS; non-zero complete + zero `source="engine"` columns = FAIL |
+
+**Machine must be exclusive** (no build, no second stack, no Phase 2 soak; sleep
+off). **A restart is a failed run**, never a recovered one — no consensus
+persistence until Phase 4. Two attempts budgeted; same cause twice → fix, not a
+third attempt.
+
+**Status residual (CC-3Ac fill):** live rehearsal and ≥ 6 h window are
+**`NOT_RUN`** with named blockers (non-exclusive machine, no this-worktree
+synced EL, CC-36b live drills outstanding). Instrument self-tests pass. Do
+**not** claim M3.5 exit green from this residual — see
+`docs/phase-3-acceptance.md`.
+
+```bash
+# After exclusive restore + CC-36b + fresh eth_syncing==false:
+bash scripts/phase-3-acceptance.sh --phase b          # writes window_start
+# 1 h rehearsal, then ≥ 6 h with sampler + scrapes (engine metrics on :9104)
+bash scripts/soak-report.sh --phase 3 \
+  --samples soak-samples.csv \
+  --boundary-file .data/phase3-window-start \
+  --chain-metrics-start chain-metrics-start.txt \
+  --chain-metrics-end   chain-metrics-end.txt \
+  --engine-metrics-start engine-metrics-start.txt \
+  --engine-metrics-end   engine-metrics-end.txt \
+  --p2p-metrics-start p2p-metrics-start.txt \
+  --p2p-metrics-end   p2p-metrics-end.txt \
+  --harness-json harness-results.json \
+  --out clause-table.md
+```
+
