@@ -21,6 +21,7 @@
 //! - **CC-24b**: KZG verify pool (`das::verify_pool`) — dedicated OS threads, §8.2 three steps, ADR P2-08 batching
 //! - **CC-26a**: bounded backfill cache (1 GiB ceiling) + `earliest_available_slot` AtomicU64
 //! - **CC-24c**: sampling tracker (`das::sampling`) — all-or-nothing `BTreeSet` equality, 64-task bound, `DataAvailable`
+//! - **CC-25**: by-root recovery (`das::recovery`) — end-of-slot-*N* ladder, ENR custody selection, `custody_unserved`
 //! - **CC-27b**: chain-stream client, outstanding map, stall-then-shed, ChainView store
 //! - **CC-29a**: Phase 2 metric family declarations (binary registers them)
 

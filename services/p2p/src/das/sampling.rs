@@ -6,8 +6,10 @@
 //! threshold (spec delta 6 / CC-24/2).
 //!
 //! Tasks are created on the first sight of **either** the block or any column
-//! for that root. Zero-blob blocks complete immediately (R-4). Until CC-25
-//! lands, deadline expiry goes straight to [`TaskState::Abandoned`].
+//! for that root. Zero-blob blocks complete immediately (R-4). At the end of
+//! slot *N*, incomplete tasks enter [`TaskState::Recovering`] and emit a
+//! [`RecoveryTrigger`] for CC-25's by-root ladder; exhaustion marks
+//! [`TaskState::Abandoned`].
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -166,10 +168,26 @@ impl std::fmt::Debug for SamplingTracker {
 /// Internal result of deadline expiry.
 enum ExpireAction {
     Complete(DaOutcome),
-    Abandon {
+    /// Enter recovery (CC-25); task left in [`TaskState::Recovering`].
+    NeedsRecovery {
         slot: u64,
         missing: BTreeSet<ColumnIndex>,
     },
+}
+
+/// Work item emitted when a sampling task hits the end-of-slot-*N* deadline.
+///
+/// The host / recovery driver runs [`crate::das::recovery::recover`] and then
+/// either feeds columns via [`SamplingTracker::on_column`] (`ColumnSource::ByRoot`)
+/// or calls [`SamplingTracker::mark_abandoned`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryTrigger {
+    /// Beacon block root.
+    pub root: [u8; 32],
+    /// Slot of the block.
+    pub slot: u64,
+    /// `required − verified` at deadline.
+    pub missing: BTreeSet<ColumnIndex>,
 }
 
 impl SamplingTracker {
@@ -360,9 +378,11 @@ impl SamplingTracker {
 
     /// Drive deadline expiry for all pending tasks.
     ///
-    /// Incomplete tasks past `deadline` enter [`TaskState::Recovering`] then,
-    /// until CC-25 implements recovery, immediately [`TaskState::Abandoned`].
-    pub fn poll_deadlines(&mut self, now: Instant) {
+    /// Incomplete tasks past `deadline` (end of slot *N*) enter
+    /// [`TaskState::Recovering`] and yield a [`RecoveryTrigger`] for the
+    /// by-root ladder (CC-25). There is no unbounded wait path: either recovery
+    /// fills the set or the driver calls [`Self::mark_abandoned`].
+    pub fn poll_deadlines(&mut self, now: Instant) -> Vec<RecoveryTrigger> {
         let expired: Vec<[u8; 32]> = self
             .tasks
             .iter()
@@ -372,10 +392,56 @@ impl SamplingTracker {
             .map(|(r, _)| *r)
             .collect();
 
+        let mut triggers = Vec::with_capacity(expired.len());
         for root in expired {
-            self.expire_task(&root);
+            if let Some(t) = self.expire_task(&root) {
+                triggers.push(t);
+            }
         }
         self.sync_gauge();
+        triggers
+    }
+
+    /// Mark a recovering task abandoned after the by-root ladder is exhausted.
+    ///
+    /// Records `cc_p2p_da_outcome_total{result="abandoned"}` once and emits
+    /// the structured abandon log (root, slot, missing, peers tried).
+    pub fn mark_abandoned(
+        &mut self,
+        root: &[u8; 32],
+        peers_tried: &[String],
+    ) {
+        self.maybe_record_deferred(root);
+        let (slot, missing) = {
+            let Some(task) = self.tasks.get_mut(root) else {
+                return;
+            };
+            if matches!(task.state, TaskState::Complete | TaskState::Abandoned) {
+                return;
+            }
+            task.state = TaskState::Abandoned;
+            (task.slot, task.missing())
+        };
+        if let Some(m) = &self.metrics {
+            m.inc_da_outcome(DaOutcome::Abandoned);
+        }
+        warn!(
+            root = %hex_root(root),
+            slot,
+            ?missing,
+            peers_tried = ?peers_tried,
+            "by-root recovery exhausted; abandoned"
+        );
+        self.sync_gauge();
+    }
+
+    /// Bump the recovery attempt counter on a [`TaskState::Recovering`] task.
+    pub fn note_recovery_attempt(&mut self, root: &[u8; 32]) {
+        if let Some(task) = self.tasks.get_mut(root)
+            && let TaskState::Recovering { attempts } = &mut task.state
+        {
+            *attempts = attempts.saturating_add(1);
+        }
     }
 
     // ── Internals ───────────────────────────────────────────────────────────
@@ -518,16 +584,14 @@ impl SamplingTracker {
         }
     }
 
-    fn expire_task(&mut self, root: &[u8; 32]) {
-        // Ensure deferred is counted before abandon (soak: deferred → abandoned).
+    fn expire_task(&mut self, root: &[u8; 32]) -> Option<RecoveryTrigger> {
+        // Ensure deferred is counted before recovery / abandon.
         self.maybe_record_deferred(root);
 
         let action = {
-            let Some(task) = self.tasks.get_mut(root) else {
-                return;
-            };
+            let task = self.tasks.get_mut(root)?;
             if !matches!(task.state, TaskState::Pending) {
-                return;
+                return None;
             }
             if task.verified == task.required {
                 // Race: completed between poll and expire.
@@ -539,28 +603,31 @@ impl SamplingTracker {
                 };
                 ExpireAction::Complete(outcome)
             } else {
-                // CC-25 entry: transition through Recovering, then abandon until
-                // recovery lands.
+                // CC-25/1: end of slot *N* → Recovering; recovery driver runs ladder.
                 task.state = TaskState::Recovering { attempts: 0 };
-                task.state = TaskState::Abandoned;
                 let slot = task.slot;
                 let missing = task.missing();
-                ExpireAction::Abandon { slot, missing }
+                ExpireAction::NeedsRecovery { slot, missing }
             }
         };
 
         match action {
-            ExpireAction::Complete(outcome) => self.emit_complete(root, outcome),
-            ExpireAction::Abandon { slot, missing } => {
-                if let Some(m) = &self.metrics {
-                    m.inc_da_outcome(DaOutcome::Abandoned);
-                }
-                warn!(
+            ExpireAction::Complete(outcome) => {
+                self.emit_complete(root, outcome);
+                None
+            }
+            ExpireAction::NeedsRecovery { slot, missing } => {
+                debug!(
                     root = %hex_root(root),
                     slot,
                     ?missing,
-                    "sampling deadline expired; abandoned (CC-25 recovery not yet wired)"
+                    "sampling deadline expired; entering by-root recovery"
                 );
+                Some(RecoveryTrigger {
+                    root: *root,
+                    slot,
+                    missing,
+                })
             }
         }
     }
@@ -942,7 +1009,7 @@ mod tests {
     }
 
     #[test]
-    fn expiry_without_cc25_goes_to_abandoned() {
+    fn expiry_enters_recovering_then_abandon_via_driver() {
         let past = Instant::now() - Duration::from_secs(1);
         let (mut t, mut rx, metrics) = tracker_with(required_eight(), past);
         let r = root(11);
@@ -950,11 +1017,39 @@ mod tests {
         for col in 0..7u64 {
             t.on_column(r, 3, col, ColumnSource::Gossip);
         }
-        t.poll_deadlines(Instant::now());
+        let triggers = t.poll_deadlines(Instant::now());
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].root, r);
+        assert_eq!(triggers[0].slot, 3);
+        assert_eq!(triggers[0].missing, BTreeSet::from([7u64]));
         let task = t.get(&r).unwrap();
-        assert_eq!(task.state, TaskState::Abandoned);
-        assert!(rx.try_recv().is_err(), "no DA on abandon");
+        assert!(matches!(task.state, TaskState::Recovering { attempts: 0 }));
+        assert!(rx.try_recv().is_err(), "no DA while recovering");
         assert!(metrics.da_outcome(DaOutcome::Deferred) >= 1);
+        assert_eq!(metrics.da_outcome(DaOutcome::Abandoned), 0);
+
+        // Recovery fills last column via by-root → Recovered.
+        t.on_column(r, 3, 7, ColumnSource::ByRoot);
+        assert_eq!(t.get(&r).unwrap().state, TaskState::Complete);
+        assert_eq!(metrics.da_outcome(DaOutcome::Recovered), 1);
+        assert_eq!(rx.try_recv().unwrap().slot, 3);
+    }
+
+    #[test]
+    fn expiry_abandon_after_recovery_exhaustion() {
+        let past = Instant::now() - Duration::from_secs(1);
+        let (mut t, mut rx, metrics) = tracker_with(required_eight(), past);
+        let r = root(13);
+        t.on_block(r, 4, 1);
+        t.poll_deadlines(Instant::now());
+        assert!(matches!(
+            t.get(&r).unwrap().state,
+            TaskState::Recovering { .. }
+        ));
+        t.note_recovery_attempt(&r);
+        t.mark_abandoned(&r, &["peer-a".into(), "peer-b".into()]);
+        assert_eq!(t.get(&r).unwrap().state, TaskState::Abandoned);
+        assert!(rx.try_recv().is_err(), "no DA on abandon");
         assert_eq!(metrics.da_outcome(DaOutcome::Abandoned), 1);
         assert_eq!(metrics.da_outcome(DaOutcome::Imported), 0);
     }
