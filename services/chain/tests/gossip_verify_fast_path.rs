@@ -270,6 +270,7 @@ fn gossip_path_no_early_accept_without_valid_proposer_sig() {
         Some(early_tx),
         None,
         None,
+        None,
     )
     .expect("outcome");
 
@@ -327,6 +328,7 @@ fn early_accept_fires_before_two_second_da_stall() {
             cc_state_transition::BlockSignatureStrategy::NoVerification,
             None,
             Some(early_tx),
+            None,
             None,
             None,
         )
@@ -395,6 +397,7 @@ fn late_import_reject_forced_after_early_accept() {
         Some(early_tx),
         Some(inject),
         None,
+        None,
     )
     .expect("outcome");
 
@@ -451,6 +454,7 @@ fn late_import_internal_forced_after_early_accept() {
         None,
         Some(early_tx),
         Some(inject),
+        None,
         None,
     )
     .expect("outcome");
@@ -550,6 +554,7 @@ fn future_slot_is_terminal_ignore_reason() {
         cc_state_transition::BlockSignatureStrategy::NoVerification,
         None,
         None, // unary-style — still hits cheap future_slot
+        None,
         None,
         None,
     )

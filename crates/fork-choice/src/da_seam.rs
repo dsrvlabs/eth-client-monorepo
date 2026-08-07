@@ -256,6 +256,11 @@ pub struct ImportedBlock {
 /// `DataUnavailable`). Misrouting to `Err` loses the first-class
 /// `DEFERRED_DA` / `UNKNOWN_PARENT` ImportBlock verdicts that CC-24 requeue
 /// and driver walk-back need.
+///
+/// # CC-36a (MP-X2)
+///
+/// Phase 3 adds [`Self::ExecutionEngineUnavailable`] only — do not touch
+/// `is_data_available`, harness DA, or the trait body (D-3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeferralReason {
     /// Sampled columns / blobs for this root are not yet verified available.
@@ -264,17 +269,28 @@ pub enum DeferralReason {
     UnknownParent,
     /// Block slot is still in the future relative to store time.
     FutureSlot,
+    /// Execution engine errored or did not answer (CC-36 / §4.9).
+    ///
+    /// Spec: MUST NOT optimistically import, MUST NOT apply to the fork-choice
+    /// store, MAY queue. Classifies as [`GossipClass::Ignore`] — the sender is
+    /// not at fault. Distinct from a transport `EngineError` on the error path,
+    /// which remains [`GossipClass::Internal`] (Phase 1 / CC-14).
+    ExecutionEngineUnavailable,
 }
 
 impl DeferralReason {
     /// Phase 2 maps this to the p2p ACCEPT/REJECT/IGNORE verdict.
     ///
     /// Every deferral is [`GossipClass::Ignore`]: data not yet available, an
-    /// unknown parent, or a future slot is never a peer descore. Exhaustive —
-    /// no `_ =>` arm so a new variant fails to compile until classified.
+    /// unknown parent, a future slot, or an unavailable execution engine is
+    /// never a peer descore. Exhaustive match (no catch-all arm) so a new
+    /// variant fails to compile until classified.
     pub const fn gossip_class(self) -> GossipClass {
         match self {
-            Self::DataUnavailable | Self::UnknownParent | Self::FutureSlot => GossipClass::Ignore,
+            Self::DataUnavailable
+            | Self::UnknownParent
+            | Self::FutureSlot
+            | Self::ExecutionEngineUnavailable => GossipClass::Ignore,
         }
     }
 }
@@ -464,6 +480,10 @@ mod tests {
         );
         assert_eq!(
             DeferralReason::FutureSlot.gossip_class(),
+            GossipClass::Ignore
+        );
+        assert_eq!(
+            DeferralReason::ExecutionEngineUnavailable.gossip_class(),
             GossipClass::Ignore
         );
         assert_eq!(

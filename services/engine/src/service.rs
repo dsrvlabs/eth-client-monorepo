@@ -16,9 +16,11 @@ use cc_proto::engine::{
 use tonic::{Request, Response, Status};
 
 use crate::config::EngineTransportConfig;
+use crate::errors::EngineError;
 use crate::methods::fcu::{FcuGatedError, FcuSequenceGate, forkchoice_updated_v3_gated};
 use crate::methods::new_payload::{DecodedPayloadStatus, new_payload_v4};
 use crate::metrics::EngineMetrics;
+use crate::state::{CachedForkchoiceState, EngineStateHandle, UpcheckOutcome};
 use crate::transport::SharedTransport;
 use crate::version::ElForkSchedule;
 
@@ -36,6 +38,8 @@ pub struct EngineServiceImpl {
     metrics: Option<EngineMetrics>,
     /// fcU sequence high-water; resets on session change / reconnect (§3.8/2, CC-33).
     fcu_gate: Arc<FcuSequenceGate>,
+    /// Four-state engine machine (CC-36a / §3.7).
+    state: Option<EngineStateHandle>,
 }
 
 impl EngineServiceImpl {
@@ -50,6 +54,17 @@ impl EngineServiceImpl {
         cfg: &EngineTransportConfig,
         metrics: Option<EngineMetrics>,
     ) -> Self {
+        Self::new_with_state(transport, cfg, metrics, None)
+    }
+
+    /// Construct with an optional shared engine-state handle (CC-36a).
+    #[must_use]
+    pub fn new_with_state(
+        transport: SharedTransport,
+        cfg: &EngineTransportConfig,
+        metrics: Option<EngineMetrics>,
+        state: Option<EngineStateHandle>,
+    ) -> Self {
         let schedule = cfg.el_fork_schedule().unwrap_or(ElForkSchedule {
             osaka_time: 0,
             bpo1_time: None,
@@ -61,6 +76,7 @@ impl EngineServiceImpl {
             schedule,
             metrics,
             fcu_gate: Arc::new(FcuSequenceGate::new()),
+            state,
         }
     }
 
@@ -76,6 +92,36 @@ impl EngineServiceImpl {
     #[must_use]
     pub fn fcu_gate(&self) -> Arc<FcuSequenceGate> {
         Arc::clone(&self.fcu_gate)
+    }
+
+    /// Fail-closed gate: Offline / AuthFailed must not hit the EL (CC-36a review).
+    async fn ensure_el_admitted(&self) -> Result<(), Status> {
+        let Some(state) = &self.state else {
+            return Ok(());
+        };
+        if state.admits_el_call().await {
+            return Ok(());
+        }
+        let (el_offline, internal) = state.get_engine_state_fields().await;
+        Err(Status::unavailable(format!(
+            "execution engine unavailable (el_offline={el_offline}, state={internal})"
+        )))
+    }
+
+    /// Feed ordered-lane auth errors into the state machine so a wrong JWT on
+    /// `newPayload`/`fcU` becomes terminal `AuthFailed` rather than an endless
+    /// soft deferral. Transient Offline is still owned by the upcheck loop.
+    async fn note_ordered_lane_error(&self, err: &EngineError) {
+        let Some(state) = &self.state else {
+            return;
+        };
+        if let EngineError::Http401 { body } | EngineError::Http403 { body } = err {
+            let _ = state
+                .apply(UpcheckOutcome::AuthRejected {
+                    body: body.clone(),
+                })
+                .await;
+        }
     }
 }
 
@@ -99,8 +145,9 @@ impl EngineService for EngineServiceImpl {
         &self,
         request: Request<NewPayloadRequest>,
     ) -> Result<Response<NewPayloadResponse>, Status> {
+        self.ensure_el_admitted().await?;
         let req = request.into_inner();
-        let status = new_payload_v4(
+        match new_payload_v4(
             self.transport.as_ref(),
             &self.schedule,
             self.metrics.as_ref(),
@@ -110,16 +157,22 @@ impl EngineService for EngineServiceImpl {
             &req.execution_requests,
         )
         .await
-        .map_err(engine_err_to_status)?;
-        Ok(Response::new(NewPayloadResponse {
-            payload_status: Some(to_proto_status(&status)),
-        }))
+        {
+            Ok(status) => Ok(Response::new(NewPayloadResponse {
+                payload_status: Some(to_proto_status(&status)),
+            })),
+            Err(e) => {
+                self.note_ordered_lane_error(&e).await;
+                Err(engine_err_to_status(e))
+            }
+        }
     }
 
     async fn forkchoice_updated(
         &self,
         request: Request<ForkchoiceUpdatedRequest>,
     ) -> Result<Response<ForkchoiceUpdatedResponse>, Status> {
+        self.ensure_el_admitted().await?;
         let req = request.into_inner();
         let head_slot = if req.head_slot == 0 {
             None
@@ -142,14 +195,35 @@ impl EngineService for EngineServiceImpl {
         )
         .await
         {
-            Ok(status) => Ok(Response::new(ForkchoiceUpdatedResponse {
-                payload_status: Some(to_proto_status(&status)),
-                payload_id: None,
-            })),
+            Ok(status) => {
+                // Cache triple for not-Synced → Synced re-send (CC-36 /4).
+                if let Some(state) = &self.state
+                    && let (Ok(head), Ok(safe), Ok(finalized)) = (
+                        as_32(&req.head_block_hash),
+                        as_32(&req.safe_block_hash),
+                        as_32(&req.finalized_block_hash),
+                    )
+                {
+                    state
+                        .cache_forkchoice(CachedForkchoiceState {
+                            head_block_hash: head,
+                            safe_block_hash: safe,
+                            finalized_block_hash: finalized,
+                        })
+                        .await;
+                }
+                Ok(Response::new(ForkchoiceUpdatedResponse {
+                    payload_status: Some(to_proto_status(&status)),
+                    payload_id: None,
+                }))
+            }
             Err(FcuGatedError::DroppedStale(d)) => Err(Status::aborted(format!(
                 "{REASON_FCU_DROPPED_STALE}: {d}"
             ))),
-            Err(FcuGatedError::Engine(e)) => Err(engine_err_to_status(e)),
+            Err(FcuGatedError::Engine(e)) => {
+                self.note_ordered_lane_error(&e).await;
+                Err(engine_err_to_status(e))
+            }
         }
     }
 
@@ -157,13 +231,23 @@ impl EngineService for EngineServiceImpl {
         &self,
         _request: Request<GetEngineStateRequest>,
     ) -> Result<Response<GetEngineStateResponse>, Status> {
-        // Placeholder until CC-36a / CC-3B wire the state machine. Declared so
-        // the field set is additive-stable (`buf breaking` with no label).
+        if let Some(state) = &self.state {
+            let (el_offline, internal_state) = state.get_engine_state_fields().await;
+            return Ok(Response::new(GetEngineStateResponse {
+                el_offline,
+                internal_state,
+            }));
+        }
+        // No state machine wired (unit tests): default online/synced.
         Ok(Response::new(GetEngineStateResponse {
             el_offline: false,
             internal_state: "synced".into(),
         }))
     }
+}
+
+fn as_32(bytes: &[u8]) -> Result<[u8; 32], ()> {
+    <[u8; 32]>::try_from(bytes).map_err(|_| ())
 }
 
 fn to_proto_status(status: &DecodedPayloadStatus) -> PayloadStatusV1 {

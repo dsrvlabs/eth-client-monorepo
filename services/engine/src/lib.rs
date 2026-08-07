@@ -12,6 +12,8 @@
 //!   SSZ→JSON encode, `cc_engine_payload_status_total` observations
 //! - **CC-33**: `forkchoiceUpdatedV3` adapter, sequence high-water (resets on
 //!   reconnect), three-value payloadStatus decoder, `-38002`/`-38006` handling
+//! - **CC-36a**: four-state engine machine, `eth_syncing` upcheck on the upcheck
+//!   lane, detached+floored drive, fcU re-send on Synced edge
 
 #![allow(missing_docs)]
 
@@ -22,11 +24,17 @@ pub mod jwt;
 pub mod methods;
 pub mod metrics;
 pub mod service;
+pub mod state;
 pub mod transport;
 pub mod version;
 
+pub use methods::eth_syncing::{EthSyncingResult, eth_syncing};
 pub use methods::fcu::{
     FcuDroppedStale, FcuGatedError, FcuSequenceGate, build_fcu_params, decode_fcu_payload_status,
     decode_fcu_result, forkchoice_updated_v3, forkchoice_updated_v3_gated,
 };
 pub use service::REASON_FCU_DROPPED_STALE;
+pub use state::{
+    CachedForkchoiceState, EngineState, EngineStateHandle, EngineStateInternal, EngineStateMachine,
+    StateTransition, TransitionReason, UpcheckOutcome, admits_el_call, spawn_upcheck_driver,
+};

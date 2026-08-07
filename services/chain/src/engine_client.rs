@@ -126,6 +126,45 @@ impl EngineApiClient {
         })?;
         map_proto_status(&status)
     }
+
+    /// Poll `GetEngineState` (CC-36a: Offline→Online redrive of `pending_engine`).
+    ///
+    /// Returns `true` when the engine reports online (`el_offline == false`).
+    /// Transport failures are treated as offline (fail-closed).
+    #[must_use]
+    pub fn is_engine_online(&self) -> bool {
+        let client = match self.client() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        self.handle.block_on(async move {
+            let mut client = client;
+            match client
+                .get_engine_state(cc_proto::engine::GetEngineStateRequest {})
+                .await
+            {
+                Ok(resp) => !resp.into_inner().el_offline,
+                Err(_) => false,
+            }
+        })
+    }
+}
+
+/// Poll engine online via a one-shot client (core SlotTick; no shared mutex).
+#[must_use]
+pub fn poll_engine_online(handle: &Handle, uri: &str) -> bool {
+    handle.block_on(async {
+        match EngineServiceClient::connect(uri.to_owned()).await {
+            Ok(mut client) => match client
+                .get_engine_state(cc_proto::engine::GetEngineStateRequest {})
+                .await
+            {
+                Ok(resp) => !resp.into_inner().el_offline,
+                Err(_) => false,
+            },
+            Err(_) => false,
+        }
+    })
 }
 
 impl<P: Preset> ExecutionEngine<P> for EngineApiClient {

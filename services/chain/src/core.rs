@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use cc_fork_choice::{PeerDasAvailability, Store};
+use cc_fork_choice::{PeerDasAvailability, Store, on_tick};
 use cc_proto::chain::{
     ApplyAttestationsRequest, ApplyAttestationsResponse, ImportBlockRequest, ImportBlockResponse,
 };
@@ -38,11 +38,13 @@ use tonic::Status;
 
 use crate::apply_attestations::apply_attestations;
 use crate::da::{DEFAULT_DA_PENDING_TIMEOUT_SLOTS, PendingDa};
+use crate::engine_client::poll_engine_online;
 use crate::epoch_context::{EpochContext, EpochContextStore};
 use crate::fcu_driver::{FcuDriver, GrpcFcuSink};
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
 use crate::import::{ImportCounters, ImportOutcome, import_block_with_early};
 use crate::metrics::ChainMetrics;
+use crate::pending_engine::{DEFAULT_ENGINE_PENDING_TIMEOUT_SLOTS, PendingEngine};
 use crate::residency::{DEFAULT_BODY_RING_CAPACITY, DEFAULT_MAX_RESIDENT_STATES, Residency};
 
 /// Command channel capacity (Architecture §7.2).
@@ -150,6 +152,8 @@ pub struct CoreConfig {
     pub peer_das: Option<Arc<PeerDasAvailability>>,
     /// Slots a deferred block may wait for `DataAvailable` (default 4).
     pub da_pending_timeout_slots: u64,
+    /// Slots a deferred block may wait for the execution engine (default 8).
+    pub engine_pending_timeout_slots: u64,
     /// gRPC URI for `EngineService` (CC-32b). Not a health peer (ADR P3-02).
     pub engine_uri: String,
 }
@@ -162,6 +166,7 @@ impl Default for CoreConfig {
             verify: BlockSignatureStrategy::NoVerification,
             peer_das: None,
             da_pending_timeout_slots: DEFAULT_DA_PENDING_TIMEOUT_SLOTS,
+            engine_pending_timeout_slots: DEFAULT_ENGINE_PENDING_TIMEOUT_SLOTS,
             engine_uri: crate::engine_client::DEFAULT_ENGINE_URI.to_owned(),
         }
     }
@@ -814,14 +819,21 @@ fn core_loop<P: Preset>(
     let verify = core_cfg.verify;
     let peer_das = core_cfg.peer_das;
     let da_timeout_slots = core_cfg.da_pending_timeout_slots.max(1);
+    let engine_timeout_slots = core_cfg.engine_pending_timeout_slots.max(1);
     let mut pending_da = PendingDa::new();
+    let mut pending_engine = PendingEngine::new();
+    // Last observed engine Online bit (CC-36a Offline→Online redrive edge).
+    let mut last_engine_online = false;
+    let engine_uri = core_cfg.engine_uri.clone();
+    // Keep a handle for GetEngineState polling (fcU sink consumes its own clone).
+    let poll_handle = rt_handle.clone();
 
     // CC-33: forkchoiceUpdated driver (off attestation path — after import /
     // on slot tick). Requires a multi-threaded runtime handle for gRPC.
     let fcu: Option<FcuDriver<GrpcFcuSink>> = rt_handle.map(|h| {
-        let sink = Arc::new(GrpcFcuSink::new(h, core_cfg.engine_uri.clone()));
+        let sink = Arc::new(GrpcFcuSink::new(h, engine_uri.clone()));
         tracing::info!(
-            engine_uri = %core_cfg.engine_uri,
+            engine_uri = %engine_uri,
             session_id = sink.session_id(),
             "fcU driver armed (CC-33)"
         );
@@ -838,6 +850,12 @@ fn core_loop<P: Preset>(
             &mut pending_da,
             store.get_current_slot().as_u64(),
             da_timeout_slots,
+            &metrics,
+        );
+        expire_pending_engine(
+            &mut pending_engine,
+            store.get_current_slot().as_u64(),
+            engine_timeout_slots,
             &metrics,
         );
         if let Some(ref da) = peer_das {
@@ -860,8 +878,10 @@ fn core_loop<P: Preset>(
                     None,
                     None,
                     Some(&mut pending_da),
+                    Some(&mut pending_engine),
                 );
                 metrics.set_da_pending_occupancy(pending_da.len() as u64);
+                metrics.set_pending_engine_occupancy(pending_engine.len() as u64);
                 // Republish EpochContext when the head epoch advances (§16/4).
                 if outcome.is_ok() {
                     maybe_publish_epoch_context(
@@ -897,8 +917,10 @@ fn core_loop<P: Preset>(
                     early_accept,
                     None, // production: no inject
                     Some(&mut pending_da),
+                    Some(&mut pending_engine),
                 );
                 metrics.set_da_pending_occupancy(pending_da.len() as u64);
+                metrics.set_pending_engine_occupancy(pending_engine.len() as u64);
                 if outcome.is_ok() {
                     maybe_publish_epoch_context(
                         &store,
@@ -957,6 +979,58 @@ fn core_loop<P: Preset>(
                 emit_fcu_head(&store, fcu.as_ref());
             }
             CoreCommand::SlotTick => {
+                // Advance store time so slot-bounded pending_* expiries fire
+                // (CC-36a: 8-slot pending_engine must not stick forever).
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                if let Err(e) = on_tick(&mut store, now) {
+                    tracing::debug!(error = %e, now, "on_tick on SlotTick skipped");
+                }
+                let current_slot = store.get_current_slot().as_u64();
+                expire_pending_da(
+                    &mut pending_da,
+                    current_slot,
+                    da_timeout_slots,
+                    &metrics,
+                );
+                expire_pending_engine(
+                    &mut pending_engine,
+                    current_slot,
+                    engine_timeout_slots,
+                    &metrics,
+                );
+
+                // Offline → Online: drain pending_engine and re-drive (CC-36a / §4.9).
+                if let Some(ref h) = poll_handle {
+                    let online = poll_engine_online(h, &engine_uri);
+                    if online && !last_engine_online && !pending_engine.is_empty() {
+                        tracing::info!(
+                            n = pending_engine.len(),
+                            "engine online; re-driving pending_engine"
+                        );
+                        redrive_pending_engine(
+                            &mut store,
+                            &mut residency,
+                            &config,
+                            &head,
+                            &event_tx,
+                            &metrics,
+                            &counters,
+                            &mut snapshot_sequence,
+                            &mut pending_da,
+                            &mut pending_engine,
+                            verify,
+                            &mut epoch_sequence,
+                            &mut last_published_epoch,
+                            &epoch,
+                        );
+                        emit_fcu_head(&store, fcu.as_ref());
+                    }
+                    last_engine_online = online;
+                }
+
                 // Per-slot floor even with no new block (CC-33 /7).
                 if let Some(driver) = fcu.as_ref() {
                     let slot = store.get_current_slot();
@@ -1081,9 +1155,96 @@ fn handle_data_available<P: Preset>(
         None,
         None,
         Some(pending_da),
+        None, // re-drive is DA-only; engine map is separate
     );
     if outcome.is_ok() {
         maybe_publish_epoch_context(store, config, epoch, epoch_sequence, last_published_epoch);
+    }
+}
+
+/// Drop timed-out `pending_engine` entries and bump the metric (CC-36a).
+fn expire_pending_engine(
+    pending: &mut PendingEngine,
+    current_slot: u64,
+    timeout_slots: u64,
+    metrics: &ChainMetrics,
+) {
+    let dropped = pending.expire(current_slot, timeout_slots);
+    if !dropped.is_empty() {
+        metrics.inc_pending_engine_dropped(dropped.len() as u64);
+        for e in &dropped {
+            tracing::debug!(
+                root = %e.root,
+                parked_at_slot = e.parked_at_slot,
+                current_slot,
+                "pending_engine entry dropped after timeout"
+            );
+        }
+    }
+    metrics.set_pending_engine_occupancy(pending.len() as u64);
+}
+
+/// Re-import every parked engine-deferred block (Offline → Online edge).
+#[allow(clippy::too_many_arguments)]
+fn redrive_pending_engine<P: Preset>(
+    store: &mut Store<P>,
+    residency: &mut Residency<P>,
+    config: &ChainConfig,
+    head: &HeadSnapshotStore,
+    event_tx: &mpsc::Sender<crate::events::EventInput>,
+    metrics: &ChainMetrics,
+    counters: &ImportCounters,
+    snapshot_sequence: &mut u64,
+    pending_da: &mut PendingDa,
+    pending_engine: &mut PendingEngine,
+    verify: BlockSignatureStrategy,
+    epoch_sequence: &mut u64,
+    last_published_epoch: &mut u64,
+    epoch: &EpochContextStore,
+) {
+    let entries = pending_engine.drain_oldest_first();
+    metrics.set_pending_engine_occupancy(pending_engine.len() as u64);
+    for entry in entries {
+        let root = entry.root;
+        let request = ImportBlockRequest {
+            ssz: entry.ssz.to_vec(),
+            fork: entry.fork,
+            root: root.as_slice().to_vec(),
+            source: if entry.source == 0 {
+                Source::Gossip as i32
+            } else {
+                entry.source
+            },
+        };
+        tracing::debug!(%root, slot = entry.slot, "re-driving pending_engine entry");
+        let outcome = import_block_with_early(
+            store,
+            residency,
+            config,
+            head,
+            event_tx,
+            metrics,
+            counters,
+            snapshot_sequence,
+            request,
+            verify,
+            None,
+            None,
+            None,
+            Some(pending_da),
+            Some(pending_engine),
+        );
+        metrics.set_da_pending_occupancy(pending_da.len() as u64);
+        metrics.set_pending_engine_occupancy(pending_engine.len() as u64);
+        if outcome.is_ok() {
+            maybe_publish_epoch_context(
+                store,
+                config,
+                epoch,
+                epoch_sequence,
+                last_published_epoch,
+            );
+        }
     }
 }
 

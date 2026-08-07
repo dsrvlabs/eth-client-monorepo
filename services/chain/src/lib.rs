@@ -11,6 +11,8 @@
 //! - **CC-27c**: gossip-verify fast path — block acceptance before state transition
 //! - **CC-24d**: DA seam substitution — [`da`] (`pending_da`) +
 //!   [`cc_fork_choice::PeerDasAvailability`]; Phase-1 optimistic DA stub deleted
+//! - **CC-36a**: third deferral outcome — [`pending_engine`] (64 / 8 slots),
+//!   separate from `pending_da`
 //!
 //! The binary (`main.rs`) binds first, then checkpoint-bootstraps when
 //! `checkpoint_providers` is configured (CC-19b): self health SERVING while
@@ -34,6 +36,7 @@ pub mod import;
 pub mod invalidation;
 pub mod metrics;
 pub mod p2p_stream;
+pub mod pending_engine;
 pub mod residency;
 pub mod service;
 
@@ -59,7 +62,10 @@ pub use da::{
     TTFB_TIMEOUT_SECS, assert_timeout_outlasts_recovery, chain_pending_timeout_secs,
     default_timeout_ordering_ok, recovery_ladder_worst_case_secs,
 };
-pub use engine_client::{DEFAULT_ENGINE_URI, EngineApiClient};
+pub use pending_engine::{
+    DEFAULT_ENGINE_PENDING_TIMEOUT_SLOTS, PENDING_ENGINE_BOUND, PendingEngine, PendingEngineEntry,
+};
+pub use engine_client::{DEFAULT_ENGINE_URI, EngineApiClient, poll_engine_online};
 pub use fcu_driver::{
     FcuBuildError, FcuDriver, FcuSink, FcuSkip, ForkchoiceState, GrpcFcuSink, RecordingFcuSink,
     build_forkchoice_state, safe_is_ancestor_of_head,

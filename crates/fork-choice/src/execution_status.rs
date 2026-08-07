@@ -567,7 +567,6 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
         use crate::da_seam::HarnessAvailability;
         use crate::on_block::get_forkchoice_store;
         use crate::store::Store;
-        use cc_state_transition::StubOptimisticEngine;
         use cc_types::preset::Minimal;
         use cc_types::{BeaconBlock, BeaconState};
         use std::sync::Arc;
@@ -585,7 +584,7 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
         let mut store: Store<Minimal> = get_forkchoice_store(
             state,
             &anchor_block,
-            Arc::new(StubOptimisticEngine),
+            Arc::new(AcceptEngine),
             Arc::new(HarnessAvailability),
             6,
         )
@@ -648,7 +647,6 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
         use crate::da_seam::HarnessAvailability;
         use crate::on_block::get_forkchoice_store;
         use crate::store::Store;
-        use cc_state_transition::StubOptimisticEngine;
         use cc_types::preset::{Minimal, Preset};
         use cc_types::{BeaconBlock, BeaconState};
         use std::sync::Arc;
@@ -666,7 +664,7 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
         let mut store: Store<Minimal> = get_forkchoice_store(
             state,
             &anchor_block,
-            Arc::new(StubOptimisticEngine),
+            Arc::new(AcceptEngine),
             Arc::new(HarnessAvailability),
             6,
         )

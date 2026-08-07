@@ -47,6 +47,7 @@ use crate::epoch_context::EpochContext;
 use crate::events::EventInput;
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
 use crate::metrics::{ChainMetrics, ImportResult, ImportStage};
+use crate::pending_engine::{PendingEngine, PendingEngineEntry};
 use crate::residency::Residency;
 
 /// Outcome of a single import attempt (core thread).
@@ -128,6 +129,7 @@ pub fn import_block<P: Preset>(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -145,6 +147,10 @@ pub fn import_block<P: Preset>(
 ///
 /// `pending_da` (CC-24d): when `on_block` returns `Deferred(DataUnavailable)`,
 /// the signed block is parked for re-drive on `DataAvailable`.
+///
+/// `pending_engine` (CC-36a): when `on_block` returns
+/// `Deferred(ExecutionEngineUnavailable)`, the signed block is parked for
+/// re-drive when the engine returns (separate map, 64 / 8 slots).
 #[allow(clippy::too_many_arguments)]
 pub fn import_block_with_early<P: Preset>(
     store: &mut Store<P>,
@@ -161,6 +167,7 @@ pub fn import_block_with_early<P: Preset>(
     early_accept_tx: Option<tokio::sync::oneshot::Sender<()>>,
     inject_after_early: Option<OnBlockError>,
     pending_da: Option<&mut PendingDa>,
+    pending_engine: Option<&mut PendingEngine>,
 ) -> Result<ImportOutcome, Status> {
     let gossip_path = early_accept_tx.is_some() || inject_after_early.is_some();
     // --- 1. decode-free dedup probe (ADR-P1-10 / SEC-4) ----------------------
@@ -316,6 +323,40 @@ pub fn import_block_with_early<P: Preset>(
                 transition_invoked: true,
                 early_accept,
                 // Future slot is Ignore-class for gossip; not a late Reject penalty.
+                late_import_reject: false,
+                late_import_internal: false,
+            })
+        }
+        Ok(BlockImport::Deferred(DeferralReason::ExecutionEngineUnavailable)) => {
+            // Park for re-drive when the engine returns (CC-36a / §4.9).
+            if let Some(pending) = pending_engine {
+                let entry = PendingEngineEntry {
+                    root: true_root,
+                    ssz: Bytes::from(signed.as_ssz_bytes()),
+                    fork: request.fork,
+                    source: request.source,
+                    slot: signed.message.slot.as_u64(),
+                    parked_at_slot: store.get_current_slot().as_u64(),
+                };
+                if let Some(evicted) = pending.insert(entry) {
+                    metrics.inc_pending_engine_dropped(1);
+                    tracing::debug!(
+                        root = %evicted.root,
+                        "pending_engine capacity eviction"
+                    );
+                }
+                metrics.set_pending_engine_occupancy(pending.len() as u64);
+            }
+            metrics.inc_import_result(ImportResult::DeferredEngine);
+            Ok(ImportOutcome {
+                response: ImportBlockResponse {
+                    // Proto has no DeferredEngine verdict; DeferredDa is the
+                    // Ignore-class park (same gossip class). Metric distinguishes.
+                    verdict: ImportBlockVerdict::DeferredDa as i32,
+                    reason: "execution_engine_unavailable".into(),
+                },
+                transition_invoked: true,
+                early_accept,
                 late_import_reject: false,
                 late_import_internal: false,
             })

@@ -7,6 +7,7 @@
 //!   `forkchoiceUpdatedV3`, `getBlobsV2`, `eth_syncing`)
 
 pub mod capabilities;
+pub mod eth_syncing;
 pub mod fcu;
 pub mod new_payload;
 

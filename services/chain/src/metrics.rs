@@ -677,6 +677,18 @@ impl ChainMetrics {
         self.da_available_occupancy.set(n as i64);
     }
 
+    /// Increment `cc_chain_pending_engine_dropped_total` by `n` (CC-36a).
+    pub fn inc_pending_engine_dropped(&self, n: u64) {
+        for _ in 0..n {
+            self.pending_engine_dropped.inc();
+        }
+    }
+
+    /// Set `cc_chain_pending_engine_occupancy` (CC-36a).
+    pub fn set_pending_engine_occupancy(&self, n: u64) {
+        self.pending_engine_occupancy.set(n as i64);
+    }
+
     // ── process_block / process_epoch (budgeted) ───────────────────────────
 
     /// Record one `process_block` duration.

@@ -15,14 +15,17 @@ use std::sync::Arc;
 
 use cc_bootstrap::{PeerSpec, ServiceSpec, TelemetrySettings};
 use cc_config::ServiceConfig;
+use cc_engine::capabilities::CapabilityCache;
 use cc_engine::config::EngineTransportConfig;
 use cc_engine::jwt::JwtSecret;
 use cc_engine::metrics::EngineMetrics;
 use cc_engine::service::EngineServiceImpl;
+use cc_engine::state::{EngineStateHandle, spawn_upcheck_driver};
 use cc_engine::transport::EngineTransport;
 // Mainnet preset hard-wired (≠13/5) — matches chain main.rs:240.
 use cc_types::preset::Mainnet;
 use serde::Deserialize;
+use std::time::Duration;
 use tonic::service::Routes;
 
 /// Process name and config slug (`config/engine.toml`, `CC_ENGINE_*`).
@@ -94,10 +97,36 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!(e))?;
     let transport = Arc::new(transport);
 
+    // CC-36a: four-state machine + detached/floored upcheck driver.
+    let slot_duration = Duration::from_millis(cfg.transport.slot_duration_ms.max(1));
+    let state = EngineStateHandle::new(
+        Arc::new(CapabilityCache::new()),
+        Some(engine_metrics.clone()),
+        slot_duration,
+    );
+    let schedule = cfg.transport.el_fork_schedule().unwrap_or(cc_engine::version::ElForkSchedule {
+        osaka_time: 0,
+        bpo1_time: None,
+        bpo2_time: None,
+        amsterdam_time: None,
+    });
+    let _upcheck = spawn_upcheck_driver(
+        state.clone(),
+        Arc::clone(&transport),
+        Some(engine_metrics.clone()),
+        schedule,
+        slot_duration,
+    );
+
     // CC-32b: real EngineService (NewPayload / ForkchoiceUpdated / GetEngineState).
     // Preset pin: Mainnet — see module docs and chain main.rs:240 (≠13/5).
     let _preset_pin: std::marker::PhantomData<Mainnet> = std::marker::PhantomData;
-    let svc = EngineServiceImpl::new(transport, &cfg.transport, Some(engine_metrics));
+    let svc = EngineServiceImpl::new_with_state(
+        transport,
+        &cfg.transport,
+        Some(engine_metrics),
+        Some(state),
+    );
 
     // gRPC decode budget: tonic's default max_decoding_message_size is **4 MiB**.
     // That is the load-bearing upper bound on inbound NewPayload SSZ until we

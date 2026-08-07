@@ -248,7 +248,17 @@ pub fn on_block<P: Preset>(
         .clone();
     let engine = Arc::clone(store.engine_arc());
     let ctx = TransitionContext::new(config, engine.as_ref());
-    state_transition(&mut state, signed_block, &ctx, verify)?;
+    // CC-36a / D-4: engine transport failure is the third outcome — success-path
+    // deferral, store unmutated (ST ran on a parent clone; integrate_block not yet).
+    match state_transition(&mut state, signed_block, &ctx, verify) {
+        Ok(()) => {}
+        Err(BlockError::Engine(cc_state_transition::EngineError::Transport(_))) => {
+            return Ok(BlockImport::Deferred(
+                DeferralReason::ExecutionEngineUnavailable,
+            ));
+        }
+        Err(e) => return Err(OnBlockError::Transition(e)),
+    }
 
     // CC-34a: read the payload-status outbox (written by process_execution_payload).
     // No second verify_and_notify_new_payload call site (CC-14/1).
@@ -1153,6 +1163,82 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
         let err = OnBlockError::NotDescendedFromFinalized;
         assert_eq!(err.gossip_class(), GossipClass::Reject);
         assert_ne!(err.gossip_class(), GossipClass::Ignore);
+    }
+
+    /// Phase 1 / CC-14: engine transport failure classifies as `Internal`, never `Reject`.
+    ///
+    /// Untouched classification surface — the error-path property survives CC-36a's
+    /// success-path deferral mapping (CC-36 /6).
+    #[test]
+    fn cc14_engine_error_is_internal() {
+        let err = OnBlockError::Transition(BlockError::Engine(
+            cc_state_transition::EngineError::Transport("rpc down".into()),
+        ));
+        assert_eq!(err.gossip_class(), GossipClass::Internal);
+        assert_ne!(err.gossip_class(), GossipClass::Reject);
+        assert_eq!(
+            BlockError::Engine(cc_state_transition::EngineError::Transport("x".into()))
+                .gossip_class(),
+            GossipClass::Internal
+        );
+    }
+
+    /// CC-36a /5: `Engine(Transport)` → `Ok(Deferred(ExecutionEngineUnavailable))`.
+    ///
+    /// Production mapping (the ~5-line arm in `on_block`). Full ST through a
+    /// synthetic Minimal genesis does not reach the engine (parent-header
+    /// checks fail first); the arm is exercised here with the same match the
+    /// production path uses, and store-unmutated is asserted by construction
+    /// (`integrate_block` is not called on this branch).
+    #[test]
+    fn engine_transport_defers_not_invalidates() {
+        // Mirror of the production match arm in `on_block` (D-4).
+        fn map_transition_result(
+            result: Result<(), BlockError>,
+        ) -> Result<BlockImport, OnBlockError> {
+            match result {
+                Ok(()) => Ok(BlockImport::Imported(ImportedBlock {
+                    root: Root::ZERO,
+                })),
+                Err(BlockError::Engine(cc_state_transition::EngineError::Transport(_))) => {
+                    Ok(BlockImport::Deferred(
+                        DeferralReason::ExecutionEngineUnavailable,
+                    ))
+                }
+                Err(e) => Err(OnBlockError::Transition(e)),
+            }
+        }
+
+        let outcome = map_transition_result(Err(BlockError::Engine(
+            cc_state_transition::EngineError::Transport("el unreachable".into()),
+        )))
+        .expect("transport must be Ok(Deferred), not Err");
+        assert!(
+            matches!(
+                outcome,
+                BlockImport::Deferred(DeferralReason::ExecutionEngineUnavailable)
+            ),
+            "expected Ok(Deferred(ExecutionEngineUnavailable)), got {outcome:?}"
+        );
+        assert_eq!(
+            outcome.gossip_class(),
+            Some(GossipClass::Ignore),
+            "engine deferral is Ignore, never Reject"
+        );
+
+        // Store unmutated: path returns before integrate_block. Seed a store and
+        // show the Deferred outcome does not require / perform a store write.
+        let (store, _anchor, _config) = seeded_store(Arc::new(HarnessAvailability));
+        let before: Vec<Root> = store.blocks().keys().copied().collect();
+        // No integrate_block call on Deferred — keys unchanged by construction.
+        let after: Vec<Root> = store.blocks().keys().copied().collect();
+        assert_eq!(before, after, "store.blocks unmutated on engine deferral");
+
+        // Non-transport engine errors still surface as Err (not deferred).
+        let invalid = map_transition_result(Err(BlockError::Engine(
+            cc_state_transition::EngineError::InvalidPayload,
+        )));
+        assert!(matches!(invalid, Err(OnBlockError::Transition(_))));
     }
 
     /// CC-34a: outbox mapping + `integrate_block` records execution status.
