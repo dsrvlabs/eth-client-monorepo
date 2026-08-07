@@ -19,3 +19,170 @@ message GetInfoRequest {}
 message GetInfoResponse {
   eth.common.v1.BuildInfo build_info = 1;
 }
+
+// ---------------------------------------------------------------------------
+// CC-27 stream messages (Architecture §10.2). RPC lives on ChainService;
+// message types live here so the change is additive to eth.p2p.v1.
+// ---------------------------------------------------------------------------
+
+// Kind of consensus object carried by GossipObject / PublishRequest.
+enum ObjectKind {
+  OBJECT_KIND_UNSPECIFIED = 0;
+  OBJECT_KIND_BLOCK = 1;
+  OBJECT_KIND_ATTESTATION = 2;
+  OBJECT_KIND_AGGREGATE = 3;
+  OBJECT_KIND_SYNC_COMMITTEE = 4;
+  OBJECT_KIND_SYNC_CONTRIBUTION = 5;
+  OBJECT_KIND_VOLUNTARY_EXIT = 6;
+  OBJECT_KIND_PROPOSER_SLASHING = 7;
+  OBJECT_KIND_ATTESTER_SLASHING = 8;
+  OBJECT_KIND_BLS_TO_EXECUTION_CHANGE = 9;
+  OBJECT_KIND_COLUMN_SIDECAR = 10;
+}
+
+// GossipSub acceptance class (maps onto MessageAcceptance on the p2p side).
+enum Acceptance {
+  ACCEPTANCE_UNSPECIFIED = 0;
+  ACCEPTANCE_ACCEPT = 1;
+  ACCEPTANCE_REJECT = 2;
+  ACCEPTANCE_IGNORE = 3;
+}
+
+// Reason enum maps 1:1 onto Phase 1's gossip_class() plus a detail (Architecture
+// §5.3 / §10.2). Mapping function lives in CC-22c/CC-22d; the enum is fixed here.
+// Internal never penalises a peer.
+enum Reason {
+  REASON_UNSPECIFIED = 0;
+  // Accept
+  REASON_VALID = 1;
+  // Reject (sender at fault)
+  REASON_INVALID = 2;
+  REASON_INVALID_SIGNATURE = 3;
+  REASON_NOT_DESCENDED_FROM_FINALIZED = 4;
+  // Ignore (sender not at fault)
+  REASON_DUPLICATE = 5;
+  REASON_UNKNOWN_PARENT = 6;
+  REASON_FUTURE_SLOT = 7;
+  REASON_DEFERRED_DA = 8;
+  REASON_ALREADY_KNOWN = 9;
+  // Internal — must never become a network-facing penalty
+  REASON_INTERNAL = 10;
+}
+
+// Import-path outcome (parallel to Phase 1 ImportBlockVerdict).
+enum ImportResult {
+  IMPORT_RESULT_UNSPECIFIED = 0;
+  IMPORT_RESULT_IMPORTED = 1;
+  IMPORT_RESULT_DUPLICATE = 2;
+  IMPORT_RESULT_DEFERRED_DA = 3;
+  IMPORT_RESULT_UNKNOWN_PARENT = 4;
+  IMPORT_RESULT_INVALID = 5;
+  IMPORT_RESULT_NONE = 6; // non-block / no import path
+}
+
+// p2p → chain (downward). Monotonic `seq` is per stream session (§10.4).
+message P2pToChain {
+  uint64 seq = 1;
+  oneof msg {
+    GossipObject object = 2;
+    DataAvailable data_available = 3;
+    // Defined for Phase 4 storage; no Phase 2 producer (§10.3, ADR P2-11).
+    ColumnSidecar column = 4;
+    StreamHello hello = 5;
+  }
+}
+
+// Reuses Phase 1's ImportBlockRequest shape (ssz + fork + root + Source) so the
+// dedup probe and idempotency contract come along free (CC-27/1).
+message GossipObject {
+  bytes ssz = 1;
+  uint32 fork = 2;
+  bytes root = 3;
+  eth.common.v1.Source source = 4;
+  ObjectKind kind = 5;
+  uint64 subnet_id = 6; // set for subnet-scoped kinds
+}
+
+// DA signal from p2p (CC-24). Fork-choice needs only the predicate.
+message DataAvailable {
+  bytes root = 1;
+  uint64 slot = 2;
+}
+
+// Column bytes — contract only in Phase 2. Phase 4 storage is additive.
+message ColumnSidecar {
+  bytes ssz = 1;
+  uint32 fork = 2;
+  bytes root = 3; // beacon block root
+  uint64 column_index = 4;
+  uint64 subnet_id = 5;
+}
+
+// Session open / reconnect resume point (§10.4). `session_id` is a per-process
+// random u64 so a reconnect cannot silently match the previous incarnation.
+message StreamHello {
+  uint64 session_id = 1;
+  // Last seq the client processed from chain; 0 on a fresh session.
+  uint64 resume_seq = 2;
+}
+
+// chain → p2p (upward).
+message ChainToP2p {
+  uint64 seq = 1;
+  oneof msg {
+    Verdict verdict = 2;
+    PublishRequest publish = 3;
+    ChainView view = 4;
+  }
+}
+
+// Exactly one Verdict per GossipObject, or the stream is torn down (§10.4).
+message Verdict {
+  // == GossipObject.root, or a synthetic correlation id.
+  bytes correlation_id = 1;
+  Acceptance acceptance = 2;
+  Reason reason = 3;
+  ImportResult import = 4;
+}
+
+// Outward publish: locally submitted objects ride the stream for gossip
+// (Architecture §10.5). Real producers are Phase 5 / Phases 6–7.
+message PublishRequest {
+  bytes ssz = 1;
+  ObjectKind kind = 2;
+  // Topic path segment or full topic string (e.g. "beacon_block").
+  string topic = 3;
+  uint64 subnet_id = 4;
+}
+
+// Chain-owned consensus view pushed on the stream (Architecture §10.2, ADR P2-05).
+// Cadence: fields 1–8 on every head change and every slot tick; fields 11–13 only
+// on an epoch tick. `view_kind` is one of VIEW_KIND_* constants below.
+//
+// VIEW_KIND_SLOT_TICK    = 1
+// VIEW_KIND_EPOCH_TICK   = 2
+// VIEW_KIND_HEAD_CHANGE  = 3
+// VIEW_KIND_FULL         = 4  (StreamHello / reconnect full snapshot)
+message ChainView {
+  uint64 slot = 1;
+  uint64 epoch = 2;
+  bytes head_root = 3;
+  uint64 head_slot = 4;
+  bytes finalized_root = 5;
+  uint64 finalized_epoch = 6;
+  bytes justified_root = 7;
+  uint64 justified_epoch = 8;
+  uint64 genesis_time = 9;
+  bytes genesis_validators_root = 10;
+  // (MIN_SEED_LOOKAHEAD+1) × SLOTS_PER_EPOCH; epoch tick / full only.
+  repeated uint64 proposer_lookahead = 11;
+  // Parallel to 11; epoch tick / full only.
+  repeated bytes proposer_pubkeys = 12;
+  uint64 active_validator_count = 13;
+  uint64 view_kind = 14;
+}
+
+// CC-21d's caller-facing half (message only here; RPC lands with CC-21d).
+message SetCustodyGroupCountRequest {
+  uint64 cgc = 1;
+}

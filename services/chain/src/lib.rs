@@ -6,6 +6,8 @@
 //! - **CC-1E**: batched `ApplyAttestations` (weight observed through `GetHead`)
 //! - **CC-19a**: checkpoint fetch, provider fallback, verification
 //! - **CC-1G**: `/eth/v1/config/spec` as a `BLOB_SCHEDULE` source
+//! - **CC-27a**: `P2pStream` server, `ChainView` producer, `ArcSwap<EpochContext>`,
+//!   `GetValidatorRecords`
 //!
 //! The binary (`main.rs`) binds first, then checkpoint-bootstraps when
 //! `checkpoint_providers` is configured (CC-19b): self health SERVING while
@@ -19,10 +21,12 @@
 pub mod apply_attestations;
 pub mod checkpoint_sync;
 pub mod core;
+pub mod epoch_context;
 pub mod events;
 pub mod head;
 pub mod import;
 pub mod metrics;
+pub mod p2p_stream;
 pub mod residency;
 pub mod service;
 
@@ -32,21 +36,28 @@ pub use checkpoint_sync::{
     CheckpointError, FetchedCheckpoint, GenesisInfo, MAX_BLOCK_BYTES, MAX_JSON_BYTES,
     MAX_STATE_BYTES, NETWORK_RETRIES, PROVIDER_CONNECT_TIMEOUT, PROVIDER_TOTAL_TIMEOUT,
     REQUIRED_CONSENSUS_VERSION, TRIPLE_ATTEMPTS, blob_schedule_from_spec,
-    blob_schedule_from_spec_map, bootstrap_core_from_providers, cross_check_spec, fetch_checkpoint,
-    parse_optional_root, spawn_core_from_checkpoint, validate_provider_base, verify_checkpoint,
-    warm_canonical_root,
+    blob_schedule_from_spec_map, bootstrap_core_from_providers,
+    bootstrap_core_from_providers_with_epoch, cross_check_spec, fetch_checkpoint, parse_optional_root,
+    spawn_core_from_checkpoint, spawn_core_from_checkpoint_with_epoch, validate_provider_base,
+    verify_checkpoint, warm_canonical_root,
 };
 pub use core::{
     COMMAND_CHANNEL_CAPACITY, CoreCommand, CoreConfig, CoreHandle, CoreThread, IMPORT_SEND_TIMEOUT,
-    MAX_VALIDATOR_PUBKEYS_PER_REQUEST, QueryReply, QueryRequest, SHUTDOWN_JOIN_TIMEOUT,
-    spawn_core_thread,
+    MAX_VALIDATOR_PUBKEYS_PER_REQUEST, MAX_VALIDATOR_RECORDS_PER_REQUEST, QueryReply, QueryRequest,
+    SHUTDOWN_JOIN_TIMEOUT, spawn_core_thread, spawn_core_thread_with_epoch,
 };
+pub use epoch_context::{EpochContext, EpochContextStore};
 pub use events::{
     DEFAULT_RING_CAPACITY, DEFAULT_SUBSCRIBER_QUEUE_CAPACITY, ERROR_DOMAIN, EventInput,
     EventSubscription, EventsConfig, EventsHandle, Occupancy, REASON_CURSOR_TOO_OLD,
     REASON_CURSOR_UNKNOWN_SESSION,
 };
 pub use head::{HeadSnapshot, HeadSnapshotStore};
+pub use p2p_stream::{
+    MAX_P2P_STREAM_SESSIONS, P2pStreamDeps, REASON_STREAM_SESSION_LIMIT, REASON_UNKNOWN_TOPIC,
+    STREAM_OUTBOUND_CAPACITY, VIEW_KIND_EPOCH_TICK, VIEW_KIND_FULL, VIEW_KIND_HEAD_CHANGE,
+    VIEW_KIND_SLOT_TICK, ViewTick, build_chain_view, validate_publish_topic,
+};
 pub use import::{
     ImportCounters, ImportOutcome, decode_signed_block, encode_signed_block, parse_root,
 };

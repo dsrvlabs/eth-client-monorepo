@@ -4,7 +4,9 @@
 # lint/breaking; they are not our contract surface.
 # RPC_RESPONSE_STANDARD_NAME is ignored only for chain.proto so the event bus
 # message can stay `Event` (Architecture §7.3 / re-plan §Contracts), not
-# `SubscribeEventsResponse`.
+# `SubscribeEventsResponse`. CC-27a also streams eth.p2p.v1.P2pToChain /
+# ChainToP2p (Architecture §10.2) — those names are intentional, not
+# P2pStreamRequest/Response.
 version: v2
 modules:
   - path: .
@@ -15,6 +17,8 @@ lint:
     - third_party
   ignore_only:
     RPC_RESPONSE_STANDARD_NAME:
+      - eth/chain/v1/chain.proto
+    RPC_REQUEST_STANDARD_NAME:
       - eth/chain/v1/chain.proto
 breaking:
   use:

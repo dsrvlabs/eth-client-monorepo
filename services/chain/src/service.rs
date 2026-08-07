@@ -1,10 +1,11 @@
-//! gRPC `ChainService` implementation (CC-18b / CC-1E / CC-1F / CC-19b).
+//! gRPC `ChainService` implementation (CC-18b / CC-1E / CC-1F / CC-19b / CC-27a).
 //!
 //! - `ImportBlock` → core command channel (`send_timeout` 2 s)
 //! - `ApplyAttestations` → core command channel (batched `on_attestation`, CC-1E)
 //! - `GetHead` → [`HeadSnapshotStore`] pointer load (no core interaction)
 //! - `SubscribeEvents` → events task (CC-18c)
 //! - `GetCommitteeShuffling` / `GetValidatorPubkeys` → core [`Query`] (CC-1F)
+//! - `P2pStream` / `GetValidatorRecords` → CC-27a chain-side stream contract
 //!
 //! Before checkpoint bootstrap completes the core slot is empty and RPCs return
 //! `FAILED_PRECONDITION` / `NOT_BOOTSTRAPPED` (§7.4). [`Self::install_core`] is
@@ -21,19 +22,26 @@ use cc_proto::chain::{
     ApplyAttestationsRequest, ApplyAttestationsResponse, Checkpoint as ProtoCheckpoint,
     GetCommitteeShufflingRequest, GetCommitteeShufflingResponse, GetHeadRequest, GetHeadResponse,
     GetInfoRequest, GetInfoResponse, GetValidatorPubkeysRequest, GetValidatorPubkeysResponse,
-    ImportBlockRequest, ImportBlockResponse, SubscribeEventsRequest,
+    GetValidatorRecordsRequest, GetValidatorRecordsResponse, ImportBlockRequest,
+    ImportBlockResponse, SubscribeEventsRequest,
 };
 use cc_proto::common::BuildInfo;
+use cc_proto::p2p::{ChainToP2p, P2pToChain, PublishRequest};
 use cc_proto::status_with_error_info;
 use futures::Stream;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Code, Request, Response, Status};
+use tonic::{Code, Request, Response, Status, Streaming};
 
 use crate::apply_attestations::MAX_APPLY_ATTESTATIONS;
-use crate::core::{CoreHandle, MAX_VALIDATOR_PUBKEYS_PER_REQUEST, QueryReply, QueryRequest};
+use crate::core::{
+    CoreHandle, MAX_VALIDATOR_PUBKEYS_PER_REQUEST, MAX_VALIDATOR_RECORDS_PER_REQUEST, QueryReply,
+    QueryRequest,
+};
+use crate::epoch_context::EpochContextStore;
 use crate::events::EventsHandle;
 use crate::head::HeadSnapshotStore;
 use crate::metrics::ChainMetrics;
+use crate::p2p_stream::{P2pStreamDeps, serve_p2p_stream};
 
 /// gRPC `ErrorInfo.reason` before checkpoint bootstrap (CC-19; Architecture §7.4).
 pub const REASON_NOT_BOOTSTRAPPED: &str = "NOT_BOOTSTRAPPED";
@@ -46,12 +54,16 @@ const SERVICE: &str = "chain";
 
 /// Fully wired chain service.
 ///
-/// The core handle is behind [`RwLock`] so the bootstrap task can install it
-/// after bind without rebuilding the tonic service.
+/// The core handle is behind a shared [`Arc`]<[`RwLock`]> so bootstrap
+/// [`Self::install_core`] is visible to live `P2pStream` sessions (F2).
+/// The epoch store identity is fixed at construction and shared with the core
+/// via [`crate::core::spawn_core_thread_with_epoch`].
 #[derive(Debug, Clone)]
 pub struct ChainServiceImpl {
     core: Arc<RwLock<Option<CoreHandle>>>,
     head: HeadSnapshotStore,
+    /// Immutable identity after construction (clone shares ArcSwap + tick bus).
+    stream_deps: P2pStreamDeps,
     events: EventsHandle,
     #[allow(dead_code)]
     metrics: ChainMetrics,
@@ -65,9 +77,30 @@ impl ChainServiceImpl {
         events: EventsHandle,
         metrics: ChainMetrics,
     ) -> Self {
+        Self::with_epoch(core, head, EpochContextStore::new(), events, metrics)
+    }
+
+    /// Construct with an explicit shared [`EpochContextStore`] (tests / bootstrap).
+    ///
+    /// Prefer the core's epoch store when a core is already present so service
+    /// and core share one ArcSwap identity.
+    pub fn with_epoch(
+        core: Option<CoreHandle>,
+        head: HeadSnapshotStore,
+        epoch: EpochContextStore,
+        events: EventsHandle,
+        metrics: ChainMetrics,
+    ) -> Self {
+        let epoch = core
+            .as_ref()
+            .map(|c| c.epoch_context().clone())
+            .unwrap_or(epoch);
+        let core_slot = Arc::new(RwLock::new(core));
+        let stream_deps = P2pStreamDeps::new(head.clone(), epoch, Arc::clone(&core_slot));
         Self {
-            core: Arc::new(RwLock::new(core)),
+            core: core_slot,
             head,
+            stream_deps,
             events,
             metrics,
         }
@@ -76,16 +109,16 @@ impl ChainServiceImpl {
     /// Install the core handle after checkpoint bootstrap (CC-19b).
     ///
     /// Idempotent replace: later installs overwrite (tests only; production
-    /// installs once).
+    /// installs once). Live `P2pStream` sessions re-read this slot on every
+    /// gossip object, so no reconnect is required (F2).
+    ///
+    /// **Epoch store identity:** callers must spawn the core with the same
+    /// [`EpochContextStore`] already held by this service
+    /// ([`crate::core::spawn_core_thread_with_epoch`] / bootstrap with epoch).
+    /// If the core carries a different store, sessions keep reading the service
+    /// store; prefer sharing at construction.
     pub fn install_core(&self, handle: CoreHandle) {
-        match self.core.write() {
-            Ok(mut guard) => {
-                *guard = Some(handle);
-            }
-            Err(poisoned) => {
-                *poisoned.into_inner() = Some(handle);
-            }
-        }
+        self.stream_deps.set_core(Some(handle));
     }
 
     /// Shared head snapshot store.
@@ -93,9 +126,36 @@ impl ChainServiceImpl {
         &self.head
     }
 
+    /// Shared epoch context store (`ChainView` source).
+    pub fn epoch_context(&self) -> EpochContextStore {
+        self.stream_deps.epoch.clone()
+    }
+
     /// Events handle.
     pub fn events(&self) -> &EventsHandle {
         &self.events
+    }
+
+    /// Clone of stream deps (cheap: Arc handles + broadcast senders).
+    pub fn stream_deps(&self) -> P2pStreamDeps {
+        self.stream_deps.clone()
+    }
+
+    /// Validate and fan-out a publish request onto live `P2pStream` sessions.
+    ///
+    /// Unknown topic → `INVALID_ARGUMENT` / `UNKNOWN_TOPIC` (CC-27a §10.5).
+    pub fn request_publish(&self, req: PublishRequest) -> Result<(), Status> {
+        self.stream_deps.request_publish(req)
+    }
+
+    /// Open a `P2pStream` session against an arbitrary inbound stream (tests +
+    /// the tonic handler). Avoids needing a real `tonic::Streaming` transport.
+    pub async fn open_p2p_stream(
+        &self,
+        inbound: impl Stream<Item = Result<P2pToChain, Status>> + Send + Unpin + 'static,
+    ) -> Result<Response<BoxStreamChainToP2p>, Status> {
+        let outbound = serve_p2p_stream(self.stream_deps.clone(), inbound).await?;
+        Ok(Response::new(outbound))
     }
 
     /// Whether a core handle has been installed (bootstrap complete).
@@ -300,6 +360,39 @@ impl ChainService for ChainServiceImpl {
             ))),
         }
     }
+
+    async fn p2p_stream(
+        &self,
+        request: Request<Streaming<P2pToChain>>,
+    ) -> Result<Response<BoxStreamChainToP2p>, Status> {
+        // Stream is available pre-bootstrap for ChainView (snapshot loads);
+        // block import on the stream still requires a core (verdicts → IGNORE).
+        self.open_p2p_stream(request.into_inner()).await
+    }
+
+    async fn get_validator_records(
+        &self,
+        request: Request<GetValidatorRecordsRequest>,
+    ) -> Result<Response<GetValidatorRecordsResponse>, Status> {
+        let Some(core) = self.core_handle() else {
+            return Err(Self::not_bootstrapped(
+                "chain core not bootstrapped; GetValidatorRecords unavailable until checkpoint sync",
+            ));
+        };
+        let req = request.into_inner();
+        let indices = resolve_record_indices(&req)?;
+        let reply = core
+            .query(QueryRequest::ValidatorRecords { indices })
+            .await?;
+        match reply {
+            QueryReply::ValidatorRecords { ssz, slot } => {
+                Ok(Response::new(GetValidatorRecordsResponse { ssz, slot }))
+            }
+            other => Err(Status::internal(format!(
+                "unexpected query reply for GetValidatorRecords: {other:?}"
+            ))),
+        }
+    }
 }
 
 /// Resolve the index list for `GetValidatorPubkeys`, enforcing the 256 bound
@@ -340,9 +433,33 @@ fn resolve_pubkey_indices(req: &GetValidatorPubkeysRequest) -> Result<Vec<u64>, 
     ))
 }
 
+/// Resolve indices for `GetValidatorRecords` (explicit list only; bound 256).
+fn resolve_record_indices(req: &GetValidatorRecordsRequest) -> Result<Vec<u64>, Status> {
+    if req.indices.is_empty() {
+        return Err(Status::invalid_argument(
+            "GetValidatorRecords requires a non-empty indices list",
+        ));
+    }
+    if req.indices.len() as u64 > MAX_VALIDATOR_RECORDS_PER_REQUEST {
+        return Err(Status::invalid_argument(format!(
+            "GetValidatorRecords bound is {MAX_VALIDATOR_RECORDS_PER_REQUEST} indices per request; \
+             got {}",
+            req.indices.len()
+        )));
+    }
+    Ok(req.indices.clone())
+}
+
 /// Server-streaming response type matching the generated trait (`BoxStream`).
 pub type BoxStreamEvent =
     Pin<Box<dyn Stream<Item = Result<cc_proto::chain::Event, Status>> + Send + 'static>>;
+
+/// Bidirectional stream outbound half for `P2pStream`.
+pub type BoxStreamChainToP2p =
+    Pin<Box<dyn Stream<Item = Result<ChainToP2p, Status>> + Send + 'static>>;
+
+// Re-export so call sites can validate without depending on p2p_stream directly.
+pub use crate::p2p_stream::validate_publish_topic;
 
 /// Build a resume cursor helper for tests.
 pub fn root_bytes(root: &cc_types::primitives::Root) -> Bytes {

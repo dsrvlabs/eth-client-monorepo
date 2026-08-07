@@ -2,6 +2,7 @@ syntax = "proto3";
 package eth.chain.v1;
 
 import "eth/common/v1/common.proto";
+import "eth/p2p/v1/p2p.proto";
 
 // The hot core: state transition, fork choice, BeaconState.
 //
@@ -9,7 +10,8 @@ import "eth/common/v1/common.proto";
 //   resume-cursor semantics from the re-plan).
 // Phase 1 (CC-1E) adds: batched on_attestation weight updates.
 // Phase 1 (CC-1F) adds: unary shuffling + pubkey queries.
-// Phase 2 (CC-27) adds: the bidirectional p2p stream (blocks/columns down, verdicts up).
+// Phase 2 (CC-27) adds: the bidirectional p2p stream (blocks/columns down, verdicts up)
+//   and GetValidatorRecords (§5.4a / §16/5).
 service ChainService {
   rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
   rpc ImportBlock(ImportBlockRequest) returns (ImportBlockResponse);
@@ -28,6 +30,12 @@ service ChainService {
   // CC-1F: registry pubkeys by index range or explicit index list. Bounded at
   // 256 indices per request; over that is INVALID_ARGUMENT (never truncation).
   rpc GetValidatorPubkeys(GetValidatorPubkeysRequest) returns (GetValidatorPubkeysResponse);
+  // CC-27: bidirectional p2p stream. Message types live in eth.p2p.v1 (§10.1–10.2).
+  // p2p dials chain; chain is the server (health DAG / ADR-07).
+  rpc P2pStream(stream eth.p2p.v1.P2pToChain) returns (stream eth.p2p.v1.ChainToP2p);
+  // CC-27a / §5.4a: SSZ Validator records by index for operation-topic gossip
+  // checks. Bound 256; over → INVALID_ARGUMENT, never truncated.
+  rpc GetValidatorRecords(GetValidatorRecordsRequest) returns (GetValidatorRecordsResponse);
 }
 
 message GetInfoRequest {}
@@ -202,4 +210,23 @@ message GetValidatorPubkeysResponse {
   repeated uint64 indices = 1;
   // 48-byte BLS public keys, parallel to `indices`.
   repeated bytes pubkeys = 2;
+}
+
+// ── CC-27a / §5.4a: GetValidatorRecords ──────────────────────────────────────
+//
+// Head-state registry read of full SSZ `Validator` containers (not pubkeys).
+// Bound: at most **256** indices; over that is INVALID_ARGUMENT (never truncation).
+// Empty request is INVALID_ARGUMENT. Response carries the slot the records were
+// read at so callers can cache with a one-epoch TTL (Architecture §5.4a).
+
+message GetValidatorRecordsRequest {
+  // Explicit index list. Max 256; over → INVALID_ARGUMENT.
+  repeated uint64 indices = 1;
+}
+
+message GetValidatorRecordsResponse {
+  // SSZ-encoded Validator containers, parallel to the request indices.
+  repeated bytes ssz = 1;
+  // Head slot at which the records were read.
+  uint64 slot = 2;
 }

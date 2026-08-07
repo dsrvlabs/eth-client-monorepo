@@ -38,7 +38,8 @@ use serde::Deserialize;
 use thiserror::Error;
 use tree_hash::TreeHash;
 
-use crate::core::{CoreConfig, CoreThread, spawn_core_thread};
+use crate::core::{CoreConfig, CoreThread, spawn_core_thread_with_epoch};
+use crate::epoch_context::EpochContextStore;
 use crate::events::EventInput;
 use crate::head::HeadSnapshotStore;
 use crate::metrics::{BootstrapResult, ChainMetrics, HashPath};
@@ -1102,9 +1103,32 @@ pub fn warm_canonical_root<P: Preset>(
 ///
 /// Aggregate health flip and bind-before-bootstrap ordering live in `main.rs`.
 pub fn spawn_core_from_checkpoint<P: Preset + 'static>(
+    fetched: FetchedCheckpoint<P>,
+    chain_config: ChainConfig,
+    head: HeadSnapshotStore,
+    event_tx: tokio::sync::mpsc::Sender<EventInput>,
+    metrics: ChainMetrics,
+    core_cfg: CoreConfig,
+) -> Result<CoreThread, CheckpointError> {
+    spawn_core_from_checkpoint_with_epoch(
+        fetched,
+        chain_config,
+        head,
+        EpochContextStore::new(),
+        event_tx,
+        metrics,
+        core_cfg,
+    )
+}
+
+/// Like [`spawn_core_from_checkpoint`] but reuses a caller-owned
+/// [`EpochContextStore`] so `P2pStream` sessions opened pre-bootstrap share
+/// the same ArcSwap identity (CC-27a F2).
+pub fn spawn_core_from_checkpoint_with_epoch<P: Preset + 'static>(
     mut fetched: FetchedCheckpoint<P>,
     chain_config: ChainConfig,
     head: HeadSnapshotStore,
+    epoch: EpochContextStore,
     event_tx: tokio::sync::mpsc::Sender<EventInput>,
     metrics: ChainMetrics,
     core_cfg: CoreConfig,
@@ -1140,10 +1164,11 @@ pub fn spawn_core_from_checkpoint<P: Preset + 'static>(
 
     // CoreConfig.verify defaults to NoVerification; soak/prod may raise later.
     let _ = BlockSignatureStrategy::NoVerification;
-    Ok(spawn_core_thread(
+    Ok(spawn_core_thread_with_epoch(
         store,
         chain_config,
         head,
+        epoch,
         event_tx,
         metrics,
         core_cfg,
@@ -1174,6 +1199,27 @@ pub async fn bootstrap_core_from_providers<P: Preset + 'static>(
     metrics: ChainMetrics,
     core_cfg: CoreConfig,
 ) -> Result<(CoreThread, BootstrapSummary), CheckpointError> {
+    bootstrap_core_from_providers_with_epoch::<P>(
+        cfg,
+        head,
+        EpochContextStore::new(),
+        event_tx,
+        metrics,
+        core_cfg,
+    )
+    .await
+}
+
+/// Bootstrap with a shared [`EpochContextStore`] (CC-27a: stream sessions
+/// opened before install keep reading the same ArcSwap).
+pub async fn bootstrap_core_from_providers_with_epoch<P: Preset + 'static>(
+    cfg: &CheckpointBootstrapConfig,
+    head: HeadSnapshotStore,
+    epoch: EpochContextStore,
+    event_tx: tokio::sync::mpsc::Sender<EventInput>,
+    metrics: ChainMetrics,
+    core_cfg: CoreConfig,
+) -> Result<(CoreThread, BootstrapSummary), CheckpointError> {
     let fetched = fetch_checkpoint::<P>(cfg, &metrics).await?;
     let summary = BootstrapSummary {
         genesis: fetched.genesis,
@@ -1181,10 +1227,11 @@ pub async fn bootstrap_core_from_providers<P: Preset + 'static>(
         provider: fetched.provider.clone(),
         slot: fetched.signed_block.message.slot.as_u64(),
     };
-    let core = spawn_core_from_checkpoint(
+    let core = spawn_core_from_checkpoint_with_epoch(
         fetched,
         cfg.chain_config.clone(),
         head,
+        epoch,
         event_tx,
         metrics,
         core_cfg,

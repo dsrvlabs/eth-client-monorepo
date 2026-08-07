@@ -9,8 +9,10 @@
 //! ```
 //!
 //! CC-1F state-requiring reads (`GetCommitteeShuffling`, `GetValidatorPubkeys`)
-//! go through the single FIFO [`CoreCommand::Query`] path (§7.1) — no second
-//! copy of the head state is held on the gRPC side.
+//! and CC-27a `GetValidatorRecords` go through the single FIFO
+//! [`CoreCommand::Query`] path (§7.1) — no second copy of the head state is held
+//! on the gRPC side. Epoch-scoped data for `ChainView` is published via
+//! [`EpochContextStore`] (second `ArcSwap`, Architecture §16/4).
 
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -20,6 +22,7 @@ use cc_fork_choice::Store;
 use cc_proto::chain::{
     ApplyAttestationsRequest, ApplyAttestationsResponse, ImportBlockRequest, ImportBlockResponse,
 };
+use cc_state_transition::helpers::accessors::get_active_validator_indices;
 use cc_state_transition::{
     BlockSignatureStrategy, compute_shuffled_active_indices, decision_root_for_epoch,
     get_committee_count_per_slot, get_current_epoch, get_or_compute_shuffling,
@@ -28,10 +31,12 @@ use cc_types::BeaconState;
 use cc_types::config::ChainConfig;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, Root};
+use ssz::Encode;
 use tokio::sync::{mpsc, oneshot};
 use tonic::Status;
 
 use crate::apply_attestations::apply_attestations;
+use crate::epoch_context::{EpochContext, EpochContextStore};
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
 use crate::import::{ImportCounters, import_block};
 use crate::metrics::ChainMetrics;
@@ -49,6 +54,9 @@ pub const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// Max indices accepted by `GetValidatorPubkeys` (CC-1F; same discipline as
 /// Phase 2's 256-bound `GetValidatorRecords`).
 pub const MAX_VALIDATOR_PUBKEYS_PER_REQUEST: u64 = 256;
+
+/// Max indices accepted by `GetValidatorRecords` (CC-27a / §5.4a).
+pub const MAX_VALIDATOR_RECORDS_PER_REQUEST: u64 = 256;
 
 /// Commands handled by the core thread.
 #[derive(Debug)]
@@ -88,9 +96,11 @@ pub enum QueryRequest {
     CommitteeShuffling { epoch: u64 },
     /// Validator pubkeys by resolved index list (CC-1F). Indices already bound-checked.
     ValidatorPubkeys { indices: Vec<u64> },
+    /// SSZ `Validator` records by index list (CC-27a). Indices already bound-checked.
+    ValidatorRecords { indices: Vec<u64> },
 }
 
-/// Reply for the Phase-1 `Query` command.
+/// Reply for the Phase-1 / CC-27a `Query` command.
 #[derive(Debug, Clone)]
 pub enum QueryReply {
     /// Head probe.
@@ -106,6 +116,11 @@ pub enum QueryReply {
     ValidatorPubkeys {
         indices: Vec<u64>,
         pubkeys: Vec<Vec<u8>>,
+    },
+    /// Served SSZ validator records + the head slot they were read at.
+    ValidatorRecords {
+        ssz: Vec<Vec<u8>>,
+        slot: u64,
     },
 }
 
@@ -132,6 +147,7 @@ impl Default for CoreConfig {
 pub struct CoreHandle {
     cmd_tx: mpsc::Sender<CoreCommand>,
     head: HeadSnapshotStore,
+    epoch: EpochContextStore,
     metrics: ChainMetrics,
     counters: Arc<ImportCounters>,
 }
@@ -140,6 +156,11 @@ impl CoreHandle {
     /// Shared head snapshot (also used by `GetHead`).
     pub fn head(&self) -> &HeadSnapshotStore {
         &self.head
+    }
+
+    /// Shared epoch context (used by `ChainView` producer; §16/4).
+    pub fn epoch_context(&self) -> &EpochContextStore {
+        &self.epoch
     }
 
     /// Metrics handle.
@@ -213,12 +234,23 @@ impl CoreHandle {
     }
 
     /// `Query` command (single FIFO queue in Phase 1).
+    ///
+    /// Uses the same 2 s send timeout as [`Self::import_block`] so a stalled
+    /// core does not hang gRPC workers on state reads (CC-1F / CC-27a).
     pub async fn query(&self, request: QueryRequest) -> Result<QueryReply, Status> {
         let (reply, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(CoreCommand::Query { request, reply })
-            .await
-            .map_err(|_| Status::unavailable("chain core thread is shut down"))?;
+        let cmd = CoreCommand::Query { request, reply };
+        match self.cmd_tx.send_timeout(cmd, IMPORT_SEND_TIMEOUT).await {
+            Ok(()) => {}
+            Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
+                return Err(Status::resource_exhausted(
+                    "query command channel full after 2s send_timeout",
+                ));
+            }
+            Err(mpsc::error::SendTimeoutError::Closed(_)) => {
+                return Err(Status::unavailable("chain core thread is shut down"));
+            }
+        }
         rx.await
             .map_err(|_| Status::unavailable("core thread dropped query reply"))?
     }
@@ -329,6 +361,10 @@ impl CoreThread {
 /// Spawn the dedicated OS core thread owning `store` **by value**.
 ///
 /// This is a dedicated OS thread (ADR-P1-09) — not a tokio task or blocking pool worker.
+///
+/// When `epoch` is `None`, a fresh [`EpochContextStore`] is created and published
+/// at bootstrap. Callers that need the store before spawn (e.g. gRPC service)
+/// pass their own.
 pub fn spawn_core_thread<P: Preset + 'static>(
     store: Store<P>,
     config: ChainConfig,
@@ -337,15 +373,30 @@ pub fn spawn_core_thread<P: Preset + 'static>(
     metrics: ChainMetrics,
     core_cfg: CoreConfig,
 ) -> CoreThread {
+    spawn_core_thread_with_epoch(store, config, head, EpochContextStore::new(), event_tx, metrics, core_cfg)
+}
+
+/// Like [`spawn_core_thread`] but reuses a caller-owned [`EpochContextStore`].
+pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
+    store: Store<P>,
+    config: ChainConfig,
+    head: HeadSnapshotStore,
+    epoch: EpochContextStore,
+    event_tx: mpsc::Sender<crate::events::EventInput>,
+    metrics: ChainMetrics,
+    core_cfg: CoreConfig,
+) -> CoreThread {
     let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
     let counters = Arc::new(ImportCounters::default());
     let counters_thread = Arc::clone(&counters);
     let head_thread = head.clone();
+    let epoch_thread = epoch.clone();
     let metrics_thread = metrics.clone();
 
-    // Publish an initial snapshot from the seeded store so GetHead works
-    // immediately after spawn (tests / post-bootstrap).
+    // Publish initial snapshots from the seeded store so GetHead / ChainView
+    // work immediately after spawn (tests / post-bootstrap).
     publish_initial_snapshot(&store, &head);
+    publish_epoch_context_from_store(&store, &config, &epoch, 0);
 
     let join = thread::Builder::new()
         .name("chain-core".into())
@@ -354,6 +405,7 @@ pub fn spawn_core_thread<P: Preset + 'static>(
                 store,
                 config,
                 head_thread,
+                epoch_thread,
                 event_tx,
                 metrics_thread,
                 counters_thread,
@@ -371,6 +423,7 @@ pub fn spawn_core_thread<P: Preset + 'static>(
         handle: CoreHandle {
             cmd_tx,
             head,
+            epoch,
             metrics,
             counters,
         },
@@ -514,6 +567,83 @@ fn handle_query<P: Preset>(
             }
             Ok(QueryReply::ValidatorPubkeys { indices, pubkeys })
         }
+        QueryRequest::ValidatorRecords { indices } => {
+            if indices.len() as u64 > MAX_VALIDATOR_RECORDS_PER_REQUEST {
+                return Err(Status::invalid_argument(format!(
+                    "GetValidatorRecords bound is {MAX_VALIDATOR_RECORDS_PER_REQUEST} indices; \
+                     got {}",
+                    indices.len()
+                )));
+            }
+            let state = head_state(store, residency, head_root)?;
+            let slot = state.slot().as_u64();
+            let mut ssz = Vec::with_capacity(indices.len());
+            for &idx in &indices {
+                let v = state.validators_get(idx as usize).ok_or_else(|| {
+                    Status::invalid_argument(format!(
+                        "validator index {idx} out of range (registry len {})",
+                        state.validators_len()
+                    ))
+                })?;
+                ssz.push(v.as_ssz_bytes());
+            }
+            Ok(QueryReply::ValidatorRecords { ssz, slot })
+        }
+    }
+}
+
+/// Build and publish [`EpochContext`] from the head state's registry / lookahead.
+pub fn build_epoch_context<P: Preset>(
+    state: &BeaconState<P>,
+    config: &ChainConfig,
+    sequence: u64,
+) -> EpochContext {
+    let epoch = get_current_epoch(state);
+    let active = get_active_validator_indices(state, epoch);
+    let mut proposer_lookahead = Vec::with_capacity(state.proposer_lookahead_len());
+    let mut proposer_pubkeys = Vec::with_capacity(state.proposer_lookahead_len());
+    for i in 0..state.proposer_lookahead_len() {
+        let idx = state
+            .proposer_lookahead_get(i)
+            .map(|v| v.as_u64())
+            .unwrap_or(0);
+        proposer_lookahead.push(idx);
+        let pk = state
+            .validators_get(idx as usize)
+            .map(|v| v.pubkey.as_slice().to_vec())
+            .unwrap_or_else(|| vec![0u8; 48]);
+        proposer_pubkeys.push(pk);
+    }
+    EpochContext {
+        epoch,
+        proposer_lookahead,
+        proposer_pubkeys,
+        active_validator_count: active.len() as u64,
+        genesis_time: state.genesis_time(),
+        genesis_validators_root: state.genesis_validators_root(),
+        seconds_per_slot: config.seconds_per_slot,
+        slots_per_epoch: P::SLOTS_PER_EPOCH,
+        sequence,
+    }
+}
+
+fn publish_epoch_context_from_store<P: Preset>(
+    store: &Store<P>,
+    config: &ChainConfig,
+    epoch_store: &EpochContextStore,
+    sequence: u64,
+) {
+    let head_root = head_root_of(store);
+    if let Some(state) = store.block_state(&head_root) {
+        epoch_store.store(build_epoch_context(state, config, sequence));
+    } else {
+        // No resident state yet — publish stable chain params only.
+        epoch_store.store(EpochContext {
+            seconds_per_slot: config.seconds_per_slot,
+            slots_per_epoch: P::SLOTS_PER_EPOCH,
+            sequence,
+            ..EpochContext::default()
+        });
     }
 }
 
@@ -551,6 +681,7 @@ fn core_loop<P: Preset>(
     mut store: Store<P>,
     config: ChainConfig,
     head: HeadSnapshotStore,
+    epoch: EpochContextStore,
     event_tx: mpsc::Sender<crate::events::EventInput>,
     metrics: ChainMetrics,
     counters: Arc<ImportCounters>,
@@ -567,6 +698,8 @@ fn core_loop<P: Preset>(
     }
 
     let mut snapshot_sequence: u64 = 0;
+    let mut epoch_sequence: u64 = epoch.load().sequence;
+    let mut last_published_epoch = epoch.load().epoch.as_u64();
     let verify = core_cfg.verify;
 
     while let Some(cmd) = cmd_rx.blocking_recv() {
@@ -585,6 +718,16 @@ fn core_loop<P: Preset>(
                     request,
                     verify,
                 );
+                // Republish EpochContext when the head epoch advances (§16/4).
+                if outcome.is_ok() {
+                    maybe_publish_epoch_context(
+                        &store,
+                        &config,
+                        &epoch,
+                        &mut epoch_sequence,
+                        &mut last_published_epoch,
+                    );
+                }
                 let _ = reply.send(outcome.map(|o| o.response));
             }
             CoreCommand::ApplyAttestations { request, reply } => {
@@ -613,6 +756,27 @@ fn core_loop<P: Preset>(
         }
         metrics.set_import_queue_depth(cmd_rx.len() as u64);
     }
+}
+
+/// Publish a new [`EpochContext`] when the head state's epoch has advanced.
+fn maybe_publish_epoch_context<P: Preset>(
+    store: &Store<P>,
+    config: &ChainConfig,
+    epoch_store: &EpochContextStore,
+    epoch_sequence: &mut u64,
+    last_published_epoch: &mut u64,
+) {
+    let head_root = head_root_of(store);
+    let Some(state) = store.block_state(&head_root) else {
+        return;
+    };
+    let current = get_current_epoch(state).as_u64();
+    if current == *last_published_epoch && epoch_store.load().sequence > 0 {
+        return;
+    }
+    *epoch_sequence = epoch_sequence.saturating_add(1);
+    *last_published_epoch = current;
+    epoch_store.store(build_epoch_context(state, config, *epoch_sequence));
 }
 
 #[cfg(test)]
@@ -710,7 +874,9 @@ mod tests {
                 head_root,
                 head_slot: _,
             } => head_root,
-            QueryReply::CommitteeShuffling { .. } | QueryReply::ValidatorPubkeys { .. } => {
+            QueryReply::CommitteeShuffling { .. }
+            | QueryReply::ValidatorPubkeys { .. }
+            | QueryReply::ValidatorRecords { .. } => {
                 unreachable!("Head request must yield Head reply")
             }
         };

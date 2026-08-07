@@ -18,11 +18,13 @@ use cc_bootstrap::{
     serve_with_options,
 };
 use cc_chain::checkpoint_sync::{
-    CheckpointBootstrapConfig, bootstrap_core_from_providers, parse_optional_root,
+    CheckpointBootstrapConfig, bootstrap_core_from_providers_with_epoch, parse_optional_root,
 };
 use cc_chain::core::{CoreConfig, CoreThread};
 use cc_chain::service::ChainServiceImpl;
-use cc_chain::{ChainMetrics, EventsConfig, EventsHandle, HeadSnapshotStore};
+use cc_chain::{
+    ChainMetrics, EpochContextStore, EventsConfig, EventsHandle, HeadSnapshotStore,
+};
 use cc_config::ServiceConfig;
 use cc_proto::chain::chain_service_server::ChainServiceServer;
 use cc_types::config::ChainConfig as NetworkChainConfig;
@@ -171,6 +173,9 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let head = HeadSnapshotStore::new();
+    // Shared with core at spawn so pre-bootstrap P2pStream sessions keep the
+    // same EpochContext ArcSwap after install_core (CC-27a F2).
+    let epoch = EpochContextStore::new();
     let needs_bootstrap = !cfg.checkpoint_providers.is_empty();
     tracing::debug!(
         max_resident_states = cfg.max_resident_states,
@@ -185,7 +190,13 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(kzg_backend = %_kzg_kind, "chain KZG backend selection (CC-11d default)");
 
     // Core starts absent; bootstrap task installs it after bind (CC-19b).
-    let svc = ChainServiceImpl::new(None, head.clone(), events.clone(), chain_metrics.clone());
+    let svc = ChainServiceImpl::with_epoch(
+        None,
+        head.clone(),
+        epoch.clone(),
+        events.clone(),
+        chain_metrics.clone(),
+    );
     let core_owner: Arc<Mutex<CoreJoinOwner>> = Arc::new(Mutex::new(CoreJoinOwner::default()));
 
     // Local-ready channel: serve hands us the handle once health is initialised.
@@ -219,6 +230,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let svc_boot = svc.clone();
         let head_boot = head;
+        let epoch_boot = epoch;
         let events_boot = events.event_sender();
         let metrics_boot = chain_metrics;
         let core_owner_boot = Arc::clone(&core_owner);
@@ -237,9 +249,10 @@ async fn main() -> anyhow::Result<()> {
                 providers = boot_cfg.providers.len(),
                 "starting checkpoint bootstrap after health init (CC-19b; bind races multi-minute fetch)"
             );
-            match bootstrap_core_from_providers::<Mainnet>(
+            match bootstrap_core_from_providers_with_epoch::<Mainnet>(
                 &boot_cfg,
                 head_boot,
+                epoch_boot,
                 events_boot,
                 metrics_boot,
                 core_cfg,
