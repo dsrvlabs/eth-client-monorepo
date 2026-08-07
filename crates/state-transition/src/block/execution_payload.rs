@@ -6,7 +6,7 @@ use cc_types::{BeaconBlock, BeaconState};
 use tree_hash::TreeHash;
 
 use crate::block::TransitionContext;
-use crate::engine_seam::{NewPayloadRequest, PayloadStatus};
+use crate::engine_seam::NewPayloadRequest;
 use crate::error::{BlockError, EngineError};
 use crate::helpers::accessors::{compute_time_at_slot, get_current_epoch, get_randao_mix};
 use crate::helpers::misc::kzg_commitment_to_versioned_hash;
@@ -40,8 +40,11 @@ pub fn process_execution_payload<P: Preset>(
     }
 
     // Verify timestamp.
-    let expected_ts =
-        compute_time_at_slot(state.genesis_time(), state.slot(), ctx.config.seconds_per_slot);
+    let expected_ts = compute_time_at_slot(
+        state.genesis_time(),
+        state.slot(),
+        ctx.config.seconds_per_slot,
+    );
     if payload.timestamp != expected_ts {
         return Err(BlockError::InvalidPayload);
     }
@@ -76,12 +79,15 @@ pub fn process_execution_payload<P: Preset>(
         execution_requests: &body.execution_requests,
     };
 
-    match ctx.engine.verify_and_notify_new_payload(request)? {
-        PayloadStatus::Valid | PayloadStatus::Syncing => {}
-        PayloadStatus::Invalid { .. } => {
-            return Err(BlockError::Engine(EngineError::InvalidPayload));
-        }
+    let status = ctx.engine.verify_and_notify_new_payload(request)?;
+    // sync/optimistic.md: MUST return True for NOT_VALIDATED as well as VALID.
+    // Outbox is written on both paths so INVALIDATED still carries latest_valid_hash
+    // for CC-35 (ADR P3-03).
+    if status.is_invalidated() {
+        ctx.set_payload_status(status);
+        return Err(BlockError::Engine(EngineError::InvalidPayload));
     }
+    ctx.set_payload_status(status);
 
     // Cache execution payload header.
     let transactions_root =

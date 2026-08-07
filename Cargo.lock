@@ -1151,6 +1151,7 @@ dependencies = [
  "cc-types",
  "ethereum_ssz",
  "serde",
+ "serde_json",
  "serde_yaml",
  "snap",
  "ssz_types",

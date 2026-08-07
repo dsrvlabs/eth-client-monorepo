@@ -11,6 +11,7 @@ pub mod randao;
 pub mod sync_aggregate;
 pub mod withdrawals;
 
+use std::cell::RefCell;
 use std::marker::PhantomData;
 
 use cc_types::config::ChainConfig;
@@ -18,21 +19,21 @@ use cc_types::preset::Preset;
 use cc_types::primitives::Root;
 use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
 
-use crate::engine_seam::ExecutionEngine;
+use crate::BlockSignatureStrategy;
+use crate::engine_seam::{ExecutionEngine, PayloadStatus};
 use crate::error::BlockError;
 use crate::root_measure::measured_canonical_root;
 use crate::signatures::verify_block_signatures;
 use crate::slots::process_slots;
-use crate::BlockSignatureStrategy;
 
 pub use eth1_data::process_eth1_data;
 pub use execution_payload::process_execution_payload;
 pub use header::process_block_header;
 pub use operations::{
-    process_attestation, process_attester_slashing, process_bls_to_execution_change,
-    process_consolidation_request, process_deposit, process_deposit_request, process_operations,
-    process_proposer_slashing, process_voluntary_exit, process_withdrawal_request,
-    ProcessAttestationOpts,
+    ProcessAttestationOpts, process_attestation, process_attester_slashing,
+    process_bls_to_execution_change, process_consolidation_request, process_deposit,
+    process_deposit_request, process_operations, process_proposer_slashing, process_voluntary_exit,
+    process_withdrawal_request,
 };
 pub use randao::process_randao;
 pub use sync_aggregate::{process_sync_aggregate, process_sync_aggregate_with_opts};
@@ -42,12 +43,25 @@ pub use withdrawals::{get_expected_withdrawals, process_withdrawals};
 // TransitionContext (engine trait lives in `engine_seam.rs`, CC-14)
 // ---------------------------------------------------------------------------
 
-/// Per-transition context (config + engine).
+/// Per-transition context (config + engine + payload-status outbox).
+///
+/// The outbox carries the EL's [`PayloadStatus`] out of the state transition
+/// without a second `verify_and_notify_new_payload` call site (CC-14/1, ADR P3-03).
+/// Written at the sole call site in [`super::execution_payload::process_execution_payload`];
+/// read by `on_block` from `CC-34a` onward. This commit writes and leaves unread (D-4).
+///
+/// `RefCell` rather than `Mutex`: `TransitionContext` is stack-local per import and is
+/// not required to be `Sync` (§12/8 compile check).
 pub struct TransitionContext<'a, P: Preset> {
     /// Runtime chain config (blob schedule, forks, …).
     pub config: &'a ChainConfig,
     /// Execution-engine seam (CC-14).
     pub engine: &'a dyn ExecutionEngine<P>,
+    /// CC-32/6 — payload status leaves the transition through here.
+    ///
+    /// Written exactly once at the sole engine call site (both Valid/NOT_VALIDATED
+    /// and INVALIDATED paths). Not read in this commit (D-4).
+    payload_status_outbox: RefCell<Option<PayloadStatus>>,
     _phantom: PhantomData<P>,
 }
 
@@ -65,8 +79,29 @@ impl<'a, P: Preset> TransitionContext<'a, P> {
         Self {
             config,
             engine,
+            payload_status_outbox: RefCell::new(None),
             _phantom: PhantomData,
         }
+    }
+
+    /// Record the payload status returned by the sole engine call site.
+    ///
+    /// `pub(crate)` so only this crate's `process_execution_payload` may write;
+    /// external crates (fork-choice) consume via [`Self::take_payload_status`] only.
+    /// Panics in debug builds if written twice (outbox is single-shot per transition).
+    pub(crate) fn set_payload_status(&self, status: PayloadStatus) {
+        let mut slot = self.payload_status_outbox.borrow_mut();
+        debug_assert!(
+            slot.is_none(),
+            "payload_status_outbox written twice in one transition"
+        );
+        *slot = Some(status);
+    }
+
+    /// Take the recorded payload status (if any). Used by tests; production
+    /// readers arrive in `CC-34a`.
+    pub fn take_payload_status(&self) -> Option<PayloadStatus> {
+        self.payload_status_outbox.borrow_mut().take()
     }
 }
 
@@ -216,15 +251,15 @@ mod tests {
         state.set_deposit_requests_start_index(u64::MAX);
 
         let pre = process_slots(&mut state, Slot::new(1)).unwrap();
-        let parent =
-            Root::from_hash256(tree_hash::TreeHash::tree_hash_root(state.latest_block_header()));
+        let parent = Root::from_hash256(tree_hash::TreeHash::tree_hash_root(
+            state.latest_block_header(),
+        ));
         use crate::helpers::accessors::{get_current_epoch, get_randao_mix};
         let epoch = get_current_epoch(&state);
         let mix = get_randao_mix(&state, epoch).unwrap();
         let mut body = cc_types::BeaconBlockBody::<Minimal>::default();
         body.execution_payload.prev_randao = mix;
-        body.execution_payload.timestamp =
-            state.genesis_time() + state.slot().as_u64() * 6; // minimal seconds_per_slot
+        body.execution_payload.timestamp = state.genesis_time() + state.slot().as_u64() * 6; // minimal seconds_per_slot
         body.execution_payload.parent_hash = state.latest_execution_payload_header().block_hash;
         // Empty participant set requires the infinity signature (eth_fast_aggregate_verify).
         body.sync_aggregate.sync_committee_signature =

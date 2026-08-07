@@ -30,7 +30,11 @@ pub struct NewPayloadRequest<'a, P: Preset> {
     pub execution_requests: &'a ExecutionRequests<P>,
 }
 
-/// Engine response status (Engine API `PayloadStatusV1` subset used by consensus).
+/// Engine response status (Engine API `PayloadStatusV1` — all five wire values).
+///
+/// Five variants match the five `PayloadStatusV1` statuses (ADR P3-04). Spec
+/// aliases [`PayloadStatus::is_not_validated`] / [`PayloadStatus::is_invalidated`]
+/// fold them for fork-choice bookkeeping; the metric surface needs all five.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PayloadStatus {
     /// EL accepted the payload as valid.
@@ -40,9 +44,24 @@ pub enum PayloadStatus {
         /// Latest valid execution block hash known to the EL, if any.
         latest_valid_hash: Option<Hash256>,
     },
-    /// EL is still syncing; Phase 3 optimistic-sync bookkeeping consumes this
-    /// outside the trait (in `services/chain`).
+    /// EL is still syncing — "requisite data missing". Spec `NOT_VALIDATED`.
     Syncing,
+    /// Well-formed, not on the canonical chain, ancestors known. Spec `NOT_VALIDATED`.
+    Accepted,
+    /// EL rejected the block hash itself. Spec `INVALIDATED`; `latestValidHash` is always none.
+    InvalidBlockHash,
+}
+
+impl PayloadStatus {
+    /// Spec `NOT_VALIDATED` ≜ `SYNCING | ACCEPTED`.
+    pub const fn is_not_validated(&self) -> bool {
+        matches!(self, Self::Syncing | Self::Accepted)
+    }
+
+    /// Spec `INVALIDATED` ≜ `INVALID | INVALID_BLOCK_HASH`.
+    pub const fn is_invalidated(&self) -> bool {
+        matches!(self, Self::Invalid { .. } | Self::InvalidBlockHash)
+    }
 }
 
 /// Spec-shaped execution-engine seam.
@@ -81,7 +100,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use crate::block::{process_execution_payload, TransitionContext};
+    use crate::block::{TransitionContext, process_execution_payload};
     use crate::error::{BlockError, GossipClass};
     use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
     use cc_types::preset::Mainnet;
@@ -255,5 +274,143 @@ mod tests {
             BlockError::Engine(EngineError::Transport("x".into())).gossip_class(),
             GossipClass::Internal
         );
+    }
+
+    /// CC-34 /1 first half: all five `PayloadStatusV1` values map onto the two
+    /// spec aliases — `is_not_validated` ≜ Syncing|Accepted,
+    /// `is_invalidated` ≜ Invalid|InvalidBlockHash; Valid is neither.
+    #[test]
+    fn payload_status_aliases() {
+        let cases: [(PayloadStatus, bool, bool); 5] = [
+            (PayloadStatus::Valid, false, false),
+            (
+                PayloadStatus::Invalid {
+                    latest_valid_hash: None,
+                },
+                false,
+                true,
+            ),
+            (PayloadStatus::Syncing, true, false),
+            (PayloadStatus::Accepted, true, false),
+            (PayloadStatus::InvalidBlockHash, false, true),
+        ];
+        for (status, not_validated, invalidated) in cases {
+            assert_eq!(
+                status.is_not_validated(),
+                not_validated,
+                "{status:?}: is_not_validated"
+            );
+            assert_eq!(
+                status.is_invalidated(),
+                invalidated,
+                "{status:?}: is_invalidated"
+            );
+            // The two aliases are mutually exclusive and Valid is in neither.
+            assert!(
+                !(status.is_not_validated() && status.is_invalidated()),
+                "{status:?}: aliases must not overlap"
+            );
+        }
+    }
+
+    /// Engine that always returns a fixed status (test driver for outbox / NOT_VALIDATED).
+    #[derive(Debug, Clone)]
+    struct FixedStatusEngine(PayloadStatus);
+
+    impl<P: Preset> ExecutionEngine<P> for FixedStatusEngine {
+        fn verify_and_notify_new_payload(
+            &self,
+            _request: NewPayloadRequest<'_, P>,
+        ) -> Result<PayloadStatus, EngineError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// Outbox records `Valid` on the success path.
+    #[test]
+    fn outbox_records_valid() {
+        let config = test_config();
+        let engine = FixedStatusEngine(PayloadStatus::Valid);
+        let ctx = TransitionContext::<Mainnet>::new(&config, &engine);
+        let (mut state, block) = ready_state_and_block(&config);
+
+        process_execution_payload(&mut state, &block, &ctx).expect("Valid completes");
+        assert_eq!(
+            ctx.take_payload_status(),
+            Some(PayloadStatus::Valid),
+            "outbox must hold Valid after the sole call site"
+        );
+    }
+
+    /// Outbox records `Syncing` / `Accepted` (NOT_VALIDATED) on the success path.
+    #[test]
+    fn outbox_records_not_validated() {
+        let config = test_config();
+        for status in [PayloadStatus::Syncing, PayloadStatus::Accepted] {
+            let engine = FixedStatusEngine(status.clone());
+            let ctx = TransitionContext::<Mainnet>::new(&config, &engine);
+            let (mut state, block) = ready_state_and_block(&config);
+
+            process_execution_payload(&mut state, &block, &ctx)
+                .unwrap_or_else(|e| panic!("{status:?} must complete, got {e:?}"));
+            assert_eq!(
+                ctx.take_payload_status(),
+                Some(status.clone()),
+                "outbox must hold {status:?} after the sole call site"
+            );
+        }
+    }
+
+    /// Outbox is also written on the INVALIDATED path (carries latest_valid_hash for CC-35).
+    #[test]
+    fn outbox_records_invalidated() {
+        let config = test_config();
+        let status = PayloadStatus::Invalid {
+            latest_valid_hash: Some(Hash256::repeat_byte(0xab)),
+        };
+        let engine = FixedStatusEngine(status.clone());
+        let ctx = TransitionContext::<Mainnet>::new(&config, &engine);
+        let (mut state, block) = ready_state_and_block(&config);
+
+        let err = process_execution_payload(&mut state, &block, &ctx).unwrap_err();
+        assert!(matches!(
+            err,
+            BlockError::Engine(EngineError::InvalidPayload)
+        ));
+        assert_eq!(ctx.take_payload_status(), Some(status));
+
+        // InvalidBlockHash likewise.
+        let engine = FixedStatusEngine(PayloadStatus::InvalidBlockHash);
+        let ctx = TransitionContext::<Mainnet>::new(&config, &engine);
+        let (mut state, block) = ready_state_and_block(&config);
+        let err = process_execution_payload(&mut state, &block, &ctx).unwrap_err();
+        assert!(matches!(
+            err,
+            BlockError::Engine(EngineError::InvalidPayload)
+        ));
+        assert_eq!(
+            ctx.take_payload_status(),
+            Some(PayloadStatus::InvalidBlockHash)
+        );
+    }
+
+    /// CC-32 /5: NOT_VALIDATED (SYNCING and ACCEPTED) completes the state transition.
+    #[test]
+    fn not_validated_completes() {
+        let config = test_config();
+        for status in [PayloadStatus::Syncing, PayloadStatus::Accepted] {
+            let engine = FixedStatusEngine(status.clone());
+            let ctx = TransitionContext::<Mainnet>::new(&config, &engine);
+            let (mut state, block) = ready_state_and_block(&config);
+
+            process_execution_payload(&mut state, &block, &ctx).unwrap_or_else(|e| {
+                panic!("NOT_VALIDATED ({status:?}) must complete the transition, got {e:?}")
+            });
+            // Header is cached — transition completed, not short-circuited.
+            assert_eq!(
+                state.latest_execution_payload_header().timestamp,
+                block.body.execution_payload.timestamp
+            );
+        }
     }
 }
