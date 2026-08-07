@@ -159,6 +159,49 @@ pub fn next_fork_digest(cfg: &ChainConfig, gvr: Root, epoch: Epoch) -> ForkDiges
     }
 }
 
+/// Digests accepted by the discovery ENR filter at `epoch` (CC-2A / §6.3).
+///
+/// Always includes the digest at `epoch`. Inside the Overlap window
+/// (boundary − 1 through the boundary epoch inclusive) also includes the
+/// coexisting peer digest:
+/// - approaching: `next_fork` one epoch ahead;
+/// - just crossed: previous epoch's digest while topics still dual-subscribe.
+///
+/// **Read from the schedule in advance** — never discovered on failure (§4.3).
+#[must_use]
+pub fn discovery_allowed_digests(cfg: &ChainConfig, gvr: Root, epoch: Epoch) -> Vec<ForkDigest> {
+    let current = compute_fork_digest(cfg, gvr, epoch);
+    let mut out = Vec::with_capacity(2);
+    out.push(current);
+
+    // Pre-boundary Overlap: epoch == boundary − 1 → also accept next.
+    if let Some((boundary, _, next_d)) = next_fork(cfg, gvr, epoch)
+        && boundary.as_u64() == epoch.as_u64().saturating_add(1)
+        && next_d != current
+    {
+        out.push(next_d);
+    }
+
+    // At the boundary epoch itself Overlap continues (registry still has both
+    // until boundary + 1 Drain). Previous epoch's digest is the peer's lagging
+    // advertisement we must still accept.
+    if epoch.as_u64() > 0 {
+        let prev = compute_fork_digest(cfg, gvr, Epoch::new(epoch.as_u64() - 1));
+        if prev != current && !out.contains(&prev) {
+            out.push(prev);
+        }
+    }
+
+    out
+}
+
+/// True when `epoch` is exactly one epoch before a scheduled digest boundary
+/// (regular fork or BPO). Schedule lookahead — CC-2A/1.
+#[must_use]
+pub fn is_overlap_entry_epoch(cfg: &ChainConfig, epoch: Epoch) -> bool {
+    next_digest_boundary_epoch(cfg, epoch).is_some_and(|b| b.as_u64() == epoch.as_u64() + 1)
+}
+
 /// Single source of truth for the current/next digest and the per-epoch cache.
 ///
 /// Constructed once at startup with an initial epoch; refreshed via
@@ -237,6 +280,20 @@ impl ForkContext {
     #[must_use]
     pub fn nfd(&self) -> ForkDigest {
         self.nfd
+    }
+
+    /// Digests accepted by discovery at the current epoch (Overlap-aware).
+    ///
+    /// See [`discovery_allowed_digests`].
+    #[must_use]
+    pub fn discovery_allowed_digests(&self) -> Vec<ForkDigest> {
+        discovery_allowed_digests(&self.cfg, self.gvr, self.current_epoch)
+    }
+
+    /// Next scheduled digest-change epoch, if any (schedule lookahead, CC-2A/1).
+    #[must_use]
+    pub fn next_boundary_epoch(&self) -> Option<Epoch> {
+        self.next.map(|(e, _, _)| e)
     }
 
     /// Digest at an arbitrary epoch, served from the per-epoch cache.

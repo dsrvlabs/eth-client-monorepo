@@ -29,7 +29,8 @@ pub fn digest_matches(enr: &Enr, current: ForkDigest) -> bool {
 /// Generic peer predicate: digest match (current, or next inside Overlap).
 ///
 /// `allowed` is the set of digests we accept (usually `{current}` or
-/// `{current, next}` during Overlap — CC-2A owns Overlap transitions).
+/// `{current, next}` during Overlap — built by
+/// [`crate::fork_digest::discovery_allowed_digests`] / CC-2A).
 #[must_use]
 pub fn generic_peer_predicate(
     allowed: Vec<ForkDigest>,

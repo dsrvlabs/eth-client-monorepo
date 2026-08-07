@@ -453,8 +453,19 @@ impl EnrManager {
     }
 
     /// Epoch-tick helper: write `eth2` + `nfd` from [`ForkContext`] in **one** bump.
+    ///
+    /// **Idempotent:** if both payloads already match the local ENR, this is a
+    /// no-op (no `seq` bump). Crossing a BPO that changes both fields therefore
+    /// advances `seq` by exactly **one** (CC-2A/3 coalesce), not once per epoch.
     pub fn apply_fork_context(&self, ctx: &ForkContext) -> Result<(), EnrApplyError> {
-        self.apply(fork_field_changes(ctx))
+        let changes = fork_field_changes(ctx);
+        let enr = self.local_enr();
+        let eth2_same = read_eth2(&enr).is_some_and(|id| id == ctx.enr_fork_id());
+        let nfd_same = read_nfd(&enr).is_some_and(|d| d == ctx.nfd());
+        if eth2_same && nfd_same {
+            return Ok(());
+        }
+        self.apply(changes)
     }
 
     /// Install Phase-2 default empty attnets/syncnets + fixed `cgc`.

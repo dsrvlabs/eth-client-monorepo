@@ -618,9 +618,12 @@ pub async fn run_discovery_task(task: DiscoveryTask) {
     }
 }
 
+/// Digests accepted by discv5 predicates (CC-2A Overlap-aware).
+///
+/// Steady: `{current}`. Overlap window (boundary − 1 … boundary):
+/// `{current, next}` / `{previous, current}` via schedule lookahead.
 fn allowed_digests(ctx: &ForkContext) -> Vec<ForkDigest> {
-    // Overlap window acceptance of *next* digest is CC-2A; Phase 2 ships current only.
-    vec![ctx.current_digest()]
+    ctx.discovery_allowed_digests()
 }
 
 /// Parse a multiaddr string without panicking.

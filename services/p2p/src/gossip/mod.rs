@@ -3,7 +3,7 @@
 //! | Module | Issue | Role |
 //! |--------|-------|------|
 //! | [`topics`] | CC-22a/b | `(digest, name)` keys, Fulu name expansion, topic strings, message-id |
-//! | [`registry`] | CC-22a | sole `subscribe` / `unsubscribe` / `set_topic_params` owner; Steady→Overlap→Drain skeleton |
+//! | [`registry`] | CC-22a / CC-2A | sole `subscribe` / `unsubscribe` / `set_topic_params` owner; Steady→Overlap→Drain schedule-driven |
 //! | [`validate`] | CC-22b/d | SSZ max table, block/column validators, pipeline |
 //! | [`scoring`] | CC-22c | one `ScoringConfig`, P3/P3b weight 0, column `0.5/sampling_size`, docs gen |
 //! | [`seen`] | CC-22d | bounded column/block seen sets |

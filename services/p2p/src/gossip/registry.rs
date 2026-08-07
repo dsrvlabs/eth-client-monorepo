@@ -16,17 +16,25 @@
 //! A topic with no registered validator is refused. Phase 2's first real
 //! subscription lands in CC-22d; until then the registry only bookkeeps.
 //!
-//! ## State machine (skeleton; CC-2A wires the epoch tick)
+//! ## State machine (CC-2A — schedule-driven epoch tick)
+//!
+//! Boundary detection is **read from the schedule in advance** via
+//! [`ForkContext::next`] / [`crate::fork_digest::next_fork`] (CC-21b lookahead;
+//! CC-2A supplies the epoch-tick trigger). Never discovered on failure.
 //!
 //! ```text
 //! Steady   live = {current}
 //!   │  epoch == boundary − 1
-//! Overlap  live = {current, next}   ← subscribe(next) here
+//! Overlap  live = {current, next}   ← subscribe(next) here (params first)
 //!   │  epoch == boundary + 1
 //! Drain    live = {next}; unsubscribe(current)
 //!   │  next advance_to
 //! Steady with current := next
 //! ```
+//!
+//! Call [`TopicRegistry::advance_to`] once per epoch tick **after**
+//! [`ForkContext::on_epoch`]. Publishing uses [`TopicRegistry::publish_digest`]
+//! (switches at the boundary); Status/ENR use [`ForkContext::current_digest`].
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -264,6 +272,40 @@ impl<G: GossipsubControl> TopicRegistry<G> {
         self.live.clone()
     }
 
+    /// Scheduled digest-change boundary, if known from the schedule.
+    #[must_use]
+    pub fn boundary(&self) -> Option<Epoch> {
+        self.boundary
+    }
+
+    /// Next-digest twin during Overlap / Drain.
+    #[must_use]
+    pub fn next_digest(&self) -> Option<ForkDigest> {
+        self.next_digest
+    }
+
+    /// Digest used for **publish / validate** at `epoch`.
+    ///
+    /// Steady and pre-boundary Overlap publish on `current`; from the boundary
+    /// epoch inclusive (and through Drain) publish on `next` (CC-2A / §5.1 step 3).
+    #[must_use]
+    pub fn publish_digest(&self, epoch: Epoch) -> ForkDigest {
+        match self.phase {
+            SubscriptionPhase::Steady => self.current,
+            SubscriptionPhase::Overlap => {
+                if self
+                    .boundary
+                    .is_some_and(|b| epoch.as_u64() >= b.as_u64())
+                {
+                    self.next_digest.unwrap_or(self.current)
+                } else {
+                    self.current
+                }
+            }
+            SubscriptionPhase::Drain => self.next_digest.unwrap_or(self.current),
+        }
+    }
+
     /// Subnet counts used for expansion.
     #[must_use]
     pub fn counts(&self) -> SubnetCounts {
@@ -407,11 +449,17 @@ impl<G: GossipsubControl> TopicRegistry<G> {
         Ok(())
     }
 
-    /// Drive Steady → Overlap → Drain → Steady from an explicit epoch.
+    /// Drive Steady → Overlap → Drain → Steady from the epoch tick (CC-2A).
     ///
-    /// CC-2A wires the epoch tick and boundary detection; this method is the
-    /// manual trigger for the skeleton and for unit tests with a synthetic
-    /// two-digest schedule.
+    /// **Trigger wiring:** call once per epoch **after** [`ForkContext::on_epoch`].
+    /// The boundary is taken from `ctx.next()` (schedule lookahead — regular
+    /// fork **or** BPO), never discovered on subscribe failure.
+    ///
+    /// Ordering inside transitions (the bug surface, §5.1):
+    /// 1. `set_topic_params` for every next-digest topic **before** `subscribe`
+    /// 2. subscribe one full epoch before the boundary (Overlap entry)
+    /// 3. publish/validate switch at the boundary ([`Self::publish_digest`])
+    /// 4. unsubscribe old one epoch after (Drain); ENR eth2/nfd coalesce elsewhere
     ///
     /// # Errors
     ///

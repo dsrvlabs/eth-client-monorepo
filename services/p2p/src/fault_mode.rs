@@ -1,5 +1,4 @@
-//! Self-devnet publisher and fault modes (CC-2Jd / CC-2Jb).
-//! Self-devnet publisher and fault modes (CC-2Jd / CC-2Jc).
+//! Self-devnet publisher and fault modes (CC-2Jd / CC-2Jb / CC-2Jc).
 //!
 //! - **`--publish-fixture`**: plain publisher — loads CC-2Ja's chain fixture,
 //!   forces conceptual `cgc = 128`, subscribes to all 128 column subnets, and
@@ -8,15 +7,11 @@
 //!   refuse them on `DataColumnSidecarsByRoot` until a **flag file** appears.
 //!   Seams live in `gossip/validate/column.rs` (publish) and
 //!   `reqresp/columns.rs` (by-root serve).
-//! - **`misbehave`**: parses; body lands in CC-2Jc.
-//! - Process-global active fault ([`install_active_fault`]) is what the two
-//!   seam call sites consult so production paths stay greppable one-liners.
-//! - **`withhold-column`**: parsed; body lands in CC-2Jb (still "not implemented").
-//! - **`misbehave:<kind>`** (CC-2Jc): four kinds map to attributable penalty
-//!   reasons — `invalid-column` / `malformed` → `gossip_invalid`, `spam` →
-//!   `rate_limit`, `custody-refuse` → `custody_unserved`, `stall-reqresp` →
-//!   `reqresp_fault`. Publish mutations attach here; by-root refuse/stall
-//!   reuses the Track D seam in [`crate::reqresp::columns`].
+//! - **`misbehave:<kind>`** (CC-2Jc): kinds map to attributable penalty reasons —
+//!   `invalid-column` / `malformed` → `gossip_invalid`, `spam` → `rate_limit`,
+//!   `custody-refuse` → `custody_unserved`, `stall-reqresp` → `reqresp_fault`.
+//! - Process-global active fault ([`install_active_fault`]) is what the seam
+//!   call sites consult so production paths stay greppable one-liners.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // tests only below
 
@@ -40,16 +35,16 @@ use cc_libp2p::{
     build_swarm, CcBehaviour, CcBehaviourEvent, ReqRespRequest, ReqRespResponse, SwarmConfig,
 };
 use cc_types::{compute_columns_for_custody_group, ChainConfig, Epoch, Root};
+use cc_types::{ChainConfig, Epoch, Root, compute_columns_for_custody_group};
 use discv5::Enr;
 use discv5::enr::{CombinedKey, NodeId};
 use sha2::{Digest, Sha256};
+use ssz::{Decode, Encode};
 use tracing::{info, warn};
 
 use crate::das::CustodyManager;
-use ssz::{Decode, Encode};
-
 use crate::fork_digest::compute_fork_digest;
-use crate::gossip::validate::column::{decide_column_publish, ColumnPublishDecision};
+use crate::gossip::validate::column::{ColumnPublishDecision, decide_column_publish};
 use crate::gossip::{SubnetCounts, TopicName, format_topic_string};
 use crate::metrics::{
     Direction, DirectionLabels, GossipMessageLabels, P2pMetrics, PeerPenaltyReason,
@@ -159,8 +154,6 @@ pub fn active_allows_by_root_serve(column_index: u64) -> bool {
 
 /// Adversarial / publisher fault kind.
 ///
-/// [`FaultMode::None`] is the plain publisher. [`FaultMode::WithholdColumn`] is
-/// CC-2Jb. [`FaultMode::Misbehave`] parses and stays unimplemented until CC-2Jc.
 /// Extra gossip publishes per column under `misbehave:spam` (beyond the honest one).
 pub const SPAM_GOSSIP_EXTRA_PUBLISHES: u32 = 8;
 
@@ -295,6 +288,7 @@ impl FaultMode {
     ///
     /// Both fault modes have landed; this is the post-merge form of the two
     /// temporary stubs that previously failed closed for the other stream.
+    /// Returns `Ok(())` for all shipped fault modes (plain, withhold-column, misbehave).
     pub fn ensure_implemented(&self) -> Result<()> {
         match self {
             Self::None | Self::WithholdColumn { .. } | Self::Misbehave { .. } => Ok(()),
@@ -379,15 +373,18 @@ impl FaultMode {
         }
     }
 
-    /// Gossip column payload transform (block path uses identity for misbehave).
+    /// Payload transform for the **block** publish path (and single-shot column
+    /// mutations under misbehave).
     ///
-    /// Returns `None` when the column must not be published (withhold — 2Jb).
-    /// For spam, prefer [`Self::column_publish_payloads`] which may yield many.
+    /// - [`Self::None`] / [`Self::WithholdColumn`]: identity — column skip is
+    ///   the publish seam ([`decide_column_publish`]), not this transform.
+    /// - [`Self::Misbehave`]: mutates for invalid/malformed; identity for
+    ///   custody-refuse / stall. Prefer [`Self::column_publish_payloads`] for
+    ///   multi-publish spam.
     #[must_use]
     pub fn relay(&self, payload: &[u8]) -> Option<Vec<u8>> {
         match self {
-            Self::None => Some(payload.to_vec()),
-            Self::WithholdColumn { .. } => None,
+            Self::None | Self::WithholdColumn { .. } => Some(payload.to_vec()),
             Self::Misbehave { kind } => Some(transform_column_payload(payload, *kind, 0)),
         }
     }

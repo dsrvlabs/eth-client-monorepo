@@ -165,6 +165,38 @@ Kinds map to attributable `cc_p2p_peer_penalty_total{reason}` labels:
 | Measured | `_NOT_RUN_` |
 | Pass/Fail | `_NOT_RUN_` (failure is still a blocker) |
 
+### CC-2A · BPO transition (booking g)
+
+**Owner:** CC-2A  
+**Venue:** **self-devnet** (generated `BLOB_SCHEDULE` with `bpo_1_epoch: 5`, `bpo_2_epoch: 10`)  
+**Date:** 2026-08-07  
+**Status:** code path **LANDED** / live self-devnet regression **`_NOT_RUN_`**
+
+| Check | Result |
+|---|---|
+| V-3: `BLOB_SCHEDULE` re-read vs live Hoodi head | **PASS** (unit) — head ≈ epoch **114 273** on 2026-08-07; BPO1=52480 / BPO2=54016 both past; **no pending real-network BPO** |
+| Boundary known in advance from schedule | **PASS** (`cargo test -p cc-p2p --test bpo_transition`) |
+| Overlap window both sets inside / one outside | **PASS** (unit) |
+| `set_topic_params` before `subscribe` on next digest | **PASS** (recording stub) |
+| `nfd` / `next_fork_epoch` track BPO; `next_fork_version` unchanged | **PASS** (Hoodi schedule) |
+| ENR eth2+nfd coalesce → `seq` +1 at boundary; idempotent re-apply | **PASS** |
+| Status v2 switches at boundary; old peer not disconnect before / may after | **PASS** |
+| Two-boundary walk (epochs 5 & 10) Steady→Overlap→Drain×2 | **PASS** (unit stand-in for booking g) |
+| Live self-devnet: topic-set change count == 2; peers retained; no zero-rate slot | **`_NOT_RUN_`** |
+| Venue column (not Hoodi) | **yes** — self-devnet |
+
+**soak-report expression (when run):** topic-set change count == 2; peers retained; no zero-rate slot on `cc_p2p_gossip_messages_total{topic=~".*beacon_block"}` across either boundary.
+
+**OQ-5 limitation (run notes — not papered over):** the self-devnet covers the *mechanism* under our control (digest change, resubscription, `nfd`, peer retention). Heterogeneous peers transitioning at slightly different times is **not** covered — every peer on it runs our code. Do not claim equivalence to a multi-client BPO.
+
+**Commands:**
+
+```text
+cargo test -p cc-p2p --test bpo_transition
+cargo clippy -p cc-p2p --all-targets -- -D warnings
+# live (operator): devnet/scenarios/bpo.sh  — NOT_RUN
+```
+
 ## M2.1 Hoodi hold
 
 **Owner:** CC-21c  

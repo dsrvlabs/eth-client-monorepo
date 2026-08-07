@@ -402,6 +402,12 @@ pub fn stall_first_byte_delay() -> std::time::Duration {
 ///
 /// `policy` is the CC-2Jc branch selector — [`ByRootFaultPolicy::Honest`] is the
 /// production default; fault modes map onto the other two variants.
+/// - **CC-2Jb** (`column_index` + global active fault): held columns that are
+///   still withheld refuse until the release flag file flips.
+/// - **CC-2Jc** (`policy`): `custody-refuse` never serves; `stall-reqresp`
+///   delays first byte past TTFB when held and allowed.
+///
+/// Production callers pass [`ByRootFaultPolicy::Honest`].
 #[inline]
 #[must_use]
 pub fn decide_by_root_column_serve(
@@ -421,6 +427,21 @@ pub fn decide_by_root_column_serve(
         (true, ByRootFaultPolicy::Honest) => ByRootServeDecision::Serve,
         (true, ByRootFaultPolicy::CustodyRefuse) => ByRootServeDecision::ResourceUnavailable,
         (false, _) => ByRootServeDecision::ResourceUnavailable,
+    match policy {
+        ByRootFaultPolicy::CustodyRefuse => ByRootServeDecision::ResourceUnavailable,
+        ByRootFaultPolicy::StallReqresp
+            if held && crate::fault_mode::active_allows_by_root_serve(column_index) =>
+        {
+            ByRootServeDecision::Stall
+        }
+        ByRootFaultPolicy::Honest | ByRootFaultPolicy::StallReqresp
+            if held && crate::fault_mode::active_allows_by_root_serve(column_index) =>
+        {
+            ByRootServeDecision::Serve
+        }
+        ByRootFaultPolicy::Honest | ByRootFaultPolicy::StallReqresp => {
+            ByRootServeDecision::ResourceUnavailable
+        }
     }
 }
 
@@ -581,6 +602,7 @@ pub fn serve_columns_by_root<P: Preset>(
             // Track D sanctioned seam — greppable single branch for CC-2Jb/2Jc.
             let decision =
                 decide_by_root_column_serve(held, *col_idx, ctx.by_root_fault);
+            let decision = decide_by_root_column_serve(held, *col_idx, ctx.by_root_fault);
             match decision {
                 ByRootServeDecision::Serve | ByRootServeDecision::Stall => {
                     if decision == ByRootServeDecision::Stall {
@@ -1043,6 +1065,7 @@ mod tests {
         );
 
         // Seam unit: held → Serve, missing → ResourceUnavailable (honest, no withhold).
+        // Seam unit: held → Serve, missing → ResourceUnavailable (honest / no fault).
         crate::fault_mode::clear_active_fault();
         assert_eq!(
             decide_by_root_column_serve(true, 0, ByRootFaultPolicy::Honest),

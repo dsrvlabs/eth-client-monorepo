@@ -9,6 +9,7 @@
 //! - **CC-21c**: discv5 discovery task, ENR field encoders, predicates, dial queue
 //! - **CC-21d**: runtime `cgc` hook (`set_custody_group_count`) — five §6.4 effects, no Phase 2 caller
 //! - **CC-22a**: Topic registry, Fulu topic strings, Steady→Overlap→Drain skeleton
+//! - **CC-2A**: BPO transition — schedule-driven Overlap/Drain triggers, discovery allowed digests, ENR coalesce, Status boundary
 //! - **CC-22b**: Message-id preimage + fixture, per-container SSZ max table, pre-decode check
 //! - **CC-22c**: GossipSub `ScoringConfig`, two score spaces, IDONTWANT, penalty table
 //! - **CC-22d**: block/column validators, seen/pending, one Verdict, single report site
