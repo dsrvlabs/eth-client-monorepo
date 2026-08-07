@@ -512,12 +512,7 @@ async fn pre_drain_joins_core_within_shutdown_budget() {
         })
     };
 
-    let svc = ChainServiceImpl::new(
-        Some(core.handle.clone()),
-        head,
-        events,
-        chain_metrics,
-    );
+    let svc = ChainServiceImpl::new(Some(core.handle.clone()), head, events, chain_metrics);
     let routes = Routes::default().add_service(ChainServiceServer::new(svc));
 
     let core_holder: Arc<Mutex<Option<CoreThread>>> = Arc::new(Mutex::new(Some(core)));

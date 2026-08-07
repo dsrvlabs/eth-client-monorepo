@@ -13,9 +13,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use cc_chain::core::{
-    CoreConfig, MAX_VALIDATOR_RECORDS_PER_REQUEST, spawn_core_thread_with_epoch,
-};
+use cc_chain::core::{CoreConfig, MAX_VALIDATOR_RECORDS_PER_REQUEST, spawn_core_thread_with_epoch};
 use cc_chain::epoch_context::{EpochContext, EpochContextStore};
 use cc_chain::events::{EventsConfig, EventsHandle};
 use cc_chain::head::{HeadSnapshot, HeadSnapshotStore};
@@ -175,11 +173,7 @@ async fn stream_hello_receives_full_chain_view() {
 
     let (in_tx, in_rx) = tokio::sync::mpsc::channel(8);
     let inbound = tokio_stream::wrappers::ReceiverStream::new(in_rx);
-    let mut outbound = svc
-        .open_p2p_stream(inbound)
-        .await
-        .unwrap()
-        .into_inner();
+    let mut outbound = svc.open_p2p_stream(inbound).await.unwrap().into_inner();
 
     in_tx
         .send(Ok(P2pToChain {
@@ -204,7 +198,10 @@ async fn stream_hello_receives_full_chain_view() {
     };
     assert_eq!(view.view_kind, VIEW_KIND_FULL);
     assert!(!view.head_root.is_empty());
-    assert!(!view.proposer_lookahead.is_empty(), "full view needs lookahead");
+    assert!(
+        !view.proposer_lookahead.is_empty(),
+        "full view needs lookahead"
+    );
     assert_eq!(
         view.proposer_pubkeys.len(),
         view.proposer_lookahead.len(),
@@ -271,15 +268,12 @@ async fn chain_view_cadence_epoch_payload_three_times() {
     let mut registry = Registry::default();
     let metrics = ChainMetrics::register(&mut registry);
     let events = EventsHandle::spawn(EventsConfig::default());
-    let svc = ChainServiceImpl::with_epoch(None, head.clone(), epoch.clone(), events.clone(), metrics);
+    let svc =
+        ChainServiceImpl::with_epoch(None, head.clone(), epoch.clone(), events.clone(), metrics);
 
     let (in_tx, in_rx) = tokio::sync::mpsc::channel(8);
     let inbound = tokio_stream::wrappers::ReceiverStream::new(in_rx);
-    let mut outbound = svc
-        .open_p2p_stream(inbound)
-        .await
-        .unwrap()
-        .into_inner();
+    let mut outbound = svc.open_p2p_stream(inbound).await.unwrap().into_inner();
 
     // Open session.
     in_tx
@@ -437,8 +431,7 @@ async fn epoch_store_alone_emits_epoch_tick_view() {
     let mut registry = Registry::default();
     let metrics = ChainMetrics::register(&mut registry);
     let events = EventsHandle::spawn(EventsConfig::default());
-    let svc =
-        ChainServiceImpl::with_epoch(None, head, epoch.clone(), events.clone(), metrics);
+    let svc = ChainServiceImpl::with_epoch(None, head, epoch.clone(), events.clone(), metrics);
 
     let (in_tx, in_rx) = tokio::sync::mpsc::channel(4);
     let mut outbound = svc
@@ -629,13 +622,8 @@ async fn chain_view_matches_get_head_over_many_publishes() {
         sequence: 1,
         ..HeadSnapshot::default()
     });
-    let svc = ChainServiceImpl::with_epoch(
-        None,
-        head.clone(),
-        epoch.clone(),
-        events.clone(),
-        metrics,
-    );
+    let svc =
+        ChainServiceImpl::with_epoch(None, head.clone(), epoch.clone(), events.clone(), metrics);
 
     for i in 1..=100u64 {
         let root = Root::from_array({
@@ -774,9 +762,7 @@ async fn get_validator_records_ssz_and_bound() {
 
     // Empty → INVALID_ARGUMENT.
     let err = svc
-        .get_validator_records(Request::new(GetValidatorRecordsRequest {
-            indices: vec![],
-        }))
+        .get_validator_records(Request::new(GetValidatorRecordsRequest { indices: vec![] }))
         .await
         .unwrap_err();
     assert_eq!(err.code(), Code::InvalidArgument);
@@ -821,10 +807,7 @@ fn column_sidecar_has_no_construction_site() {
     // Acceptance: `grep -rn "ColumnSidecar" services/ crates/` shows the
     // generated type and no construction site. We approximate by ensuring our
     // chain sources never construct `ColumnSidecar {`.
-    let chain_src = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/p2p_stream.rs"
-    ));
+    let chain_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/p2p_stream.rs"));
     assert!(
         !chain_src.contains("ColumnSidecar {"),
         "p2p_stream must not construct ColumnSidecar"

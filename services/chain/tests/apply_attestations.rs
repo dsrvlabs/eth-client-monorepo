@@ -6,15 +6,13 @@
 
 use std::sync::Arc;
 
+use cc_chain::MAX_APPLY_ATTESTATIONS;
 use cc_chain::core::{CoreConfig, spawn_core_thread};
 use cc_chain::events::{EventsConfig, EventsHandle};
 use cc_chain::head::HeadSnapshotStore;
 use cc_chain::metrics::ChainMetrics;
 use cc_chain::service::ChainServiceImpl;
-use cc_chain::MAX_APPLY_ATTESTATIONS;
-use cc_fork_choice::{
-    HarnessAvailability, ProtoNodeBlock, Store, get_forkchoice_store, on_tick,
-};
+use cc_fork_choice::{HarnessAvailability, ProtoNodeBlock, Store, get_forkchoice_store, on_tick};
 use cc_proto::chain::chain_service_server::ChainService;
 use cc_proto::chain::{ApplyAttestationsRequest, AttestationApplyVerdict, GetHeadRequest};
 use cc_state_transition::StubOptimisticEngine;

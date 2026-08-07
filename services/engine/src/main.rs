@@ -2,9 +2,12 @@
 //!
 //! Phase 0 surface: health + reflection + `GetInfo`. Real RPCs land in Phase 3+.
 //! Health peer: `chain` (§6.3).
+//!
+//! CC-3Aa: §9.1 metric families are registered between `init` and `serve`.
 
 use cc_bootstrap::{PeerSpec, ServiceSpec, TelemetrySettings};
 use cc_config::ServiceConfig;
+use cc_engine::metrics::EngineMetrics;
 use cc_proto::common::BuildInfo;
 use cc_proto::engine::engine_service_server::{EngineService, EngineServiceServer};
 use cc_proto::engine::{GetInfoRequest, GetInfoResponse};
@@ -76,7 +79,11 @@ impl EngineService for EngineStub {
 async fn main() -> anyhow::Result<()> {
     // Fail before any bind (CC-09/2): load config, then telemetry, then serve.
     let cfg = cc_config::load::<EngineConfig>(SERVICE)?;
-    let bs = cc_bootstrap::init(SERVICE, TelemetrySettings::from(&cfg.service))?;
+    let mut bs = cc_bootstrap::init(SERVICE, TelemetrySettings::from(&cfg.service))?;
+
+    // CC-3Aa: register §9.1 engine families between init and serve.
+    let _engine_metrics = EngineMetrics::register(&mut bs.registry);
+
     let routes = Routes::default().add_service(EngineServiceServer::new(EngineStub));
     cc_bootstrap::serve(bs, cfg.service_spec(), routes).await?;
     Ok(())

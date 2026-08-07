@@ -268,7 +268,8 @@ fn spawn_slot_tick_driver(epoch: EpochContextStore, ticks: broadcast::Sender<Vie
                 last_emitted_slot = Some(current_slot);
             }
             // Sleep until next slot boundary (or 50 ms floor for short slots).
-            let next_start = genesis.saturating_add(current_slot.saturating_add(1).saturating_mul(sps));
+            let next_start =
+                genesis.saturating_add(current_slot.saturating_add(1).saturating_mul(sps));
             let sleep_secs = next_start.saturating_sub(now).max(1);
             let sleep = Duration::from_secs(sleep_secs).min(Duration::from_secs(sps.max(1)));
             tokio::time::sleep(sleep.max(Duration::from_millis(50))).await;
@@ -715,9 +716,7 @@ where
             // Imported / deferred / internal — single equality verdict already sent.
             // Internal: explicitly no second REJECT and no penalty (Phase 1 §5.3).
             if o.late_import_internal {
-                tracing::debug!(
-                    "import failed Internal after early ACCEPT; no penalty, no REJECT"
-                );
+                tracing::debug!("import failed Internal after early ACCEPT; no penalty, no REJECT");
             }
             Ok(())
         }

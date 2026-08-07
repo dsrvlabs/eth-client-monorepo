@@ -248,20 +248,18 @@ pub fn import_block_with_early<P: Preset>(
     metrics.observe_import_stage(ImportStage::Transition, on_block_secs);
 
     match outcome {
-        Ok(BlockImport::Imported(b)) => {
-            finish_imported(
-                store,
-                residency,
-                head_store,
-                event_tx,
-                metrics,
-                snapshot_sequence,
-                &signed,
-                b.root,
-                on_block_secs,
-                early_accept,
-            )
-        }
+        Ok(BlockImport::Imported(b)) => finish_imported(
+            store,
+            residency,
+            head_store,
+            event_tx,
+            metrics,
+            snapshot_sequence,
+            &signed,
+            b.root,
+            on_block_secs,
+            early_accept,
+        ),
         Ok(BlockImport::Deferred(DeferralReason::DataUnavailable)) => {
             // Park for re-drive when DataAvailable lands (CC-24d / §8.3).
             if let Some(pending) = pending_da {
@@ -544,7 +542,15 @@ fn finish_imported<P: Preset>(
         .block_state(&block_root)
         .map(|s| s.validators_len() as u64)
         .unwrap_or(0);
-    metrics.observe_process_block(on_block_secs, slot, slot / slots_per_epoch, validator_count);
+    // Inclusive + exclusive dual observation (CC-3Aa / §6.4). Single call site
+    // so pre-engine local ≡ inclusive; after the engine is in the path only
+    // local stays exclusive (CC-32b will split the span).
+    metrics.observe_process_block_with_local(
+        on_block_secs,
+        slot,
+        slot / slots_per_epoch,
+        validator_count,
+    );
 
     if let Some(post) = store.block_state(&block_root).cloned() {
         residency.record_imported_body(block_root, Arc::new(signed.clone()), post);
@@ -788,10 +794,7 @@ mod tests {
         use cc_types::primitives::{Slot, ValidatorIndex};
 
         let samples: &[(OnBlockError, GossipClass)] = &[
-            (
-                OnBlockError::NotDescendedFromFinalized,
-                GossipClass::Reject,
-            ),
+            (OnBlockError::NotDescendedFromFinalized, GossipClass::Reject),
             (
                 OnBlockError::Transition(BlockError::InvalidSignature {
                     which: SignatureKind::BlockProposer,
@@ -819,10 +822,7 @@ mod tests {
                 OnBlockError::ProtoArray(ProtoArrayError::UnknownParent(Root::ZERO)),
                 GossipClass::Internal,
             ),
-            (
-                OnBlockError::PulledUpTip("x".into()),
-                GossipClass::Internal,
-            ),
+            (OnBlockError::PulledUpTip("x".into()), GossipClass::Internal),
             (
                 OnBlockError::Transition(BlockError::UnknownParent),
                 GossipClass::Ignore,
@@ -852,5 +852,4 @@ mod tests {
             assert_eq!(err.gossip_class(), *expected, "OnBlockError method {err:?}");
         }
     }
-
 }

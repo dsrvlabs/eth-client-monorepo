@@ -1,9 +1,16 @@
-//! Chain service Prometheus metrics (CC-1C / Architecture §11).
+//! Chain service Prometheus metrics (CC-1C / Architecture §11; CC-3Aa / §9).
 //!
 //! Registered into [`cc_bootstrap::Bootstrap::registry`] between `init` and
 //! `serve` — the Phase 0 §4.1 seam. Bucket boundaries for the two budgeted
 //! histograms include exact `0.4` and `1.0` so soak p95 is a counting question
 //! (ADR-P1-15 / §11.2), not a quantile interpolation.
+//!
+//! Phase 3 (CC-3Aa) appends engine-seam / optimism / deferral families and
+//! **`cc_chain_process_block_local_seconds`**, which is declared **and observed**
+//! here (the exclusive half of §6.4's Trigger A / Trigger B discrimination).
+//! Both `cc_chain_engine_call_seconds` and `cc_chain_process_block_local_seconds`
+//! reuse [`PROCESS_BLOCK_BUCKETS`] by reference so the three histograms cannot
+//! drift apart.
 
 use std::time::Instant;
 
@@ -65,6 +72,12 @@ pub struct ImportStageLabels {
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct ImportResultLabels {
     pub result: String,
+}
+
+/// Labels for `cc_chain_optimistic_transitions_total`.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct OptimisticDirectionLabels {
+    pub direction: String,
 }
 
 /// Labels for `cc_chain_event_buffer_occupancy` (ring + deepest subscriber).
@@ -145,12 +158,17 @@ impl ImportStage {
     }
 }
 
-/// `result` label values for `cc_chain_import_total` (Architecture §11.1).
+/// `result` label values for `cc_chain_import_total` (Architecture §11.1 / §9.1).
+///
+/// `DeferredEngine` is the Phase 3 third deferral outcome (`result="deferred_engine"`);
+/// observations land in CC-36a — this issue only declares the closed label value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ImportResult {
     Imported,
     Duplicate,
     Deferred,
+    /// Engine unavailable / errored — `result="deferred_engine"` (CC-36 / §4.9).
+    DeferredEngine,
     UnknownParent,
     Invalid,
 }
@@ -162,10 +180,31 @@ impl ImportResult {
             Self::Imported => "imported",
             Self::Duplicate => "duplicate",
             Self::Deferred => "deferred",
+            Self::DeferredEngine => "deferred_engine",
             Self::UnknownParent => "unknown_parent",
             Self::Invalid => "invalid",
         }
     }
+}
+
+/// `direction` label values for `cc_chain_optimistic_transitions_total` (§9.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OptimisticDirection {
+    Validated,
+    Invalidated,
+}
+
+impl OptimisticDirection {
+    /// Prometheus label value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Validated => "validated",
+            Self::Invalidated => "invalidated",
+        }
+    }
+
+    /// All variants (seed + tests).
+    pub const ALL: [Self; 2] = [Self::Validated, Self::Invalidated];
 }
 
 /// `op` label values for `cc_chain_budget_exceeded_total`.
@@ -192,12 +231,16 @@ pub const BUFFER_SUBSCRIBER: &str = "subscriber";
 
 // ── metric handles ──────────────────────────────────────────────────────────
 
-/// All chain Phase-1 metric families (CC-1C / §11.1).
+/// All chain Phase-1 + Phase-3 metric families (CC-1C / §11.1; CC-3Aa / §9.1).
 ///
 /// Cheap to clone (each field is a handle into shared series storage).
 ///
 /// CC-18b adds root-mismatch / backpressure counters and the body-ring gauge
 /// (Architecture §7.2 / §7.5); registration stays in this module.
+///
+/// CC-3Aa appends engine-call / process-block-local / optimism / pending_engine
+/// families. Most are declare-only; **`process_block_local` is observed** on the
+/// block-processing path so the pre-engine baseline is captured.
 #[derive(Debug, Clone)]
 pub struct ChainMetrics {
     pub process_block: Histogram,
@@ -230,6 +273,27 @@ pub struct ChainMetrics {
     pub da_pending_occupancy: Gauge,
     /// Current PeerDAS available-root set occupancy (CC-24d).
     pub da_available_occupancy: Gauge,
+    // ── CC-3Aa / §9.1 chain-side additions ─────────────────────────────────
+    /// Inclusive engine-call wall time (declare-only until CC-32b).
+    pub engine_call: Histogram,
+    /// Exclusive local block-processing time (declared **and** observed here).
+    pub process_block_local: Histogram,
+    /// Count of proto-array nodes with Optimistic execution status (ADR P3-10 / ≠13/8).
+    pub optimistic_nodes: Gauge,
+    /// Head is optimistic (0/1).
+    pub is_optimistic: Gauge,
+    /// Optimistic ↔ validated/invalidated transitions.
+    pub optimistic_transitions: Family<OptimisticDirectionLabels, Counter>,
+    /// Valid → Invalid hard-error path (EL consensus failure; expected zero forever).
+    pub valid_became_invalid: Counter,
+    /// Justified checkpoint invalidated (exit path).
+    pub justified_invalidated: Counter,
+    /// Nodes marked invalid by a backwards walk.
+    pub invalidated_nodes: Counter,
+    /// Current `pending_engine` occupancy.
+    pub pending_engine_occupancy: Gauge,
+    /// Blocks dropped from `pending_engine` (timeout or capacity).
+    pub pending_engine_dropped: Counter,
 }
 
 impl ChainMetrics {
@@ -266,6 +330,18 @@ impl ChainMetrics {
         let da_pending_dropped = Counter::default();
         let da_pending_occupancy = Gauge::default();
         let da_available_occupancy = Gauge::default();
+
+        // CC-3Aa: reuse PROCESS_BLOCK_BUCKETS by reference (never copy the ladder).
+        let engine_call = Histogram::new(PROCESS_BLOCK_BUCKETS);
+        let process_block_local = Histogram::new(PROCESS_BLOCK_BUCKETS);
+        let optimistic_nodes = Gauge::default();
+        let is_optimistic = Gauge::default();
+        let optimistic_transitions = Family::<OptimisticDirectionLabels, Counter>::default();
+        let valid_became_invalid = Counter::default();
+        let justified_invalidated = Counter::default();
+        let invalidated_nodes = Counter::default();
+        let pending_engine_occupancy = Gauge::default();
+        let pending_engine_dropped = Counter::default();
 
         registry.register_with_unit(
             "cc_chain_process_block",
@@ -311,7 +387,7 @@ impl ChainMetrics {
         // OpenMetrics appends `_total` for counters — do not include it in the name.
         registry.register(
             "cc_chain_import",
-            "Block import outcomes (result=imported|duplicate|deferred|unknown_parent|invalid)",
+            "Block import outcomes (result=imported|duplicate|deferred|deferred_engine|unknown_parent|invalid)",
             import_total.clone(),
         );
         registry.register(
@@ -383,6 +459,60 @@ impl ChainMetrics {
             da_available_occupancy.clone(),
         );
 
+        // ── CC-3Aa / §9.1 ───────────────────────────────────────────────────
+        registry.register_with_unit(
+            "cc_chain_engine_call",
+            "Wall time of engine API calls from chain (PROCESS_BLOCK_BUCKETS; boundary at 0.4 s)",
+            Unit::Seconds,
+            engine_call.clone(),
+        );
+        registry.register_with_unit(
+            "cc_chain_process_block_local",
+            "Exclusive local process_block wall time (PROCESS_BLOCK_BUCKETS; §6.4 Trigger A/B)",
+            Unit::Seconds,
+            process_block_local.clone(),
+        );
+        registry.register(
+            "cc_chain_optimistic_nodes",
+            "Proto-array nodes with Optimistic execution status (node count, not a root set; ≠13/8)",
+            optimistic_nodes.clone(),
+        );
+        registry.register(
+            "cc_chain_is_optimistic",
+            "Whether the chain head is optimistic (0/1)",
+            is_optimistic.clone(),
+        );
+        registry.register(
+            "cc_chain_optimistic_transitions",
+            "Optimistic status transitions (direction=validated|invalidated)",
+            optimistic_transitions.clone(),
+        );
+        registry.register(
+            "cc_chain_valid_became_invalid",
+            "Valid → Invalid hard errors (EL consensus failure; expected zero forever)",
+            valid_became_invalid.clone(),
+        );
+        registry.register(
+            "cc_chain_justified_invalidated",
+            "Justified-checkpoint invalidation exits",
+            justified_invalidated.clone(),
+        );
+        registry.register(
+            "cc_chain_invalidated_nodes",
+            "Proto-array nodes marked Invalid by a backwards walk",
+            invalidated_nodes.clone(),
+        );
+        registry.register(
+            "cc_chain_pending_engine_occupancy",
+            "Current pending_engine map occupancy",
+            pending_engine_occupancy.clone(),
+        );
+        registry.register(
+            "cc_chain_pending_engine_dropped",
+            "Blocks dropped from pending_engine (timeout or capacity eviction)",
+            pending_engine_dropped.clone(),
+        );
+
         let metrics = Self {
             process_block,
             process_epoch,
@@ -406,6 +536,16 @@ impl ChainMetrics {
             da_pending_dropped,
             da_pending_occupancy,
             da_available_occupancy,
+            engine_call,
+            process_block_local,
+            optimistic_nodes,
+            is_optimistic,
+            optimistic_transitions,
+            valid_became_invalid,
+            justified_invalidated,
+            invalidated_nodes,
+            pending_engine_occupancy,
+            pending_engine_dropped,
         };
         metrics.seed_exposition();
         metrics
@@ -440,6 +580,7 @@ impl ChainMetrics {
             ImportResult::Imported,
             ImportResult::Duplicate,
             ImportResult::Deferred,
+            ImportResult::DeferredEngine,
             ImportResult::UnknownParent,
             ImportResult::Invalid,
         ] {
@@ -493,6 +634,30 @@ impl ChainMetrics {
         let _ = self.da_pending_dropped.get();
         self.da_pending_occupancy.set(0);
         self.da_available_occupancy.set(0);
+
+        // CC-3Aa seeds — declare-only families start at zero.
+        //
+        // **Do not** seed-observe `process_block_local`: a fake `observe(0.0)`
+        // would make `_count ≥ 1` at register, so curl non-zero cannot prove the
+        // import-path observation this issue must land before the engine (M1 /
+        // §6.4 / §16/9). HELP/TYPE still appear because the histogram is
+        // registered unlabelled (prometheus-client emits empty classic histos).
+        self.engine_call.observe(0.0);
+        self.optimistic_nodes.set(0);
+        self.is_optimistic.set(0);
+        for direction in OptimisticDirection::ALL {
+            let _ = self
+                .optimistic_transitions
+                .get_or_create(&OptimisticDirectionLabels {
+                    direction: direction.as_str().to_owned(),
+                })
+                .get();
+        }
+        let _ = self.valid_became_invalid.get();
+        let _ = self.justified_invalidated.get();
+        let _ = self.invalidated_nodes.get();
+        self.pending_engine_occupancy.set(0);
+        let _ = self.pending_engine_dropped.get();
     }
 
     /// Increment `cc_chain_da_pending_dropped_total` by `n`.
@@ -541,6 +706,37 @@ impl ChainMetrics {
                 "process_block exceeded budget"
             );
         }
+    }
+
+    /// Record exclusive local `process_block` duration (CC-3Aa / §6.4).
+    ///
+    /// Prefer [`Self::observe_process_block_with_local`] from the import path so
+    /// inclusive and exclusive stay wired through one production call site.
+    pub fn observe_process_block_local(&self, duration_secs: f64) {
+        self.process_block_local.observe(duration_secs);
+    }
+
+    /// Production dual observation for pre-engine block processing (CC-3Aa / §6.4).
+    ///
+    /// **This is the call site `finish_imported` uses.** Inclusive
+    /// (`process_block`) and exclusive (`process_block_local`) share the same
+    /// duration until the engine is in the path; after CC-32b only local stays
+    /// exclusive. Tests for placement must exercise **this** method (or import),
+    /// not dual-feed the two helpers independently.
+    pub fn observe_process_block_with_local(
+        &self,
+        duration_secs: f64,
+        slot: u64,
+        epoch: u64,
+        validator_count: u64,
+    ) {
+        self.observe_process_block(duration_secs, slot, epoch, validator_count);
+        self.observe_process_block_local(duration_secs);
+    }
+
+    /// Record one engine-call duration (declare-only until CC-32b observes it).
+    pub fn observe_engine_call(&self, duration_secs: f64) {
+        self.engine_call.observe(duration_secs);
     }
 
     /// Record one `process_epoch` duration and emit the structured epoch log.
@@ -1022,5 +1218,272 @@ mod tests {
         );
         assert!(buf.contains("path=\"cold\""), "missing cold path:\n{buf}");
         assert!(buf.contains("cc_chain_state_hash_tree_root_seconds"));
+    }
+
+    /// M1: after register alone, local `_count` is **0** (no seed observation).
+    /// After one production dual-site observation, `_count` is non-zero.
+    #[test]
+    fn process_block_local_zero_until_observed() {
+        let mut registry = Registry::default();
+        let m = ChainMetrics::register(&mut registry);
+
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        let before = histogram_snapshot(&buf, "cc_chain_process_block_local_seconds");
+        assert_eq!(
+            before.count, 0,
+            "seed must not observe process_block_local; count after register alone:\n{buf}"
+        );
+        // HELP/TYPE + empty bucket lines still present without a fake observation.
+        assert!(
+            buf.contains("# TYPE cc_chain_process_block_local_seconds histogram"),
+            "declared family must still emit TYPE without seed observe:\n{buf}"
+        );
+
+        // Production call site used by finish_imported (not dual-feed helpers).
+        m.observe_process_block_with_local(0.05, 1, 0, 10);
+
+        buf.clear();
+        encode(&mut buf, &registry).unwrap();
+        let after = histogram_snapshot(&buf, "cc_chain_process_block_local_seconds");
+        assert_eq!(
+            after.count, 1,
+            "one dual-site observation must yield local count=1:\n{buf}"
+        );
+    }
+
+    /// Pre-engine exclusive ≡ inclusive when driven only through the production
+    /// dual observation site (`observe_process_block_with_local` / `finish_imported`).
+    ///
+    /// Inclusive may have a Phase-1 seed sample; equality is asserted on **deltas**
+    /// so a seed observation cannot mask a missing local wire-up (M1/M2).
+    #[test]
+    fn local_equals_inclusive_before_engine() {
+        let mut registry = Registry::default();
+        let m = ChainMetrics::register(&mut registry);
+
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        let before_inc = histogram_snapshot(&buf, "cc_chain_process_block_seconds");
+        let before_loc = histogram_snapshot(&buf, "cc_chain_process_block_local_seconds");
+        assert_eq!(
+            before_loc.count, 0,
+            "local must start at 0 (no seed observe)"
+        );
+
+        // Sole production dual-site — the same method finish_imported calls.
+        // Dual-feeding observe_process_block + observe_process_block_local
+        // independently would not catch a missing call in finish_imported.
+        let fixture = [0.001_f64, 0.05, 0.2, 0.45, 1.1];
+        for d in fixture {
+            m.observe_process_block_with_local(d, 1, 0, 10);
+        }
+
+        buf.clear();
+        encode(&mut buf, &registry).unwrap();
+        let after_inc = histogram_snapshot(&buf, "cc_chain_process_block_seconds");
+        let after_loc = histogram_snapshot(&buf, "cc_chain_process_block_local_seconds");
+
+        let delta_inc = after_inc.count - before_inc.count;
+        let delta_loc = after_loc.count - before_loc.count;
+        assert_eq!(
+            delta_inc, delta_loc,
+            "pre-engine dual site must advance both by the same count: \
+             inc {before_inc:?}→{after_inc:?} loc {before_loc:?}→{after_loc:?}"
+        );
+        assert_eq!(
+            delta_loc,
+            fixture.len() as u64,
+            "fixture must drive {n} local observations",
+            n = fixture.len()
+        );
+
+        // Bucket deltas must match element-for-element (same samples, same ladder).
+        assert_eq!(
+            after_inc.buckets.len(),
+            after_loc.buckets.len(),
+            "bucket label sets must align"
+        );
+        for ((le_i, v_i), (le_l, v_l)) in after_inc
+            .buckets
+            .iter()
+            .zip(after_loc.buckets.iter())
+        {
+            assert_eq!(le_i, le_l, "bucket le mismatch");
+            let before_i = before_inc
+                .buckets
+                .iter()
+                .find(|(le, _)| le == le_i)
+                .map(|(_, v)| *v)
+                .unwrap_or(0);
+            let before_l = before_loc
+                .buckets
+                .iter()
+                .find(|(le, _)| le == le_l)
+                .map(|(_, v)| *v)
+                .unwrap_or(0);
+            assert_eq!(
+                v_i - before_i,
+                v_l - before_l,
+                "bucket delta mismatch at le={le_i}"
+            );
+        }
+    }
+
+    #[test]
+    fn process_block_local_emits_bucket_lines() {
+        let mut registry = Registry::default();
+        let m = ChainMetrics::register(&mut registry);
+        // Real observation so bucket samples are non-zero (declaration alone
+        // still emits zero-count lines via register).
+        m.observe_process_block_with_local(0.01, 1, 0, 1);
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+
+        // OpenMetrics encodes whole floats as "1.0" / "2.0" (not Display's "1"/"2").
+        for le in [
+            "0.005", "0.01", "0.025", "0.05", "0.1", "0.2", "0.3", "0.4", "0.5", "0.75", "1.0",
+            "2.0", "5.0",
+        ] {
+            let needle = format!("cc_chain_process_block_local_seconds_bucket{{le=\"{le}\"}}");
+            assert!(
+                buf.contains(&needle),
+                "missing local bucket le={le}:\n{buf}"
+            );
+        }
+        assert!(
+            buf.contains("cc_chain_process_block_local_seconds_sum"),
+            "missing _sum:\n{buf}"
+        );
+        assert!(
+            buf.contains("cc_chain_process_block_local_seconds_count"),
+            "missing _count:\n{buf}"
+        );
+        // 13 classic upper bounds + +Inf.
+        let bucket_lines = buf
+            .lines()
+            .filter(|l| l.starts_with("cc_chain_process_block_local_seconds_bucket{"))
+            .count();
+        assert_eq!(
+            bucket_lines, 14,
+            "expected 13 bounds + +Inf = 14 bucket lines, got {bucket_lines}:\n{buf}"
+        );
+    }
+
+    #[test]
+    fn process_block_buckets_reused_not_copied() {
+        // Source-level: three production Histogram::new(PROCESS_BLOCK_BUCKETS)
+        // (process_block, engine_call, process_block_local). Count only the
+        // `register` body so this test's own string literals are excluded.
+        let src = include_str!("metrics.rs");
+        let register_body = src
+            .split("pub fn register(registry: &mut Registry)")
+            .nth(1)
+            .and_then(|s| s.split("metrics.seed_exposition()").next())
+            .expect("register body");
+        let constructions = register_body
+            .matches("Histogram::new(PROCESS_BLOCK_BUCKETS)")
+            .count();
+        assert_eq!(
+            constructions, 3,
+            "expected three Histogram::new(PROCESS_BLOCK_BUCKETS) uses in register, got {constructions}"
+        );
+        assert_eq!(PROCESS_BLOCK_BUCKETS.len(), 13);
+        assert!(PROCESS_BLOCK_BUCKETS.contains(&0.4));
+        assert!(PROCESS_BLOCK_BUCKETS.contains(&0.75));
+    }
+
+    /// M2: production import path must use the dual observation site (not
+    /// independently dual-feed the two helpers).
+    #[test]
+    fn finish_imported_wires_dual_observation_site() {
+        let import_src = include_str!("import.rs");
+        assert!(
+            import_src.contains("observe_process_block_with_local"),
+            "finish_imported must call observe_process_block_with_local"
+        );
+        // Guard against re-introducing independent dual-feed at the site.
+        let after_comment = import_src
+            .split("// Inclusive + exclusive dual observation")
+            .nth(1)
+            .unwrap_or("");
+        let site = after_comment
+            .split("if let Some(post)")
+            .next()
+            .unwrap_or("");
+        assert!(
+            site.contains("observe_process_block_with_local"),
+            "dual observation site missing in finish_imported:\n{site}"
+        );
+        assert!(
+            !site.contains("observe_process_block_local("),
+            "finish_imported must not call observe_process_block_local separately:\n{site}"
+        );
+        assert!(
+            !site.contains("observe_process_block("),
+            "finish_imported must not call observe_process_block separately:\n{site}"
+        );
+    }
+
+    #[test]
+    fn optimistic_nodes_not_roots_name() {
+        let mut registry = Registry::default();
+        let _m = ChainMetrics::register(&mut registry);
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        assert!(
+            buf.contains("cc_chain_optimistic_nodes"),
+            "expected optimistic_nodes gauge:\n{buf}"
+        );
+        // Forbidden legacy name (≠13/8) — assembled so source grep stays clean.
+        let forbidden = format!("cc_chain_optimistic_{}", "roots");
+        assert!(
+            !buf.contains(&forbidden),
+            "{forbidden} must not exist (≠13/8):\n{buf}"
+        );
+        assert!(
+            buf.contains("result=\"deferred_engine\""),
+            "deferred_engine label must be seeded:\n{buf}"
+        );
+    }
+
+    #[derive(Debug)]
+    struct HistSnap {
+        count: u64,
+        buckets: Vec<(String, u64)>,
+    }
+
+    fn histogram_snapshot(buf: &str, family: &str) -> HistSnap {
+        let count_prefix = format!("{family}_count");
+        let bucket_prefix = format!("{family}_bucket{{");
+        let mut count = 0_u64;
+        let mut buckets = Vec::new();
+        for line in buf.lines() {
+            if let Some(rest) = line.strip_prefix(&count_prefix) {
+                let n = rest.trim();
+                count = n
+                    .parse::<f64>()
+                    .map(|v| v as u64)
+                    .or_else(|_| n.parse::<u64>())
+                    .unwrap_or(0);
+            }
+            if let Some(rest) = line.strip_prefix(&bucket_prefix) {
+                // le="0.4"} 1
+                if let Some(le_start) = rest.find("le=\"") {
+                    let after = &rest[le_start + 4..];
+                    if let Some(le_end) = after.find('"') {
+                        let le = after[..le_end].to_owned();
+                        let value_part = rest.rsplit_once(' ').map(|(_, v)| v).unwrap_or("0");
+                        let v = value_part
+                            .parse::<f64>()
+                            .map(|x| x as u64)
+                            .or_else(|_| value_part.parse::<u64>())
+                            .unwrap_or(0);
+                        buckets.push((le, v));
+                    }
+                }
+            }
+        }
+        HistSnap { count, buckets }
     }
 }

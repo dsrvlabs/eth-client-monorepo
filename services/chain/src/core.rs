@@ -96,10 +96,7 @@ pub enum CoreCommand {
     ///
     /// Marks [`PeerDasAvailability`] and re-drives a parked `pending_da` entry
     /// when present. Order-independent with block arrival.
-    DataAvailable {
-        root: Root,
-        slot: u64,
-    },
+    DataAvailable { root: Root, slot: u64 },
     /// Graceful shutdown.
     Shutdown { done: oneshot::Sender<()> },
 }
@@ -135,10 +132,7 @@ pub enum QueryReply {
         pubkeys: Vec<Vec<u8>>,
     },
     /// Served SSZ validator records + the head slot they were read at.
-    ValidatorRecords {
-        ssz: Vec<Vec<u8>>,
-        slot: u64,
-    },
+    ValidatorRecords { ssz: Vec<Vec<u8>>, slot: u64 },
 }
 
 /// Configuration for spawning the core thread.
@@ -451,7 +445,15 @@ pub fn spawn_core_thread<P: Preset + 'static>(
     metrics: ChainMetrics,
     core_cfg: CoreConfig,
 ) -> CoreThread {
-    spawn_core_thread_with_epoch(store, config, head, EpochContextStore::new(), event_tx, metrics, core_cfg)
+    spawn_core_thread_with_epoch(
+        store,
+        config,
+        head,
+        EpochContextStore::new(),
+        event_tx,
+        metrics,
+        core_cfg,
+    )
 }
 
 /// Like [`spawn_core_thread`] but reuses a caller-owned [`EpochContextStore`].
@@ -998,13 +1000,7 @@ fn handle_data_available<P: Preset>(
         Some(pending_da),
     );
     if outcome.is_ok() {
-        maybe_publish_epoch_context(
-            store,
-            config,
-            epoch,
-            epoch_sequence,
-            last_published_epoch,
-        );
+        maybe_publish_epoch_context(store, config, epoch, epoch_sequence, last_published_epoch);
     }
 }
 

@@ -1050,9 +1050,12 @@ dependencies = [
  "cc-bootstrap",
  "cc-config",
  "cc-proto",
+ "prometheus-client",
  "serde",
  "tokio",
  "tonic",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

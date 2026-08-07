@@ -322,9 +322,9 @@ pub fn blob_schedule_from_spec(value: &str) -> Result<BlobSchedule, BlobSchedule
 pub fn blob_schedule_from_spec_map(
     remote: &BTreeMap<String, String>,
 ) -> Result<BlobSchedule, BlobScheduleFromSpecError> {
-    let value = remote.get("BLOB_SCHEDULE").ok_or_else(|| {
-        BlobScheduleFromSpecError::Malformed("BLOB_SCHEDULE key missing".into())
-    })?;
+    let value = remote
+        .get("BLOB_SCHEDULE")
+        .ok_or_else(|| BlobScheduleFromSpecError::Malformed("BLOB_SCHEDULE key missing".into()))?;
     blob_schedule_from_spec(value)
 }
 
@@ -366,11 +366,7 @@ pub fn cross_check_spec(
     let fulu_epoch = local.fulu_fork_epoch.as_u64().to_string();
     match remote.get("FULU_FORK_EPOCH") {
         Some(remote_v) if remote_v.trim() == fulu_epoch => {}
-        Some(remote_v) => differing.push((
-            "FULU_FORK_EPOCH".into(),
-            fulu_epoch,
-            remote_v.clone(),
-        )),
+        Some(remote_v) => differing.push(("FULU_FORK_EPOCH".into(), fulu_epoch, remote_v.clone())),
         None => differing.push(("FULU_FORK_EPOCH".into(), fulu_epoch, "<missing>".into())),
     }
 
@@ -456,12 +452,9 @@ fn format_blob_schedule(entries: &[BlobParameters]) -> String {
 /// Accepts JSON arrays whose fields are numbers or decimal strings, with either
 /// SCREAMING_SNAKE or lowercase keys — the shapes public providers emit after
 /// `Value::Array` → string flattening in [`parse_spec_json`].
-fn parse_blob_schedule_entries(
-    s: &str,
-) -> Result<Vec<BlobParameters>, BlobScheduleFromSpecError> {
-    let value: serde_json::Value = serde_json::from_str(s.trim()).map_err(|e| {
-        BlobScheduleFromSpecError::Malformed(format!("json: {e}"))
-    })?;
+fn parse_blob_schedule_entries(s: &str) -> Result<Vec<BlobParameters>, BlobScheduleFromSpecError> {
+    let value: serde_json::Value = serde_json::from_str(s.trim())
+        .map_err(|e| BlobScheduleFromSpecError::Malformed(format!("json: {e}")))?;
     let arr = value.as_array().ok_or_else(|| {
         BlobScheduleFromSpecError::Malformed("expected JSON array of schedule entries".into())
     })?;
@@ -471,8 +464,12 @@ fn parse_blob_schedule_entries(
             BlobScheduleFromSpecError::Malformed(format!("entry {i} is not an object"))
         })?;
         let epoch = field_u64(obj, &["EPOCH", "epoch"], i, "EPOCH")?;
-        let max_blobs =
-            field_u64(obj, &["MAX_BLOBS_PER_BLOCK", "max_blobs_per_block"], i, "MAX_BLOBS_PER_BLOCK")?;
+        let max_blobs = field_u64(
+            obj,
+            &["MAX_BLOBS_PER_BLOCK", "max_blobs_per_block"],
+            i,
+            "MAX_BLOBS_PER_BLOCK",
+        )?;
         entries.push(BlobParameters {
             epoch: Epoch::new(epoch),
             max_blobs_per_block: max_blobs,
@@ -487,22 +484,15 @@ fn field_u64(
     index: usize,
     label: &str,
 ) -> Result<u64, BlobScheduleFromSpecError> {
-    let raw = keys
-        .iter()
-        .find_map(|k| obj.get(*k))
-        .ok_or_else(|| {
-            BlobScheduleFromSpecError::Malformed(format!("entry {index} missing {label}"))
-        })?;
+    let raw = keys.iter().find_map(|k| obj.get(*k)).ok_or_else(|| {
+        BlobScheduleFromSpecError::Malformed(format!("entry {index} missing {label}"))
+    })?;
     match raw {
         serde_json::Value::Number(n) => n.as_u64().ok_or_else(|| {
-            BlobScheduleFromSpecError::Malformed(format!(
-                "entry {index} {label} not a u64: {n}"
-            ))
+            BlobScheduleFromSpecError::Malformed(format!("entry {index} {label} not a u64: {n}"))
         }),
         serde_json::Value::String(s) => s.trim().parse::<u64>().map_err(|e| {
-            BlobScheduleFromSpecError::Malformed(format!(
-                "entry {index} {label} parse {s:?}: {e}"
-            ))
+            BlobScheduleFromSpecError::Malformed(format!("entry {index} {label} parse {s:?}: {e}"))
         }),
         other => Err(BlobScheduleFromSpecError::Malformed(format!(
             "entry {index} {label} unexpected type: {other}"
@@ -524,7 +514,10 @@ impl CheckpointClient {
     /// Redirects that leave HTTPS (or leave loopback HTTP) are refused so a
     /// compromised provider cannot pivot bootstrap GETs into cleartext or
     /// arbitrary internal hosts (SEC-19a-3).
-    pub fn new(connect_timeout: Duration, total_timeout: Duration) -> Result<Self, CheckpointError> {
+    pub fn new(
+        connect_timeout: Duration,
+        total_timeout: Duration,
+    ) -> Result<Self, CheckpointError> {
         let http = reqwest::Client::builder()
             .connect_timeout(connect_timeout)
             .timeout(total_timeout)
@@ -667,9 +660,7 @@ async fn read_body_capped(
     {
         return Err(CheckpointError::Provider {
             provider: provider.to_owned(),
-            reason: format!(
-                "GET {url}: Content-Length {cl} exceeds max {max_bytes} bytes"
-            ),
+            reason: format!("GET {url}: Content-Length {cl} exceeds max {max_bytes} bytes"),
         });
     }
 
@@ -807,8 +798,7 @@ fn parse_genesis_json(text: &str) -> Result<GenesisInfo, String> {
 }
 
 fn parse_spec_json(text: &str) -> Result<BTreeMap<String, String>, String> {
-    let v: serde_json::Value =
-        serde_json::from_str(text).map_err(|e| format!("spec json: {e}"))?;
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("spec json: {e}"))?;
     let data = v
         .get("data")
         .ok_or_else(|| "spec missing data".to_owned())?;
@@ -831,9 +821,7 @@ fn parse_spec_json(text: &str) -> Result<BTreeMap<String, String>, String> {
 
 fn json_u64(v: &serde_json::Value) -> Result<u64, String> {
     match v {
-        serde_json::Value::Number(n) => n
-            .as_u64()
-            .ok_or_else(|| format!("not u64: {n}")),
+        serde_json::Value::Number(n) => n.as_u64().ok_or_else(|| format!("not u64: {n}")),
         serde_json::Value::String(s) => s
             .trim()
             .parse::<u64>()
@@ -856,9 +844,7 @@ pub fn parse_optional_root(s: Option<&str>) -> Result<Option<Root>, CheckpointEr
             if t.is_empty() {
                 Ok(None)
             } else {
-                parse_root_hex(t)
-                    .map(Some)
-                    .map_err(CheckpointError::Decode)
+                parse_root_hex(t).map(Some).map_err(CheckpointError::Decode)
             }
         }
     }
@@ -1057,11 +1043,7 @@ async fn fetch_and_verify_triple<P: Preset>(
         });
     }
 
-    let block_root = verify_checkpoint(
-        &signed_block,
-        &state,
-        cfg.expected_checkpoint_root,
-    )?;
+    let block_root = verify_checkpoint(&signed_block, &state, cfg.expected_checkpoint_root)?;
 
     if cfg.expected_checkpoint_root.is_none() {
         tracing::warn!(
@@ -1087,10 +1069,7 @@ async fn fetch_and_verify_triple<P: Preset>(
 /// A decoded state starts cold by construction (§3.4). Paying the full root
 /// here keeps the first post-bootstrap import off the cold path (§8.3).
 /// Records `cc_chain_state_hash_tree_root_seconds{path="cold"}` for the warm-up.
-pub fn warm_canonical_root<P: Preset>(
-    state: &mut BeaconState<P>,
-    metrics: &ChainMetrics,
-) -> Root {
+pub fn warm_canonical_root<P: Preset>(state: &mut BeaconState<P>, metrics: &ChainMetrics) -> Root {
     metrics.time_state_hash_tree_root(HashPath::Cold, || state.canonical_root())
 }
 
@@ -1253,14 +1232,12 @@ mod tests {
     use super::*;
     use std::convert::Infallible;
     use std::net::SocketAddr;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     use cc_types::config::{BlobSchedule, PresetName};
     use cc_types::preset::Minimal;
-    use cc_types::primitives::{
-        Epoch, ExecutionAddress, ForkVersion, Slot, ValidatorIndex,
-    };
+    use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Slot, ValidatorIndex};
     use cc_types::{BeaconBlock, BeaconBlockBody};
     use http_body_util::{BodyExt, Full};
     use hyper::body::Incoming;
@@ -1335,10 +1312,7 @@ mod tests {
             "FULU_FORK_EPOCH".into(),
             cfg.fulu_fork_epoch.as_u64().to_string(),
         );
-        m.insert(
-            "SECONDS_PER_SLOT".into(),
-            cfg.seconds_per_slot.to_string(),
-        );
+        m.insert("SECONDS_PER_SLOT".into(), cfg.seconds_per_slot.to_string());
         m.insert(
             "BLOB_SCHEDULE".into(),
             serde_json::to_string(
@@ -1985,9 +1959,9 @@ mod tests {
             let service = service_fn(|_req: Request<Incoming>| async move {
                 // 9 × 1 MiB chunks = 9 MiB > MAX_BLOCK_BYTES (8 MiB).
                 let chunk = Bytes::from(vec![0u8; 1024 * 1024]);
-                let chunks = stream::iter((0..9).map(move |_| {
-                    Ok::<_, Infallible>(Frame::data(chunk.clone()))
-                }));
+                let chunks = stream::iter(
+                    (0..9).map(move |_| Ok::<_, Infallible>(Frame::data(chunk.clone()))),
+                );
                 let body = StreamBody::new(chunks);
                 Ok::<_, Infallible>(
                     Response::builder()
@@ -2002,12 +1976,10 @@ mod tests {
         });
         tokio::task::yield_now().await;
 
-        let client = CheckpointClient::new(Duration::from_secs(1), Duration::from_secs(30)).unwrap();
+        let client =
+            CheckpointClient::new(Duration::from_secs(1), Duration::from_secs(30)).unwrap();
         let base = format!("http://{addr}");
-        let err = client
-            .fetch_finalized_block_ssz(&base)
-            .await
-            .unwrap_err();
+        let err = client.fetch_finalized_block_ssz(&base).await.unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("exceeds max") || msg.contains("body exceeds max"),
@@ -2088,8 +2060,8 @@ mod tests {
         // block signature verifies with it and fails with a wrong root.
         // (Mirror assertion lives in CC-11a / crates/crypto/tests/bls.rs.)
         use cc_crypto::{
-            compute_domain, compute_signing_root, get_domain, verify, Signature,
-            DOMAIN_BEACON_PROPOSER,
+            DOMAIN_BEACON_PROPOSER, Signature, compute_domain, compute_signing_root, get_domain,
+            verify,
         };
         use cc_types::Fork;
         use std::fs;
@@ -2146,12 +2118,7 @@ mod tests {
             Root::from_array(a)
         };
 
-        let domain_ok = get_domain(
-            &fork,
-            DOMAIN_BEACON_PROPOSER,
-            Some(Epoch::new(epoch)),
-            gvr,
-        );
+        let domain_ok = get_domain(&fork, DOMAIN_BEACON_PROPOSER, Some(Epoch::new(epoch)), gvr);
         let domain_bad = get_domain(
             &fork,
             DOMAIN_BEACON_PROPOSER,
@@ -2208,14 +2175,8 @@ mod tests {
             ("slot", Field::Fixed(8)),
             ("fork", Field::Fixed(16)),
             ("latest_block_header", Field::Fixed(112)),
-            (
-                "block_roots",
-                Field::Fixed(SLOTS_PER_HISTORICAL_ROOT * 32),
-            ),
-            (
-                "state_roots",
-                Field::Fixed(SLOTS_PER_HISTORICAL_ROOT * 32),
-            ),
+            ("block_roots", Field::Fixed(SLOTS_PER_HISTORICAL_ROOT * 32)),
+            ("state_roots", Field::Fixed(SLOTS_PER_HISTORICAL_ROOT * 32)),
             ("historical_roots", Field::Var),
             ("eth1_data", Field::Fixed(72)),
             ("eth1_data_votes", Field::Var),
@@ -2226,10 +2187,7 @@ mod tests {
                 "randao_mixes",
                 Field::Fixed(EPOCHS_PER_HISTORICAL_VECTOR * 32),
             ),
-            (
-                "slashings",
-                Field::Fixed(EPOCHS_PER_SLASHINGS_VECTOR * 8),
-            ),
+            ("slashings", Field::Fixed(EPOCHS_PER_SLASHINGS_VECTOR * 8)),
             ("previous_epoch_participation", Field::Var),
             ("current_epoch_participation", Field::Var),
             ("justification_bits", Field::Fixed(1)),

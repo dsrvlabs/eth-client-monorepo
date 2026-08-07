@@ -57,9 +57,9 @@ use cc_state_transition::helpers::accessors::{
     compute_time_at_slot, get_beacon_proposer_index, get_current_epoch, get_randao_mix,
 };
 use cc_state_transition::{
-    get_expected_withdrawals, process_block, process_justification_and_finalization, process_slots,
-    take_canonical_root_call_count, take_canonical_root_elapsed_ns, BlockSignatureStrategy,
-    StubOptimisticEngine, TransitionContext,
+    BlockSignatureStrategy, StubOptimisticEngine, TransitionContext, get_expected_withdrawals,
+    process_block, process_justification_and_finalization, process_slots,
+    take_canonical_root_call_count, take_canonical_root_elapsed_ns,
 };
 use cc_types::config::ChainConfig;
 use cc_types::containers::SyncAggregate;
@@ -123,10 +123,7 @@ fn parse_flat_toml(text: &str) -> BTreeMap<String, String> {
         let Some((k, v)) = line.split_once('=') else {
             continue;
         };
-        map.insert(
-            k.trim().to_string(),
-            v.trim().trim_matches('"').to_string(),
-        );
+        map.insert(k.trim().to_string(), v.trim().trim_matches('"').to_string());
     }
     map
 }
@@ -143,8 +140,7 @@ struct AnchorPin {
 
 fn load_anchor_pin() -> AnchorPin {
     let path = manifests_dir().join("hoodi-anchor.toml");
-    let text = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let map = parse_flat_toml(&text);
     AnchorPin {
         slot: map
@@ -177,8 +173,8 @@ fn verify_file_sha256(path: &Path, expected: &str, artifact: &str) {
             path.display()
         );
     }
-    let bytes = fs::read(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}; {FETCH_HINT}", path.display()));
+    let bytes =
+        fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}; {FETCH_HINT}", path.display()));
     let actual = hex_sha256(&bytes);
     assert_eq!(
         actual, expected,
@@ -205,8 +201,8 @@ fn require_fixtures() {
     verify_file_sha256(&block, &pin.block_sha256, "signed_beacon_block.ssz");
     verify_file_sha256(&state, &pin.state_sha256, "beacon_state.ssz");
 
-    let meta =
-        fs::metadata(&state).unwrap_or_else(|e| panic!("stat {}: {e}; {FETCH_HINT}", state.display()));
+    let meta = fs::metadata(&state)
+        .unwrap_or_else(|e| panic!("stat {}: {e}; {FETCH_HINT}", state.display()));
     if meta.len() < 150 * 1024 * 1024 {
         panic!(
             "beacon_state.ssz too small ({} bytes); {FETCH_HINT}",
@@ -275,7 +271,9 @@ fn load_anchor_block() -> SignedBeaconBlock<Mainnet> {
     let signed = SignedBeaconBlock::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, &bytes)
         .unwrap_or_else(|e| panic!("decode SignedBeaconBlock: {e:?}; {FETCH_HINT}"));
     let pin = load_anchor_pin();
-    let actual = root_hex(&Root::from_hash256(TreeHash::tree_hash_root(&signed.message)));
+    let actual = root_hex(&Root::from_hash256(TreeHash::tree_hash_root(
+        &signed.message,
+    )));
     let expected = pin.block_root.trim_start_matches("0x");
     assert_eq!(actual, expected, "anchor block_root pin mismatch");
     signed
@@ -342,16 +340,14 @@ fn parse_sequence_toml(text: &str) -> Vec<SequenceEntry> {
 
 fn load_sequence_block(slot: u64) -> SignedBeaconBlock<Mainnet> {
     let path = slot_dir().join("sequence").join(format!("{slot}.ssz"));
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}; {FETCH_HINT}", path.display()));
+    let bytes =
+        fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}; {FETCH_HINT}", path.display()));
     SignedBeaconBlock::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, &bytes)
         .unwrap_or_else(|e| panic!("decode sequence/{slot}.ssz: {e:?}"))
 }
 
 fn root_hex(root: &Root) -> String {
-    root.as_slice()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    root.as_slice().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ── block builder (valid post-anchor extension from real Hoodi state) ────────
@@ -577,7 +573,10 @@ fn recorded_sequence_parent_linked_and_decodes() {
         let expected = e.root.trim_start_matches("0x");
         assert_eq!(actual, expected, "root mismatch slot {}", e.slot);
     }
-    assert!(nonempty >= 30, "expected most slots non-empty, got {nonempty}");
+    assert!(
+        nonempty >= 30,
+        "expected most slots non-empty, got {nonempty}"
+    );
     println!("recorded sequence: {nonempty} non-empty parent-linked SSZ blocks ok");
 }
 
@@ -611,8 +610,7 @@ async fn offline_replay_40_slots_via_grpc() {
     let config = hoodi_config();
     let anchor_state = load_anchor_state();
     let anchor_signed = load_anchor_block();
-    let anchor_root =
-        Root::from_hash256(TreeHash::tree_hash_root(&anchor_signed.message));
+    let anchor_root = Root::from_hash256(TreeHash::tree_hash_root(&anchor_signed.message));
 
     // Pre-build 40 valid post-anchor blocks (full ST offline for state_root).
     let mut parent_state = anchor_state.clone();
@@ -629,7 +627,10 @@ async fn offline_replay_40_slots_via_grpc() {
             ANCHOR_SLOT + 1 + i,
             "slot progression"
         );
-        assert_eq!(signed.message.parent_root, parent_root, "parent-linked build");
+        assert_eq!(
+            signed.message.parent_root, parent_root,
+            "parent-linked build"
+        );
         roots.push(root);
         parent_root = root;
         parent_state = post;
@@ -644,12 +645,7 @@ async fn offline_replay_40_slots_via_grpc() {
     );
 
     // Seed store from committed Hoodi anchor; time covers the 40-slot window.
-    let store = seed_store(
-        anchor_state,
-        &anchor_signed.message,
-        &config,
-        SEQUENCE_LEN,
-    );
+    let store = seed_store(anchor_state, &anchor_signed.message, &config, SEQUENCE_LEN);
     let initial_finalized = store.finalized_checkpoint().epoch.as_u64();
     let mut harness = Harness::spawn(store, config.clone()).await;
 
@@ -681,7 +677,8 @@ async fn offline_replay_40_slots_via_grpc() {
         // Snapshot path (core ArcSwap) and gRPC GetHead must agree with tip.
         let snap = harness.core.handle.head().load();
         assert_eq!(
-            snap.head_root, expected,
+            snap.head_root,
+            expected,
             "snapshot head after import {i}: got {} want {} seq={}",
             root_hex(&snap.head_root),
             root_hex(&expected),
@@ -693,14 +690,19 @@ async fn offline_replay_40_slots_via_grpc() {
             .await
             .expect("GetHead")
             .into_inner();
-        assert_eq!(head.head_root.len(), 32, "GetHead head_root must be 32 bytes");
+        assert_eq!(
+            head.head_root.len(),
+            32,
+            "GetHead head_root must be 32 bytes"
+        );
         let head_root = Root::from_array({
             let mut a = [0u8; 32];
             a.copy_from_slice(&head.head_root);
             a
         });
         assert_eq!(
-            head_root, expected,
+            head_root,
+            expected,
             "GetHead root after import {i}: got {} want {}",
             root_hex(&head_root),
             root_hex(&expected)
@@ -860,9 +862,7 @@ fn cc1h_mid_gate_with_fork_choice_clone() {
         process_justification_and_finalization(&mut pull)
             .unwrap_or_else(|e| panic!("warm-up pulled-up J&F: {e}"));
         next_boundary = next_boundary.saturating_add(slots_per_epoch);
-        println!(
-            "warmup_epoch from_slot={from} to_slot={to} (discarded from mid-gate max)"
-        );
+        println!("warmup_epoch from_slot={from} to_slot={to} (discarded from mid-gate max)");
     }
 
     let measure_start_slot = state.slot().as_u64();
@@ -927,9 +927,7 @@ fn cc1h_mid_gate_with_fork_choice_clone() {
             0.0
         };
 
-        println!(
-            "{i},{from},{to},{wall_ms:.2},{hash_ms:.2},{share:.1},{root_calls},{clone_ms:.2}"
-        );
+        println!("{i},{from},{to},{wall_ms:.2},{hash_ms:.2},{share:.1},{root_calls},{clone_ms:.2}");
         walls_ms.push(wall_ms);
         hash_shares.push(share);
         fc_clone_ms.push(clone_ms);

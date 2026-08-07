@@ -22,9 +22,7 @@ use cc_chain::checkpoint_sync::{
 };
 use cc_chain::core::{CoreConfig, CoreThread};
 use cc_chain::service::ChainServiceImpl;
-use cc_chain::{
-    ChainMetrics, EpochContextStore, EventsConfig, EventsHandle, HeadSnapshotStore,
-};
+use cc_chain::{ChainMetrics, EpochContextStore, EventsConfig, EventsHandle, HeadSnapshotStore};
 use cc_config::ServiceConfig;
 use cc_proto::chain::chain_service_server::ChainServiceServer;
 use cc_types::config::ChainConfig as NetworkChainConfig;
@@ -50,11 +48,7 @@ impl CoreJoinOwner {
     /// Holds `self` only for the synchronous install/store step (no await).
     ///
     /// `Option` rather than `Result` so the large `CoreThread` is not an Err variant.
-    fn try_install(
-        &mut self,
-        svc: &ChainServiceImpl,
-        core: CoreThread,
-    ) -> Option<CoreThread> {
+    fn try_install(&mut self, svc: &ChainServiceImpl, core: CoreThread) -> Option<CoreThread> {
         if self.shutting_down {
             return Some(core);
         }
@@ -209,9 +203,8 @@ async fn main() -> anyhow::Result<()> {
                  (path to hoodi/mainnet consensus YAML for /eth/v1/config/spec cross-check)"
             )
         })?;
-        let network = NetworkChainConfig::from_yaml_file(network_path).map_err(|e| {
-            anyhow::anyhow!("failed to load network_config {network_path}: {e}")
-        })?;
+        let network = NetworkChainConfig::from_yaml_file(network_path)
+            .map_err(|e| anyhow::anyhow!("failed to load network_config {network_path}: {e}"))?;
         let expected = parse_optional_root(cfg.checkpoint_root.as_deref())
             .map_err(|e| anyhow::anyhow!("checkpoint_root: {e}"))?;
         let boot_cfg = CheckpointBootstrapConfig {
@@ -271,9 +264,7 @@ async fn main() -> anyhow::Result<()> {
                     // SEC-19b-2: under core_owner lock — install + store, or
                     // join locally if pre-drain already sealed installs.
                     let orphan = {
-                        let mut guard = core_owner_boot
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner());
+                        let mut guard = core_owner_boot.lock().unwrap_or_else(|p| p.into_inner());
                         guard.try_install(&svc_boot, core)
                     };
                     if let Some(core) = orphan {

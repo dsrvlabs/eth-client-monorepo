@@ -36,14 +36,14 @@ pub mod service;
 
 pub use apply_attestations::MAX_APPLY_ATTESTATIONS;
 pub use checkpoint_sync::{
-    BootstrapSummary, BlobScheduleFromSpecError, CheckpointBootstrapConfig, CheckpointClient,
+    BlobScheduleFromSpecError, BootstrapSummary, CheckpointBootstrapConfig, CheckpointClient,
     CheckpointError, FetchedCheckpoint, GenesisInfo, MAX_BLOCK_BYTES, MAX_JSON_BYTES,
     MAX_STATE_BYTES, NETWORK_RETRIES, PROVIDER_CONNECT_TIMEOUT, PROVIDER_TOTAL_TIMEOUT,
     REQUIRED_CONSENSUS_VERSION, TRIPLE_ATTEMPTS, blob_schedule_from_spec,
     blob_schedule_from_spec_map, bootstrap_core_from_providers,
-    bootstrap_core_from_providers_with_epoch, cross_check_spec, fetch_checkpoint, parse_optional_root,
-    spawn_core_from_checkpoint, spawn_core_from_checkpoint_with_epoch, validate_provider_base,
-    verify_checkpoint, warm_canonical_root,
+    bootstrap_core_from_providers_with_epoch, cross_check_spec, fetch_checkpoint,
+    parse_optional_root, spawn_core_from_checkpoint, spawn_core_from_checkpoint_with_epoch,
+    validate_provider_base, verify_checkpoint, warm_canonical_root,
 };
 pub use core::{
     COMMAND_CHANNEL_CAPACITY, CoreCommand, CoreConfig, CoreHandle, CoreThread, IMPORT_SEND_TIMEOUT,
@@ -63,11 +63,6 @@ pub use events::{
     REASON_CURSOR_UNKNOWN_SESSION,
 };
 pub use head::{HeadSnapshot, HeadSnapshotStore};
-pub use p2p_stream::{
-    MAX_P2P_STREAM_SESSIONS, P2pStreamDeps, REASON_STREAM_SESSION_LIMIT, REASON_UNKNOWN_TOPIC,
-    STREAM_OUTBOUND_CAPACITY, VIEW_KIND_EPOCH_TICK, VIEW_KIND_FULL, VIEW_KIND_HEAD_CHANGE,
-    VIEW_KIND_SLOT_TICK, ViewTick, build_chain_view, validate_publish_topic,
-};
 pub use import::{
     ImportCounters, ImportOutcome, decode_signed_block, encode_signed_block,
     import_block_with_early, late_import_flags, on_block_error_gossip_class, parse_root,
@@ -75,7 +70,13 @@ pub use import::{
 pub use metrics::{
     AUX_DURATION_BUCKETS, BLOCK_BUDGET_SECS, BUFFER_RING, BUFFER_SUBSCRIBER, BootstrapResult,
     BudgetOp, CI_BLOCK_CEILING_SECS, CI_EPOCH_CEILING_SECS, ChainMetrics, EPOCH_BUDGET_SECS,
-    HashPath, ImportResult, ImportStage, PROCESS_BLOCK_BUCKETS, PROCESS_EPOCH_BUCKETS,
+    HashPath, ImportResult, ImportStage, OptimisticDirection, PROCESS_BLOCK_BUCKETS,
+    PROCESS_EPOCH_BUCKETS,
+};
+pub use p2p_stream::{
+    MAX_P2P_STREAM_SESSIONS, P2pStreamDeps, REASON_STREAM_SESSION_LIMIT, REASON_UNKNOWN_TOPIC,
+    STREAM_OUTBOUND_CAPACITY, VIEW_KIND_EPOCH_TICK, VIEW_KIND_FULL, VIEW_KIND_HEAD_CHANGE,
+    VIEW_KIND_SLOT_TICK, ViewTick, build_chain_view, validate_publish_topic,
 };
 pub use residency::{
     BodyRingEntry, DEFAULT_BODY_RING_CAPACITY, DEFAULT_MAX_RESIDENT_STATES, Residency,

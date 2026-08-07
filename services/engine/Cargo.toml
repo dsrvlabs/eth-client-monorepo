@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[lib]
+name = "cc_engine"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cc-engine"
 path = "src/main.rs"
@@ -19,6 +23,11 @@ anyhow = { workspace = true }
 cc-bootstrap = { workspace = true }
 cc-config = { workspace = true }
 cc-proto = { workspace = true }
+prometheus-client = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

@@ -360,19 +360,13 @@ mod tests {
     fn inverted_timeout_config_fails_ordering() {
         // 1 slot × 12 s = 12 s; ladder 3×15 = 45 s → fail.
         let err = assert_timeout_outlasts_recovery(1, 12, 3, 4, 5, 10).unwrap_err();
-        assert!(
-            err.contains("strictly greater"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("strictly greater"), "unexpected error: {err}");
     }
 
     #[test]
     fn recovery_ladder_matches_cc25_math() {
         // 3 attempts × 15 s = 45 s ≈ 3.75 slots at 12 s — under 4-slot chain budget.
-        assert_eq!(
-            recovery_ladder_worst_case_secs(3, 4, 5, 10),
-            45
-        );
+        assert_eq!(recovery_ladder_worst_case_secs(3, 4, 5, 10), 45);
         assert_eq!(chain_pending_timeout_secs(4, 12), 48);
     }
 
@@ -430,11 +424,7 @@ mod tests {
 
     fn seeded_peer_das_store(
         da: Arc<PeerDasAvailability>,
-    ) -> (
-        cc_fork_choice::Store<Minimal>,
-        Root,
-        ChainConfig,
-    ) {
+    ) -> (cc_fork_choice::Store<Minimal>, Root, ChainConfig) {
         let config = minimal_config();
         let mut state = BeaconState::<Minimal>::default();
         state.set_genesis_time(0);
@@ -614,9 +604,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             outcome,
-            cc_fork_choice::BlockImport::Deferred(
-                cc_fork_choice::DeferralReason::DataUnavailable
-            )
+            cc_fork_choice::BlockImport::Deferred(cc_fork_choice::DeferralReason::DataUnavailable)
         ));
         // Park (import pipeline responsibility).
         pending.insert(PendingDaEntry {

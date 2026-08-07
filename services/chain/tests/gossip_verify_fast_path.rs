@@ -14,26 +14,24 @@ use cc_chain::epoch_context::EpochContextStore;
 use cc_chain::events::{EventsConfig, EventsHandle};
 use cc_chain::head::HeadSnapshotStore;
 use cc_chain::import::{
-    encode_signed_block, import_block_with_early, late_import_flags, on_block_error_gossip_class,
-    ImportCounters,
+    ImportCounters, encode_signed_block, import_block_with_early, late_import_flags,
+    on_block_error_gossip_class,
 };
 use cc_chain::metrics::ChainMetrics;
 use cc_chain::residency::Residency;
 use cc_chain::service::ChainServiceImpl;
-use cc_crypto::{
-    compute_signing_root, get_domain, SecretKey, DOMAIN_BEACON_PROPOSER,
-};
+use cc_crypto::{DOMAIN_BEACON_PROPOSER, SecretKey, compute_signing_root, get_domain};
 use cc_fork_choice::{
-    HarnessAvailability, DataAvailability, OnBlockError, get_forkchoice_store, on_tick,
+    DataAvailability, HarnessAvailability, OnBlockError, get_forkchoice_store, on_tick,
 };
 use cc_proto::p2p::{
     Acceptance, GossipObject, ImportResult, ObjectKind, P2pToChain, Reason, StreamHello,
     chain_to_p2p, p2p_to_chain,
 };
+use cc_state_transition::helpers::constants::{FAR_FUTURE_EPOCH, MAX_EFFECTIVE_BALANCE};
 use cc_state_transition::{
     BlockError, EngineError, GossipClass, SignatureKind, StubOptimisticEngine,
 };
-use cc_state_transition::helpers::constants::{FAR_FUTURE_EPOCH, MAX_EFFECTIVE_BALANCE};
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::containers::{BeaconBlockHeader, Validator};
 use cc_types::preset::{Minimal, Preset};
@@ -111,12 +109,7 @@ fn active_validator_with_pk(pk: &BlsPublicKey) -> Validator {
 
 fn seeded_store_signed(
     da: Arc<dyn DataAvailability>,
-) -> (
-    cc_fork_choice::Store<Minimal>,
-    Root,
-    ChainConfig,
-    SecretKey,
-) {
+) -> (cc_fork_choice::Store<Minimal>, Root, ChainConfig, SecretKey) {
     let config = minimal_config();
     let sk = proposer_sk();
     let pk_bytes = sk.public_key().serialize();
@@ -133,13 +126,17 @@ fn seeded_store_signed(
     fork.epoch = Epoch::new(0);
     state.set_fork(fork);
 
-    state.validators_push(active_validator_with_pk(&pk)).unwrap();
+    state
+        .validators_push(active_validator_with_pk(&pk))
+        .unwrap();
     state.balances_push(MAX_EFFECTIVE_BALANCE).unwrap();
     // Pad a few more validators so registry is non-trivial.
     for i in 1..8 {
         let ski = SecretKey::from_seed_index(&[9u8; 32], i).unwrap();
         let pki = BlsPublicKey::from_array(ski.public_key().serialize());
-        state.validators_push(active_validator_with_pk(&pki)).unwrap();
+        state
+            .validators_push(active_validator_with_pk(&pki))
+            .unwrap();
         state.balances_push(MAX_EFFECTIVE_BALANCE).unwrap();
     }
     for i in 0..state.proposer_lookahead_len() {
@@ -217,8 +214,7 @@ fn signed_child(
 
 #[test]
 fn gossip_path_no_early_accept_without_valid_proposer_sig() {
-    let (mut store, anchor, config, _sk) =
-        seeded_store_signed(Arc::new(HarnessAvailability));
+    let (mut store, anchor, config, _sk) = seeded_store_signed(Arc::new(HarnessAvailability));
     // Unsigned / zero signature block.
     let block = SignedBeaconBlock::<Minimal> {
         message: BeaconBlock {
@@ -269,7 +265,10 @@ fn gossip_path_no_early_accept_without_valid_proposer_sig() {
         !outcome.early_accept,
         "H1: must not early-ACCEPT when proposer sig fails (even if ST is NoVerification)"
     );
-    assert!(early_rx.blocking_recv().is_err(), "early oneshot must not fire");
+    assert!(
+        early_rx.blocking_recv().is_err(),
+        "early oneshot must not fire"
+    );
     assert!(!outcome.transition_invoked);
 }
 
@@ -332,7 +331,10 @@ fn early_accept_fires_before_two_second_da_stall() {
 
     let outcome = handle.join().expect("import thread").expect("import ok");
     assert!(outcome.early_accept);
-    assert!(entered.load(Ordering::SeqCst), "DA gate must run after early ACCEPT");
+    assert!(
+        entered.load(Ordering::SeqCst),
+        "DA gate must run after early ACCEPT"
+    );
     assert!(start.elapsed() >= Duration::from_secs(2));
 }
 
@@ -415,9 +417,8 @@ fn late_import_internal_forced_after_early_accept() {
     let mut snap_seq = 0u64;
     let (early_tx, early_rx) = oneshot::channel();
 
-    let inject = OnBlockError::Transition(BlockError::Engine(EngineError::Transport(
-        "induced".into(),
-    )));
+    let inject =
+        OnBlockError::Transition(BlockError::Engine(EngineError::Transport("induced".into())));
     assert_eq!(
         on_block_error_gossip_class(&inject),
         GossipClass::Internal,
@@ -453,18 +454,12 @@ fn late_import_internal_forced_after_early_accept() {
 
 #[test]
 fn late_import_flags_helper_exhaustive() {
-    assert_eq!(
-        late_import_flags(true, GossipClass::Reject),
-        (true, false)
-    );
+    assert_eq!(late_import_flags(true, GossipClass::Reject), (true, false));
     assert_eq!(
         late_import_flags(true, GossipClass::Internal),
         (false, true)
     );
-    assert_eq!(
-        late_import_flags(true, GossipClass::Ignore),
-        (false, false)
-    );
+    assert_eq!(late_import_flags(true, GossipClass::Ignore), (false, false));
     assert_eq!(
         late_import_flags(false, GossipClass::Reject),
         (false, false)
