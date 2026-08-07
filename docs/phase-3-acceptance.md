@@ -587,6 +587,77 @@ green claim.
 | Per-slot load average + disk queue depth | exclusivity evidence (R-7) |
 | Trigger C | soft-deadline ratio over this window → append-only `docs/engine-latency.md` `## Verdict` |
 
+## Gates and outstanding debt
+
+**Owner:** CC-3Kb  
+**Date:** 2026-08-08  
+**Milestone:** M3.5 exit — the admission audit (not the edge admission; D-1).
+
+### Local gates recorded (CI has never executed — G3 / D-2)
+
+| Gate | Command | Result |
+|---|---|---|
+| `cargo deny check` | `cargo deny check advisories bans licenses sources` | **ok** (advisories/bans/licenses/sources); duplicate-crate warnings only |
+| `buf lint` | `cd proto && buf lint --path eth/{engine,p2p,chain}/v1` | **exit 0** all three packages (DEFAULT→STANDARD deprecation WARN only) |
+| `buf format` | `cd proto && buf format --path … --diff --exit-code` | **exit 0** all three; no label |
+| `buf breaking` | `cd proto && buf breaking --against '../.git#branch=origin/develop,subdir=proto' --path …` | **exit 0** all three; no label. **`eth.chain.v1` included** (CC-3B's contract — the one that gets forgotten) |
+| `check-no-remodelling` | extended with `ExecutionPayload` / `ExecutionRequests` / `DataColumnSidecar` | **exit 0**; negative: `message ExecutionPayloadV3 { }` in `engine.proto` → non-zero naming the file |
+| `check-crate-dag` | `bash scripts/check-crate-dag.sh` | **ok (16 members)**; `cc-engine` row = `cc-bootstrap cc-config cc-proto cc-types cc-crypto`; ADR P3-16 installed; `cc-fork-choice` row appends `cc-proto` (dev-dep from ea3c079, admitted here) |
+| Engine service isolation (CC-3K /3) | `cargo metadata … \| jq` on `cc-engine` deps | **no other service crate**; ninth contract is `cc-proto` generated code |
+| Member count (CC-3K /8) | `cargo metadata --format-version 1 --no-deps \| jq '.packages \| length'` | **16** (not 17 — CC-28 retired `bin/driver` 17→16 before Phase 3). Phase 3 **adds no workspace member** (ADR P3-01 / ≠13/1). Names: `cc-attestation cc-beacon-api cc-bootstrap cc-chain cc-config cc-crypto cc-devnet-gen cc-engine cc-fork-choice cc-libp2p cc-p2p cc-proto cc-spec-tests cc-state-transition cc-storage cc-types` |
+| Clause 5 re-assert | `cargo nextest run -p cc-spec-tests` + `cargo nextest run -p cc-fork-choice --test fork_choice` | **33 + 5 passed**; `docs/spec-vectors-skiplist.md` has **no skip entries** (header-only skeleton; `committed_skiplist_parses_empty` green) |
+| Closing green | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`; `cargo build --workspace --locked` | **0 warnings / exit 0** (one-shot `gen_hostile_corpus` allow for expect/unwrap/panic — fixture tool, not service code) |
+
+### Runnable restatements (criteria that cannot be written as "passes")
+
+**phase-3-base** = `59a2389342a37d57a9e69781569d0bf5679cf8cc` (parent of CC-3Ka / `a144c10`).
+
+#### Restatement 1 — formatting, scoped
+
+```sh
+git diff --name-only --diff-filter=ACMR 59a2389342a37d57a9e69781569d0bf5679cf8cc..HEAD -- '*.rs' \
+  | xargs rustfmt --edition 2024 --check
+```
+
+- **Result at CC-3Kb:** **exit 1** — 64 of 84 Phase-3-touched `.rs` files fail `rustfmt --check`.
+- **Not absorbed:** Phase 3 does **not** reformat the tree. `cargo fmt --all --check 2>&1 | grep -c '^Diff in'` = **880** (planning figure was ~340). Owner of the backlog: **outside this phase** (workspace-wide rustfmt debt; absorbing it would make every Phase 3 review unreadable — PRD Non-Goals / D-2).
+- Obligation kept: **no reformat-only file** was introduced by this audit commit to green-wash the restatement.
+
+#### Restatement 2 — env reads, as a count
+
+```sh
+scripts/check-no-env-reads.sh 2>&1 | grep -c 'std::env::var'
+```
+
+| Snapshot | Count (`grep -c 'std::env::var'` on script stderr+stdout) | Notes |
+|---|---|---|
+| Planning AC | **6** | Planning-time figure; already wrong at M3.1 entry |
+| CC-3Ka / phase-3-base (`a144c10` / `59a2389`) | **10** hits in `services/` (+ script error header → **11** with `grep -c`) | Pre-existing chain/p2p test + main.rs debt |
+| HEAD (post Phase 3) | **13** hits (**14** with error header) | **+3** in `services/engine/tests/encode_real_hoodi_payload.rs` (CC-3C latency fixture) |
+
+- `git diff 59a2389..HEAD -- scripts/check-no-env-reads.sh` is **empty** — no silent exemption.
+- Phase 3's **production JWT / config path** does not add `std::env::var` (config via `cc-config`); the three new hits are **test-only** fixture loaders in CC-3C.
+- Fixing the ten baseline hits (or the three test hits) is a **named debt with an owner outside this phase**; this audit records the count rather than weakening the script.
+
+### Outstanding debt (narrowest honest form)
+
+| Debt | Status | Owner |
+|---|---|---|
+| **CI runner** (G3) | Every completed Actions run on `develop` failed *"job was not acquired by Runner of type hosted"*; branch protection bypassed. **CI has never executed here.** | Outside Phase 3 (PRD Non-Goals). Phase 3 substitutes **local invocations with tails** (D-2). |
+| **`cargo fmt --all` backlog** | **880** `Diff in` lines; scoped Phase 3 restatement also red (64/84 files) | Outside this phase — do not absorb into a Phase 3 diff |
+| **`check-no-env-reads` hits** | Count **13** (not 6); script unchanged | Outside this phase; no seventh *production* path; CC-3C added three test hits |
+| **Phase 1 Clause 2 + Clause 3** | `docs/phase-1-soak.md` remains **`NOT_RUN`** in both `## Run record` and `## Timing` | **Phase 1's owners** — **not** Phase 3 |
+| **Phase 3 ≥ 6 h window** | `## Run record` / `## Clause table` still **`NOT_RUN`** (CC-3Ac) | Phase 3 soak operators; separate from Phase 1 |
+
+### D-12 — two reports, two soaks (R-12)
+
+**Phase 1's Clause 2 (the ≥ 24 h Hoodi soak) and Clause 3 (the timing window) remain `NOT_RUN`.**
+Phase 3's ≥ 6 h window **does not discharge them**, and they **would not discharge Phase 3's clause 1** —
+different things, different stacks, different durations. The two reports
+(`docs/phase-1-soak.md` and this file) stay **separate even if the runs shared one process lifetime**.
+`git diff` against Phase 1's soak doc from this commit is **empty** — the debt is recorded here, not
+by editing Phase 1's report.
+
 ## Clause 2 — EL restart
 
 **Owner:** CC-36b  

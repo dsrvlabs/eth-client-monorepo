@@ -108,3 +108,35 @@ addition of a further git source to `allow-git`, and every **phase boundary** (P
 …). Re-review is manual against the pinned rev and the RUSTSEC advisory DB; a green
 `cargo deny` run alone does not discharge it (git sources sit outside crates.io advisory
 matching — see gap §2 above). Details of the pin also live in `docs/p2p-dependencies.md`.
+
+## Phase 3 — Engine API transport pins (CC-30a / CC-3Kb / §12/1)
+
+Append-only admission of Design's four pins for the Engine API HTTP + JWT surface.
+`reqwest` and `serde_json` were already workspace-pinned (Phase 1); Phase 3 is their
+first **engine** consumer. Three new `[workspace.dependencies]` rows were appended
+at `CC-30a` (never re-sorted).
+
+| Dependency | Declared pin | Resolved (Cargo.lock) | Role |
+|---|---|---|---|
+| **reqwest** | `0.13.4` (pre-existing; `json` + `rustls` + `stream`, default-features off) | **0.13.4** | Engine API HTTP client (only `cc-engine` may declare — ADR P3-16) |
+| **serde_json** | `1.0.145` (pre-existing) | **1.0.151** | Hand-rolled JSON-RPC encode/decode over the HTTP body |
+| **jsonwebtoken** | `9.3.1` (appended at CC-30a) | **9.3.1** | HS256 JWT signer for the Engine auth port |
+| **wiremock** | `0.6.5` (appended at CC-30a) | **0.6.5** | Offline EL test double (`cc-engine` dev-dep) |
+| **crc32fast** | `1.5.0` (appended at CC-30a) | **1.5.0** | Transport/log checksum helper |
+
+**Review date:** 2026-08-08 (CC-3Kb local `cargo deny check advisories bans licenses sources`).
+
+**What was reviewed (this admission):**
+
+- `cargo deny check` locally: **advisories ok, bans ok, licenses ok, sources ok** (duplicate-crate
+  warnings only — transitive, not new Phase 3 policy breaches).
+- No new git sources; `unknown-git` / `unknown-registry` remain deny.
+- ADR P3-16 isolation: only `cc-engine` declares `reqwest` / `jsonwebtoken` (and JWT signers);
+  `scripts/check-crate-dag.sh` enforces the rule (early manifest scan + metadata walk).
+- `cc-engine` workspace row: `cc-bootstrap cc-config cc-proto cc-types cc-crypto`
+  (CC-32b / CC-37b appends). **No other service crate** depends on engine and engine depends
+  on **no other service crate** — the ninth contract (`EngineStream` client) is generated code
+  in `cc-proto`, not a crate edge (CC-3K /3).
+
+**Re-review trigger:** any bump of the five pins above; any new HTTP client or JWT signer
+declared outside `services/engine/Cargo.toml`; any new git source; every **phase boundary**.

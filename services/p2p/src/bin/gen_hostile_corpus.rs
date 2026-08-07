@@ -4,6 +4,9 @@
 //! cargo run -p cc-p2p --bin gen_hostile_corpus --locked
 //! ```
 
+// Dev fixture tool — not production service code (CC-3Kb clippy close).
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use std::fs;
 use std::path::PathBuf;
 

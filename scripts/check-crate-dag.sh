@@ -63,7 +63,9 @@ allowed_deps() {
     cc-crypto)            echo "cc-types" ;;
     cc-bootstrap)         echo "cc-proto cc-config" ;;
     cc-state-transition)  echo "cc-types cc-crypto" ;;
-    cc-fork-choice)       echo "cc-state-transition cc-types cc-crypto" ;;
+    # CC-34 / invalidation-walk tests: dev-dep on cc-proto for PayloadStatus fixtures
+    # (admitted at CC-3Kb audit — edge landed with ea3c079 without a row append).
+    cc-fork-choice)       echo "cc-state-transition cc-types cc-crypto cc-proto" ;;
     cc-spec-tests)        echo "" ;;
     # Self-devnet generator (CC-2K member; content is CC-2Ja).
     cc-devnet-gen)        echo "cc-types cc-crypto cc-state-transition cc-config" ;;
