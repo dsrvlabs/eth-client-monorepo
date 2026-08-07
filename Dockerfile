@@ -12,6 +12,8 @@ ARG RUST_VERSION
 WORKDIR /build
 
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+# Embedded by cc-spec-tests (include_str from crates/spec-tests/src/ → repo root).
+COPY spec-vectors.lock ./
 # crates/proto/build.rs resolves ../../proto — must be present before cargo build.
 COPY proto/ proto/
 COPY crates/ crates/
@@ -68,5 +70,9 @@ COPY --from=probe /grpc-health-probe /usr/local/bin/grpc-health-probe
 COPY --from=builder /out/${SERVICE} /usr/local/bin/service
 # Compose overrides via CC_* env; TOML must still exist (figment file_exact fails if missing).
 COPY config/ /app/config/
+# p2p (and later services) persist relative paths under WORKDIR as user `cc`
+# (e.g. config node_key_path = "./data/node_key"). /app is root-owned after
+# COPY; create a writable data dir before dropping privileges.
+RUN mkdir -p /app/data && chown -R 10001:10001 /app/data
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/service"]
