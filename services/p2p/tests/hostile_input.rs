@@ -32,17 +32,18 @@ use std::time::Instant;
 
 use cc_proto::p2p::ChainView;
 use cc_types::{
-    Attestation, AttesterSlashing, ChainConfig, DATA_COLUMN_SIDECAR_SUBNET_COUNT, Mainnet, Preset,
-    ProposerSlashing, SignedAggregateAndProof, SignedBlsToExecutionChange,
-    SignedContributionAndProof, SignedVoluntaryExit, SyncCommitteeMessage,
+    Attestation, ChainConfig, DATA_COLUMN_SIDECAR_SUBNET_COUNT, Mainnet, Preset,
+    SignedAggregateAndProof, SignedContributionAndProof, SyncCommitteeMessage,
 };
 use ssz::Decode;
 
+use cc_p2p::chain_stream::{MapValidatorRecordSource, ValidatorRecordCache};
 use cc_p2p::gossip::topics::{expand_fulu_topic_names, SubnetCounts, TopicName};
 use cc_p2p::gossip::validate::{
     check_payload_len, max_container_bytes, validate_beacon_block_local,
-    validate_data_column_sidecar, AlwaysValidKzg, BlockValidateInput, ColumnValidateInput,
-    ColumnValidatorState, NoopSamplingFeed,
+    validate_data_column_sidecar, validate_operation, AlwaysValidKzg, BlockValidateInput,
+    ColumnValidateInput, ColumnValidatorState, NoopSamplingFeed, OperationValidateInput,
+    OperationValidatorState,
 };
 use cc_p2p::gossip::{PendingQueues, SeenSets, ATTESTATION_SUBNET_COUNT};
 use cc_p2p::reqresp::codec::{ResponseChunk, ResponseCode, SszLimits, SszSnappyFraming, MAX_PAYLOAD_SIZE};
@@ -310,6 +311,9 @@ struct ExerciseCtx {
     pending: PendingQueues,
     kzg: AlwaysValidKzg,
     sampling: NoopSamplingFeed,
+    operations: OperationValidatorState,
+    record_cache: ValidatorRecordCache,
+    record_source: MapValidatorRecordSource,
 }
 
 impl ExerciseCtx {
@@ -318,6 +322,7 @@ impl ExerciseCtx {
             slot: 100,
             epoch: 3,
             head_slot: 100,
+            genesis_validators_root: vec![0u8; 32],
             ..ChainView::default()
         };
         Self {
@@ -328,6 +333,9 @@ impl ExerciseCtx {
             pending: PendingQueues::new(),
             kzg: AlwaysValidKzg,
             sampling: NoopSamplingFeed,
+            operations: OperationValidatorState::new(),
+            record_cache: ValidatorRecordCache::new(),
+            record_source: MapValidatorRecordSource::new(),
         }
     }
 
@@ -382,6 +390,8 @@ impl ExerciseCtx {
             }
             // IGNORE stubs today (CC-2B/C): still SSZ-decode the container so
             // mutated-valid bytes reach deep decoders; panic-is-failure applies.
+            // CC-2C/D IGNORE stubs: still SSZ-decode so mutated-valid bytes reach
+            // deep decoders; panic-is-failure applies.
             TopicName::BeaconAggregateAndProof => {
                 let _ = SignedAggregateAndProof::<Mainnet>::from_ssz_bytes(payload);
             }
@@ -423,17 +433,26 @@ impl ExerciseCtx {
                     &mut seen, &source, &input, None,
                 );
             }
-            TopicName::VoluntaryExit => {
-                let _ = SignedVoluntaryExit::from_ssz_bytes(payload);
-            }
-            TopicName::ProposerSlashing => {
-                let _ = ProposerSlashing::from_ssz_bytes(payload);
-            }
-            TopicName::AttesterSlashing => {
-                let _ = AttesterSlashing::<Mainnet>::from_ssz_bytes(payload);
-            }
-            TopicName::BlsToExecutionChange => {
-                let _ = SignedBlsToExecutionChange::from_ssz_bytes(payload);
+            // CC-2B real operation validators (empty record map → IGNORE/REJECT; no panic).
+            TopicName::VoluntaryExit
+            | TopicName::ProposerSlashing
+            | TopicName::AttesterSlashing
+            | TopicName::BlsToExecutionChange => {
+                let input = OperationValidateInput {
+                    payload,
+                    view: &self.view,
+                    config: &self.config,
+                    slots_per_epoch: 32,
+                    current_epoch: self.view.epoch,
+                };
+                // Sync test harness: block_on is fine; no nested runtime.
+                let _ = futures::executor::block_on(validate_operation::<Mainnet>(
+                    &self.operations,
+                    name,
+                    &input,
+                    &self.record_cache,
+                    &self.record_source,
+                ));
             }
         }
     }

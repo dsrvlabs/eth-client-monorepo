@@ -23,6 +23,7 @@
 pub mod block;
 pub mod column;
 pub mod kzg_verify;
+pub mod operations;
 pub mod pipeline;
 pub mod sync;
 
@@ -36,6 +37,12 @@ pub use column::{
     ColumnPublishDecision, ColumnStep, ColumnValidateInput, ColumnValidatorState, FailClosedKzg,
     InclusionProofCache, InclusionProofKey, KzgVerify, NoopSamplingFeed, SamplingFeed,
     StepCounters, BLOB_KZG_COMMITMENTS_FIELD_INDEX, INCLUSION_PROOF_CACHE_BOUND,
+};
+pub use operations::{
+    epoch_from_view, validate_attester_slashing, validate_bls_to_execution_change,
+    validate_operation, validate_proposer_slashing, validate_voluntary_exit, BoundedIndexSet,
+    OpStepCounters, OperationOccupancy, OperationSeenSets, OperationValidateInput,
+    OperationValidatorState, OPERATION_SEEN_BOUND,
 };
 pub use pipeline::{
     all_topics_have_validators, apply_late_chain_verdict, parse_topic_name, run_chain_in_late_verdicts,

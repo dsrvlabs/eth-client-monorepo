@@ -12,6 +12,7 @@
 
 pub mod client;
 pub mod publish;
+pub mod records;
 pub mod view;
 
 pub use client::{
@@ -20,6 +21,11 @@ pub use client::{
 };
 pub use crate::channels::VerdictResolution;
 pub use publish::{PublishDropCounter, run_publish_dispatch};
+pub use records::{
+    check_record_request_bound, MapValidatorRecordSource, RecordsError, RpcValidatorRecordSource,
+    ValidatorRecordCache, ValidatorRecordSource, FetchedRecords, MAX_VALIDATOR_RECORDS_PER_REQUEST,
+    VALIDATOR_RECORD_CACHE_BOUND,
+};
 pub use view::{ChainViewStore, VIEW_KIND_EPOCH_TICK, VIEW_KIND_FULL, VIEW_KIND_HEAD_CHANGE, VIEW_KIND_SLOT_TICK};
 
 use std::time::Duration;

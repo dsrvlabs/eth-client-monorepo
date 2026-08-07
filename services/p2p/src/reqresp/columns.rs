@@ -399,6 +399,8 @@ pub fn stall_first_byte_delay() -> std::time::Duration {
 /// CC-2Jb: held columns that are still withheld refuse until the release flag
 /// file flips (`active_allows_by_root_serve`). CC-2Jc attaches `custody-refuse`
 /// / `stall-reqresp` via [`ByRootFaultPolicy`] on this same branch.
+/// file flips (`column_index` + active fault). CC-2Jc attaches
+/// `custody-refuse` / `stall-reqresp` via `policy`.
 ///
 /// `policy` is the CC-2Jc branch selector — [`ByRootFaultPolicy::Honest`] is the
 /// production default; fault modes map onto the other two variants.
@@ -443,6 +445,16 @@ pub fn decide_by_root_column_serve(
         }
         ByRootFaultPolicy::Honest | ByRootFaultPolicy::StallReqresp => {
             ByRootServeDecision::ResourceUnavailable
+    // Single named branch for CC-2Jb withhold + CC-2Jc custody/stall.
+    match policy {
+        ByRootFaultPolicy::CustodyRefuse => ByRootServeDecision::ResourceUnavailable,
+        ByRootFaultPolicy::StallReqresp if held => ByRootServeDecision::Stall,
+        ByRootFaultPolicy::StallReqresp | ByRootFaultPolicy::Honest => {
+            if held && crate::fault_mode::active_allows_by_root_serve(column_index) {
+                ByRootServeDecision::Serve
+            } else {
+                ByRootServeDecision::ResourceUnavailable
+            }
         }
     if !held {
         return ByRootServeDecision::ResourceUnavailable;
@@ -1080,6 +1092,7 @@ mod tests {
 
         // Seam unit: held → Serve, missing → ResourceUnavailable (honest, no withhold).
         // Seam unit: held → Serve, missing → ResourceUnavailable (honest / no fault).
+        // Seam unit: held → Serve, missing → ResourceUnavailable (honest, no fault).
         crate::fault_mode::clear_active_fault();
         assert_eq!(
             decide_by_root_column_serve(true, 0, ByRootFaultPolicy::Honest),

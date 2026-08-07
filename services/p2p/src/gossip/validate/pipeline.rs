@@ -1,14 +1,18 @@
-//! Validation pool: topic dispatch, stub validators, report via swarm cmd.
+//! Validation pool: topic dispatch, report via swarm cmd.
 //!
 //! **CC-22/4**: every registered Fulu topic family has a non-default validator
 //! wired here. Operation / attestation families are IGNORE stubs (CC-2B /
 //! CC-2C replace them). **CC-2D** replaces the sync-committee IGNORE stubs.
+//! wired here. Operation topics are CC-2B real validators; attestation / sync
+//! families remain IGNORE stubs (CC-2C / CC-2D).
 //!
 //! ## Ownership
 //!
 //! One [`ValidationPoolState`] owns a single [`ColumnValidatorState`] (seen +
 //! pending + inclusion cache) plus [`SyncSeenSets`]. Block and column paths
 //! share the column state — no dual sync.
+//! pending + inclusion cache) and the CC-2B [`OperationValidatorState`]. Block
+//! and column paths share the column state — no dual sync.
 //!
 //! ## Pending redrive
 //!
@@ -39,6 +43,12 @@ use super::sync::{
     validate_sync_committee_message, validate_sync_contribution_and_proof, NoopSyncSource,
     SyncCommitteeSource, SyncContribValidateInput, SyncMessageValidateInput, SyncOutcome,
     SyncSeenSets,
+use super::operations::{
+    epoch_from_view, validate_operation, OperationValidateInput, OperationValidatorState,
+};
+use crate::chain_stream::records::{
+    MapValidatorRecordSource, RpcValidatorRecordSource, ValidatorRecordCache,
+    ValidatorRecordSource,
 };
 use crate::channels::{
     ChainInbound, ChainOutbound, GossipWork, PeerPenaltyCmd, SwarmCommand, VerdictResolution,
@@ -62,6 +72,9 @@ pub enum ValidatorKind {
     /// P2p-authoritative sync committee message / contribution (CC-2D).
     SyncCommittee,
     /// IGNORE stub (CC-2B/C).
+    /// P2p-authoritative operation topics (CC-2B).
+    Operation,
+    /// IGNORE stub (CC-2C / CC-2D).
     StubIgnore,
 }
 
@@ -80,6 +93,14 @@ pub fn validator_kind(name: TopicName) -> ValidatorKind {
         | TopicName::ProposerSlashing
         | TopicName::AttesterSlashing
         | TopicName::BlsToExecutionChange => ValidatorKind::StubIgnore,
+        TopicName::VoluntaryExit
+        | TopicName::ProposerSlashing
+        | TopicName::AttesterSlashing
+        | TopicName::BlsToExecutionChange => ValidatorKind::Operation,
+        TopicName::BeaconAggregateAndProof
+        | TopicName::BeaconAttestation(_)
+        | TopicName::SyncCommitteeContributionAndProof
+        | TopicName::SyncCommittee(_) => ValidatorKind::StubIgnore,
     }
 }
 
@@ -94,6 +115,7 @@ pub fn all_topics_have_validators(counts: &crate::gossip::topics::SubnetCounts) 
                 ValidatorKind::BeaconBlock
                     | ValidatorKind::DataColumnSidecar
                     | ValidatorKind::SyncCommittee
+                    | ValidatorKind::Operation
                     | ValidatorKind::StubIgnore
             )
         })
@@ -162,6 +184,12 @@ pub struct ValidationPoolState {
     pub column: ColumnValidatorState,
     /// Sync-committee message / contribution seen sets (CC-2D).
     pub sync: SyncSeenSets,
+    /// Operation-topic anti-replay sets (CC-2B). `Arc` so the operation
+    /// validator can hold a shared ref across record-fetch `.await` without
+    /// parking the outer pool mutex.
+    pub operations: Arc<OperationValidatorState>,
+    /// Last `finalized_epoch` at which operation index sets were cleared.
+    pub ops_cleared_at_finalized_epoch: u64,
     /// Bounded map of ACCEPTed correlation ids → entry (historical / late path).
     pub reported: LruCache<Vec<u8>, ReportedEntry>,
     /// ACCEPT entries **pinned** until late import resolves (CC-27c H2).
@@ -179,8 +207,18 @@ impl ValidationPoolState {
         Self {
             column: ColumnValidatorState::new(),
             sync: SyncSeenSets::new(),
+            operations: Arc::new(OperationValidatorState::new()),
+            ops_cleared_at_finalized_epoch: 0,
             reported: LruCache::new(cap),
             late_open: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Clear operation index sets when `finalized_epoch` advances (CC-2B).
+    pub fn maybe_clear_operations_at_finalization(&mut self, finalized_epoch: u64) {
+        if finalized_epoch > self.ops_cleared_at_finalized_epoch {
+            self.operations.clear_at_finalization();
+            self.ops_cleared_at_finalized_epoch = finalized_epoch;
         }
     }
 
@@ -202,7 +240,7 @@ impl ValidationPoolState {
         }
     }
 
-    /// Export occupancy gauges (pending + seen).
+    /// Export occupancy gauges (pending + seen + operation index sets).
     pub fn export_occupancy(&self, metrics: &P2pMetrics) {
         let (ps, pb) = self.column.pending.occupancy();
         metrics.set_queue_depth(QueueName::PendingSidecar, ps as i64);
@@ -214,6 +252,14 @@ impl ValidationPoolState {
         metrics.set_queue_depth(QueueName::SeenColumn, cs as i64);
         metrics.set_queue_depth(QueueName::SeenBlock, bs as i64);
         metrics.set_queue_depth(QueueName::SeenSync, self.sync.occupancy() as i64);
+        let op = self.operations.occupancy();
+        metrics.set_queue_depth(QueueName::SeenVoluntaryExit, op.voluntary_exit as i64);
+        metrics.set_queue_depth(QueueName::SeenProposerSlashing, op.proposer_slashing as i64);
+        metrics.set_queue_depth(QueueName::SeenAttesterSlashing, op.attester_slashing as i64);
+        metrics.set_queue_depth(
+            QueueName::SeenBlsToExecutionChange,
+            op.bls_to_execution_change as i64,
+        );
     }
 }
 
@@ -251,10 +297,15 @@ pub struct ValidationPool {
     pub sync_source: Arc<dyn SyncCommitteeSource>,
     /// Gossip channel bound.
     pub in_flight_cap: usize,
+    /// Validator-record LRU (CC-2B / §5.4a).
+    pub record_cache: Arc<ValidatorRecordCache>,
+    /// Unary `GetValidatorRecords` source.
+    pub record_source: Arc<dyn ValidatorRecordSource>,
 }
 
 impl ValidationPool {
     /// Production pool: real/fail-closed KZG, noop sampling, noop sync source.
+    /// Production pool: real/fail-closed KZG, noop sampling, RPC record source.
     #[must_use]
     pub fn new(
         config: Arc<ChainConfig>,
@@ -264,6 +315,61 @@ impl ValidationPool {
         cmd_tx: mpsc::Sender<SwarmCommand>,
         penalty_tx: mpsc::Sender<PeerPenaltyCmd>,
         metrics: P2pMetrics,
+    ) -> Self {
+        Self::with_record_source(
+            config,
+            clock,
+            view,
+            chain_out_tx,
+            cmd_tx,
+            penalty_tx,
+            metrics,
+            Arc::new(MapValidatorRecordSource::new()),
+        )
+    }
+
+    /// Production pool wired to a live chain URI for `GetValidatorRecords`.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_chain_uri(
+        config: Arc<ChainConfig>,
+        clock: SlotClock,
+        view: Arc<dyn Fn() -> ChainView + Send + Sync>,
+        chain_out_tx: mpsc::Sender<ChainOutbound>,
+        cmd_tx: mpsc::Sender<SwarmCommand>,
+        penalty_tx: mpsc::Sender<PeerPenaltyCmd>,
+        metrics: P2pMetrics,
+        chain_uri: String,
+    ) -> Self {
+        let source: Arc<dyn ValidatorRecordSource> = if chain_uri.is_empty() {
+            Arc::new(MapValidatorRecordSource::new())
+        } else {
+            Arc::new(RpcValidatorRecordSource { chain_uri })
+        };
+        Self::with_record_source(
+            config,
+            clock,
+            view,
+            chain_out_tx,
+            cmd_tx,
+            penalty_tx,
+            metrics,
+            source,
+        )
+    }
+
+    /// Full constructor with an injected record source (tests).
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_record_source(
+        config: Arc<ChainConfig>,
+        clock: SlotClock,
+        view: Arc<dyn Fn() -> ChainView + Send + Sync>,
+        chain_out_tx: mpsc::Sender<ChainOutbound>,
+        cmd_tx: mpsc::Sender<SwarmCommand>,
+        penalty_tx: mpsc::Sender<PeerPenaltyCmd>,
+        metrics: P2pMetrics,
+        record_source: Arc<dyn ValidatorRecordSource>,
     ) -> Self {
         Self {
             state: Arc::new(Mutex::new(ValidationPoolState::new())),
@@ -278,6 +384,8 @@ impl ValidationPool {
             sampling: Arc::new(NoopSamplingFeed),
             sync_source: Arc::new(NoopSyncSource),
             in_flight_cap: GOSSIP_BOUND,
+            record_cache: Arc::new(ValidatorRecordCache::new()),
+            record_source,
         }
     }
 }
@@ -335,7 +443,7 @@ async fn validate_one(pool: &ValidationPool, work: &GossipWork) -> Verdict {
     );
     let finalized_slot = view.finalized_epoch.saturating_mul(slots_per_epoch);
 
-    // Finalization prune (M1).
+    // Finalization prune (M1) — column/block slot-keyed + operation index sets.
     {
         let mut guard = pool
             .state
@@ -343,6 +451,8 @@ async fn validate_one(pool: &ValidationPool, work: &GossipWork) -> Verdict {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.column.seen.prune_at_finalization(finalized_slot);
         guard.sync.prune_at_finalization(finalized_slot);
+        // Operation sets are **cleared** when finalized_epoch advances (CC-2B).
+        guard.maybe_clear_operations_at_finalization(view.finalized_epoch);
     }
 
     match validator_kind(name) {
@@ -408,6 +518,40 @@ async fn validate_one(pool: &ValidationPool, work: &GossipWork) -> Verdict {
                     verdict
                 }
             }
+        ValidatorKind::Operation => {
+            // p2p-authoritative: never forward GossipObject to chain (CC-2B/3, /4).
+            // Clone the Arc under a short lock, then await without holding it.
+            let ops = {
+                let guard = pool
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                Arc::clone(&guard.operations)
+            };
+            let current_epoch = epoch_from_view(&view, slots_per_epoch);
+            let input = OperationValidateInput {
+                payload: &work.data,
+                view: &view,
+                config: &pool.config,
+                slots_per_epoch,
+                current_epoch,
+            };
+            let verdict = validate_operation::<Mainnet>(
+                ops.as_ref(),
+                name,
+                &input,
+                pool.record_cache.as_ref(),
+                pool.record_source.as_ref(),
+            )
+            .await;
+            {
+                let guard = pool
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.export_occupancy(&pool.metrics);
+            }
+            verdict
         }
         ValidatorKind::DataColumnSidecar => {
             let TopicName::DataColumnSidecar(subnet) = name else {
@@ -798,6 +942,18 @@ mod tests {
         );
         assert_eq!(
             validator_kind(TopicName::VoluntaryExit),
+            ValidatorKind::Operation
+        );
+        assert_eq!(
+            validator_kind(TopicName::ProposerSlashing),
+            ValidatorKind::Operation
+        );
+        assert_eq!(
+            validator_kind(TopicName::BlsToExecutionChange),
+            ValidatorKind::Operation
+        );
+        assert_eq!(
+            validator_kind(TopicName::BeaconAttestation(0)),
             ValidatorKind::StubIgnore
         );
         assert_eq!(

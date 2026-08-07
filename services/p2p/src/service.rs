@@ -660,7 +660,7 @@ fn spawn_edge_workers(
     let view_store = handle.view.clone();
     let view_fn: std::sync::Arc<dyn Fn() -> cc_proto::p2p::ChainView + Send + Sync> =
         std::sync::Arc::new(move || (*view_store.load()).clone());
-    let pool = crate::gossip::validate::ValidationPool::new(
+    let pool = crate::gossip::validate::ValidationPool::with_chain_uri(
         std::sync::Arc::new(chain_cfg),
         clock,
         view_fn,
@@ -668,6 +668,7 @@ fn spawn_edge_workers(
         cmd_tx.clone(),
         penalty_tx.clone(),
         metrics.clone(),
+        cfg.chain_uri.clone(),
     );
     // CC-24b: share CC-22d's single inclusion-proof LRU with the KZG pool
     // (do not create a second cache).

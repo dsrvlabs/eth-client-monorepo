@@ -314,6 +314,10 @@ impl FaultMode {
     pub fn ensure_implemented(&self) -> Result<()> {
         match self {
             Self::None | Self::WithholdColumn { .. } | Self::Misbehave { .. } => Ok(()),
+    /// Returns `Ok(())` for all modes implemented in Phase 2 (CC-2Jb + CC-2Jc).
+    pub fn ensure_implemented(&self) -> Result<()> {
+        match self {
+            Self::None | Self::WithholdColumn { .. } | Self::Misbehave { .. } => Ok(()),
         }
     }
 
@@ -410,6 +414,11 @@ impl FaultMode {
     /// (column **skip** is via [`Self::allows_publish_column`] /
     /// [`Self::column_publish_payloads`], not here). Misbehave mutates when the
     /// kind is a payload-level fault.
+    /// Relay transform for a single payload.
+    ///
+    /// Blocks always pass through for [`Self::None`] and [`Self::WithholdColumn`]
+    /// (column skip uses [`Self::allows_publish_column`] / [`Self::column_publish_payloads`]).
+    /// Misbehave applies the kind's gossip mutation (CC-2Jc).
     #[must_use]
     pub fn relay(&self, payload: &[u8]) -> Option<Vec<u8>> {
         match self {

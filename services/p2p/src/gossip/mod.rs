@@ -11,6 +11,7 @@
 //!
 //! Operation / attestation validators are IGNORE stubs until CC-2B/C.
 //! Sync-committee validators land in CC-2D ([`validate::sync`]).
+//! Operation validators are CC-2B; attestation / sync remain IGNORE stubs until CC-2C/D.
 //!
 //! ## Spec delta 13 — `blob_sidecar_{subnet_id}`
 //!

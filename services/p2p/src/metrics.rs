@@ -259,7 +259,13 @@ impl ColumnSource {
 /// Thirteen values on **one** gauge family — not thirteen separate metrics.
 /// `SeenColumn` / `SeenBlock` / `SeenSync` hold gossip seen-set **entry counts**
 /// (not backfill cache bytes — those use `cc_p2p_cache_*` exclusively).
+/// `q` label values for `cc_p2p_queue_depth` (§2.2 / CC-22/5 / CC-24c / CC-26a / CC-2B).
+///
+/// Sixteen values on **one** gauge family — not sixteen separate metrics.
+/// `SeenColumn` / `SeenBlock` hold gossip seen-set **entry counts** (not
+/// backfill cache bytes — those use `cc_p2p_cache_*` exclusively).
 /// `Sampling` is sampling-task map occupancy (CC-24c; bound 64).
+/// Operation index sets (`SeenVoluntaryExit` …) are CC-2B anti-replay occupancy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueueName {
     Gossip,
@@ -279,6 +285,14 @@ pub enum QueueName {
     SeenSync,
     /// Sampling-task map occupancy (CC-24c; bound 64).
     Sampling,
+    /// `voluntary_exit_indices` occupancy (CC-2B; bound 4 096).
+    SeenVoluntaryExit,
+    /// `proposer_slashing_indices` occupancy (CC-2B; bound 4 096).
+    SeenProposerSlashing,
+    /// `attester_slashing_indices` occupancy (CC-2B; bound 4 096).
+    SeenAttesterSlashing,
+    /// `bls_to_execution_change_indices` occupancy (CC-2B; bound 4 096).
+    SeenBlsToExecutionChange,
 }
 
 impl QueueName {
@@ -299,11 +313,16 @@ impl QueueName {
             Self::SeenBlock => "seen_block",
             Self::SeenSync => "seen_sync",
             Self::Sampling => "sampling",
+            Self::SeenVoluntaryExit => "seen_voluntary_exit",
+            Self::SeenProposerSlashing => "seen_proposer_slashing",
+            Self::SeenAttesterSlashing => "seen_attester_slashing",
+            Self::SeenBlsToExecutionChange => "seen_bls_to_execution_change",
         }
     }
 
     /// All variants (seed + tests).
     pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 16] = [
         Self::Gossip,
         Self::ReqrespIn,
         Self::Conn,
@@ -317,6 +336,10 @@ impl QueueName {
         Self::SeenBlock,
         Self::SeenSync,
         Self::Sampling,
+        Self::SeenVoluntaryExit,
+        Self::SeenProposerSlashing,
+        Self::SeenAttesterSlashing,
+        Self::SeenBlsToExecutionChange,
     ];
 }
 
@@ -1404,6 +1427,8 @@ mod tests {
     #[test]
     fn queue_depth_q_label_has_exactly_thirteen_values() {
         assert_eq!(QueueName::ALL.len(), 13);
+    fn queue_depth_q_label_has_exactly_sixteen_values() {
+        assert_eq!(QueueName::ALL.len(), 16);
         let labels: BTreeSet<&str> = QueueName::ALL.iter().map(|q| q.as_str()).collect();
         assert_eq!(
             labels,
@@ -1421,6 +1446,10 @@ mod tests {
                 "seen_block",
                 "seen_sync",
                 "sampling",
+                "seen_voluntary_exit",
+                "seen_proposer_slashing",
+                "seen_attester_slashing",
+                "seen_bls_to_execution_change",
             ])
         );
     }
