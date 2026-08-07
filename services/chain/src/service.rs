@@ -1,4 +1,4 @@
-//! gRPC `ChainService` implementation (CC-18b / CC-1E / CC-1F / CC-19b / CC-27a).
+//! gRPC `ChainService` implementation (CC-18b / CC-1E / CC-1F / CC-19b / CC-27a / CC-3B).
 //!
 //! - `ImportBlock` → core command channel (`send_timeout` 2 s)
 //! - `ApplyAttestations` → core command channel (batched `on_attestation`, CC-1E)
@@ -6,6 +6,7 @@
 //! - `SubscribeEvents` → events task (CC-18c)
 //! - `GetCommitteeShuffling` / `GetValidatorPubkeys` → core [`Query`] (CC-1F)
 //! - `P2pStream` / `GetValidatorRecords` → CC-27a chain-side stream contract
+//! - `IsOptimistic` → core [`Query`] over fork-choice only (CC-3B; no Phase 3 caller)
 //!
 //! Before checkpoint bootstrap completes the core slot is empty and RPCs return
 //! `FAILED_PRECONDITION` / `NOT_BOOTSTRAPPED` (§7.4). [`Self::install_core`] is
@@ -23,8 +24,9 @@ use cc_proto::chain::{
     GetCommitteeShufflingRequest, GetCommitteeShufflingResponse, GetHeadRequest, GetHeadResponse,
     GetInfoRequest, GetInfoResponse, GetValidatorPubkeysRequest, GetValidatorPubkeysResponse,
     GetValidatorRecordsRequest, GetValidatorRecordsResponse, ImportBlockRequest,
-    ImportBlockResponse, SubscribeEventsRequest,
+    ImportBlockResponse, IsOptimisticRequest, IsOptimisticResponse, SubscribeEventsRequest,
 };
+use cc_types::primitives::Root;
 use cc_proto::common::BuildInfo;
 use cc_proto::p2p::{ChainToP2p, P2pToChain, PublishRequest};
 use cc_proto::status_with_error_info;
@@ -390,6 +392,51 @@ impl ChainService for ChainServiceImpl {
             }
             other => Err(Status::internal(format!(
                 "unexpected query reply for GetValidatorRecords: {other:?}"
+            ))),
+        }
+    }
+
+    /// CC-3B: optimistic status from **fork choice** (proto-array), never from
+    /// engine liveness. `known=false` for a root the store has never seen so
+    /// Phase 6 cannot invent `is_optimistic: false` for an unknown block.
+    ///
+    /// Root-less request → node-level predicate (`is_optimistic_node`, both
+    /// CC-34c branches). Root present → per-root derivation.
+    async fn is_optimistic(
+        &self,
+        request: Request<IsOptimisticRequest>,
+    ) -> Result<Response<IsOptimisticResponse>, Status> {
+        let Some(core) = self.core_handle() else {
+            return Err(Self::not_bootstrapped(
+                "chain core not bootstrapped; IsOptimistic unavailable until checkpoint sync",
+            ));
+        };
+        let req = request.into_inner();
+        let root = match req.root {
+            None => None,
+            Some(bytes) if bytes.is_empty() => None,
+            Some(bytes) => {
+                let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+                    Status::invalid_argument(format!(
+                        "IsOptimistic root must be 32 bytes; got {}",
+                        bytes.len()
+                    ))
+                })?;
+                Some(Root::from_array(arr))
+            }
+        };
+        // Answer is read from the proto-array via core Query (fork choice only).
+        let reply = core.query(QueryRequest::IsOptimistic { root }).await?;
+        match reply {
+            QueryReply::IsOptimistic {
+                is_optimistic,
+                known,
+            } => Ok(Response::new(IsOptimisticResponse {
+                is_optimistic,
+                known,
+            })),
+            other => Err(Status::internal(format!(
+                "unexpected query reply for IsOptimistic: {other:?}"
             ))),
         }
     }

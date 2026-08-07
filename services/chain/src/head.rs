@@ -23,7 +23,8 @@ pub struct HeadSnapshot {
     pub current_epoch_target_root: Root,
     /// Phase 6 duties dependent root; zero until duties land.
     pub dependent_root: Root,
-    /// Always `false` in Phase 1; Phase 3 sets optimistic status.
+    /// Node-level optimistic (CC-3B / CC-34c): derived from fork choice after
+    /// fresh `get_head`, not from engine liveness.
     pub is_optimistic: bool,
     /// Monotonic publish sequence (core-thread producer only).
     pub sequence: u64,

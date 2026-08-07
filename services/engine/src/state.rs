@@ -85,6 +85,10 @@ pub enum EngineState {
 
 impl EngineState {
     /// Whether `el_offline` should be true (`GET /eth/v1/node/syncing` / GetEngineState).
+    ///
+    /// Maps **1:1** onto [`EngineState::Offline`] (CC-3B): the external collapse
+    /// of the four internal states is the only source — never fork-choice
+    /// optimistic status.
     #[must_use]
     pub const fn el_offline(self) -> bool {
         matches!(self, Self::Offline)
@@ -778,6 +782,45 @@ mod tests {
             }
         }
         assert_eq!(m.internal(), target);
+    }
+
+    /// CC-3B: `el_offline` maps **1:1** onto [`EngineState::Offline`].
+    ///
+    /// Table-driven over all four internal states:
+    /// `Synced|Syncing → false`, `Offline|AuthFailed → true`.
+    #[test]
+    fn el_offline_maps_one_to_one() {
+        let cases: [(EngineStateInternal, bool); 4] = [
+            (EngineStateInternal::Synced, false),
+            (EngineStateInternal::Syncing, false),
+            (EngineStateInternal::Offline, true),
+            (EngineStateInternal::AuthFailed, true),
+        ];
+        for (internal, want_offline) in cases {
+            let external = internal.external();
+            assert_eq!(
+                external.el_offline(),
+                want_offline,
+                "{internal:?} → external {external:?}: el_offline must be {want_offline}"
+            );
+            // 1:1 with EngineState::Offline (not with any fork-choice signal).
+            assert_eq!(
+                external.el_offline(),
+                matches!(external, EngineState::Offline),
+                "el_offline must map 1:1 onto EngineState::Offline for {internal:?}"
+            );
+
+            // Machine path: GetEngineState fields agree.
+            let mut m = machine();
+            force_state(&mut m, internal);
+            assert_eq!(m.internal(), internal);
+            assert_eq!(
+                m.external().el_offline(),
+                want_offline,
+                "machine {internal:?}: el_offline"
+            );
+            assert_eq!(m.internal().as_str(), internal.as_str());
+        }
     }
 
     /// CC-36 /3: AuthFailed stays put over ≥ 10 subsequent "slots".

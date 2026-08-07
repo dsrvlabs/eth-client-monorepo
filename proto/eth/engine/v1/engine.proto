@@ -19,7 +19,8 @@ service EngineService {
   rpc NewPayload(NewPayloadRequest) returns (NewPayloadResponse);
   // CC-32b declares the RPC; the fcU driver that fills it is CC-33.
   rpc ForkchoiceUpdated(ForkchoiceUpdatedRequest) returns (ForkchoiceUpdatedResponse);
-  // CC-32b declares the field set; the el_offline answer is CC-3B / CC-36a.
+  // CC-32b declares the field set; el_offline maps 1:1 onto EngineState::Offline
+  // (CC-3B / CC-36a). No Phase 3 caller — Phase 6 consumes for node/syncing.
   rpc GetEngineState(GetEngineStateRequest) returns (GetEngineStateResponse);
 }
 
@@ -88,8 +89,13 @@ message ForkchoiceUpdatedResponse {
 
 message GetEngineStateRequest {}
 
-// Surface Phase 6 consumes (CC-3B). el_offline answer lands with CC-36a.
+// Surface Phase 6 consumes (CC-3B). el_offline maps 1:1 onto the external
+// collapse of CC-36a's four-state machine:
+//   Synced | Syncing  → Online  → el_offline = false
+//   Offline | AuthFailed → Offline → el_offline = true
+// Distinct from chain's is_optimistic (fork choice / payload validation).
 message GetEngineStateResponse {
+  // true when the EL transport is Offline or AuthFailed (beacon-APIs required).
   bool el_offline = 1;
   // synced | syncing | offline | auth_failed (Architecture §3.7 / §9.3).
   string internal_state = 2;

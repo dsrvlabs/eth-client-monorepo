@@ -18,7 +18,9 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use cc_fork_choice::{PeerDasAvailability, Store, on_tick};
+use cc_fork_choice::{
+    PeerDasAvailability, Store, is_optimistic, is_optimistic_node, on_tick,
+};
 use cc_proto::chain::{
     ApplyAttestationsRequest, ApplyAttestationsResponse, ImportBlockRequest, ImportBlockResponse,
 };
@@ -117,9 +119,14 @@ pub enum QueryRequest {
     ValidatorPubkeys { indices: Vec<u64> },
     /// SSZ `Validator` records by index list (CC-27a). Indices already bound-checked.
     ValidatorRecords { indices: Vec<u64> },
+    /// CC-3B: optimistic status from fork choice (proto-array only — never engine).
+    ///
+    /// `root: None` → node-level [`is_optimistic_node`] (CC-34c both branches).
+    /// `root: Some` → per-root [`is_optimistic`]; `known=false` when absent.
+    IsOptimistic { root: Option<Root> },
 }
 
-/// Reply for the Phase-1 / CC-27a `Query` command.
+/// Reply for the Phase-1 / CC-27a / CC-3B `Query` command.
 #[derive(Debug, Clone)]
 pub enum QueryReply {
     /// Head probe.
@@ -138,6 +145,8 @@ pub enum QueryReply {
     },
     /// Served SSZ validator records + the head slot they were read at.
     ValidatorRecords { ssz: Vec<Vec<u8>>, slot: u64 },
+    /// CC-3B: tri-state optimistic answer (`known=false` ⇒ ignore `is_optimistic`).
+    IsOptimistic { is_optimistic: bool, known: bool },
 }
 
 /// Configuration for spawning the core thread.
@@ -704,6 +713,25 @@ fn handle_query<P: Preset>(
             }
             Ok(QueryReply::ValidatorRecords { ssz, slot })
         }
+        // CC-3B: answers from fork choice only (is_optimistic / is_optimistic_node).
+        // EngineState is never consulted here — el_offline is EngineService's job.
+        QueryRequest::IsOptimistic { root } => match root {
+            None => Ok(QueryReply::IsOptimistic {
+                is_optimistic: is_optimistic_node(store),
+                known: true,
+            }),
+            Some(r) => match is_optimistic(store, r) {
+                Some(flag) => Ok(QueryReply::IsOptimistic {
+                    is_optimistic: flag,
+                    known: true,
+                }),
+                // Unknown root: known=false so Phase 6 cannot invent is_optimistic=false.
+                None => Ok(QueryReply::IsOptimistic {
+                    is_optimistic: false,
+                    known: false,
+                }),
+            },
+        },
     }
 }
 
@@ -786,7 +814,8 @@ fn publish_initial_snapshot<P: Preset>(store: &Store<P>, head: &HeadSnapshotStor
         unrealized_finalized: store.unrealized_finalized_checkpoint(),
         current_epoch_target_root: Root::ZERO,
         dependent_root: Root::ZERO,
-        is_optimistic: false,
+        // CC-3B: node-level predicate from fork choice (not engine liveness).
+        is_optimistic: is_optimistic_node(store),
         sequence: 0,
     });
 }
@@ -1378,7 +1407,8 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
             } => head_root,
             QueryReply::CommitteeShuffling { .. }
             | QueryReply::ValidatorPubkeys { .. }
-            | QueryReply::ValidatorRecords { .. } => {
+            | QueryReply::ValidatorRecords { .. }
+            | QueryReply::IsOptimistic { .. } => {
                 unreachable!("Head request must yield Head reply")
             }
         };

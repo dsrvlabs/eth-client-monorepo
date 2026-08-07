@@ -110,6 +110,7 @@ to an existing service is **not** a `FILE`-category break — `buf breaking` mus
 | `ApplyAttestations` | unary | Batched free-floating `on_attestation` (CC-1E); weight observed through `GetHead` |
 | `GetCommitteeShuffling` | unary | Packed epoch shuffling + `dependent_root` from head state (CC-1F, **served**) |
 | `GetValidatorPubkeys` | unary | Registry pubkeys by index range/list, bound 256 (CC-1F, **served**) |
+| `IsOptimistic` | unary | CC-3B: fork-choice optimistic tri-state (`is_optimistic` + `known`); no Phase 3 caller |
 
 ### `ImportBlock`
 

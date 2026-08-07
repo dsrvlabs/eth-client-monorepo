@@ -142,6 +142,7 @@ fn recompute_and_publish_head<P: Preset>(
         .unwrap_or(Root::ZERO);
 
     *snapshot_sequence = snapshot_sequence.saturating_add(1);
+    let optimistic = cc_fork_choice::is_optimistic_node(store);
     head_store.store(HeadSnapshot {
         head_root,
         head_slot,
@@ -152,7 +153,8 @@ fn recompute_and_publish_head<P: Preset>(
         unrealized_finalized: store.unrealized_finalized_checkpoint(),
         current_epoch_target_root: Root::ZERO,
         dependent_root: Root::ZERO,
-        is_optimistic: false,
+        // CC-3B: node-level optimistic from fork choice after fresh get_head.
+        is_optimistic: optimistic,
         sequence: *snapshot_sequence,
     });
     metrics.set_head(
@@ -160,6 +162,7 @@ fn recompute_and_publish_head<P: Preset>(
         0,
         store.finalized_checkpoint().epoch.as_u64(),
     );
+    metrics.is_optimistic.set(i64::from(optimistic));
 
     // Non-blocking HEAD event (never stall the core).
     let _ = event_tx.try_send(EventInput {

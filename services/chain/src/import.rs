@@ -622,6 +622,7 @@ fn finish_imported<P: Preset>(
 
     // --- 8. snapshot publish BEFORE events (ordering guarantee) ------------
     *snapshot_sequence = snapshot_sequence.saturating_add(1);
+    let optimistic = cc_fork_choice::is_optimistic_node(store);
     let snapshot = HeadSnapshot {
         head_root,
         head_slot,
@@ -632,7 +633,8 @@ fn finish_imported<P: Preset>(
         unrealized_finalized: store.unrealized_finalized_checkpoint(),
         current_epoch_target_root: Root::ZERO,
         dependent_root: Root::ZERO,
-        is_optimistic: false,
+        // CC-3B: node-level optimistic from fork choice after fresh get_head.
+        is_optimistic: optimistic,
         sequence: *snapshot_sequence,
     };
     head_store.store(snapshot);
@@ -641,6 +643,10 @@ fn finish_imported<P: Preset>(
         0,
         store.finalized_checkpoint().epoch.as_u64(),
     );
+    metrics.is_optimistic.set(i64::from(optimistic));
+    metrics
+        .optimistic_nodes
+        .set(store.proto_array().optimistic_node_count() as i64);
 
     // --- 9. event publish (non-blocking; never stall the core — SEC-2) -----
     publish_events_nonblocking(

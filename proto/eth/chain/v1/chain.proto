@@ -12,6 +12,8 @@ import "eth/p2p/v1/p2p.proto";
 // Phase 1 (CC-1F) adds: unary shuffling + pubkey queries.
 // Phase 2 (CC-27) adds: the bidirectional p2p stream (blocks/columns down, verdicts up)
 //   and GetValidatorRecords (§5.4a / §16/5).
+// Phase 3 (CC-3B) adds: IsOptimistic — fork-choice optimistic surface for Phase 6
+//   (`is_optimistic` / known tri-state; no Phase 3 caller).
 service ChainService {
   rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
   rpc ImportBlock(ImportBlockRequest) returns (ImportBlockResponse);
@@ -36,6 +38,12 @@ service ChainService {
   // CC-27a / §5.4a: SSZ Validator records by index for operation-topic gossip
   // checks. Bound 256; over → INVALID_ARGUMENT, never truncated.
   rpc GetValidatorRecords(GetValidatorRecordsRequest) returns (GetValidatorRecordsResponse);
+  // CC-3B: optimistic status from fork choice (no Phase 3 caller — Phase 6
+  // consumes for GET /eth/v1/node/syncing and block/state optimistic envelopes).
+  // Root-less = node-level is_optimistic (CC-34c both branches); root present =
+  // per-root derivation from ProtoNode.execution_status. known=false when the
+  // root is absent from the proto-array (Phase 6 must not invent false).
+  rpc IsOptimistic(IsOptimisticRequest) returns (IsOptimisticResponse);
 }
 
 message GetInfoRequest {}
@@ -229,4 +237,30 @@ message GetValidatorRecordsResponse {
   repeated bytes ssz = 1;
   // Head slot at which the records were read.
   uint64 slot = 2;
+}
+
+// ── CC-3B: IsOptimistic ──────────────────────────────────────────────────────
+//
+// Tri-state surface for Phase 6 (`GET /eth/v1/node/syncing`.is_optimistic and
+// the optimistic envelope on block/state endpoints). Answers come from fork
+// choice (`ProtoNode.execution_status` / `is_optimistic_node`), never from
+// engine liveness — a node can be `el_offline: false, is_optimistic: true`
+// when the EL is up and answering SYNCING.
+//
+// `known: false` means the root is not in the store; callers MUST ignore
+// `is_optimistic` in that case (a bare bool would make Phase 6 report
+// `is_optimistic: false` for a block the node has never seen).
+
+message IsOptimisticRequest {
+  // Absent / empty → node-level predicate (CC-34c both branches).
+  // Present 32-byte root → per-root `is_optimistic` derivation.
+  optional bytes root = 1;
+}
+
+message IsOptimisticResponse {
+  // When known=true: whether the root (or node head) is optimistically imported.
+  // When known=false: undefined — ignore.
+  bool is_optimistic = 1;
+  // false ≜ root not in the proto-array (unknown to this node).
+  bool known = 2;
 }
