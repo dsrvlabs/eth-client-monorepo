@@ -389,3 +389,59 @@ Numbers land in `docs/phase-2-soak.md` § Run record and § Clause table. Full
 checklist, void/non-void table, and residual `NOT_RUN` fields: that file.
 Phase 1 no-CPU / R-1 load-guard rules still apply on the soak machine.
 
+## Phase 3 stack (EL joins compose)
+
+Phase 3 adds the execution client as compose service `el`
+(`ethereum/client-go:v1.17.5` by exact tag — see `docs/el-runbook.md`). The six
+consensus services remain; `engine` gains `depends_on: el` with
+`condition: service_started` (**not** `service_healthy` — ADR P3-14). EL health
+is `eth_syncing == false`, which is minutes to hours; Phase A of acceptance
+exercises the client **while** the EL catches up.
+
+### JWT secret
+
+```bash
+mkdir -p secrets
+openssl rand -hex 32 > secrets/jwt.hex
+chmod 0600 secrets/jwt.hex
+```
+
+Path is `secrets/jwt.hex` (not `jwt/`). Mounted read-only into `el` at
+`/jwt/jwt.hex`. Never commit the file — `.gitignore` rules `secrets/*` and
+`**/jwt.hex` (with `secrets/.gitkeep` tracked as the placeholder).
+
+### Bring-up (Phase 3)
+
+```bash
+export CC_GIT_SHA="$(git rev-parse --short HEAD)"
+# JWT required before el will authenticate usefully (geth will silently mint its
+# own secret if the mount is empty — see docs/el-runbook.md R-6).
+test -f secrets/jwt.hex
+docker compose build
+docker compose up -d
+bash scripts/wait-healthy.sh                        # six CC services healthy
+# el may stay unhealthy for a long time while snap-syncing; that is expected.
+curl -s -X POST localhost:8545 \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_syncing","params":[]}'
+```
+
+Port **8551** (authenticated Engine API) is **not** published to the host — only
+on the `cc` network. Host-visible: **8545** (`eth_syncing`), **6060** (geth
+metrics / Prometheus text), **30303** (devp2p).
+
+### Persistence asymmetry (read before restarting)
+
+**From Phase 3 onward the EL's datadir survives a restart while ours does not.**
+
+| Side | Volume | After `docker compose down` (default) | After `down -v` / volume rm |
+|---|---|---|---|
+| `el` | named volume `elstore` → `/data` | **Persists** | Lost — full snap/snapshot restore again |
+| Our six services | none (ephemeral) | Process state gone; next `up` **re-checkpoint-syncs** | same |
+
+There is **no durable consensus storage until Phase 4**. Operators who treat
+`docker compose down` as "reset everything" will be surprised that geth still has
+chain data (and that deleting `elstore` costs a large re-download). Snapshot
+restore procedure is CC-39b; until then, protect `elstore` deliberately.
+Full auth-trap and `-38002` lookup: `docs/el-runbook.md`.
+

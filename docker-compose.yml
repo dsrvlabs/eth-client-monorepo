@@ -90,6 +90,11 @@ services:
     depends_on:
       chain:
         condition: service_healthy
+      # ADR P3-14: service_started, never service_healthy. EL health is
+      # eth_syncing==false (minutes–hours); Phase A exercises the client while
+      # the EL catches up, so the stack must not wait on a synced EL.
+      el:
+        condition: service_started
     healthcheck:
       <<: *hc
       test: ["CMD", "/usr/local/bin/grpc-health-probe", "-addr=:9004"]
@@ -140,14 +145,54 @@ services:
       <<: *hc
       test: ["CMD", "/usr/local/bin/grpc-health-probe", "-addr=:9005"]
 
-  # ── Phase 3 (CC-3x) fills this slot. Deliberately commented, not absent, so the
-  #    port allocation and the JWT-volume gap are visible now. A7 / A-P0-5: no secrets
-  #    in Phases 0-2, so there is no jwt volume here yet.
-  # el:
-  #   image: ethereum/client-go:<pinned>
-  #   ports: ["8545:8545", "8551:8551", "30303:30303/tcp", "30303:30303/udp"]
-  #   volumes: [ "./secrets/jwt.hex:/jwt.hex:ro" ]      # Phase 3
-  #   networks: [cc]
+  # ── Phase 3 EL (CC-39a). Pinned exact tag; 8551 stays on the cc network only.
+  # Inherits stop_grace_period: 5s from x-cc-runtime (CC service budget). geth may
+  # still be force-killed mid-flush on large elstore; lengthen only if soak shows it.
+  el:
+    <<: *cc-runtime                       # restart: unless-stopped, SIGTERM, networks: [cc]
+    image: ethereum/client-go:v1.17.5     # EXACT tag — never floating tags (both move under a stack).
+                                          # Resolved digest recorded in docs/el-runbook.md (V-3).
+    command:
+      - --hoodi
+      - --syncmode=snap
+      - --datadir=/data
+      # --- the Container-Auth Trap: both defaults break a container CL, differently ---
+      - --authrpc.addr=0.0.0.0            # default "localhost" → CONNECTION REFUSED from another container
+      - --authrpc.port=8551               # authenticated Engine API; NOT published to the host
+      - --authrpc.vhosts=el               # default ["localhost"] → HTTP 403 "invalid host specified"
+                                          #   (geth serves any IP Host; validates hostnames; engine→http://el:8551
+                                          #   sends Host: el — not "engine". Use el or *.)
+      - --authrpc.jwtsecret=/jwt/jwt.hex
+      # --- unauthenticated eth namespace, for the healthcheck and for debugging ---
+      - --http
+      - --http.addr=0.0.0.0
+      - --http.port=8545
+      - --http.api=eth,net,web3
+      - --http.vhosts=*
+      # --- geth's own newPayload timings, as an independent reference (CC-39/7, CC-3C /2) ---
+      - --metrics
+      - --metrics.addr=0.0.0.0
+      - --metrics.port=6060
+    volumes:
+      - elstore:/data
+      - ./secrets:/jwt:ro                 # NOT copied into any image (.dockerignore)
+    # 8545 eth_syncing / operator; 6060 metrics; 30303 devp2p. 8551 is intentionally omitted.
+    ports:
+      - "8545:8545"
+      - "6060:6060"
+      - "30303:30303/tcp"
+      - "30303:30303/udp"
+    healthcheck:
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 120s
+      # eth_syncing == false, not "the port is open" (CC-39/8 / ADR P3-14). geth's own
+      # binary over IPC — the alpine image has no curl; verified against v1.17.5 (§12/6).
+      test: ["CMD-SHELL", "geth attach --exec 'eth.syncing == false' /data/geth.ipc | grep -q true"]
 
 networks:
   cc: {}
+
+volumes:
+  elstore: {}

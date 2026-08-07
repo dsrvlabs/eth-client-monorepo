@@ -23,6 +23,13 @@
 # Contains mutation testing data
 **/mutants.out*/
 
+# Local secrets (A7 / A-P0-5). .dockerignore already keeps these out of images;
+# this keeps them out of the repository. The Engine API JWT lives here (CC-39/3, ≠13/6).
+# secrets/* (not secrets/) so secrets/.gitkeep can be tracked as a path placeholder.
+secrets/*
+!secrets/.gitkeep
+**/jwt.hex
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
