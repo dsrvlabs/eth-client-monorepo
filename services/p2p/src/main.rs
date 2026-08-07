@@ -132,6 +132,64 @@ struct P2pConfig {
     /// Peer manager knobs (CC-20c).
     #[serde(default)]
     peer_manager: PeerManagerFileConfig,
+    /// Discovery / discv5 (CC-21c).
+    #[serde(default)]
+    discovery: DiscoveryFileConfig,
+    /// Optional consensus-specs network YAML for `ForkContext` / ENR `eth2`.
+    #[serde(default)]
+    network_config: Option<PathBuf>,
+    /// Optional genesis validators root hex (`0x` + 64 hex chars).
+    #[serde(default)]
+    genesis_validators_root: Option<String>,
+    /// When false, do not spawn the discovery task.
+    #[serde(default = "default_enable_discovery")]
+    enable_discovery: bool,
+}
+
+fn default_enable_discovery() -> bool {
+    true
+}
+
+/// `[discovery]` section — maps onto [`cc_p2p::discovery::DiscoveryConfig`].
+#[derive(Debug, Deserialize)]
+struct DiscoveryFileConfig {
+    /// UDP listen IP (default 0.0.0.0).
+    #[serde(default = "default_discovery_ip")]
+    listen_ip: String,
+    /// UDP listen port (default matches TCP listen).
+    #[serde(default = "default_discovery_udp")]
+    listen_udp: u16,
+    /// Bootnode ENR list (`enr:…` strings).
+    #[serde(default)]
+    boot_nodes: Vec<String>,
+    /// Optional bootnodes file (self-devnet: `devnet/out/bootnodes.txt`).
+    #[serde(default)]
+    boot_nodes_file: Option<PathBuf>,
+    /// Min peers per subnet before targeted queries.
+    #[serde(default = "default_min_peers_per_subnet")]
+    min_peers_per_subnet: usize,
+}
+
+impl Default for DiscoveryFileConfig {
+    fn default() -> Self {
+        Self {
+            listen_ip: default_discovery_ip(),
+            listen_udp: default_discovery_udp(),
+            boot_nodes: Vec::new(),
+            boot_nodes_file: None,
+            min_peers_per_subnet: default_min_peers_per_subnet(),
+        }
+    }
+}
+
+fn default_discovery_ip() -> String {
+    "0.0.0.0".to_owned()
+}
+fn default_discovery_udp() -> u16 {
+    9000
+}
+fn default_min_peers_per_subnet() -> usize {
+    cc_p2p::discovery::DEFAULT_MIN_PEERS_PER_SUBNET
 }
 
 /// `[peer_manager]` section — maps onto [`cc_p2p::peer_manager::PeerManagerConfig`].
@@ -273,6 +331,33 @@ impl P2pConfig {
             .parse()
             .map_err(|e| RuntimeError::ListenAddr(format!("{}: {e}", self.listen_multiaddr)))?;
         let peer_manager = self.peer_manager.to_runtime()?;
+        let listen_ip: std::net::Ipv4Addr = self
+            .discovery
+            .listen_ip
+            .parse()
+            .map_err(|e| RuntimeError::ListenAddr(format!("discovery.listen_ip: {e}")))?;
+        let discovery = cc_p2p::discovery::DiscoveryConfig {
+            listen_ip,
+            listen_udp: self.discovery.listen_udp,
+            // TCP port is aligned with the libp2p listen multiaddr in `serve`.
+            tcp_port: self.discovery.listen_udp,
+            boot_nodes: self.discovery.boot_nodes.clone(),
+            boot_nodes_file: self.discovery.boot_nodes_file.clone(),
+            target_peers: peer_manager.target_peers,
+            min_peers_per_subnet: self.discovery.min_peers_per_subnet,
+            // Phase 2: empty until CC-2C sets the backbone bitmask.
+            interested_attnets: 0,
+            enr_strategy: cc_p2p::discovery::EnrSeqStrategy::EnrInsert,
+        };
+        let genesis_validators_root = match &self.genesis_validators_root {
+            Some(hex) => {
+                let bytes = cc_types::parse_hex_bytes::<32>(hex).map_err(|e| {
+                    RuntimeError::ListenAddr(format!("genesis_validators_root: {e}"))
+                })?;
+                Some(bytes)
+            }
+            None => None,
+        };
         Ok(RuntimeConfig {
             node_key_path: self.node_key_path.clone(),
             listen_multiaddr,
@@ -286,6 +371,10 @@ impl P2pConfig {
                 slot_clock_offset_seconds: self.clock.slot_clock_offset_seconds,
             },
             peer_manager,
+            discovery,
+            network_config_path: self.network_config.clone(),
+            genesis_validators_root,
+            enable_discovery: self.enable_discovery,
             test_swarm_panic: false,
         })
     }

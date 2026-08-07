@@ -6,6 +6,7 @@
 //!   eviction, `Goodbye`-on-disconnect
 //! - **CC-21a**: A-P2-4 ENR sequence probe + `EnrManager::apply` batching skeleton
 //! - **CC-21b**: Epoch-aware fork digest (`fork_digest`) — no libp2p/discv5/I/O
+//! - **CC-21c**: discv5 discovery task, ENR field encoders, predicates, dial queue
 //! - **CC-22a**: Topic registry, Fulu topic strings, Steady→Overlap→Drain skeleton
 //! - **CC-29a**: Phase 2 metric family declarations (binary registers them)
 

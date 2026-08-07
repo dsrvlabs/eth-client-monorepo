@@ -1109,6 +1109,7 @@ dependencies = [
 name = "cc-p2p"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "anyhow",
  "cc-bootstrap",
  "cc-config",

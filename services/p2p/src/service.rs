@@ -25,6 +25,11 @@ use tracing::{error, info};
 
 use crate::channels::{self, ChannelMap, SwarmCommand, stub_consumer};
 use crate::clock::{ClockConfig, SlotClock};
+use crate::discovery::{
+    DIAL_QUEUE_BOUND, DiscoveryConfig, DiscoveryPeerView, DiscoveryTask, build_enr_manager,
+    run_discovery_task,
+};
+use crate::fork_digest::ForkContext;
 use crate::host::{SwarmTask, build_host_swarm, run_swarm_task};
 use crate::identity::{self, IdentityError};
 use crate::metrics::{P2pMetrics, QueueName};
@@ -53,6 +58,16 @@ pub struct RuntimeConfig {
     pub clock: ClockConfig,
     /// Peer manager knobs (target/max/static peers). Defaults match §3.6.
     pub peer_manager: PeerManagerConfig,
+    /// Discovery / discv5 knobs (CC-21c). Empty bootnodes → discovery still
+    /// starts but finds nobody until peers are configured.
+    pub discovery: DiscoveryConfig,
+    /// Optional path to consensus-specs network YAML for [`ForkContext`].
+    pub network_config_path: Option<PathBuf>,
+    /// Optional genesis validators root (32 bytes). Required with network config
+    /// for a correct `eth2` ENR field.
+    pub genesis_validators_root: Option<[u8; 32]>,
+    /// When false, discovery task is not spawned (tests / offline).
+    pub enable_discovery: bool,
     /// **Test-only:** swarm task panics immediately so the process-fatal path
     /// can be exercised through [`run_process`] without a real host crash.
     /// Production always leaves this `false`.
@@ -66,6 +81,10 @@ impl Default for RuntimeConfig {
             listen_multiaddr: default_listen_multiaddr(),
             clock: ClockConfig::default(),
             peer_manager: PeerManagerConfig::default(),
+            discovery: DiscoveryConfig::default(),
+            network_config_path: None,
+            genesis_validators_root: None,
+            enable_discovery: true,
             test_swarm_panic: false,
         }
     }
@@ -77,6 +96,57 @@ fn default_listen_multiaddr() -> Multiaddr {
     addr.push(Protocol::Ip4(Ipv4Addr::UNSPECIFIED));
     addr.push(Protocol::Tcp(9000));
     addr
+}
+
+/// Extract the first TCP port from a multiaddr, if any.
+fn tcp_port_from_multiaddr(addr: &Multiaddr) -> Option<u16> {
+    for p in addr.iter() {
+        if let Protocol::Tcp(port) = p {
+            return Some(port);
+        }
+    }
+    None
+}
+
+/// Build a [`ForkContext`] from optional network config + GVR.
+///
+/// Falls back to the committed Hoodi fixture embedded via `include_str!` so
+/// discovery can still start when operators omit `network_config`.
+fn build_fork_context(cfg: &RuntimeConfig, epoch: u64) -> ForkContext {
+    use cc_types::{ChainConfig, Epoch, Root};
+
+    let epoch = Epoch::new(epoch);
+    let gvr = cfg
+        .genesis_validators_root
+        .map(Root::from_array)
+        .unwrap_or(Root::ZERO);
+
+    if let Some(path) = &cfg.network_config_path {
+        match ChainConfig::from_yaml_file(path) {
+            Ok(chain) => return ForkContext::new(chain, gvr, epoch),
+            Err(e) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "network_config load failed; falling back to embedded Hoodi"
+                );
+            }
+        }
+    }
+
+    // Embedded at compile time — always available without filesystem layout.
+    // The fixture is a workspace invariant; parse failure means ChainConfig
+    // schema drift and is treated as unreachable for a well-formed tree.
+    const EMBEDDED_HOODI: &str =
+        include_str!("../../../crates/types/tests/fixtures/hoodi-config.yaml");
+    let chain = match ChainConfig::from_yaml_str(EMBEDDED_HOODI) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = %e, "embedded hoodi-config.yaml rejected");
+            unreachable!("embedded hoodi-config.yaml must parse as ChainConfig");
+        }
+    };
+    ForkContext::new(chain, gvr, epoch)
 }
 
 /// Snapshot published when the runtime is up (identity loaded + swarm spawned).
@@ -155,7 +225,8 @@ pub async fn serve(
 
     // ── 2. Clock (config-sourced until ChainView) ──────────────────────────
     let clock = SlotClock::new(cfg.clock.clone());
-    let _epoch_rx = clock.spawn_epoch_ticks();
+    let epoch_rx = clock.spawn_epoch_ticks();
+    let initial_epoch = clock.current_epoch();
 
     // ── 3. Channel map (§2.2 bounds) ───────────────────────────────────────
     let mut channels = ChannelMap::new(&metrics);
@@ -173,18 +244,27 @@ pub async fn serve(
     let peer_cmd_tx = channels.cmd_tx.clone();
     let peer_cfg = cfg.peer_manager.clone();
 
+    // Discovery → peer manager dial channel (bound = dial queue capacity).
+    let (dial_tx, dial_rx) = mpsc::channel(DIAL_QUEUE_BOUND);
+    let (peer_view_tx, peer_view_rx) = watch::channel(DiscoveryPeerView::default());
+
     // ── 5. Stub consumers (count + drop) ───────────────────────────────────
     // Owned edges claimed by later issues; stubs are fire-and-forget scaffolding
     // until CC-22*/23*/27* install supervised workers (§2.4 note). Peer manager
     // (CC-20c) consumes `conn_rx` itself — not the stub.
     spawn_stub_consumers(channels, metrics.clone());
 
+    // Fork context for ENR eth2/nfd (best-effort when network config is present).
+    let fork_ctx = build_fork_context(&cfg, initial_epoch);
+
     // ── 6. Supervisor ──────────────────────────────────────────────────────
-    let (swarm_factory, peer_factory) = if cfg.test_swarm_panic {
+    let (swarm_factory, peer_factory, discovery_factory) = if cfg.test_swarm_panic {
         // Induced panic for process-fatal production-path tests.
         drop(cmd_rx);
         drop(conn_rx);
         drop(peer_cmd_tx);
+        drop(dial_tx);
+        drop(dial_rx);
         let swarm_factory = factory_from_future("swarm", || async {
             #[allow(clippy::panic)] // test-only RuntimeConfig.test_swarm_panic
             {
@@ -194,7 +274,10 @@ pub async fn serve(
         let peer_factory = factory_from_future("peer_manager", || async {
             std::future::pending::<()>().await;
         });
-        (swarm_factory, peer_factory)
+        let discovery_factory = factory_from_future("discovery", || async {
+            std::future::pending::<()>().await;
+        });
+        (swarm_factory, peer_factory, discovery_factory)
     } else {
         let swarm = build_host_swarm(identity.keypair().clone())?;
         assert_eq!(snapshot.peer_id, *swarm.local_peer_id());
@@ -227,7 +310,15 @@ pub async fn serve(
         // Peer manager: respawnable; table is rebuilt from connection events.
         let peer_metrics = metrics.clone();
         let peer_shutdown = shutdown_rx.clone();
-        let peer_cell = Mutex::new(Some((conn_rx, peer_cmd_tx, peer_cfg, peer_metrics)));
+        let peer_view_tx_pm = peer_view_tx;
+        let peer_cell = Mutex::new(Some((
+            conn_rx,
+            peer_cmd_tx,
+            peer_cfg,
+            peer_metrics,
+            dial_rx,
+            peer_view_tx_pm,
+        )));
         let peer_factory = factory_from_future("peer_manager", move || {
             let taken = peer_cell
                 .lock()
@@ -235,17 +326,97 @@ pub async fn serve(
                 .take();
             let mut shutdown = peer_shutdown.clone();
             async move {
-                if let Some((conn_rx, cmd_tx, config, metrics)) = taken {
+                if let Some((conn_rx, cmd_tx, config, metrics, dial_rx, peer_view_tx)) = taken {
                     let manager = PeerManager::new(config, cmd_tx, metrics);
-                    run_peer_manager(manager, conn_rx, shutdown).await;
+                    run_peer_manager(
+                        manager,
+                        conn_rx,
+                        Some(dial_rx),
+                        Some(peer_view_tx),
+                        shutdown,
+                    )
+                    .await;
                 } else {
-                    // After first exit, park (respawn rebuilds from empty table
-                    // only if we re-install; for now stay idle post-channel-close).
                     let _ = shutdown.changed().await;
                 }
             }
         });
-        (swarm_factory, peer_factory)
+
+        // Discovery driver: RespawnBudget (fatal after 5 restarts / 5 min).
+        // Factory **rebuilds** EnrManager from the retained identity secret on
+        // every spawn (B2) — no one-shot take that parks forever after first run.
+        let discovery_factory = if cfg.enable_discovery {
+            let disc_cfg = {
+                let mut d = cfg.discovery.clone();
+                d.target_peers = cfg.peer_manager.target_peers;
+                // Align UDP with TCP port from listen multiaddr when unset.
+                if let Some(tcp) = tcp_port_from_multiaddr(&cfg.listen_multiaddr) {
+                    d.tcp_port = tcp;
+                    if d.listen_udp == 0 || d.listen_udp == 9000 {
+                        d.listen_udp = tcp;
+                    }
+                }
+                d
+            };
+            // Validate key once at start so we fail before bind on bad identity.
+            let _ = identity.combined_key().map_err(RuntimeError::Identity)?;
+            let identity_for_disc = identity.clone();
+            let disc_metrics = metrics.clone();
+            let disc_shutdown = shutdown_rx.clone();
+            let disc_epoch = epoch_rx.clone();
+            let disc_peer_view = peer_view_rx.clone();
+            let dial_tx_factory = dial_tx;
+            let fork_ctx_seed = fork_ctx;
+            factory_from_future("discovery", move || {
+                let identity = identity_for_disc.clone();
+                let disc_cfg = disc_cfg.clone();
+                let metrics = disc_metrics.clone();
+                let shutdown = disc_shutdown.clone();
+                let epoch_rx = disc_epoch.clone();
+                let peer_view_rx = disc_peer_view.clone();
+                let dial_tx = dial_tx_factory.clone();
+                let mut fork_ctx = fork_ctx_seed.clone();
+                // Refresh epoch from the clock watch so respawns are not stuck
+                // on the pre-start epoch.
+                let epoch_now = *epoch_rx.borrow();
+                fork_ctx.on_epoch(cc_types::Epoch::new(epoch_now));
+                async move {
+                    // Panics here are intentional: RespawnBudget counts them and
+                    // re-invokes this factory, which rebuilds EnrManager (B2).
+                    #[allow(clippy::panic)]
+                    let run = async {
+                        let enr_key = identity
+                            .combined_key()
+                            .unwrap_or_else(|e| panic!("discovery identity CombinedKey: {e}"));
+                        let manager = build_enr_manager(enr_key, &disc_cfg)
+                            .unwrap_or_else(|e| panic!("discovery EnrManager build failed: {e}"));
+                        run_discovery_task(DiscoveryTask {
+                            manager,
+                            cfg: disc_cfg,
+                            fork_ctx,
+                            epoch_rx,
+                            peer_view_rx,
+                            dial_tx,
+                            metrics,
+                            shutdown: shutdown.clone(),
+                        })
+                        .await;
+                        // Unexpected clean exit → panic so budget applies.
+                        if !*shutdown.borrow() {
+                            panic!("discovery task exited unexpectedly");
+                        }
+                    };
+                    run.await;
+                }
+            })
+        } else {
+            drop(dial_tx);
+            factory_from_future("discovery", || async {
+                std::future::pending::<()>().await;
+            })
+        };
+
+        (swarm_factory, peer_factory, discovery_factory)
     };
 
     // Idle respawnable worker so the respawn policy is live before CC-22*.
@@ -263,6 +434,11 @@ pub async fn serve(
             name: "peer_manager",
             policy: TaskPolicy::Respawn,
             factory: peer_factory,
+        },
+        SupervisedTask {
+            name: "discovery",
+            policy: TaskPolicy::discovery(),
+            factory: discovery_factory,
         },
         SupervisedTask {
             name: "idle_worker",

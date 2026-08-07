@@ -69,7 +69,15 @@ A-P2-4.
 ## M2.1 Hoodi hold
 
 **Owner:** CC-21c  
-**Status:** `_NOT_RUN_`
+**Status:** `_NOT_RUN_` — code path landed (discv5 task, V-4 bootnodes in
+`config/p2p.toml` retrieved **2026-08-07** from eth-clients/hoodi
+`metadata/bootstrap_nodes.yaml`). Live cold-start (≥ 25 peers / 10 min, then
+60 min hold on `cc_p2p_peers{direction}` + `cc_p2p_peers_custody_compatible`)
+and D-8 promotion verdict remain operator runs.
+
+**V-4 bootnode list:** see `config/p2p.toml` `[discovery].boot_nodes` (retrieval
+date in-file). Self-devnet reads `devnet/out/bootnodes.txt` via
+`boot_nodes_file`.
 
 ## Run record
 

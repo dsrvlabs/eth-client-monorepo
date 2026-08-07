@@ -65,7 +65,10 @@ fn runtime_cfg(key: PathBuf, panic: bool) -> RuntimeConfig {
             slot_clock_offset_seconds: 0,
         },
         peer_manager: cc_p2p::peer_manager::PeerManagerConfig::default(),
+        // Discovery off in identity tests (no UDP bind / bootnode traffic).
+        enable_discovery: false,
         test_swarm_panic: panic,
+        ..RuntimeConfig::default()
     }
 }
 

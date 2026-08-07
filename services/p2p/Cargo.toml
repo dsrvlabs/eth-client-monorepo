@@ -26,6 +26,7 @@ cc-crypto = { workspace = true }
 cc-libp2p = { workspace = true }
 cc-proto = { workspace = true }
 cc-types = { workspace = true }
+alloy-primitives = { workspace = true }
 # Workspace pin from CC-2K; first consumer (CC-21a probe / EnrManager skeleton).
 discv5 = { workspace = true }
 futures = { workspace = true }

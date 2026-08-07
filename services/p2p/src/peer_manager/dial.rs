@@ -1,10 +1,10 @@
 //! Dial scheduler: target / max / concurrent dial caps (Architecture §3.6).
 //!
 //! Policy lives here; hard ceilings are `connection_limits::Behaviour` on the
-//! swarm. Source of dials in this issue is the config-supplied **static peer
-//! list only** — discovery (CC-21c) must not be the first thing that dials a
-//! bootnode from this path.
+//! swarm. Dial sources: config **static peers** and table rows with known
+//! multiaddrs (discovery-fed via CC-21c). Discovery never calls the swarm.
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use cc_libp2p::{Multiaddr, PeerId};
@@ -17,7 +17,7 @@ use super::{ConnectionState, PeerManagerConfig, PeerTable};
 pub struct DialRequest {
     /// Target peer.
     pub peer_id: PeerId,
-    /// Address to dial (static peer list / later discovery).
+    /// Address to dial (static peer list / discovery).
     pub addr: Multiaddr,
 }
 
@@ -25,6 +25,9 @@ pub struct DialRequest {
 ///
 /// Does **not** dial when `connected >= max_peers`. Dials while
 /// `connected < target_peers` and concurrent dials < `max_concurrent_dials`.
+///
+/// Preference order: static peers first, then any disconnected table peer that
+/// has at least one multiaddr (discovery candidates).
 #[must_use]
 pub fn schedule_dials(
     table: &PeerTable,
@@ -61,6 +64,8 @@ pub fn schedule_dials(
         .min(config.max_peers - connected);
 
     let mut out = Vec::with_capacity(want);
+    let mut scheduled: HashSet<PeerId> = HashSet::new();
+
     for sp in &config.static_peers {
         if out.len() >= want {
             break;
@@ -79,10 +84,48 @@ pub fn schedule_dials(
             }
         }
         // Not yet in the table, or disconnected + backoff ready.
+        scheduled.insert(sp.peer_id);
         out.push(DialRequest {
             peer_id: sp.peer_id,
             addr: sp.addr.clone(),
         });
+    }
+
+    // Discovery-fed peers: disconnected table rows with a multiaddr.
+    if out.len() < want {
+        let mut discovered: Vec<DialRequest> = table
+            .iter()
+            .filter(|rec| {
+                !scheduled.contains(&rec.peer_id)
+                    && !bans.is_banned(&rec.peer_id)
+                    && rec.state == ConnectionState::Disconnected
+                    && rec.dial_backoff.ready(now)
+                    && !rec.addrs.is_empty()
+            })
+            .map(|rec| DialRequest {
+                peer_id: rec.peer_id,
+                addr: rec.addrs[0].clone(),
+            })
+            .collect();
+        // Prefer higher custody_usefulness (discovery priority is stored there
+        // until a dedicated field lands).
+        discovered.sort_by(|a, b| {
+            let ca = table
+                .get(&a.peer_id)
+                .map(|r| r.custody_usefulness)
+                .unwrap_or(0);
+            let cb = table
+                .get(&b.peer_id)
+                .map(|r| r.custody_usefulness)
+                .unwrap_or(0);
+            cb.cmp(&ca).then_with(|| a.peer_id.cmp(&b.peer_id))
+        });
+        for d in discovered {
+            if out.len() >= want {
+                break;
+            }
+            out.push(d);
+        }
     }
     out
 }

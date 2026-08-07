@@ -121,6 +121,27 @@ pub struct PeerStatus {
     pub present: bool,
 }
 
+/// Snapshot of a peer's advertised ENR fields relevant to dial policy.
+///
+/// Full ENR retention is not required for Phase 2; we keep the digests and
+/// bitfields discovery already decoded. **`nfd` is intentionally informational
+/// only** — an `nfd` mismatch MUST NOT cause a disconnect before the fork
+/// boundary (CC-21/4, spec delta 11). There is no disconnect condition on
+/// `nfd` anywhere in this module (grep guard).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerEnrInfo {
+    /// Advertised `eth2.fork_digest` when present.
+    pub fork_digest: Option<[u8; 4]>,
+    /// Advertised `nfd` when present (not a disconnect input).
+    pub nfd: Option<[u8; 4]>,
+    /// Advertised `cgc` when present.
+    pub cgc: Option<u64>,
+    /// Advertised attestation subnet bitfield (`BitVector[64]` as `u64`).
+    pub attnets: Option<u64>,
+    /// Advertised sync-committee subnet bitfield (`BitVector[4]` as low nibble).
+    pub syncnets: Option<u8>,
+}
+
 /// One peer's row in the table (Architecture §3.6).
 #[derive(Debug, Clone)]
 pub struct PeerRecord {
@@ -132,8 +153,8 @@ pub struct PeerRecord {
     pub state: ConnectionState,
     /// Direction of the established connection (`None` if not connected).
     pub direction: Option<ConnectionDirection>,
-    /// ENR placeholder (CC-21c).
-    pub enr: Option<()>,
+    /// ENR-derived fields from discovery (CC-21c). Not a disconnect input for `nfd`.
+    pub enr: Option<PeerEnrInfo>,
     /// MetaData v3 (CC-23b) — `None` until received.
     pub metadata: Option<MetaDataV3>,
     /// Last Status (CC-23b).
@@ -145,6 +166,7 @@ pub struct PeerRecord {
     /// Application score field (−100…+100). Semantics: CC-22c.
     pub app_score: f64,
     /// How many of our sampled columns this peer covers (0 until CC-24a).
+    /// Discovery may stash dial priority here until CC-24a computes real usefulness.
     pub custody_usefulness: u32,
     /// Dial backoff state.
     pub dial_backoff: DialBackoff,
@@ -454,6 +476,49 @@ impl PeerManager {
         self.table.entry_mut(peer_id).gossip_score = score;
     }
 
+    /// Offer a discovery-sourced dial candidate (CC-21c).
+    ///
+    /// Inserts/updates the table row with the multiaddr and priority. Does **not**
+    /// inspect `nfd` and never disconnects on ENR field mismatch. Actual dial
+    /// emission is left to [`Self::run_scheduler`].
+    pub fn offer_discovered(
+        &mut self,
+        peer_id: PeerId,
+        addr: Multiaddr,
+        priority: u32,
+        enr_info: Option<PeerEnrInfo>,
+    ) {
+        if self.bans.is_banned(&peer_id) {
+            return;
+        }
+        let rec = self.table.entry_mut(peer_id);
+        if !rec.addrs.contains(&addr) {
+            rec.addrs.push(addr);
+        }
+        // Stash discovery priority until CC-24a computes real custody usefulness.
+        if priority > rec.custody_usefulness {
+            rec.custody_usefulness = priority;
+        }
+        if enr_info.is_some() {
+            rec.enr = enr_info;
+        }
+    }
+
+    /// Active peer ids (connected or dialing) for the discovery filter.
+    #[must_use]
+    pub fn active_peer_ids(&self) -> Vec<PeerId> {
+        self.table
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.state,
+                    ConnectionState::Connected | ConnectionState::Dialing
+                )
+            })
+            .map(|p| p.peer_id)
+            .collect()
+    }
+
     async fn on_connected(
         &mut self,
         peer_id: PeerId,
@@ -691,9 +756,14 @@ impl PeerManager {
 }
 
 /// Run the peer-manager task until `conn_rx` closes or shutdown.
+///
+/// `discovery_rx` is the discovery → dial path (CC-21c); when `None`, only
+/// static peers are dialed.
 pub async fn run_peer_manager(
     mut manager: PeerManager,
     mut conn_rx: mpsc::Receiver<ConnEvent>,
+    mut discovery_rx: Option<mpsc::Receiver<crate::discovery::DiscoveredPeer>>,
+    peer_view_tx: Option<tokio::sync::watch::Sender<crate::discovery::DiscoveryPeerView>>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     let tick = manager.config.tick_interval;
@@ -709,6 +779,7 @@ pub async fn run_peer_manager(
     }
     // Initial schedule.
     manager.on_tick(Instant::now()).await;
+    publish_peer_view(&manager, &peer_view_tx);
 
     loop {
         tokio::select! {
@@ -720,6 +791,7 @@ pub async fn run_peer_manager(
             }
             _ = interval.tick() => {
                 manager.on_tick(Instant::now()).await;
+                publish_peer_view(&manager, &peer_view_tx);
             }
             event = conn_rx.recv() => {
                 match event {
@@ -732,6 +804,7 @@ pub async fn run_peer_manager(
                             );
                         }
                         manager.handle_conn_event(ev, Instant::now()).await;
+                        publish_peer_view(&manager, &peer_view_tx);
                     }
                     None => {
                         debug!("conn channel closed; peer manager exiting");
@@ -739,7 +812,63 @@ pub async fn run_peer_manager(
                     }
                 }
             }
+            discovered = async {
+                match discovery_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match discovered {
+                    Some(d) => {
+                        manager.offer_discovered(d.peer_id, d.addr, d.priority, d.enr_info);
+                        manager.on_tick(Instant::now()).await;
+                        publish_peer_view(&manager, &peer_view_tx);
+                    }
+                    None => {
+                        // Discovery task exited; keep PM alive on conn/tick only.
+                        discovery_rx = None;
+                    }
+                }
+            }
         }
+    }
+}
+
+fn publish_peer_view(
+    manager: &PeerManager,
+    peer_view_tx: &Option<tokio::sync::watch::Sender<crate::discovery::DiscoveryPeerView>>,
+) {
+    if let Some(tx) = peer_view_tx {
+        let mut attnet_peer_counts = [0u16; crate::discovery::ATTNETS_BIT_LEN];
+        let mut syncnet_peer_counts = [0u16; crate::discovery::SYNCNETS_BIT_LEN];
+        for rec in manager.table.iter() {
+            if rec.state != ConnectionState::Connected {
+                continue;
+            }
+            if let Some(info) = &rec.enr {
+                if let Some(bits) = info.attnets {
+                    for (s, count) in attnet_peer_counts.iter_mut().enumerate() {
+                        if bits & (1u64 << s) != 0 {
+                            *count = count.saturating_add(1);
+                        }
+                    }
+                }
+                if let Some(bits) = info.syncnets {
+                    for (s, count) in syncnet_peer_counts.iter_mut().enumerate() {
+                        if bits & (1u8 << s) != 0 {
+                            *count = count.saturating_add(1);
+                        }
+                    }
+                }
+            }
+        }
+        let view = crate::discovery::DiscoveryPeerView {
+            connected: manager.table.connected_count(),
+            active: manager.active_peer_ids(),
+            attnet_peer_counts,
+            syncnet_peer_counts,
+        };
+        let _ = tx.send(view);
     }
 }
 
