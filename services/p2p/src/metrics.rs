@@ -151,19 +151,27 @@ impl Direction {
 /// `reason` label values for `cc_p2p_peer_penalty_total` (CC-29/3 / §3.7).
 ///
 /// Six values, enumerable, **no catch-all** — an unattributed penalty is a bug.
+/// Deltas live in [`crate::peer_manager::score::penalty_delta`] (CC-22c).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum PeerPenaltyReason {
+pub enum PeerPenaltyReason {
+    /// Gossip REJECT attributed to this peer (−10).
     GossipInvalid,
+    /// Late-detected invalid import after ACCEPT (−25).
     ImportInvalid,
+    /// Req/resp timeout or malformed response (−5).
     ReqrespFault,
+    /// Non-response for a column the peer custodies (−15).
     CustodyUnserved,
+    /// GossipSub behavioural penalty observed / P7 (−5).
     Behavioural,
+    /// Rate-limit violation against us (−5).
     RateLimit,
 }
 
 impl PeerPenaltyReason {
     /// Prometheus label value.
-    pub(crate) const fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::GossipInvalid => "gossip_invalid",
             Self::ImportInvalid => "import_invalid",
@@ -175,7 +183,7 @@ impl PeerPenaltyReason {
     }
 
     /// All six variants (seed + tests). Order matches §3.7 prose.
-    pub(crate) const ALL: [Self; 6] = [
+    pub const ALL: [Self; 6] = [
         Self::GossipInvalid,
         Self::ImportInvalid,
         Self::ReqrespFault,
@@ -773,6 +781,56 @@ impl P2pMetrics {
         self.gossip_shed
             .get_or_create(&TopicLabels {
                 topic: topic.to_owned(),
+            })
+            .get()
+    }
+
+    // ── scoring producers (CC-22c) ──────────────────────────────────────────
+
+    /// Increment `cc_p2p_peer_penalty_total{reason}` (CC-29/3 label set).
+    pub fn inc_peer_penalty(&self, reason: PeerPenaltyReason) {
+        self.peer_penalty
+            .get_or_create(&PenaltyReasonLabels {
+                reason: reason.as_str().to_owned(),
+            })
+            .inc();
+    }
+
+    /// Read `cc_p2p_peer_penalty_total{reason}`.
+    #[must_use]
+    pub fn peer_penalty_count(&self, reason: PeerPenaltyReason) -> u64 {
+        self.peer_penalty
+            .get_or_create(&PenaltyReasonLabels {
+                reason: reason.as_str().to_owned(),
+            })
+            .get()
+    }
+
+    /// Observe a GossipSub peer score sample (`cc_p2p_peer_score`).
+    pub fn observe_peer_score(&self, score: f64) {
+        self.peer_score.observe(score);
+    }
+
+    /// Observe an application score sample (`cc_p2p_app_score`).
+    pub fn observe_app_score(&self, score: f64) {
+        self.app_score.observe(score);
+    }
+
+    /// Set `cc_p2p_peers_below_threshold{threshold}` (R-3 early warning).
+    pub fn set_peers_below_threshold(&self, threshold: &str, count: i64) {
+        self.peers_below_threshold
+            .get_or_create(&ThresholdLabels {
+                threshold: threshold.to_owned(),
+            })
+            .set(count);
+    }
+
+    /// Read `cc_p2p_peers_below_threshold{threshold}`.
+    #[must_use]
+    pub fn peers_below_threshold(&self, threshold: &str) -> i64 {
+        self.peers_below_threshold
+            .get_or_create(&ThresholdLabels {
+                threshold: threshold.to_owned(),
             })
             .get()
     }

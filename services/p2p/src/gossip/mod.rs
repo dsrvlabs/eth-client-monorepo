@@ -5,8 +5,9 @@
 //! | [`topics`] | CC-22a/b | `(digest, name)` keys, Fulu name expansion, topic strings, message-id |
 //! | [`registry`] | CC-22a | sole `subscribe` / `unsubscribe` / `set_topic_params` owner; Steady→Overlap→Drain skeleton |
 //! | [`validate`] | CC-22b | per-container SSZ maximum table and pre-decode size check |
+//! | [`scoring`] | CC-22c | one `ScoringConfig`, P3/P3b weight 0, column `0.5/sampling_size`, docs gen |
 //!
-//! Later: `scoring` (CC-22c), per-topic validators (CC-22d / CC-2B/C/D).
+//! Later: per-topic validators (CC-22d / CC-2B/C/D).
 //!
 //! ## Spec delta 13 — `blob_sidecar_{subnet_id}`
 //!
@@ -19,12 +20,17 @@
 use cc_types::{DATA_COLUMN_SIDECAR_SUBNET_COUNT, Mainnet, Preset};
 
 pub mod registry;
+pub mod scoring;
 pub mod topics;
 pub mod validate;
 
 pub use registry::{
     GossipCall, GossipControlError, GossipsubControl, RecordingGossipsub, RegistryError,
     SubscriptionPhase, TopicParams, TopicRegistry,
+};
+pub use scoring::{
+    ScoringConfig, ScoringInputs, TopicFamily, TopicScoreConfig, build_scoring_config,
+    column_topic_weight, render_scoring_doc, to_libp2p_scoring_config,
 };
 pub use topics::{
     MESSAGE_DOMAIN_INVALID_SNAPPY, MESSAGE_DOMAIN_VALID_SNAPPY, MESSAGE_ID_SIZE, SubnetCounts,

@@ -24,10 +24,17 @@ use crate::metrics::{Direction as MetricDirection, P2pMetrics};
 
 use self::ban::{BanList, DialBackoff};
 use self::dial::{DialRequest, schedule_dials};
-use self::score::{
-    APP_SCORE_BAN, APP_SCORE_DISCONNECT, DEFAULT_APP_SCORE, DEFAULT_GOSSIP_SCORE,
-    is_mesh_protected,
+pub use self::score::{
+    APP_SCORE_BAN, APP_SCORE_DECAY, APP_SCORE_DISCONNECT, APP_SCORE_MAX, APP_SCORE_MIN,
+    DEFAULT_APP_SCORE, DEFAULT_GOSSIP_SCORE, GOSSIP_THRESHOLD, GossipClass, apply_gossip_coupling,
+    apply_penalty, apply_penalty_with_metrics, apply_useful_delivery, decay_app_score,
+    gossip_coupling_delta, is_mesh_protected, observe_score_snapshot, penalty_delta,
+    penalty_for_chain_class, penalty_for_gossip_reject, sanitize_app_score, sanitize_gossip_score,
+    should_ban, should_disconnect,
 };
+
+/// Application-score decay / gossip-coupling interval (1 slot = 12 s, §5.6).
+pub const SCORE_DECAY_INTERVAL: Duration = Duration::from_secs(12);
 
 // ── knobs (CC-20/3 defaults) ────────────────────────────────────────────────
 
@@ -320,6 +327,11 @@ impl PeerTable {
         self.peers.values()
     }
 
+    /// Mutable records (score pipeline).
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut PeerRecord> {
+        self.peers.values_mut()
+    }
+
     /// Number of rows (connected or not).
     #[must_use]
     pub fn len(&self) -> usize {
@@ -389,6 +401,8 @@ pub struct PeerManager {
     metrics: P2pMetrics,
     /// Captured commands when `capture` is set (tests).
     capture: Option<mpsc::UnboundedSender<SwarmCommand>>,
+    /// Last time we applied gossip coupling + app decay (1 slot).
+    last_score_decay_at: Option<Instant>,
 }
 
 impl PeerManager {
@@ -406,6 +420,7 @@ impl PeerManager {
             cmd_tx,
             metrics,
             capture: None,
+            last_score_decay_at: None,
         }
     }
 
@@ -443,10 +458,10 @@ impl PeerManager {
         self.enforce_scores(now).await;
     }
 
-    /// Periodic tick (1 s): scheduler + score enforcement.
+    /// Periodic tick (1 s): scheduler + score decay/coupling (slot) + enforce.
     pub async fn on_tick(&mut self, now: Instant) {
         self.run_scheduler(now).await;
-        self.enforce_scores(now).await;
+        self.tick_scores(now).await;
     }
 
     /// Manual disconnect path (always Goodbye then close).
@@ -454,10 +469,24 @@ impl PeerManager {
         self.emit_disconnect(peer_id, reason, false).await;
     }
 
-    /// Apply an external app_score update (tests / CC-22c producers later).
+    /// Apply an external app_score update (tests / producers).
+    ///
+    /// Non-finite values are sanitized to 0 and clamped to [−100, +100] (H2).
     pub async fn set_app_score(&mut self, peer_id: PeerId, score: f64, now: Instant) {
         let rec = self.table.entry_mut(peer_id);
-        rec.app_score = score;
+        rec.app_score = sanitize_app_score(score);
+        self.enforce_scores(now).await;
+    }
+
+    /// Apply a named penalty to a peer and emit metrics (CC-22c / §3.7).
+    pub async fn apply_peer_penalty(
+        &mut self,
+        peer_id: PeerId,
+        reason: crate::metrics::PeerPenaltyReason,
+        now: Instant,
+    ) {
+        let rec = self.table.entry_mut(peer_id);
+        apply_penalty_with_metrics(&mut rec.app_score, reason, &self.metrics);
         self.enforce_scores(now).await;
     }
 
@@ -472,8 +501,11 @@ impl PeerManager {
     }
 
     /// Set gossip_score field (not a disconnect input).
+    ///
+    /// Non-finite values are sanitized to 0 (H2). Coupling reads this on the
+    /// next score-decay tick; does not disconnect by itself (ADR P2-09).
     pub fn set_gossip_score(&mut self, peer_id: PeerId, score: f64) {
-        self.table.entry_mut(peer_id).gossip_score = score;
+        self.table.entry_mut(peer_id).gossip_score = sanitize_gossip_score(score);
     }
 
     /// Offer a discovery-sourced dial candidate (CC-21c).
@@ -577,6 +609,36 @@ impl PeerManager {
         }
     }
 
+    /// Ordered score pipeline (CC-22c / M1): sanitize → couple+decay (slot) →
+    /// observe metrics → enforce disconnect/ban.
+    async fn tick_scores(&mut self, now: Instant) {
+        // Always strip non-finite poison so enforce never sees NaN (H2).
+        for rec in self.table.iter_mut() {
+            rec.app_score = sanitize_app_score(rec.app_score);
+            rec.gossip_score = sanitize_gossip_score(rec.gossip_score);
+        }
+
+        let due = match self.last_score_decay_at {
+            None => true,
+            Some(t) => now.saturating_duration_since(t) >= SCORE_DECAY_INTERVAL,
+        };
+        if due {
+            for rec in self.table.iter_mut() {
+                // Coupling first (one-way damped), then decay toward 0.
+                apply_gossip_coupling(&mut rec.app_score, rec.gossip_score);
+                decay_app_score(&mut rec.app_score);
+            }
+            self.last_score_decay_at = Some(now);
+        }
+
+        // R-3 early warning: left tail of peer_score + below GossipThreshold.
+        let gossip: Vec<f64> = self.table.iter().map(|r| r.gossip_score).collect();
+        let apps: Vec<f64> = self.table.iter().map(|r| r.app_score).collect();
+        observe_score_snapshot(&self.metrics, gossip, apps);
+
+        self.enforce_scores(now).await;
+    }
+
     /// Score-driven disconnect / ban — **app_score only** (ADR P2-09).
     async fn enforce_scores(&mut self, _now: Instant) {
         let mut to_disconnect: Vec<PeerId> = Vec::new();
@@ -586,9 +648,11 @@ impl PeerManager {
             if rec.state != ConnectionState::Connected {
                 continue;
             }
-            if rec.app_score < APP_SCORE_BAN {
+            // Defensive sanitize in case a raw field write bypassed setters.
+            let app = sanitize_app_score(rec.app_score);
+            if should_ban(app) {
                 to_ban.push(rec.peer_id);
-            } else if rec.app_score < APP_SCORE_DISCONNECT {
+            } else if should_disconnect(app) {
                 to_disconnect.push(rec.peer_id);
             }
         }
@@ -1263,7 +1327,7 @@ mod tests {
         let now = Instant::now();
         mgr.table
             .insert_connected(id, ConnectionDirection::Outbound, now);
-        mgr.set_gossip_score(id, -16000.0);
+        mgr.set_gossip_score(id, crate::gossip::scoring::GRAYLIST_THRESHOLD);
         mgr.on_tick(now).await;
         let cmds = drain(&mut cap);
         assert!(
@@ -1273,6 +1337,58 @@ mod tests {
             )),
             "gossip_score must not disconnect: {cmds:?}"
         );
+        // Coupling applied once: 0 + (−5) then ×0.98 → finite, still above disconnect.
+        let app = mgr.table.get(&id).unwrap().app_score;
+        assert!(app.is_finite() && app > APP_SCORE_DISCONNECT, "app={app}");
+    }
+
+    #[tokio::test]
+    async fn nan_app_score_is_sanitized_not_poisoned() {
+        let id = pid();
+        let (mut mgr, mut cap, _cmd_rx) = manager(PeerManagerConfig::default());
+        let now = Instant::now();
+        mgr.table
+            .insert_connected(id, ConnectionDirection::Inbound, now);
+        // NaN must not freeze disconnect forever (H2).
+        mgr.set_app_score(id, f64::NAN, now).await;
+        let app = mgr.table.get(&id).unwrap().app_score;
+        assert_eq!(app, 0.0, "NaN sanitized to 0");
+        let cmds = drain(&mut cap);
+        assert!(
+            !cmds.iter().any(|c| matches!(c, SwarmCommand::Disconnect { .. })),
+            "sanitized 0 must not disconnect: {cmds:?}"
+        );
+
+        mgr.set_gossip_score(id, f64::NAN);
+        assert_eq!(mgr.table.get(&id).unwrap().gossip_score, 0.0);
+    }
+
+    #[tokio::test]
+    async fn score_tick_couples_and_decays_once_per_slot() {
+        let id = pid();
+        let (mut mgr, mut cap, _cmd_rx) = manager(PeerManagerConfig::default());
+        let now = Instant::now();
+        mgr.table
+            .insert_connected(id, ConnectionDirection::Outbound, now);
+        mgr.set_gossip_score(id, -2500.0); // coupling −2.5
+        mgr.set_app_score(id, 10.0, now).await;
+        let _ = drain(&mut cap);
+
+        mgr.on_tick(now).await;
+        let app1 = mgr.table.get(&id).unwrap().app_score;
+        // 10 + (−2.5) = 7.5; ×0.98 = 7.35
+        assert!((app1 - 7.35).abs() < 1e-9, "app1={app1}");
+
+        // Second tick inside the same slot: no extra couple/decay.
+        mgr.on_tick(now + Duration::from_secs(1)).await;
+        let app2 = mgr.table.get(&id).unwrap().app_score;
+        assert!((app2 - app1).abs() < 1e-12, "app2={app2} app1={app1}");
+
+        // After SCORE_DECAY_INTERVAL, another step.
+        mgr.on_tick(now + SCORE_DECAY_INTERVAL).await;
+        let app3 = mgr.table.get(&id).unwrap().app_score;
+        // 7.35 + (−2.5) = 4.85; ×0.98 = 4.753
+        assert!((app3 - 4.753).abs() < 1e-9, "app3={app3}");
     }
 
     #[tokio::test]

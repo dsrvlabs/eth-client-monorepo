@@ -9,6 +9,7 @@
 //! - **CC-21c**: discv5 discovery task, ENR field encoders, predicates, dial queue
 //! - **CC-22a**: Topic registry, Fulu topic strings, Steady→Overlap→Drain skeleton
 //! - **CC-22b**: Message-id preimage + fixture, per-container SSZ max table, pre-decode check
+//! - **CC-22c**: GossipSub `ScoringConfig`, two score spaces, IDONTWANT, penalty table
 //! - **CC-27b**: chain-stream client, outstanding map, stall-then-shed, ChainView store
 //! - **CC-29a**: Phase 2 metric family declarations (binary registers them)
 

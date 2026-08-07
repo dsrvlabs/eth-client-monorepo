@@ -112,9 +112,15 @@ pub fn gossipsub_message_id(message: &Message) -> MessageId {
 /// integration build site so the live path and the committed fixture share
 /// one implementation (`compute_message_id` in this module). The libp2p crate
 /// also defaults to the same preimage as a safety net.
+///
+/// `IDONTWANT` on publish is **enabled** (CC-22c / BehaviourConfig default).
+/// Disable via [`BehaviourConfig::with_idontwant_on_publish`]`(false)` for the
+/// self-devnet A/B control run.
 #[must_use]
 pub fn ethereum_behaviour_config() -> BehaviourConfig {
-    BehaviourConfig::default().with_message_id_fn(gossipsub_message_id)
+    BehaviourConfig::default()
+        .with_message_id_fn(gossipsub_message_id)
+        .with_idontwant_on_publish(true)
 }
 
 /// Subnet-family cardinalities used to expand the three Fulu subnet topics.

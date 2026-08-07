@@ -190,6 +190,12 @@ pub struct BehaviourConfig {
     /// with its scaffold-owned implementation so the committed fixture and the
     /// live path share one source of truth.
     pub message_id_fn: MessageIdFn,
+    /// Enable GossipSub v1.2 `IDONTWANT` on publish (CC-22c / §5.7).
+    ///
+    /// Default **true**. The pinned `libp2p-gossipsub` is ≥ 0.48.0 (A-P2-3).
+    /// Paired A/B measurement is booking (b) on the self-devnet — see
+    /// `docs/phase-2-soak.md` §IDONTWANT A/B.
+    pub idontwant_on_publish: bool,
 }
 
 impl std::fmt::Debug for BehaviourConfig {
@@ -204,6 +210,7 @@ impl std::fmt::Debug for BehaviourConfig {
             .field("connection_limits", &"ConnectionLimits{…}")
             .field("reqresp_protocols", &self.reqresp_protocols)
             .field("message_id_fn", &"<MessageIdFn>")
+            .field("idontwant_on_publish", &self.idontwant_on_publish)
             .finish()
     }
 }
@@ -221,6 +228,8 @@ impl Default for BehaviourConfig {
             reqresp_protocols: Vec::new(),
             // Secure default: eth2 Altair+ id (never libp2p's seqno/from hash).
             message_id_fn: Arc::new(default_eth2_message_id),
+            // CC-22c / §5.7 — IDONTWANT on by default.
+            idontwant_on_publish: true,
         }
     }
 }
@@ -233,6 +242,13 @@ impl BehaviourConfig {
         F: Fn(&Message) -> MessageId + Send + Sync + 'static,
     {
         self.message_id_fn = Arc::new(f);
+        self
+    }
+
+    /// Enable or disable GossipSub `IDONTWANT` on publish (CC-22c A/B control).
+    #[must_use]
+    pub fn with_idontwant_on_publish(mut self, enabled: bool) -> Self {
+        self.idontwant_on_publish = enabled;
         self
     }
 }
@@ -268,6 +284,7 @@ impl CcBehaviour {
     /// - `max_transmit_size`, `heartbeat_interval`, `duplicate_cache_time`,
     ///   `validate_messages`, **`message_id_fn`** (SEC C1 / CC-22b — eth2
     ///   Altair+ preimage; never the libp2p default)
+    /// - **`idontwant_on_publish`** (CC-22c / §5.7 — default true)
     /// - resolved method names at pin — see `docs/p2p-dependencies.md` §14
     pub fn new(keypair: &Keypair, cfg: BehaviourConfig) -> Result<Self, BehaviourBuildError> {
         let message_id_fn = cfg.message_id_fn;
@@ -278,6 +295,7 @@ impl CcBehaviour {
             .heartbeat_interval(cfg.heartbeat_interval)
             .duplicate_cache_time(cfg.duplicate_cache_time)
             .message_id_fn(move |message: &Message| message_id_fn(message))
+            .idontwant_on_publish(cfg.idontwant_on_publish)
             .build()
             .map_err(|e| BehaviourBuildError::GossipsubConfig(e.to_string()))?;
 
@@ -373,5 +391,21 @@ mod tests {
     fn cc_behaviour_new_accepts_default_config() {
         let keypair = Keypair::generate_secp256k1();
         let _ = CcBehaviour::new(&keypair, BehaviourConfig::default()).expect("build");
+    }
+
+    #[test]
+    fn idontwant_on_publish_default_true_and_overridable() {
+        assert!(BehaviourConfig::default().idontwant_on_publish);
+        assert!(!BehaviourConfig::default()
+            .with_idontwant_on_publish(false)
+            .idontwant_on_publish);
+        // Construction succeeds with both settings (ConfigBuilder accepts the flag).
+        let keypair = Keypair::generate_secp256k1();
+        let _ = CcBehaviour::new(&keypair, BehaviourConfig::default()).expect("idontwant on");
+        let _ = CcBehaviour::new(
+            &keypair,
+            BehaviourConfig::default().with_idontwant_on_publish(false),
+        )
+        .expect("idontwant off");
     }
 }
