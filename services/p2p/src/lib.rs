@@ -28,6 +28,8 @@
 //! - **CC-25**: by-root recovery (`das::recovery`) — end-of-slot-*N* ladder, ENR custody selection, `custody_unserved`
 //! - **CC-27b**: chain-stream client, outstanding map, stall-then-shed, ChainView store
 //! - **CC-29a**: Phase 2 metric family declarations (binary registers them)
+//! - **CC-38b**: EngineStream server (`engine_stream`) — ninth contract p2p side,
+//!   §5.5 inject into sampling tracker, SubscriptionSet producer (CC-21 hook consumer)
 
 #![allow(missing_docs)]
 
@@ -37,6 +39,7 @@ pub mod channels;
 pub mod clock;
 pub mod das;
 pub mod discovery;
+pub mod engine_stream;
 pub mod fault_mode;
 pub mod fork_digest;
 pub mod gossip;

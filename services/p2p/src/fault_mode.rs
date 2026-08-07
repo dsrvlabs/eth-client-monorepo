@@ -372,25 +372,18 @@ impl FaultMode {
         }
     }
 
-    /// Payload transform for the **block** publish path (and single-shot column
-    /// mutations under misbehave).
+    /// Relay transform for a single payload (block / single-shot column path).
     ///
     /// - [`Self::None`] / [`Self::WithholdColumn`]: identity — column skip is
     ///   the publish seam ([`decide_column_publish`]), not this transform.
     /// - [`Self::Misbehave`]: mutates for invalid/malformed; identity for
     ///   custody-refuse / stall. Prefer [`Self::column_publish_payloads`] for
     ///   multi-publish spam.
-    /// Block/column payload transform for the publisher path.
     ///
     /// Blocks always pass through for [`Self::None`] and [`Self::WithholdColumn`]
-    /// (column **skip** is via [`Self::allows_publish_column`] /
-    /// [`Self::column_publish_payloads`], not here). Misbehave mutates when the
-    /// kind is a payload-level fault.
-    /// Relay transform for a single payload.
-    ///
-    /// Blocks always pass through for [`Self::None`] and [`Self::WithholdColumn`]
-    /// (column skip uses [`Self::allows_publish_column`] / [`Self::column_publish_payloads`]).
-    /// Misbehave applies the kind's gossip mutation (CC-2Jc).
+    /// (column skip uses [`Self::allows_publish_column`] /
+    /// [`Self::column_publish_payloads`]). Misbehave applies the kind's gossip
+    /// mutation (CC-2Jc).
     #[must_use]
     pub fn relay(&self, payload: &[u8]) -> Option<Vec<u8>> {
         match self {

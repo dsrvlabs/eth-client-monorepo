@@ -49,6 +49,7 @@ use crate::discovery::{
     DIAL_QUEUE_BOUND, DiscoveryConfig, DiscoveryPeerView, DiscoveryTask, build_enr_manager,
     run_discovery_task,
 };
+use crate::engine_stream::EngineStreamService;
 use crate::fork_digest::ForkContext;
 use crate::host::{build_host_swarm, run_swarm_task, HandshakeRuntime, SwarmTask};
 use crate::reqresp::{CgcPolicy, HandshakeDeps};
@@ -1061,15 +1062,21 @@ impl CgcHookInvoker for UnattachedCgcHook {
     }
 }
 
-/// gRPC `eth.p2p.v1.P2pService` implementation (GetInfo + SetCustodyGroupCount).
+/// gRPC `eth.p2p.v1.P2pService` implementation
+/// (GetInfo + SetCustodyGroupCount + EngineStream).
 #[derive(Clone)]
 pub struct P2pGrpcService {
     cgc: Arc<dyn CgcHookInvoker>,
+    /// CC-38b EngineStream server. `None` → stream returns `UNIMPLEMENTED`
+    /// (fail-closed until the host wires inject/subscription).
+    engine_stream: Option<EngineStreamService>,
 }
 
 impl fmt::Debug for P2pGrpcService {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("P2pGrpcService").finish_non_exhaustive()
+        f.debug_struct("P2pGrpcService")
+            .field("engine_stream", &self.engine_stream.is_some())
+            .finish_non_exhaustive()
     }
 }
 
@@ -1080,18 +1087,41 @@ impl Default for P2pGrpcService {
 }
 
 impl P2pGrpcService {
-    /// Construct with the unattached Phase-2 default invoker.
+    /// Construct with the unattached Phase-2 default invoker and no EngineStream.
     #[must_use]
     pub fn new() -> Self {
         Self {
             cgc: Arc::new(UnattachedCgcHook),
+            engine_stream: None,
         }
     }
 
     /// Construct with a custom invoker (tests / Phase 6 wiring).
     #[must_use]
     pub fn with_invoker(invoker: Arc<dyn CgcHookInvoker>) -> Self {
-        Self { cgc: invoker }
+        Self {
+            cgc: invoker,
+            engine_stream: None,
+        }
+    }
+
+    /// Attach the CC-38b `EngineStream` server (inject + subscription producer).
+    #[must_use]
+    pub fn with_engine_stream(mut self, engine: EngineStreamService) -> Self {
+        self.engine_stream = Some(engine);
+        self
+    }
+
+    /// Construct with invoker + EngineStream in one step.
+    #[must_use]
+    pub fn with_invoker_and_engine(
+        invoker: Arc<dyn CgcHookInvoker>,
+        engine: EngineStreamService,
+    ) -> Self {
+        Self {
+            cgc: invoker,
+            engine_stream: Some(engine),
+        }
     }
 
     /// Rust method: same entry point as the `SetCustodyGroupCount` RPC.
@@ -1145,22 +1175,30 @@ impl P2pService for P2pGrpcService {
         }
     }
 
-    /// CC-38a stub: real `EngineStream` server is **CC-38b**.
+    /// CC-38b: EngineStream server — the ninth contract, p2p side.
     ///
-    /// Present so regenerating protos does not break `cc-p2p` builds. Returns
-    /// `UNIMPLEMENTED` and does not accept inject traffic (fail-closed).
+    /// When [`P2pGrpcService::with_engine_stream`] has attached deps, runs the
+    /// §5.5 inject path and SubscriptionSet producer. Without deps, remains
+    /// fail-closed (`UNIMPLEMENTED`) so unconfigured hosts do not accept inject.
     ///
-    /// # Security residual (S-38a-1 / S-38a-2 → CC-38b)
+    /// # Security residual (S-38a-1 / S-38a-2)
     ///
-    /// When implementing: do **not** skip KZG re-verification solely on
-    /// `InjectColumns.trusted_local` until mutual auth exists; prefer single
-    /// session + re-verify-always. Compose host-publish of `:9002` elevates risk.
+    /// `InjectColumns.trusted_local` is client-asserted on an unauthenticated
+    /// stream. The inject pipeline **never** skips KZG solely on this flag —
+    /// skip requires [`crate::engine_stream::AuthMode::Authenticated`] (a
+    /// software knob — do not flip without real mTLS/allowlist/token).
+    /// Inclusion multiproof is **always** re-verified (S-38b-1). Compose
+    /// host-publish of `:9002` elevates residual S-38a-2 (ops/network policy).
     async fn engine_stream(
         &self,
-        _request: Request<Streaming<EngineToP2p>>,
+        request: Request<Streaming<EngineToP2p>>,
     ) -> Result<Response<BoxStreamP2pToEngine>, Status> {
-        Err(Status::unimplemented(
-            "EngineStream server is CC-38b (ninth-contract p2p side); not yet implemented",
-        ))
+        match &self.engine_stream {
+            Some(svc) => svc.handle(request).await,
+            None => Err(Status::unimplemented(
+                "EngineStream deps not attached (wire InjectPipeline + SubscriptionHandle via \
+                 P2pGrpcService::with_engine_stream)",
+            )),
+        }
     }
 }

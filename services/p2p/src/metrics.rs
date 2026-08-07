@@ -229,6 +229,9 @@ impl DaOutcome {
 }
 
 /// `source` label values for `cc_p2p_columns_received_total`.
+///
+/// Four values: `gossip|byroot|byrange|engine` (CC-38b adds `engine` — additive
+/// label value on the existing family; no new metric family).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ColumnSource {
     /// Gossip pipeline.
@@ -237,6 +240,8 @@ pub enum ColumnSource {
     ByRoot,
     /// By-range backfill.
     ByRange,
+    /// Engine inject stream (CC-38b / ninth contract).
+    Engine,
 }
 
 impl ColumnSource {
@@ -247,11 +252,12 @@ impl ColumnSource {
             Self::Gossip => "gossip",
             Self::ByRoot => "byroot",
             Self::ByRange => "byrange",
+            Self::Engine => "engine",
         }
     }
 
-    /// All three variants (seed + tests).
-    pub const ALL: [Self; 3] = [Self::Gossip, Self::ByRoot, Self::ByRange];
+    /// All four variants (seed + tests). Order: gossip, byroot, byrange, engine.
+    pub const ALL: [Self; 4] = [Self::Gossip, Self::ByRoot, Self::ByRange, Self::Engine];
 }
 
 /// `q` label values for `cc_p2p_queue_depth` (§2.2 / CC-22/5 / CC-24c / CC-26a / CC-2B / CC-2D).
@@ -523,7 +529,7 @@ impl P2pMetrics {
         );
         registry.register(
             "cc_p2p_columns_received",
-            "Data columns received by source (gossip|byroot|byrange)",
+            "Data columns received by source (gossip|byroot|byrange|engine)",
             columns_received.clone(),
         );
         registry.register(

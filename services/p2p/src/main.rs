@@ -25,6 +25,7 @@ use cc_p2p::fault_mode::{
     parse_socket_addr, read_multiaddrs_file, run_devnet,
 };
 use cc_types::CUSTODY_REQUIREMENT;
+use cc_p2p::engine_stream::build_minimal_engine_stream;
 use cc_p2p::identity::{self, DEFAULT_NODE_KEY_PATH};
 use cc_p2p::metrics::P2pMetrics;
 use cc_p2p::service::{
@@ -456,7 +457,7 @@ async fn main() -> Result<()> {
     // CC-20/2 structural load order: identity **before** anything else that
     // could bind or compute custody. Refuse broad permissions here so we never
     // open ports with an unusable key.
-    let _identity = identity::load_or_create(&cfg.node_key_path)?;
+    let identity = identity::load_or_create(&cfg.node_key_path)?;
 
     let mut bs = cc_bootstrap::init(SERVICE, TelemetrySettings::from(&cfg.service))?;
 
@@ -464,8 +465,19 @@ async fn main() -> Result<()> {
     let p2p_metrics = P2pMetrics::register(&mut bs.registry);
 
     let runtime_cfg = cfg.runtime_config()?;
+    // CC-38b: EngineStream server — minimal attach (sampling tracker + inject
+    // pipeline + subscription set). AuthMode stays Unauthenticated (never flip
+    // without real mutual auth — KZG skip footgun). Inclusion always verified.
+    // Publish is NoopPublisher until gRPC co-owns swarm publish_tx.
+    let engine_stream = build_minimal_engine_stream(
+        identity.node_id(),
+        CUSTODY_REQUIREMENT,
+        Some(p2p_metrics.clone()),
+    );
+    let grpc = P2pGrpcService::new().with_engine_stream(engine_stream);
     // CC-21d: GetInfo + SetCustodyGroupCount (hook unattached in Phase 2).
-    let routes = Routes::default().add_service(P2pServiceServer::new(P2pGrpcService::new()));
+    // CC-38b: EngineStream attached above.
+    let routes = Routes::default().add_service(P2pServiceServer::new(grpc));
 
     match run_process(
         bs,
