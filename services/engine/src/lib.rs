@@ -10,6 +10,8 @@
 //!   `ADVERTISED_CAPABILITIES`, capability cache clear edges
 //! - **CC-32b**: `NewPayload` / `ForkchoiceUpdated` / `GetEngineState` server,
 //!   SSZ→JSON encode, `cc_engine_payload_status_total` observations
+//! - **CC-33**: `forkchoiceUpdatedV3` adapter, sequence high-water (resets on
+//!   reconnect), three-value payloadStatus decoder, `-38002`/`-38006` handling
 
 #![allow(missing_docs)]
 
@@ -22,3 +24,9 @@ pub mod metrics;
 pub mod service;
 pub mod transport;
 pub mod version;
+
+pub use methods::fcu::{
+    FcuDroppedStale, FcuGatedError, FcuSequenceGate, build_fcu_params, decode_fcu_payload_status,
+    decode_fcu_result, forkchoice_updated_v3, forkchoice_updated_v3_gated,
+};
+pub use service::REASON_FCU_DROPPED_STALE;

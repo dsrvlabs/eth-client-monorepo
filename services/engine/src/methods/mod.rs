@@ -7,6 +7,7 @@
 //!   `forkchoiceUpdatedV3`, `getBlobsV2`, `eth_syncing`)
 
 pub mod capabilities;
+pub mod fcu;
 pub mod new_payload;
 
 /// JSON-RPC method name strings used on the wire (version-suffixed per common.md).

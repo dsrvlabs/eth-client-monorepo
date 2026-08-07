@@ -65,18 +65,24 @@ message NewPayloadResponse {
 }
 
 // ForkchoiceStateV1 triple + chain sequence (CC-33 driver owns emission order).
-// payloadAttributes is always null on the wire (Phase 3 / CC-31 /8) — not a field.
+// Payload attrs are omitted on the wire in Phase 3 (CC-31 /8) — not a field.
 message ForkchoiceUpdatedRequest {
   bytes head_block_hash = 1;
   bytes safe_block_hash = 2;
   bytes finalized_block_hash = 3;
   // Monotonic sequence assigned by chain's fcU driver; engine drops stale.
   uint64 sequence = 4;
+  // Chain process/session id. Engine resets the sequence high-water mark when
+  // this changes (reconnect / chain restart — §3.8/2). Zero is treated as
+  // "unspecified" and does not trigger a reset by itself.
+  uint64 session_id = 5;
+  // Head beacon slot for -38002 diagnostics (optional; 0 = unknown).
+  uint64 head_slot = 6;
 }
 
 message ForkchoiceUpdatedResponse {
   PayloadStatusV1 payload_status = 1;
-  // Always absent when payloadAttributes is null (Phase 3).
+  // Always absent while attrs are null on the wire (Phase 3).
   optional bytes payload_id = 2;
 }
 

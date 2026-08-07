@@ -28,6 +28,7 @@ pub mod da;
 pub mod engine_client;
 pub mod epoch_context;
 pub mod events;
+pub mod fcu_driver;
 pub mod head;
 pub mod import;
 pub mod invalidation;
@@ -59,6 +60,10 @@ pub use da::{
     default_timeout_ordering_ok, recovery_ladder_worst_case_secs,
 };
 pub use engine_client::{DEFAULT_ENGINE_URI, EngineApiClient};
+pub use fcu_driver::{
+    FcuBuildError, FcuDriver, FcuSink, FcuSkip, ForkchoiceState, GrpcFcuSink, RecordingFcuSink,
+    build_forkchoice_state, safe_is_ancestor_of_head,
+};
 pub use epoch_context::{EpochContext, EpochContextStore};
 pub use events::{
     DEFAULT_RING_CAPACITY, DEFAULT_SUBSCRIBER_QUEUE_CAPACITY, ERROR_DOMAIN, EventInput,

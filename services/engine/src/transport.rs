@@ -163,6 +163,35 @@ impl EngineTransport {
             .await
     }
 
+    /// Acquire the ordered-lane mutex (held across admit + fcU HTTP, CC-33 F1).
+    ///
+    /// Callers that already hold this guard must use [`Self::call_with_ordered_held`]
+    /// so they do not re-lock (would deadlock).
+    pub async fn lock_ordered(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.ordered.lock().await
+    }
+
+    /// JSON-RPC call **without** taking the ordered mutex.
+    ///
+    /// # Safety (logical)
+    ///
+    /// Caller must already hold [`Self::lock_ordered`] for this transport for
+    /// the entire duration of the future (admit + HTTP atomicity for fcU).
+    pub async fn call_with_ordered_held(
+        &self,
+        method: EngineMethod,
+        rpc_method: &str,
+        params: Value,
+    ) -> Result<Value, EngineError> {
+        self.call_inner(
+            method,
+            rpc_method,
+            params,
+            RequestOverrides::default(),
+        )
+        .await
+    }
+
     /// Like [`Self::call`], with explicit JWT `iat` and/or `Host` overrides.
     ///
     /// **IT / diagnostics only** (CC-30b). See [`RequestOverrides`]. Not for
@@ -227,8 +256,10 @@ impl EngineTransport {
                 .get_or_create(&labels)
                 .observe(elapsed.as_secs_f64());
         }
-        // Soft deadline: warn always; count when metrics are registered; never abort.
-        if elapsed > self.soft_deadline {
+        // Soft deadline: warn+count for methods on the attestation path; never abort.
+        // fcU is off the attestation path (CC-33 /5) — excluded from the alarm so
+        // an 8 s forkchoiceUpdated does not make the soft-deadline counter useless.
+        if elapsed > self.soft_deadline && method != EngineMethod::ForkchoiceUpdatedV3 {
             if let Some(m) = &self.metrics {
                 m.soft_deadline_exceeded.get_or_create(&labels).inc();
             }

@@ -136,6 +136,7 @@ fn core_command_has_no_bootstrap_variant() {
         | CoreCommand::Query { .. }
         | CoreCommand::BlockFor { .. }
         | CoreCommand::DataAvailable { .. }
+        | CoreCommand::SlotTick
         | CoreCommand::Shutdown { .. } => {}
     }
 }

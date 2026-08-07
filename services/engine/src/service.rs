@@ -16,7 +16,8 @@ use cc_proto::engine::{
 use tonic::{Request, Response, Status};
 
 use crate::config::EngineTransportConfig;
-use crate::methods::new_payload::{DecodedPayloadStatus, forkchoice_updated_v3, new_payload_v4};
+use crate::methods::fcu::{FcuGatedError, FcuSequenceGate, forkchoice_updated_v3_gated};
+use crate::methods::new_payload::{DecodedPayloadStatus, new_payload_v4};
 use crate::metrics::EngineMetrics;
 use crate::transport::SharedTransport;
 use crate::version::ElForkSchedule;
@@ -24,12 +25,17 @@ use crate::version::ElForkSchedule;
 /// Process name for `GetInfo` (matches binary).
 const SERVICE: &str = "engine";
 
+/// gRPC `ErrorInfo.reason` when an fcU sequence is dropped as stale.
+pub const REASON_FCU_DROPPED_STALE: &str = "FCU_DROPPED_STALE";
+
 /// gRPC implementation of [`EngineService`].
 #[derive(Debug, Clone)]
 pub struct EngineServiceImpl {
     transport: SharedTransport,
     schedule: ElForkSchedule,
     metrics: Option<EngineMetrics>,
+    /// fcU sequence high-water; resets on session change / reconnect (§3.8/2, CC-33).
+    fcu_gate: Arc<FcuSequenceGate>,
 }
 
 impl EngineServiceImpl {
@@ -54,7 +60,22 @@ impl EngineServiceImpl {
             transport,
             schedule,
             metrics,
+            fcu_gate: Arc::new(FcuSequenceGate::new()),
         }
+    }
+
+    /// Reset the fcU sequence high-water mark (reconnect / new session, §3.8/2).
+    ///
+    /// Production path also resets automatically when
+    /// `ForkchoiceUpdatedRequest.session_id` changes (chain restart).
+    pub fn reset_fcu_sequence(&self) {
+        self.fcu_gate.reset();
+    }
+
+    /// Shared sequence gate (tests / session wiring).
+    #[must_use]
+    pub fn fcu_gate(&self) -> Arc<FcuSequenceGate> {
+        Arc::clone(&self.fcu_gate)
     }
 }
 
@@ -100,23 +121,36 @@ impl EngineService for EngineServiceImpl {
         request: Request<ForkchoiceUpdatedRequest>,
     ) -> Result<Response<ForkchoiceUpdatedResponse>, Status> {
         let req = request.into_inner();
-        // Sequence drop is CC-33; this RPC still forwards to the EL so the
-        // chain→engine contract is live. Stale-drop lands with the driver.
-        let _sequence = req.sequence;
-        let status = forkchoice_updated_v3(
+        let head_slot = if req.head_slot == 0 {
+            None
+        } else {
+            Some(req.head_slot)
+        };
+        // Admit under ordered lane + session reset + EL call (CC-33 F1/F2).
+        // Stale sequences return gRPC Aborted — never spoofed VALID.
+        match forkchoice_updated_v3_gated(
             self.transport.as_ref(),
+            self.fcu_gate.as_ref(),
             &self.schedule,
             self.metrics.as_ref(),
+            req.sequence,
+            req.session_id,
             &req.head_block_hash,
             &req.safe_block_hash,
             &req.finalized_block_hash,
+            head_slot,
         )
         .await
-        .map_err(engine_err_to_status)?;
-        Ok(Response::new(ForkchoiceUpdatedResponse {
-            payload_status: Some(to_proto_status(&status)),
-            payload_id: None,
-        }))
+        {
+            Ok(status) => Ok(Response::new(ForkchoiceUpdatedResponse {
+                payload_status: Some(to_proto_status(&status)),
+                payload_id: None,
+            })),
+            Err(FcuGatedError::DroppedStale(d)) => Err(Status::aborted(format!(
+                "{REASON_FCU_DROPPED_STALE}: {d}"
+            ))),
+            Err(FcuGatedError::Engine(e)) => Err(engine_err_to_status(e)),
+        }
     }
 
     async fn get_engine_state(

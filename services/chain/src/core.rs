@@ -39,6 +39,7 @@ use tonic::Status;
 use crate::apply_attestations::apply_attestations;
 use crate::da::{DEFAULT_DA_PENDING_TIMEOUT_SLOTS, PendingDa};
 use crate::epoch_context::{EpochContext, EpochContextStore};
+use crate::fcu_driver::{FcuDriver, GrpcFcuSink};
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
 use crate::import::{ImportCounters, ImportOutcome, import_block_with_early};
 use crate::metrics::ChainMetrics;
@@ -97,6 +98,8 @@ pub enum CoreCommand {
     /// Marks [`PeerDasAvailability`] and re-drives a parked `pending_da` entry
     /// when present. Order-independent with block arrival.
     DataAvailable { root: Root, slot: u64 },
+    /// Per-slot fcU floor tick (CC-33 /7) — re-points a restarted EL with no block.
+    SlotTick,
     /// Graceful shutdown.
     Shutdown { done: oneshot::Sender<()> },
 }
@@ -481,6 +484,29 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
     publish_initial_snapshot(&store, &head);
     publish_epoch_context_from_store(&store, &config, &epoch, 0);
 
+    // Per-slot fcU floor ticker (CC-33 /7). try_send so a busy import queue
+    // never blocks the ticker; drops under load are fine (next slot retries).
+    let tick_tx = cmd_tx.clone();
+    let tick_secs = config.seconds_per_slot.max(1);
+    let _fcu_ticker = thread::Builder::new()
+        .name("chain-fcu-floor".into())
+        .spawn(move || {
+            loop {
+                thread::sleep(Duration::from_secs(tick_secs));
+                if tick_tx.try_send(CoreCommand::SlotTick).is_err() {
+                    // Channel full or closed — exit if closed; otherwise skip.
+                    if tick_tx.is_closed() {
+                        break;
+                    }
+                }
+            }
+        })
+        .ok();
+
+    // Capture multi-threaded runtime handle for GrpcFcuSink (§2.4). Absent in
+    // pure unit tests that spawn the core off a runtime → fcU stays disabled.
+    let rt_handle = tokio::runtime::Handle::try_current().ok();
+
     let join = thread::Builder::new()
         .name("chain-core".into())
         .spawn(move || {
@@ -494,6 +520,7 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
                 counters_thread,
                 core_cfg,
                 cmd_rx,
+                rt_handle,
             );
         })
         .unwrap_or_else(|e| {
@@ -770,6 +797,7 @@ fn core_loop<P: Preset>(
     counters: Arc<ImportCounters>,
     core_cfg: CoreConfig,
     mut cmd_rx: mpsc::Receiver<CoreCommand>,
+    rt_handle: Option<tokio::runtime::Handle>,
 ) {
     let mut residency =
         Residency::<P>::new(core_cfg.max_resident_states, core_cfg.body_ring_capacity);
@@ -787,6 +815,21 @@ fn core_loop<P: Preset>(
     let peer_das = core_cfg.peer_das;
     let da_timeout_slots = core_cfg.da_pending_timeout_slots.max(1);
     let mut pending_da = PendingDa::new();
+
+    // CC-33: forkchoiceUpdated driver (off attestation path — after import /
+    // on slot tick). Requires a multi-threaded runtime handle for gRPC.
+    let fcu: Option<FcuDriver<GrpcFcuSink>> = rt_handle.map(|h| {
+        let sink = Arc::new(GrpcFcuSink::new(h, core_cfg.engine_uri.clone()));
+        tracing::info!(
+            engine_uri = %core_cfg.engine_uri,
+            session_id = sink.session_id(),
+            "fcU driver armed (CC-33)"
+        );
+        FcuDriver::new(sink)
+    });
+    if fcu.is_none() {
+        tracing::debug!("fcU driver disabled (no tokio runtime handle on core spawn)");
+    }
 
     while let Some(cmd) = cmd_rx.blocking_recv() {
         metrics.set_import_queue_depth(cmd_rx.len() as u64);
@@ -828,6 +871,8 @@ fn core_loop<P: Preset>(
                         &mut epoch_sequence,
                         &mut last_published_epoch,
                     );
+                    // Post-import fcU (off attestation path — after snapshot publish).
+                    emit_fcu_head(&store, fcu.as_ref());
                 }
                 let _ = reply.send(outcome.map(|o| o.response));
             }
@@ -862,6 +907,7 @@ fn core_loop<P: Preset>(
                         &mut epoch_sequence,
                         &mut last_published_epoch,
                     );
+                    emit_fcu_head(&store, fcu.as_ref());
                 }
                 let _ = reply.send(outcome);
             }
@@ -874,6 +920,10 @@ fn core_loop<P: Preset>(
                     &mut snapshot_sequence,
                     request,
                 );
+                // Attestations can move head; re-point EL when they do.
+                if outcome.is_ok() {
+                    emit_fcu_head(&store, fcu.as_ref());
+                }
                 let _ = reply.send(outcome);
             }
             CoreCommand::Query { request, reply } => {
@@ -903,6 +953,17 @@ fn core_loop<P: Preset>(
                     &mut last_published_epoch,
                     &epoch,
                 );
+                // Re-import may have moved head.
+                emit_fcu_head(&store, fcu.as_ref());
+            }
+            CoreCommand::SlotTick => {
+                // Per-slot floor even with no new block (CC-33 /7).
+                if let Some(driver) = fcu.as_ref() {
+                    let slot = store.get_current_slot();
+                    if let Err(e) = driver.on_slot(slot) {
+                        tracing::warn!(error = %e, slot = slot.as_u64(), "fcU per-slot floor failed");
+                    }
+                }
             }
             CoreCommand::Shutdown { done } => {
                 let _ = done.send(());
@@ -910,6 +971,25 @@ fn core_loop<P: Preset>(
             }
         }
         metrics.set_import_queue_depth(cmd_rx.len() as u64);
+    }
+}
+
+/// Post-import / post-attestation fcU emission (errors are logged, never fatal).
+fn emit_fcu_head<P: Preset>(store: &Store<P>, fcu: Option<&FcuDriver<GrpcFcuSink>>) {
+    let Some(driver) = fcu else {
+        return;
+    };
+    let head_root = head_root_of(store);
+    match driver.on_head_update(store, head_root) {
+        Ok(true) => {
+            tracing::debug!(?head_root, "fcU emitted after head update");
+        }
+        Ok(false) => {
+            tracing::debug!(?head_root, "fcU dropped as superseded");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, ?head_root, "fcU emission failed");
+        }
     }
 }
 

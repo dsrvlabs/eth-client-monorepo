@@ -316,64 +316,8 @@ fn hex_to_32(s: &str) -> Result<[u8; 32], EngineError> {
     Ok(out)
 }
 
-/// Issue `engine_forkchoiceUpdatedV3` with null payloadAttributes (CC-32b / CC-33 skeleton).
-pub async fn forkchoice_updated_v3(
-    transport: &EngineTransport,
-    schedule: &ElForkSchedule,
-    metrics: Option<&EngineMetrics>,
-    head_block_hash: &[u8],
-    safe_block_hash: &[u8],
-    finalized_block_hash: &[u8],
-) -> Result<DecodedPayloadStatus, EngineError> {
-    // fcU with null attributes has no timestamp gate on geth; still use the
-    // schedule's Osaka arm so Amsterdam fails loud if we ever pass attributes.
-    let _method =
-        crate::version::forkchoice_method_for(schedule.osaka_time, schedule).map_err(|e| {
-            EngineError::UnsupportedFork {
-                message: e.to_string(),
-            }
-        })?;
-
-    if head_block_hash.len() != 32
-        || safe_block_hash.len() != 32
-        || finalized_block_hash.len() != 32
-    {
-        return Err(EngineError::Decode {
-            reason: "forkchoice hashes must be 32 bytes each".into(),
-        });
-    }
-
-    let params = json!([
-        {
-            "headBlockHash": bytes_to_hex(head_block_hash),
-            "safeBlockHash": bytes_to_hex(safe_block_hash),
-            "finalizedBlockHash": bytes_to_hex(finalized_block_hash),
-        },
-        Value::Null
-    ]);
-
-    let result = transport
-        .call(
-            Lane::Ordered,
-            EngineMethod::ForkchoiceUpdatedV3,
-            names::FORKCHOICE_UPDATED_V3,
-            params,
-        )
-        .await?;
-
-    // Result is { payloadStatus: PayloadStatusV1, payloadId: null | DATA }
-    let payload_status_val =
-        result
-            .get("payloadStatus")
-            .cloned()
-            .ok_or_else(|| EngineError::Decode {
-                reason: "forkchoiceUpdated result missing payloadStatus".into(),
-            })?;
-    // allow_accepted = false: fcU accepts only VALID | INVALID | SYNCING.
-    let status = decode_payload_status(&payload_status_val, false)?;
-    observe_payload_status(metrics, EngineMethod::ForkchoiceUpdatedV3, &status);
-    Ok(status)
-}
+/// Re-export of the CC-33 fcU adapter (body lives in [`crate::methods::fcu`]).
+pub use crate::methods::fcu::forkchoice_updated_v3;
 
 #[cfg(test)]
 mod tests {
@@ -550,6 +494,7 @@ mod tests {
                 &[0u8; 32],
                 &[0u8; 32],
                 &[0u8; 32],
+                None,
             )
             .await
             .unwrap_or_else(|e| panic!("fcU {status}: {e}"));
