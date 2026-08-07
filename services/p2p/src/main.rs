@@ -6,14 +6,12 @@
 //! CC-29a: §12 metric families registered into `bs.registry` between `init` and
 //! `serve` (same seam as `services/chain`).
 
-mod metrics;
-
 use cc_bootstrap::{PeerSpec, ServiceSpec, TelemetrySettings};
 use cc_config::ServiceConfig;
+use cc_p2p::metrics::P2pMetrics;
 use cc_proto::common::BuildInfo;
 use cc_proto::p2p::p2p_service_server::{P2pService, P2pServiceServer};
 use cc_proto::p2p::{GetInfoRequest, GetInfoResponse};
-use metrics::P2pMetrics;
 use serde::Deserialize;
 use tonic::service::Routes;
 use tonic::{Request, Response, Status};

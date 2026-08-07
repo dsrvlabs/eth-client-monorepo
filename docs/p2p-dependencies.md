@@ -61,10 +61,19 @@ section is the version gate only.
 
 ## Deviations
 
-- **discv5 dual identity (deferred to CC-21\*).** Workspace pins `discv5` 0.11.0 with
-  feature `libp2p` (pulls crates.io `libp2p-identity` / `multiaddr`). No member depends
-  on it yet (absent from `Cargo.lock`). First consumer must resolve under `--locked`,
-  assert a single `libp2p-identity` version, and extend this section if dual-source
-  pressure appears.
+- **discv5 dual identity (CC-21a first consumer).** Workspace pins `discv5` **0.11.0**
+  with feature `libp2p`. Resolved under `--locked` by CC-21a (`services/p2p`).
+
+  | Source | `libp2p-identity` | `multiaddr` |
+  |---|---|---|
+  | rust-libp2p git pin (via `cc-libp2p`) | **0.3.0** (crates.io) | **0.19.x** |
+  | discv5 0.11.0 `libp2p` feature | **0.2.14** (crates.io) | **0.18.2** |
+
+  **Verdict:** dual-source identity is present and **accepted for Phase 2**. discv5 0.11
+  has not yet moved to identity 0.3; forcing a single version would require a discv5
+  fork or rev bump outside the pin. PeerId / NodeId conversion for dial (CC-21c) must
+  go through explicit byte-level bridging if types do not unify — do not assume a single
+  `libp2p_identity::PeerId` type across the two graphs. Re-check on any discv5 version
+  bump.
 
 <!-- CC-23b cgc-policy and §3.2 libp2p-ping vs Ethereum-ping naming notes append here. -->

@@ -287,50 +287,50 @@ impl QueueName {
 /// Producers for each family land in the requirement that owns them — this
 /// issue only declares and seeds.
 #[derive(Debug, Clone)]
-pub(crate) struct P2pMetrics {
+pub struct P2pMetrics {
     // Peers
-    pub peers: Family<DirectionLabels, Gauge>,
-    pub peers_custody_compatible: Gauge,
-    pub peers_below_threshold: Family<ThresholdLabels, Gauge>,
+    pub(crate) peers: Family<DirectionLabels, Gauge>,
+    pub(crate) peers_custody_compatible: Gauge,
+    pub(crate) peers_below_threshold: Family<ThresholdLabels, Gauge>,
     // Gossip
-    pub gossip_messages: Family<GossipMessageLabels, Counter>,
-    pub gossip_validation: Family<TopicLabels, Histogram>,
-    pub idontwant: Family<DirectionLabels, Counter>,
-    pub gossip_duplicate_bytes: Family<TopicLabels, Counter>,
-    pub gossip_shed: Family<TopicLabels, Counter>,
+    pub(crate) gossip_messages: Family<GossipMessageLabels, Counter>,
+    pub(crate) gossip_validation: Family<TopicLabels, Histogram>,
+    pub(crate) idontwant: Family<DirectionLabels, Counter>,
+    pub(crate) gossip_duplicate_bytes: Family<TopicLabels, Counter>,
+    pub(crate) gossip_shed: Family<TopicLabels, Counter>,
     // Scoring
-    pub peer_score: Histogram,
-    pub app_score: Histogram,
-    pub peer_penalty: Family<PenaltyReasonLabels, Counter>,
+    pub(crate) peer_score: Histogram,
+    pub(crate) app_score: Histogram,
+    pub(crate) peer_penalty: Family<PenaltyReasonLabels, Counter>,
     // DA
-    pub da_outcome: Family<DaOutcomeLabels, Counter>,
-    pub sampling: Histogram,
-    pub da_verdict_slot_delta: Histogram,
-    pub columns_received: Family<ColumnSourceLabels, Counter>,
-    pub inclusion_proof_verifications: Counter,
+    pub(crate) da_outcome: Family<DaOutcomeLabels, Counter>,
+    pub(crate) sampling: Histogram,
+    pub(crate) da_verdict_slot_delta: Histogram,
+    pub(crate) columns_received: Family<ColumnSourceLabels, Counter>,
+    pub(crate) inclusion_proof_verifications: Counter,
     // Chain view
-    pub head_lag_slots: Histogram,
+    pub(crate) head_lag_slots: Histogram,
     // Backfill / memory
-    pub backfill_progress_slots: Gauge,
-    pub backfill_batch_abandoned: Counter,
-    pub cache_occupancy_bytes: Gauge,
-    pub cache_bound_bytes: Gauge,
-    pub earliest_available_slot: Gauge,
-    pub queue_depth: Family<QueueLabels, Gauge>,
+    pub(crate) backfill_progress_slots: Gauge,
+    pub(crate) backfill_batch_abandoned: Counter,
+    pub(crate) cache_occupancy_bytes: Gauge,
+    pub(crate) cache_bound_bytes: Gauge,
+    pub(crate) earliest_available_slot: Gauge,
+    pub(crate) queue_depth: Family<QueueLabels, Gauge>,
     // Stream
-    pub chain_stream_saturation_ratio: Gauge,
-    pub verdict_latency: Histogram,
-    pub verdict_late: Counter,
-    pub verdict_timeout: Counter,
-    pub chain_objects_sent: Counter,
-    pub chain_verdicts_received: Counter,
+    pub(crate) chain_stream_saturation_ratio: Gauge,
+    pub(crate) verdict_latency: Histogram,
+    pub(crate) verdict_late: Counter,
+    pub(crate) verdict_timeout: Counter,
+    pub(crate) chain_objects_sent: Counter,
+    pub(crate) chain_verdicts_received: Counter,
     // Req/resp
-    pub reqresp_inbound: Family<ReqrespLabels, Counter>,
-    pub reqresp_outbound: Family<ReqrespLabels, Counter>,
-    pub reqresp_ratelimit: Family<ReqrespRatelimitLabels, Counter>,
+    pub(crate) reqresp_inbound: Family<ReqrespLabels, Counter>,
+    pub(crate) reqresp_outbound: Family<ReqrespLabels, Counter>,
+    pub(crate) reqresp_ratelimit: Family<ReqrespRatelimitLabels, Counter>,
     // Health
-    pub worker_panics: Family<WorkerLabels, Counter>,
-    pub swarm_stall_seconds: Gauge,
+    pub(crate) worker_panics: Family<WorkerLabels, Counter>,
+    pub(crate) swarm_stall_seconds: Gauge,
 }
 
 impl P2pMetrics {
@@ -340,7 +340,7 @@ impl P2pMetrics {
     /// Call between [`cc_bootstrap::init`] and [`cc_bootstrap::serve`]. Seeds
     /// labelled series so exposition always emits HELP/TYPE (prometheus-client
     /// omits empty families).
-    pub(crate) fn register(registry: &mut Registry) -> Self {
+    pub fn register(registry: &mut Registry) -> Self {
         // ── construct ───────────────────────────────────────────────────────
         let peers = Family::<DirectionLabels, Gauge>::default();
         let peers_custody_compatible = Gauge::default();
