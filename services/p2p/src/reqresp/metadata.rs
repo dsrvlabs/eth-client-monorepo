@@ -2,8 +2,9 @@
 //!
 //! Four fields: `seq_number`, `attnets` (`BitVector[64]`), `syncnets`
 //! (`BitVector[4]`), `custody_group_count`. `seq_number` bumps on **any**
-//! change to the other three. Phase 2 keeps attnets/syncnets empty until
-//! CC-2C / CC-2D; `custody_group_count` is mutable at CC-21d.
+//! change to the other three. `attnets` is written by the CC-2C
+//! [`crate::discovery::SubnetManager`]; `syncnets` stay empty until CC-2D;
+//! `custody_group_count` is mutable at CC-21d.
 
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};

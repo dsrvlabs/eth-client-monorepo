@@ -15,6 +15,17 @@
 //! **CC-09/2:** Invalid or missing required fields return `Err` whose display
 //! names the offending key and its provenance (config file path and/or
 //! `CC_<SERVICE>_<FIELD>` env var). Callers load before any bind.
+//!
+//! **CC-2C:** Attestation-subnet backbone constants live in
+//! [`attestation_subnets`] so `services/p2p` never inlines `SUBNETS_PER_NODE`,
+//! `EPOCHS_PER_SUBNET_SUBSCRIPTION`, or related values.
+
+mod attestation_subnets;
+
+pub use attestation_subnets::{
+    ATTESTATION_SUBNET_COUNT, ATTESTATION_SUBNET_EXTRA_BITS, ATTESTATION_SUBNET_PREFIX_BITS,
+    AttestationSubnetConfig, EPOCHS_PER_SUBNET_SUBSCRIPTION, NODE_ID_BITS, SUBNETS_PER_NODE,
+};
 
 use std::collections::BTreeMap;
 use std::fmt;

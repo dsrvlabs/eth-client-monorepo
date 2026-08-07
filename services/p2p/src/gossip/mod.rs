@@ -58,11 +58,13 @@ pub use validate::{
 
 /// Mainnet / Hoodi `ATTESTATION_SUBNET_COUNT` (phase0 networking config).
 ///
-/// Supplied into [`SubnetCounts`] — never inlined inside `topics.rs` expansion.
-pub const ATTESTATION_SUBNET_COUNT: u64 = 64;
+/// Re-exported from [`cc_config`] so subnet counts and the SubnetManager backbone
+/// share one source (CC-2C). Supplied into [`SubnetCounts`] — never inlined
+/// inside `topics.rs` expansion.
+pub const ATTESTATION_SUBNET_COUNT: u64 = cc_config::ATTESTATION_SUBNET_COUNT;
 
 impl SubnetCounts {
-    /// Mainnet / Hoodi counts from `cc_types` / preset constants.
+    /// Mainnet / Hoodi counts from `cc_config` / `cc_types` constants.
     #[must_use]
     pub const fn mainnet() -> Self {
         Self {

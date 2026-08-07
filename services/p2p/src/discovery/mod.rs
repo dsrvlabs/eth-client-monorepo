@@ -4,11 +4,13 @@
 //! - **CC-21c**: field encoders (`eth2`/`nfd`/`attnets`/`syncnets`/`cgc`),
 //!   predicates, discovery task, dial queue → peer manager
 //! - **CC-21d**: runtime `cgc` hook (`set_custody_group_count`) — five §6.4 effects
+//! - **CC-2C**: attestation-subnet backbone (`SubnetManager` single writer)
 
 pub mod cgc_hook;
 pub mod dial_queue;
 pub mod enr;
 pub mod predicate;
+pub mod subnet_manager;
 pub mod task;
 
 pub use cgc_hook::{
@@ -27,6 +29,10 @@ pub use enr::{
 pub use predicate::{
     attestation_subnet_predicate, column_predicate, digest_matches, enr_fork_digest,
     generic_peer_predicate, sync_subnet_predicate,
+};
+pub use subnet_manager::{
+    attnets_bitvector, compute_subscribed_subnet, compute_subscribed_subnets, subscription_period,
+    SubnetApplyOutcome, SubnetApplyTarget, SubnetEffectKind, SubnetManager, SubnetManagerError,
 };
 pub use task::{
     DEFAULT_MIN_PEERS_PER_SUBNET, DiscoveredPeer, DiscoveryConfig, DiscoveryPeerView, DiscoveryTask,

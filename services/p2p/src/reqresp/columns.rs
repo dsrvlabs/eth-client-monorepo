@@ -408,6 +408,7 @@ pub fn stall_first_byte_delay() -> std::time::Duration {
 ///   delays first byte past TTFB when held and allowed.
 ///
 /// Production callers pass [`ByRootFaultPolicy::Honest`].
+/// / `stall-reqresp` on this same branch via `policy`.
 #[inline]
 #[must_use]
 pub fn decide_by_root_column_serve(

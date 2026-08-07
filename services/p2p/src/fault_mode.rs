@@ -292,6 +292,24 @@ impl FaultMode {
     pub fn ensure_implemented(&self) -> Result<()> {
         match self {
             Self::None | Self::WithholdColumn { .. } | Self::Misbehave { .. } => Ok(()),
+    /// Returns `Ok(())` when the mode is fully implemented (CC-2Jb + CC-2Jc).
+    pub fn ensure_implemented(&self) -> Result<()> {
+        match self {
+            Self::None | Self::WithholdColumn { .. } | Self::Misbehave { .. } => Ok(()),
+        }
+    }
+
+    /// Payload transform for gossip publish.
+    ///
+    /// - [`Self::None`] / [`Self::WithholdColumn`]: identity (blocks always pass;
+    ///   column skip is [`decide_column_publish`] / [`Self::column_publish_payloads`]).
+    /// - [`Self::Misbehave`]: applies the kind's column mutation (block path still
+    ///   uses identity at the call site for honest-looking block bytes).
+    #[must_use]
+    pub fn relay(&self, payload: &[u8]) -> Option<Vec<u8>> {
+        match self {
+            Self::None | Self::WithholdColumn { .. } => Some(payload.to_vec()),
+            Self::Misbehave { kind } => Some(transform_column_payload(payload, *kind, 0)),
         }
     }
 
@@ -359,6 +377,7 @@ impl FaultMode {
         }
         Ok(sampled)
     }
+
     /// Map onto the by-root Track D policy (CC-2Jc seam in `reqresp/columns.rs`).
     #[must_use]
     pub fn by_root_fault_policy(&self) -> ByRootFaultPolicy {
@@ -392,7 +411,7 @@ impl FaultMode {
     /// One or more gossip payloads for a single fixture column under this mode.
     ///
     /// Spam emits the honest payload plus [`SPAM_GOSSIP_EXTRA_PUBLISHES`]
-    /// distinct variants so message-ids do not collapse.
+    /// distinct variants so message-ids do not collapse. Withhold emits none.
     #[must_use]
     pub fn column_publish_payloads(&self, payload: &[u8]) -> Vec<Vec<u8>> {
         match self {

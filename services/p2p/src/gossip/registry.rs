@@ -406,27 +406,66 @@ impl<G: GossipsubControl> TopicRegistry<G> {
                 None
             })
             .collect();
+        self.sync_subnet_diff(digest, &current, desired, params, TopicName::DataColumnSidecar)
+    }
 
-        // Step 2 of §6.4: params for every column topic that will be live.
+    /// Resync `beacon_attestation_{subnet_id}` subscriptions for `digest`.
+    ///
+    /// Same params-first ordering as [`Self::sync_column_subnets`] — the third
+    /// subscription trigger (subnet rotation / CC-2C) shares the mechanism with
+    /// BPO boundary and custody change.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`RegistryError`] from params / subscribe / unsubscribe.
+    pub fn sync_attestation_subnets(
+        &mut self,
+        digest: ForkDigest,
+        desired: &BTreeSet<SubnetId>,
+        params: TopicParams,
+    ) -> Result<(), RegistryError> {
+        let current: BTreeSet<SubnetId> = self
+            .subscribed
+            .keys()
+            .filter_map(|k| {
+                if k.digest == digest
+                    && let TopicName::BeaconAttestation(id) = k.name
+                {
+                    return Some(id);
+                }
+                None
+            })
+            .collect();
+        self.sync_subnet_diff(digest, &current, desired, params, TopicName::BeaconAttestation)
+    }
+
+    /// Params → subscribe new → unsubscribe dropped for one subnet family.
+    fn sync_subnet_diff(
+        &mut self,
+        digest: ForkDigest,
+        current: &BTreeSet<SubnetId>,
+        desired: &BTreeSet<SubnetId>,
+        params: TopicParams,
+        name_of: fn(SubnetId) -> TopicName,
+    ) -> Result<(), RegistryError> {
+        // Params for every topic that remains live (weight first).
         for &subnet in desired {
-            let key = TopicKey::new(digest, TopicName::DataColumnSidecar(subnet));
+            let key = TopicKey::new(digest, name_of(subnet));
             if current.contains(&subnet) {
-                // Already subscribed — re-apply weight only.
                 self.set_topic_params(&key, params.clone())?;
             }
             // New topics get params inside `subscribe` (params-first).
         }
 
-        // Step 3: subscribe new, unsubscribe dropped.
         for &subnet in desired {
             if !current.contains(&subnet) {
-                let key = TopicKey::new(digest, TopicName::DataColumnSidecar(subnet));
+                let key = TopicKey::new(digest, name_of(subnet));
                 self.subscribe(key, params.clone())?;
             }
         }
-        for &subnet in &current {
+        for &subnet in current {
             if !desired.contains(&subnet) {
-                let key = TopicKey::new(digest, TopicName::DataColumnSidecar(subnet));
+                let key = TopicKey::new(digest, name_of(subnet));
                 self.unsubscribe(&key)?;
             }
         }
