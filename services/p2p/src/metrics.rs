@@ -712,6 +712,28 @@ impl P2pMetrics {
         self.earliest_available_slot.set(slot);
     }
 
+    /// Set `cc_p2p_backfill_progress_slots` (CC-26b — last contiguous imported).
+    pub fn set_backfill_progress_slots(&self, slot: i64) {
+        self.backfill_progress_slots.set(slot);
+    }
+
+    /// Read `cc_p2p_backfill_progress_slots`.
+    #[must_use]
+    pub fn backfill_progress_slots(&self) -> i64 {
+        self.backfill_progress_slots.get()
+    }
+
+    /// Increment `cc_p2p_backfill_batch_abandoned_total` (CC-26b).
+    pub fn inc_backfill_batch_abandoned(&self) {
+        self.backfill_batch_abandoned.inc();
+    }
+
+    /// Read `cc_p2p_backfill_batch_abandoned_total`.
+    #[must_use]
+    pub fn backfill_batch_abandoned(&self) -> u64 {
+        self.backfill_batch_abandoned.get()
+    }
+
     /// Read `cc_p2p_earliest_available_slot`.
     #[must_use]
     pub fn earliest_available_slot(&self) -> i64 {

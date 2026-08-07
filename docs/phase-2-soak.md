@@ -137,6 +137,36 @@ Kinds map to attributable `cc_p2p_peer_penalty_total{reason}` labels:
 - `behavioural` (P7) label still has a producer (GossipSub-observed); no kind injects it (D-5).
 
 **Unit coverage (landed):** `cargo test -p cc-p2p --lib fault_mode` + `reqresp::columns` seam tests for custody-refuse / stall-reqresp decisions.
+**Status:** partial — clause-4 booking skeleton landed (CC-26b); live runs still `_NOT_RUN_`
+
+### Clause 4 · 10-minute gap recovery (CC-26b)
+
+**Owner:** CC-26b  
+**Venue (discharging):** self-devnet  
+**Booking:** (e) — `faults.sh offline-gap node-a 10` (CC-2Jd docker `network disconnect` primitive)  
+**Status:** **`_NOT_RUN_`** — planner + no-DA-bypass unit path landed; live self-devnet discharge waits on M2.3 exit / operator run (CC-2Jb ideally green for full booking matrix; clause 4 itself needs only the planner + offline-gap primitive).
+
+| Field | Value |
+|---|---|
+| Venue | self-devnet |
+| Measured recovery (slots) | `_NOT_RUN_` |
+| Threshold | back to head within **32 slots** |
+| Parent-linkage walk | `_NOT_RUN_` |
+| Every backfilled block DA-gated (`cc_p2p_da_outcome_total`) | `_NOT_RUN_` |
+| Pass/Fail | `_NOT_RUN_` |
+
+### Clause 4 confirmation · Hoodi (R-5, non-discharging)
+
+**Owner:** CC-26b  
+**Venue:** Hoodi-connected compose stack (serial with self-devnet — D-6 / R-8)  
+**Status:** **`_NOT_RUN_`** — confirmation only; **does not discharge** clause 4. Ten-minute disconnect then by-range backfill of ~50 real blocks + columns from real peers.
+
+| Field | Value |
+|---|---|
+| Venue | Hoodi |
+| Kind | `confirmation, non-discharging` |
+| Measured | `_NOT_RUN_` |
+| Pass/Fail | `_NOT_RUN_` (failure is still a blocker) |
 
 ## M2.1 Hoodi hold
 
@@ -218,7 +248,8 @@ treat any `_NOT_RUN_` cell as a pass.
 | 1 · healthy peer count 24 h | Hoodi | `_NOT_RUN_` | min peers ≥ 25 **and** custody-compatible ≥ 8 | `_NOT_RUN_` |
 | 2 · DA-gated import | Hoodi | `_NOT_RUN_` | imported non-trivial; no deferred head ancestry | `_NOT_RUN_` |
 | 3 · head lag ≤ 1 typical | Hoodi | `_NOT_RUN_` | bucket `le=1` ≥ 0.95 (catch-up excluded) | `_NOT_RUN_` |
-| 4 · 10-minute gap recovery | self-devnet | `_NOT_RUN_` | back to head within 32 slots | `_NOT_RUN_` |
+| 4 · 10-minute gap recovery | self-devnet | `_NOT_RUN_` | back to head within 32 slots; parent walk clean; DA-gated (`cc_p2p_da_outcome_total`) | `_NOT_RUN_` |
+| 4 · Hoodi confirmation (R-5) | Hoodi | `_NOT_RUN_` | ~50 real blocks+columns by-range; **non-discharging** | `_NOT_RUN_` |
 | 5 · withheld column | adversarial harness | `_NOT_RUN_` | deferred then recovered | `_NOT_RUN_` |
 | 6 · scoring penalises | adversarial harness | `_NOT_RUN_` | penalty reason + score crosses −4000 | `_NOT_RUN_` |
 | CC-2A · BPO | self-devnet | `_NOT_RUN_` | topic-set change count == 2; peers retained | `_NOT_RUN_` |
