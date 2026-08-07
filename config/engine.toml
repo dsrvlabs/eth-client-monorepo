@@ -30,3 +30,18 @@ get_blobs_ms = 1000
 exchange_capabilities_ms = 1000
 eth_syncing_ms = 1000
 multiplier = 1.0
+
+# ── CC-31 EL fork schedule (Architecture §3.4, §12/7) ───────────────────────
+# Hoodi EL fork activation times (unix seconds). Loaded config — never compiled
+# into the binary (a fork schedule in a binary needs a release to correct).
+#
+# Source: ethereum/execution-apis + Hoodi network params (OsakaTime / BPO schedule).
+# Retrieval date: 2026-08-07
+#
+# AmsterdamTime is unset on Hoodi today; when set, the version gate fails loud
+# pre-flight for timestamps ≥ amsterdam_time (engine_newPayloadV5 is Phase 7+).
+[el_forks]
+osaka_time = 1761677592
+bpo1_time = 1762365720
+bpo2_time = 1762955544
+# amsterdam_time = <unset>

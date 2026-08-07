@@ -6,12 +6,16 @@
 //!   soft deadline, secret loader) — offline half
 //! - **CC-30b**: Container auth against real geth — `iat` skew pair, 403-vs-401
 //!   typed errors, geth-format `crc32` line (`tests/auth_container.rs`)
+//! - **CC-31**: Method set, fork gate (`method_for` on payload timestamp),
+//!   `ADVERTISED_CAPABILITIES`, capability cache clear edges
 
 #![allow(missing_docs)]
 
+pub mod capabilities;
 pub mod config;
 pub mod errors;
 pub mod jwt;
 pub mod methods;
 pub mod metrics;
 pub mod transport;
+pub mod version;

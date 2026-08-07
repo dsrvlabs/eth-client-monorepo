@@ -1,8 +1,9 @@
-//! Engine service config (CC-30a / Architecture §3.6, §7).
+//! Engine service config (CC-30a / Architecture §3.6, §7; CC-31 §3.4 / §12/7).
 //!
 //! Five transport timeout knobs + multiplier, JWT secret path, EL endpoint,
-//! and the inputs for the **runtime-derived** soft deadline
-//! (`ATTESTATION_DUE_BPS × SLOT_DURATION_MS / 10_000`).
+//! the inputs for the **runtime-derived** soft deadline
+//! (`ATTESTATION_DUE_BPS × SLOT_DURATION_MS / 10_000`), and the **loaded** EL
+//! fork schedule (`[el_forks]`) used by the version gate.
 //!
 //! Soft deadline uses `SLOT_DURATION_MS`, never `SECONDS_PER_SLOT` (deprecated
 //! in Hoodi's live config; Architecture delta 12 / CC-30a).
@@ -16,6 +17,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
+
+use crate::version::ElForkSchedule;
 
 /// Default transport timeouts from the Engine API / Architecture §3.6 (ms).
 pub const DEFAULT_NEW_PAYLOAD_MS: u64 = 8_000;
@@ -127,6 +130,38 @@ fn default_jwt_secret_path() -> PathBuf {
     PathBuf::from("secrets/jwt.hex")
 }
 
+/// EL fork schedule TOML table (`[el_forks]`, CC-31 / §12/7).
+///
+/// Loaded from config, never hard-coded in production Rust. Hoodi values and
+/// retrieval date live in `config/engine.toml` (same style as p2p bootnodes).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct ElForksConfig {
+    /// Unix seconds: Osaka activation (`OsakaTime`).
+    pub osaka_time: u64,
+    /// Unix seconds: BPO1 activation (`BPO1Time`).
+    #[serde(default)]
+    pub bpo1_time: Option<u64>,
+    /// Unix seconds: BPO2 activation (`BPO2Time`).
+    #[serde(default)]
+    pub bpo2_time: Option<u64>,
+    /// Unix seconds: Amsterdam activation (`AmsterdamTime`). Unset on Hoodi.
+    #[serde(default)]
+    pub amsterdam_time: Option<u64>,
+}
+
+impl ElForksConfig {
+    /// Convert to the version-gate schedule type.
+    #[must_use]
+    pub fn schedule(&self) -> ElForkSchedule {
+        ElForkSchedule {
+            osaka_time: self.osaka_time,
+            bpo1_time: self.bpo1_time,
+            bpo2_time: self.bpo2_time,
+            amsterdam_time: self.amsterdam_time,
+        }
+    }
+}
+
 /// Engine-only configuration fields (flattened beside [`cc_config::ServiceConfig`]).
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct EngineTransportConfig {
@@ -145,6 +180,11 @@ pub struct EngineTransportConfig {
     /// Attestation due time in basis points of the slot (soft-deadline input).
     #[serde(default = "default_attestation_due_bps")]
     pub attestation_due_bps: u64,
+    /// EL fork schedule for the version gate (CC-31). Optional only so older
+    /// partial TOML fixtures still deserialise; production `config/engine.toml`
+    /// always supplies `[el_forks]`.
+    #[serde(default)]
+    pub el_forks: Option<ElForksConfig>,
 }
 
 impl Default for EngineTransportConfig {
@@ -155,6 +195,7 @@ impl Default for EngineTransportConfig {
             timeouts: TimeoutKnobs::default(),
             slot_duration_ms: DEFAULT_SLOT_DURATION_MS,
             attestation_due_bps: DEFAULT_ATTESTATION_DUE_BPS,
+            el_forks: None,
         }
     }
 }
@@ -181,6 +222,12 @@ impl EngineTransportConfig {
     #[must_use]
     pub fn transport_timeouts(&self) -> TransportTimeouts {
         TransportTimeouts::from_knobs(&self.timeouts)
+    }
+
+    /// EL fork schedule for [`crate::version::method_for`], if configured.
+    #[must_use]
+    pub fn el_fork_schedule(&self) -> Option<ElForkSchedule> {
+        self.el_forks.as_ref().map(ElForksConfig::schedule)
     }
 }
 
@@ -262,5 +309,58 @@ mod tests {
         assert!((knobs.multiplier - 1.5).abs() < 1e-9);
         let scaled = TransportTimeouts::from_knobs(&knobs);
         assert_eq!(scaled.new_payload, Duration::from_millis(12_000));
+    }
+
+    /// `CC-31` /3: `[el_forks]` is loaded from config and drives the version gate.
+    ///
+    /// Hoodi activation times live **only** in `config/engine.toml` — this test
+    /// must not embed them as Rust literals (grep acceptance).
+    #[test]
+    fn el_forks_loaded_from_config() {
+        use crate::methods::names;
+        use crate::version::method_for;
+        use std::path::PathBuf;
+
+        // Resolve config relative to workspace root (CWD for `cargo test -p cc-engine`).
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/engine.toml");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        assert!(
+            text.contains("[el_forks]"),
+            "config/engine.toml must define [el_forks]"
+        );
+        assert!(
+            text.contains("Retrieval date:"),
+            "el_forks table must carry its retrieval date (p2p bootnode style)"
+        );
+
+        // Parse only the nested table via a minimal wrapper so we do not need
+        // ServiceConfig fields from the full file.
+        #[derive(Deserialize)]
+        struct File {
+            el_forks: ElForksConfig,
+        }
+        let file: File = toml::from_str(&text).expect("engine.toml el_forks deserialises");
+        assert!(file.el_forks.osaka_time > 0, "osaka_time must be set");
+        assert!(file.el_forks.bpo1_time.is_some(), "bpo1_time must be set");
+        assert!(file.el_forks.bpo2_time.is_some(), "bpo2_time must be set");
+        assert!(
+            file.el_forks.amsterdam_time.is_none(),
+            "AmsterdamTime unset on Hoodi"
+        );
+
+        let schedule = file.el_forks.schedule();
+        // Gate reads the loaded times: Osaka and BPO2 both select V4.
+        assert_eq!(
+            method_for(schedule.osaka_time, &schedule).unwrap(),
+            names::NEW_PAYLOAD_V4
+        );
+        let bpo2 = schedule.bpo2_time.expect("bpo2 from config");
+        assert_eq!(method_for(bpo2, &schedule).unwrap(), names::NEW_PAYLOAD_V4);
+        // Pre-Osaka still V4 (Prague window).
+        assert_eq!(
+            method_for(schedule.osaka_time - 1, &schedule).unwrap(),
+            names::NEW_PAYLOAD_V4
+        );
     }
 }
