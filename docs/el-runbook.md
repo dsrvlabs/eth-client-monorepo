@@ -89,3 +89,69 @@ triple **before** re-litigating fork-choice scoring.
 
 `-38006` (invalid forkchoice state / related EL rejections of the triple) is the
 same class: typed and counted on our side, never retried blindly.
+
+## Observed auth failures
+
+Evidence from CC-30b against a real `ethereum/client-go:v1.17.5` with the
+compose `el` flag set (`--authrpc.addr=0.0.0.0`, `--authrpc.vhosts=el`,
+`--authrpc.jwtsecret=/jwt/jwt.hex`). The table under **Container-auth trap** is
+the theory; this section is what geth actually sent.
+
+### HTTP 401 bodies (JWT path — token problem)
+
+Triggered with a **correct** `Host` (or an IP Host) and a deliberate claim fault.
+Bodies are plain text, not JSON-RPC error objects.
+
+| Trigger | HTTP | Body (literal) | Our typed error | Metric |
+|---|---|---|---|---|
+| `iat = now − 120 s` | 401 | `stale token` | `EngineError::Http401` | `cc_engine_errors_total{code="http_401"}` |
+| `iat = now + 120 s` | 401 | `future token` | `EngineError::Http401` | `cc_engine_errors_total{code="http_401"}` |
+| No `Authorization` header | 401 | `missing token` | `EngineError::Http401` | `cc_engine_errors_total{code="http_401"}` |
+| Token without `iat` claim | 401 | `missing issued-at` | `EngineError::Http401` | `cc_engine_errors_total{code="http_401"}` |
+| Malformed / wrong-key JWT | 401 | JWT library error string | `EngineError::Http401` | `cc_engine_errors_total{code="http_401"}` |
+
+geth enforces `jwtExpiryTimeout = 60 s` **both ways** — a client that only tests
+one direction discovers the other during a clock-drift incident. Both bodies are
+asserted literally in `services/engine/tests/auth_container.rs`
+(`jwt_iat_stale`, `jwt_iat_future`).
+
+### HTTP 403 body (vhost path — not a JWT problem)
+
+Triggered with a **valid** token and a `Host:` hostname that is **not** in
+`--authrpc.vhosts`. geth's `virtualHostHandler` serves any **IP** Host
+unconditionally but validates hostnames.
+
+| Trigger | HTTP | Body (literal) | Our typed error | Metric |
+|---|---|---|---|---|
+| Valid JWT, `Host: not-in-vhosts.invalid` | 403 | `invalid host specified` | `EngineError::Http403` | `cc_engine_errors_total{code="http_403"}` |
+
+`http_401` does **not** increment on this path. The body is logged at `error!`
+**verbatim** (not paraphrased) so this runbook stays greppable against the log
+line. Test: `vhost_rejected_is_403_not_401`.
+
+### Connection refused (addr path — not HTTP)
+
+With `--authrpc.addr` left at geth's default `localhost`, a peer on the `cc`
+network cannot connect: the engine call fails as
+`EngineError::Transport` / `cc_engine_errors_total{code="transport"}` — **not**
+`http_401`, **not** `http_403`. Restoring `--authrpc.addr=0.0.0.0` makes the
+call succeed again. (CC-39 /2 negative half; recorded at bring-up, not as a
+standing CI flip of the compose flag.)
+
+### crc32 pair (one grep, both sides)
+
+```bash
+docker compose logs 2>&1 | grep -i crc32
+# healthy — exactly two lines, identical crc32 values:
+#   el     | … Loaded JWT secret file path=/jwt/jwt.hex crc32=0x…
+#   engine | … Loaded JWT secret file path=/jwt/jwt.hex crc32=0x…
+```
+
+Engine prints the same message shape as geth (`Loaded JWT secret file` +
+`path=` + `crc32=0x…`) so a single case-insensitive grep settles R-6.
+
+**Negative form:** with `secrets/` swapped for an empty directory (and the
+`:ro` mount still present), geth either generates its own secret (writable
+path) or fails louder on write; our engine **aborts before bind** on the
+missing/unreadable secret (CC-30a). The two crc32 values then **differ** (or
+engine never starts) — that is the evidence the grep is a real check.

@@ -54,10 +54,15 @@ pub enum EngineError {
     UnsupportedFork { message: String },
     /// JSON-RPC `-38006`.
     InvalidRange { message: String },
-    /// HTTP 401 with plain-text body (geth auth failures).
-    AuthRejected { body: String },
-    /// HTTP 403 with plain-text body (vhost misconfiguration).
-    HostRejected { body: String },
+    /// HTTP 401 with plain-text body (geth auth failures: `stale token`, …).
+    ///
+    /// Distinct from [`Self::Http403`] at the type level so a CL cannot treat
+    /// vhost rejection as a JWT problem (CC-30b / PRD delta 15).
+    Http401 { body: String },
+    /// HTTP 403 with plain-text body (vhost misconfiguration: `invalid host specified`).
+    ///
+    /// Distinct from [`Self::Http401`]: the token may be valid; the `Host:` is not.
+    Http403 { body: String },
     /// Other HTTP 4xx.
     HttpClient { code: u16, body: String },
     /// HTTP 5xx.
@@ -89,8 +94,8 @@ impl EngineError {
             Self::TooLargeRequest { .. } => ErrorCode::TooLargeRequest,
             Self::UnsupportedFork { .. } => ErrorCode::UnsupportedFork,
             Self::InvalidRange { .. } => ErrorCode::InvalidRange,
-            Self::AuthRejected { .. } => ErrorCode::Http401,
-            Self::HostRejected { .. } => ErrorCode::Http403,
+            Self::Http401 { .. } => ErrorCode::Http401,
+            Self::Http403 { .. } => ErrorCode::Http403,
             Self::HttpClient { .. } => ErrorCode::Http4xx,
             Self::HttpServer { .. } => ErrorCode::Http5xx,
             Self::Timeout { .. } => ErrorCode::Timeout,
@@ -107,7 +112,7 @@ impl EngineError {
     pub fn retry_class(&self) -> RetryClass {
         match self {
             Self::InternalError { .. } | Self::ServerError { .. } => RetryClass::Transient,
-            Self::AuthRejected { .. } | Self::HostRejected { .. } => RetryClass::Auth,
+            Self::Http401 { .. } | Self::Http403 { .. } => RetryClass::Auth,
             _ => RetryClass::Fatal,
         }
     }
@@ -139,8 +144,8 @@ impl EngineError {
     #[must_use]
     pub fn from_http_status(status: u16, body: String) -> Self {
         match status {
-            401 => Self::AuthRejected { body },
-            403 => Self::HostRejected { body },
+            401 => Self::Http401 { body },
+            403 => Self::Http403 { body },
             400..=499 => Self::HttpClient { code: status, body },
             500..=599 => Self::HttpServer { code: status, body },
             _ => Self::Transport {
@@ -191,8 +196,8 @@ impl fmt::Display for EngineError {
             Self::InvalidRange { message } => {
                 write!(f, "JSON-RPC -38006 invalid range: {message}")
             }
-            Self::AuthRejected { body } => write!(f, "HTTP 401 auth rejected: {body}"),
-            Self::HostRejected { body } => write!(f, "HTTP 403 host rejected: {body}"),
+            Self::Http401 { body } => write!(f, "HTTP 401 auth rejected: {body}"),
+            Self::Http403 { body } => write!(f, "HTTP 403 host rejected: {body}"),
             Self::HttpClient { code, body } => write!(f, "HTTP {code} client error: {body}"),
             Self::HttpServer { code, body } => write!(f, "HTTP {code} server error: {body}"),
             Self::Timeout { method } => write!(f, "transport timeout on {method}"),
@@ -305,14 +310,14 @@ mod tests {
                 RetryClass::Fatal,
             ),
             (
-                EngineError::AuthRejected {
+                EngineError::Http401 {
                     body: "missing token".into(),
                 },
                 ErrorCode::Http401,
                 RetryClass::Auth,
             ),
             (
-                EngineError::HostRejected {
+                EngineError::Http403 {
                     body: "invalid host specified".into(),
                 },
                 ErrorCode::Http403,
@@ -410,5 +415,41 @@ mod tests {
             rendered.contains("geth said no"),
             "data.err must appear in log-facing Display: {rendered}"
         );
+    }
+
+    /// 401 and 403 are distinct variants at the type level, not just metric labels
+    /// (CC-30b). A match arm on one must not accept the other.
+    #[test]
+    fn auth_errors_are_distinct_variants() {
+        let e401 = EngineError::Http401 {
+            body: "stale token".into(),
+        };
+        let e403 = EngineError::Http403 {
+            body: "invalid host specified".into(),
+        };
+
+        assert_ne!(e401, e403);
+        assert_eq!(e401.metric_code(), ErrorCode::Http401);
+        assert_eq!(e403.metric_code(), ErrorCode::Http403);
+        assert_eq!(e401.retry_class(), RetryClass::Auth);
+        assert_eq!(e403.retry_class(), RetryClass::Auth);
+
+        let is_401_only = matches!(e401, EngineError::Http401 { .. });
+        let is_403_only = matches!(e403, EngineError::Http403 { .. });
+        assert!(is_401_only);
+        assert!(is_403_only);
+        // Cross-match: 401 does not accept 403 and vice versa.
+        assert!(!matches!(e401, EngineError::Http403 { .. }));
+        assert!(!matches!(e403, EngineError::Http401 { .. }));
+
+        // from_http_status maps to the right variant.
+        assert!(matches!(
+            EngineError::from_http_status(401, "stale token".into()),
+            EngineError::Http401 { body } if body == "stale token"
+        ));
+        assert!(matches!(
+            EngineError::from_http_status(403, "invalid host specified".into()),
+            EngineError::Http403 { body } if body == "invalid host specified"
+        ));
     }
 }

@@ -7,7 +7,7 @@
 //!   Unix mode must be `0600` (abort before bind on violation)
 //! - Hand-written [`Debug`] prints `Jwt(<redacted>)` so a derived impl can never
 //!   leak material into a `{:?}` log line
-//! - On successful load, logs geth-compatible `crc32=0x…` for volume diagnosis
+//! - On successful load, logs geth-format `Loaded JWT secret file path=… crc32=0x…`
 
 use std::fmt;
 use std::fs;
@@ -165,7 +165,7 @@ impl JwtSecret {
     /// Path escapes, oversized files, and (on Unix) non-`0600` modes abort
     /// before any bind (`main` loads this before `init`/`serve`).
     ///
-    /// On success logs `loaded JWT secret path=… crc32=0x…` (geth-compatible).
+    /// On success logs `Loaded JWT secret file path=… crc32=0x…` (geth format).
     pub fn load(path: &Path) -> Result<Self, JwtError> {
         let path = validate_jwt_secret_path(path)?;
         let path_str = path.display().to_string();
@@ -209,11 +209,14 @@ impl JwtSecret {
         let mut bytes = [0u8; 32];
         bytes.copy_from_slice(&decoded);
         let secret = Self { bytes };
-        let crc = crc32fast::hash(&secret.bytes);
+        // geth logs: `Loaded JWT secret file path=… crc32=0x…`
+        // Same message shape so `docker compose logs | grep -i crc32` shows both
+        // sides on one grep (CC-30 /4, Architecture §7).
+        let crc = secret.crc32();
         tracing::info!(
             path = %path.display(),
             crc32 = format_args!("0x{crc:08x}"),
-            "loaded JWT secret"
+            "Loaded JWT secret file"
         );
         Ok(secret)
     }
@@ -233,6 +236,12 @@ impl JwtSecret {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         self.sign_iat(iat)
+    }
+
+    /// IEEE CRC32 of the 32-byte secret (geth `crc32=0x…` line).
+    #[must_use]
+    pub fn crc32(&self) -> u32 {
+        crc32fast::hash(&self.bytes)
     }
 
     /// Hex encoding of the secret (tests only — never log this).

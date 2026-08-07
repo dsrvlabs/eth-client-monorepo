@@ -35,6 +35,26 @@ pub enum Lane {
     Upcheck,
 }
 
+/// Per-request overrides for **container IT only** (CC-30b).
+///
+/// Hidden from rustdoc: not part of the production Engine API surface. Exists so
+/// `services/engine/tests/auth_container.rs` can skew `iat` and override `Host`
+/// without forking the transport. Cannot be `#[cfg(test)]` / `pub(crate)` —
+/// integration tests compile as a separate crate.
+///
+/// **Invariant:** production method adapters must never pass untrusted
+/// `host`/`iat` through here (self-DoS via stale token or sticky 403). Use
+/// [`EngineTransport::call`] (always `iat=now`, no Host override).
+#[doc(hidden)]
+#[derive(Debug, Clone, Default)]
+pub struct RequestOverrides {
+    /// Explicit JWT `iat` (unix seconds). `None` → sign with wall-clock now.
+    pub iat: Option<u64>,
+    /// Override the outgoing HTTP `Host` header (vhost rejection tests only).
+    /// Does **not** retarget TCP — endpoint URL stays fixed (no SSRF).
+    pub host: Option<String>,
+}
+
 /// Shared Engine API transport.
 #[derive(Debug)]
 pub struct EngineTransport {
@@ -139,11 +159,28 @@ impl EngineTransport {
         rpc_method: &str,
         params: Value,
     ) -> Result<Value, EngineError> {
+        self.call_with(lane, method, rpc_method, params, RequestOverrides::default())
+            .await
+    }
+
+    /// Like [`Self::call`], with explicit JWT `iat` and/or `Host` overrides.
+    ///
+    /// **IT / diagnostics only** (CC-30b). See [`RequestOverrides`]. Not for
+    /// production method adapters.
+    #[doc(hidden)]
+    pub async fn call_with(
+        &self,
+        lane: Lane,
+        method: EngineMethod,
+        rpc_method: &str,
+        params: Value,
+        overrides: RequestOverrides,
+    ) -> Result<Value, EngineError> {
         match lane {
             Lane::Ordered => {
                 // Guard held across the call — ordering MUST on the same wire.
                 let _guard = self.ordered.lock().await;
-                self.call_inner(method, rpc_method, params).await
+                self.call_inner(method, rpc_method, params, overrides).await
             }
             Lane::Fastpath => {
                 let _permit =
@@ -153,7 +190,7 @@ impl EngineTransport {
                         .map_err(|_| EngineError::Transport {
                             detail: "fastpath semaphore closed".into(),
                         })?;
-                self.call_inner(method, rpc_method, params).await
+                self.call_inner(method, rpc_method, params, overrides).await
             }
             Lane::Upcheck => {
                 let _permit = self
@@ -163,7 +200,7 @@ impl EngineTransport {
                     .map_err(|_| EngineError::Transport {
                         detail: "upcheck semaphore closed".into(),
                     })?;
-                self.call_inner(method, rpc_method, params).await
+                self.call_inner(method, rpc_method, params, overrides).await
             }
         }
     }
@@ -173,10 +210,13 @@ impl EngineTransport {
         method: EngineMethod,
         rpc_method: &str,
         params: Value,
+        overrides: RequestOverrides,
     ) -> Result<Value, EngineError> {
         let started = Instant::now();
         let timeout = self.timeout_for(method);
-        let result = self.send_jsonrpc(rpc_method, params, timeout, method).await;
+        let result = self
+            .send_jsonrpc(rpc_method, params, timeout, method, overrides)
+            .await;
         let elapsed = started.elapsed();
 
         let labels = MethodLabels {
@@ -200,32 +240,53 @@ impl EngineTransport {
             );
         }
 
-        if let Err(ref e) = result
-            && let Some(m) = &self.metrics
-        {
-            m.errors_total
-                .get_or_create(&ErrorCodeLabels {
-                    code: e.metric_code().as_str().to_owned(),
-                })
-                .inc();
-            if matches!(e, EngineError::Timeout { .. }) {
-                let labels = MethodLabels {
-                    method: method.as_str().to_owned(),
-                };
-                m.transport_timeout.get_or_create(&labels).inc();
+        if let Err(ref e) = result {
+            if let Some(m) = &self.metrics {
+                m.errors_total
+                    .get_or_create(&ErrorCodeLabels {
+                        code: e.metric_code().as_str().to_owned(),
+                    })
+                    .inc();
+                if matches!(e, EngineError::Timeout { .. }) {
+                    let labels = MethodLabels {
+                        method: method.as_str().to_owned(),
+                    };
+                    m.transport_timeout.get_or_create(&labels).inc();
+                }
             }
-            // -32000 data.err is the only code that carries a diagnostic string.
-            if let EngineError::ServerError {
-                data_err: Some(err),
-                message,
-            } = e
-            {
-                tracing::warn!(
-                    method = method.as_str(),
-                    message = %message,
-                    data_err = %err,
-                    "JSON-RPC -32000 server error"
-                );
+            // geth auth/vhost failures are plain-text HTTP bodies, never JSON-RPC
+            // objects. Log the body **verbatim** at error! — the body *is* the
+            // diagnosis (CC-30b / el-runbook).
+            match e {
+                EngineError::Http401 { body } => {
+                    tracing::error!(
+                        method = method.as_str(),
+                        status = 401u16,
+                        body = %body,
+                        "HTTP 401 from EL (auth rejected)"
+                    );
+                }
+                EngineError::Http403 { body } => {
+                    tracing::error!(
+                        method = method.as_str(),
+                        status = 403u16,
+                        body = %body,
+                        "HTTP 403 from EL (host rejected)"
+                    );
+                }
+                EngineError::ServerError {
+                    data_err: Some(err),
+                    message,
+                } => {
+                    // -32000 data.err is the only JSON-RPC code with a diagnostic string.
+                    tracing::warn!(
+                        method = method.as_str(),
+                        message = %message,
+                        data_err = %err,
+                        "JSON-RPC -32000 server error"
+                    );
+                }
+                _ => {}
             }
         }
 
@@ -238,6 +299,7 @@ impl EngineTransport {
         params: Value,
         timeout: Duration,
         method: EngineMethod,
+        overrides: RequestOverrides,
     ) -> Result<Value, EngineError> {
         let id = self.next_id();
         let body = json!({
@@ -247,17 +309,27 @@ impl EngineTransport {
             "params": params,
         });
 
-        let token = self.jwt.sign_now().map_err(|e| EngineError::Transport {
+        let token = match overrides.iat {
+            Some(iat) => self.jwt.sign_iat(iat),
+            None => self.jwt.sign_now(),
+        }
+        .map_err(|e| EngineError::Transport {
             detail: format!("jwt sign: {e}"),
         })?;
 
-        let request = self
+        let mut request = self
             .client
             .post(&self.endpoint)
             .timeout(timeout)
             .bearer_auth(token)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .json(&body);
+
+        if let Some(host) = overrides.host.as_deref() {
+            // Override Host for vhost-rejection tests. reqwest rewrites Host from
+            // the URL unless we set it explicitly after building the request.
+            request = request.header(reqwest::header::HOST, host);
+        }
 
         let response = match request.send().await {
             Ok(r) => r,

@@ -86,6 +86,12 @@ services:
       CC_ENGINE_GRPC_ADDR: 0.0.0.0:9004
       CC_ENGINE_METRICS_ADDR: 0.0.0.0:9104
       CC_ENGINE_PEERS__CHAIN: http://chain:9001
+      # Engine API auth (CC-30a/b, Architecture §7). Mount matches el's /jwt/jwt.hex
+      # so `docker compose logs | grep -i crc32` shows the matching pair.
+      CC_ENGINE_EL_ENDPOINT: http://el:8551
+      CC_ENGINE_JWT_SECRET_PATH: /jwt/jwt.hex
+    volumes:
+      - ./secrets:/jwt:ro                 # same secret as el; never COPY'd into image
     ports: ["9004:9004", "9104:9104"]
     depends_on:
       chain:
