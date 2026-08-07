@@ -93,6 +93,23 @@ section is the version gate only.
 
 <!-- CC-23b cgc-policy notes append here. -->
 
+- **Phase 4 serve-window backfill (CC-26/5, A-P2-5).** Phase 2 advertises a short in-memory
+  `earliest_available_slot` from the CC-26a cache (≤ 2 048 slots / 1 GiB) rather than the
+  spec's full serve windows. On **Hoodi** those full windows are config values, not recomputed
+  constants:
+
+  | Window | Config key | Hoodi value | ≈ duration |
+  |---|---|---|---|
+  | Blocks | `MIN_EPOCHS_FOR_BLOCK_REQUESTS` | **33 024** epochs | ≈ 4.8 months |
+  | Columns | `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` | **4 096** epochs | ≈ 18 days |
+
+  Full historical backfill (blocks to `current_epoch − MIN_EPOCHS_FOR_BLOCK_REQUESTS`, columns
+  to `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS`) lands in **Phase 4** with durable storage.
+  Until then, strict peers MAY descore a short-window node — **accepted degradation** under
+  **A-P2-5** (honesty about the window via CC-26/3 + `ResourceUnavailable` below it via
+  CC-23/4 keep the penalty diagnosable rather than free-riding). Fallback if peer count bites
+  is a deeper cache within the 1 GiB ceiling, not a dishonest advertisement.
+
 ## §14 resolved API shapes (CC-20a)
 
 Resolved against rust-libp2p **`6348a0be4aeb5b48eecf17a5d0aae15ff8239984`** (2026-08-07)

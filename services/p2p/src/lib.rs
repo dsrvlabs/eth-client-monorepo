@@ -15,11 +15,13 @@
 //! - **CC-24a**: custody + sampling sets (`das::custody`), eight column subscriptions, custody-compatible metric
 //! - **CC-23a**: req/resp shared half — SszSnappy framing, nine protocols, rate limits, scheduler
 //! - **CC-24b**: KZG verify pool (`das::verify_pool`) — dedicated OS threads, §8.2 three steps, ADR P2-08 batching
+//! - **CC-26a**: bounded backfill cache (1 GiB ceiling) + `earliest_available_slot` AtomicU64
 //! - **CC-27b**: chain-stream client, outstanding map, stall-then-shed, ChainView store
 //! - **CC-29a**: Phase 2 metric family declarations (binary registers them)
 
 #![allow(missing_docs)]
 
+pub mod backfill;
 pub mod chain_stream;
 pub mod channels;
 pub mod clock;

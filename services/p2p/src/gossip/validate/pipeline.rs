@@ -39,7 +39,6 @@ use crate::channels::{
     GOSSIP_BOUND,
 };
 use crate::clock::SlotClock;
-use crate::gossip::seen::{BLOCK_SEEN_BOUND, COLUMN_SEEN_BOUND};
 use crate::gossip::topics::TopicName;
 use crate::metrics::{P2pMetrics, PeerPenaltyReason, QueueName};
 use crate::verdict::{is_late_import_reject, Verdict};
@@ -196,9 +195,11 @@ impl ValidationPoolState {
         metrics.set_queue_depth(QueueName::PendingSidecar, ps as i64);
         metrics.set_queue_depth(QueueName::PendingBlock, pb as i64);
         let (cs, bs) = self.column.seen.occupancy();
-        // Reuse cache_* gauges as seen occupancy / bound (no new CC-29a families).
-        metrics.set_cache_occupancy_bytes((cs.saturating_add(bs)) as i64);
-        metrics.set_cache_bound_bytes((COLUMN_SEEN_BOUND.saturating_add(BLOCK_SEEN_BOUND)) as i64);
+        // Seen-set entry counts — **not** `cc_p2p_cache_*` (those are backfill
+        // bytes only, CC-26a / OQ-P2-4). Bounds are the compile-time constants
+        // `COLUMN_SEEN_BOUND` / `BLOCK_SEEN_BOUND` on the seen-set types.
+        metrics.set_queue_depth(QueueName::SeenColumn, cs as i64);
+        metrics.set_queue_depth(QueueName::SeenBlock, bs as i64);
     }
 }
 

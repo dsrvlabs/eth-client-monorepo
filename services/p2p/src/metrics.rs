@@ -97,7 +97,7 @@ pub(crate) struct ColumnSourceLabels {
     pub source: String,
 }
 
-/// Labels for `cc_p2p_queue_depth` (§2.2 — one gauge, nine series).
+/// Labels for `cc_p2p_queue_depth` (§2.2 — one gauge, eleven series).
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub(crate) struct QueueLabels {
     pub q: String,
@@ -248,9 +248,11 @@ impl ColumnSource {
     pub const ALL: [Self; 3] = [Self::Gossip, Self::ByRoot, Self::ByRange];
 }
 
-/// `q` label values for `cc_p2p_queue_depth` (§2.2 / CC-22/5).
+/// `q` label values for `cc_p2p_queue_depth` (§2.2 / CC-22/5 / CC-26a).
 ///
-/// Nine values on **one** gauge family — not nine separate metrics.
+/// Eleven values on **one** gauge family — not eleven separate metrics.
+/// `SeenColumn` / `SeenBlock` hold gossip seen-set **entry counts** (not
+/// backfill cache bytes — those use `cc_p2p_cache_*` exclusively).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueueName {
     Gossip,
@@ -262,6 +264,10 @@ pub enum QueueName {
     Outstanding,
     PendingSidecar,
     PendingBlock,
+    /// Gossip column seen-set occupancy (entry count).
+    SeenColumn,
+    /// Gossip block seen-set occupancy (entry count).
+    SeenBlock,
 }
 
 impl QueueName {
@@ -278,11 +284,13 @@ impl QueueName {
             Self::Outstanding => "outstanding",
             Self::PendingSidecar => "pending_sidecar",
             Self::PendingBlock => "pending_block",
+            Self::SeenColumn => "seen_column",
+            Self::SeenBlock => "seen_block",
         }
     }
 
-    /// All nine variants (seed + tests).
-    pub const ALL: [Self; 9] = [
+    /// All variants (seed + tests).
+    pub const ALL: [Self; 11] = [
         Self::Gossip,
         Self::ReqrespIn,
         Self::Conn,
@@ -292,6 +300,8 @@ impl QueueName {
         Self::Outstanding,
         Self::PendingSidecar,
         Self::PendingBlock,
+        Self::SeenColumn,
+        Self::SeenBlock,
     ];
 }
 
@@ -523,7 +533,7 @@ impl P2pMetrics {
         );
         registry.register(
             "cc_p2p_queue_depth",
-            "In-process queue depth (q=gossip|reqresp_in|conn|kzg|publish|cmd|outstanding|pending_sidecar|pending_block)",
+            "In-process queue / set depth (q=gossip|reqresp_in|conn|kzg|publish|cmd|outstanding|pending_sidecar|pending_block|seen_column|seen_block)",
             queue_depth.clone(),
         );
 
@@ -673,14 +683,40 @@ impl P2pMetrics {
             .set(depth);
     }
 
-    /// Set `cc_p2p_cache_occupancy_bytes` (reused for seen-set entry count).
+    /// Set `cc_p2p_cache_occupancy_bytes` — **backfill cache only** (CC-26a).
+    ///
+    /// Gossip seen-set occupancy uses [`QueueName::SeenColumn`] /
+    /// [`QueueName::SeenBlock`] on `cc_p2p_queue_depth`, not these gauges.
     pub fn set_cache_occupancy_bytes(&self, n: i64) {
         self.cache_occupancy_bytes.set(n);
     }
 
-    /// Set `cc_p2p_cache_bound_bytes` (reused for seen-set bound sum).
+    /// Set `cc_p2p_cache_bound_bytes` — **backfill cache only** (1 GiB ceiling).
     pub fn set_cache_bound_bytes(&self, n: i64) {
         self.cache_bound_bytes.set(n);
+    }
+
+    /// Set `cc_p2p_earliest_available_slot` (backfill serve window / CC-26a).
+    pub fn set_earliest_available_slot(&self, slot: i64) {
+        self.earliest_available_slot.set(slot);
+    }
+
+    /// Read `cc_p2p_earliest_available_slot`.
+    #[must_use]
+    pub fn earliest_available_slot(&self) -> i64 {
+        self.earliest_available_slot.get()
+    }
+
+    /// Read `cc_p2p_cache_occupancy_bytes`.
+    #[must_use]
+    pub fn cache_occupancy_bytes(&self) -> i64 {
+        self.cache_occupancy_bytes.get()
+    }
+
+    /// Read `cc_p2p_cache_bound_bytes`.
+    #[must_use]
+    pub fn cache_bound_bytes(&self) -> i64 {
+        self.cache_bound_bytes.get()
     }
 
     /// Read `cc_p2p_queue_depth{q}`.
@@ -1310,8 +1346,8 @@ mod tests {
     }
 
     #[test]
-    fn queue_depth_q_label_has_exactly_nine_values() {
-        assert_eq!(QueueName::ALL.len(), 9);
+    fn queue_depth_q_label_has_exactly_eleven_values() {
+        assert_eq!(QueueName::ALL.len(), 11);
         let labels: BTreeSet<&str> = QueueName::ALL.iter().map(|q| q.as_str()).collect();
         assert_eq!(
             labels,
@@ -1325,12 +1361,14 @@ mod tests {
                 "outstanding",
                 "pending_sidecar",
                 "pending_block",
+                "seen_column",
+                "seen_block",
             ])
         );
     }
 
     #[test]
-    fn queue_depth_is_single_gauge_with_nine_seeded_series() {
+    fn queue_depth_is_single_gauge_with_all_seeded_series() {
         let mut registry = Registry::default();
         let _m = P2pMetrics::register(&mut registry);
         let mut buf = String::new();
