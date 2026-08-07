@@ -1,0 +1,149 @@
+# CC-2Jd self-devnet topology.
+#
+#   devnet network (cc-devnet)
+#     ├─ publisher   cc-p2p --publish-fixture  (cgc=128, all columns)
+#     ├─ node-a      peer under test (default: mesh with everything)
+#     ├─ node-b      second peer (real gossip mesh)
+#     └─ anchor      nginx serving genesis + CC-19 endpoints
+#
+# Usage (from monorepo root): always use ./devnet/up.sh (sets genesis after build).
+#
+# SEC-H1: host port publishes bind 127.0.0.1 only (metrics/anchor). Libp2p is not
+# published to the host — mesh stays on the docker network.
+
+name: cc-devnet
+
+x-cc-env: &cc-env
+  RUST_LOG: ${RUST_LOG:-info}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+
+x-cc-runtime: &cc-runtime
+  restart: unless-stopped
+  stop_signal: SIGTERM
+  stop_grace_period: 5s
+  networks: [ccdev]
+
+x-p2p-build: &p2p-build
+  context: ..
+  dockerfile: Dockerfile
+  args:
+    SERVICE: cc-p2p
+    CC_GIT_SHA: ${CC_GIT_SHA:-unknown}
+
+services:
+  anchor:
+    <<: *cc-runtime
+    image: nginx:1.27-alpine
+    volumes:
+      - ./anchor/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./out/anchor:/usr/share/nginx/html:ro
+    ports:
+      - "127.0.0.1:18080:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/eth/v1/config/spec"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 5s
+
+  publisher:
+    <<: *cc-runtime
+    build: *p2p-build
+    # Runtime image has no shell health probe tools; readiness is polled by up.sh/smoke.sh.
+    # Genesis must be set by up.sh *after* image build (H1). Do not rely on the
+    # ${CC_DEVNET_GENESIS_TIME:-0} fallback for a real run.
+    command:
+      - --publish-fixture
+      - /fixture/chain
+      - --node-key
+      - /keys/publisher.key
+      - --listen
+      - /ip4/0.0.0.0/tcp/9000
+      - --config-yaml
+      - /fixture/config.yaml
+      - --manifest
+      - /fixture/manifest.json
+      - --static-peers-file
+      - /fixture/multiaddrs.publisher.txt
+      - --metrics-addr
+      - 0.0.0.0:9102
+      - --genesis-time
+      # up.sh sets this *after* image build (H1). Placeholder 1 is only for compose parse.
+      - ${CC_DEVNET_GENESIS_TIME:-1}
+      - --seconds-per-slot
+      - ${CC_DEVNET_SECONDS_PER_SLOT:-3}
+      - --max-slots
+      - ${CC_DEVNET_MAX_SLOTS:-64}
+    environment:
+      <<: *cc-env
+    volumes:
+      - ./out:/fixture:ro
+      - ./out/node_keys:/keys:ro
+    ports:
+      # Metrics only on loopback (SEC-H1). Libp2p not published to host.
+      - "127.0.0.1:19102:9102"
+    depends_on:
+      anchor:
+        condition: service_started
+
+  node-a:
+    <<: *cc-runtime
+    build: *p2p-build
+    command:
+      - --devnet-peer
+      - --node-key
+      - /keys/node-a.key
+      - --listen
+      - /ip4/0.0.0.0/tcp/9000
+      - --config-yaml
+      - /fixture/config.yaml
+      - --manifest
+      - /fixture/manifest.json
+      - --static-peers-file
+      - /fixture/multiaddrs.node-a.txt
+      - --metrics-addr
+      - 0.0.0.0:9102
+    environment:
+      <<: *cc-env
+      CC_P2P_DISABLE_DIAL: ${CC_NODE_A_DISABLE_DIAL:-false}
+    volumes:
+      - ./out:/fixture:ro
+      - ./out/node_keys:/keys:ro
+    ports:
+      - "127.0.0.1:19112:9102"
+    depends_on:
+      publisher:
+        condition: service_started
+
+  node-b:
+    <<: *cc-runtime
+    build: *p2p-build
+    command:
+      - --devnet-peer
+      - --node-key
+      - /keys/node-b.key
+      - --listen
+      - /ip4/0.0.0.0/tcp/9000
+      - --config-yaml
+      - /fixture/config.yaml
+      - --manifest
+      - /fixture/manifest.json
+      - --static-peers-file
+      - /fixture/multiaddrs.node-b.txt
+      - --metrics-addr
+      - 0.0.0.0:9102
+    environment:
+      <<: *cc-env
+    volumes:
+      - ./out:/fixture:ro
+      - ./out/node_keys:/keys:ro
+    ports:
+      - "127.0.0.1:19122:9102"
+    depends_on:
+      publisher:
+        condition: service_started
+
+networks:
+  ccdev:
+    name: cc-devnet
+    driver: bridge

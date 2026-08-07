@@ -12,6 +12,7 @@
 pub mod channels;
 pub mod clock;
 pub mod discovery;
+pub mod fault_mode;
 pub mod fork_digest;
 pub mod gossip;
 pub mod host;

@@ -1,18 +1,28 @@
-//! `p2p` service — Architecture §4.1, CC-01b / CC-20b.
+//! `p2p` service — Architecture §4.1, CC-01b / CC-20b + CC-2Jd publisher mode.
 //!
 //! Phase 0 surface: health + reflection + `GetInfo`.
 //! CC-20b: persisted identity (load **before** bind), swarm task, supervisor,
 //! clock, §2.2 channel map. Listens; does **not** dial (CC-21c).
 //!
+//! CC-2Jd: `--publish-fixture` / `--devnet-peer` / `--emit-bootnodes` take a
+//! separate self-devnet path (`fault_mode::run_devnet`); absent those flags the
+//! existing 20b `run_process` path is preserved.
+//!
 //! CC-29a: §12 metric families registered into `bs.registry` between `init` and
 //! serve.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::{Context, Result, bail};
 use cc_bootstrap::{PeerSpec, SignalTrigger, TelemetrySettings};
 use cc_config::ServiceConfig;
 use cc_p2p::clock::ClockConfig;
+use cc_p2p::fault_mode::{
+    BootnodeSpec, DevnetRole, DevnetRuntimeConfig, FaultMode, default_bootnode_specs,
+    emit_bootnodes, parse_listen, parse_socket_addr, read_multiaddrs_file, run_devnet,
+};
 use cc_p2p::identity::{self, DEFAULT_NODE_KEY_PATH};
 use cc_p2p::metrics::P2pMetrics;
 use cc_p2p::service::{
@@ -21,12 +31,89 @@ use cc_p2p::service::{
 use cc_proto::common::BuildInfo;
 use cc_proto::p2p::p2p_service_server::{P2pService, P2pServiceServer};
 use cc_proto::p2p::{GetInfoRequest, GetInfoResponse};
+use clap::Parser;
 use serde::Deserialize;
 use tonic::service::Routes;
 use tonic::{Request, Response, Status};
 
 /// Full gRPC path for the Phase 0 RPC (metrics label normalisation).
 const GET_INFO_METHOD: &str = "/eth.p2p.v1.P2pService/GetInfo";
+
+/// CLI for CC-2Jd publisher / peer / bootnode emission; absent flags → CC-20b.
+#[derive(Debug, Parser)]
+#[command(
+    name = "cc-p2p",
+    about = "Consensus client P2P service (CC-20b runtime + CC-2Jd publisher)"
+)]
+struct Cli {
+    /// Replay CC-2Ja fixture onto gossip at slot cadence (forces cgc=128).
+    #[arg(long, value_name = "CHAIN_DIR")]
+    publish_fixture: Option<PathBuf>,
+
+    /// Peer mesh mode: dial static peers and count gossip (node-a / node-b).
+    #[arg(long)]
+    devnet_peer: bool,
+
+    /// Fault kind: `none` (default), `withhold-column`, `misbehave` (latter two inert).
+    #[arg(long, default_value = "none")]
+    fault_mode: String,
+
+    /// Write deterministic keys + `bootnodes.txt` under this directory and exit.
+    #[arg(long, value_name = "OUT_DIR")]
+    emit_bootnodes: Option<PathBuf>,
+
+    /// Path to 32-byte secp256k1 node key (written by `up.sh`).
+    #[arg(long, env = "CC_P2P_NODE_KEY_PATH")]
+    node_key: Option<PathBuf>,
+
+    /// Listen multiaddr or `host:port` (default `/ip4/0.0.0.0/tcp/9000`).
+    #[arg(long, env = "CC_P2P_LISTEN", default_value = "/ip4/0.0.0.0/tcp/9000")]
+    listen: String,
+
+    /// File of multiaddrs to dial (one per line).
+    #[arg(long, env = "CC_P2P_STATIC_PEERS_FILE")]
+    static_peers_file: Option<PathBuf>,
+
+    /// Comma-separated multiaddrs to dial (appended to file entries).
+    #[arg(long, env = "CC_P2P_STATIC_PEERS", default_value = "")]
+    static_peers: String,
+
+    /// Disable outbound dialling (single-peer mode for CC-2Jb scenarios).
+    #[arg(long, env = "CC_P2P_DISABLE_DIAL", default_value_t = false)]
+    disable_dial: bool,
+
+    /// Network config.yaml (fork schedule / SECONDS_PER_SLOT).
+    #[arg(long, env = "CC_P2P_NETWORK_CONFIG")]
+    config_yaml: Option<PathBuf>,
+
+    /// manifest.json with genesis_validators_root.
+    #[arg(long, env = "CC_P2P_MANIFEST")]
+    manifest: Option<PathBuf>,
+
+    /// Metrics listen `host:port` for publisher/peer mode.
+    #[arg(long, env = "CC_P2P_METRICS_ADDR", default_value = "0.0.0.0:9102")]
+    metrics_addr: String,
+
+    /// gRPC listen (unused in slim publisher path; reserved).
+    #[arg(long, env = "CC_P2P_GRPC_ADDR", default_value = "0.0.0.0:9002")]
+    grpc_addr: String,
+
+    /// Wall-clock genesis unix seconds (default: now).
+    #[arg(long, env = "CC_P2P_GENESIS_TIME")]
+    genesis_time: Option<u64>,
+
+    /// Override seconds-per-slot.
+    #[arg(long, env = "CC_P2P_SECONDS_PER_SLOT")]
+    seconds_per_slot: Option<u64>,
+
+    /// First slot to publish.
+    #[arg(long)]
+    start_slot: Option<u64>,
+
+    /// Stop after N published slots.
+    #[arg(long)]
+    max_slots: Option<u64>,
+}
 
 /// Per-service config: shared [`ServiceConfig`] plus p2p runtime fields.
 #[derive(Debug, Deserialize)]
@@ -153,7 +240,27 @@ impl P2pService for P2pStub {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    // ── bootnode emission (up.sh) ───────────────────────────────────────────
+    if let Some(out) = cli.emit_bootnodes {
+        emit_bootnodes(&out, &default_bootnode_specs())?;
+        return Ok(());
+    }
+
+    let fault = FaultMode::parse(&cli.fault_mode)?;
+    // Fail fast on inert kinds even before loading config.
+    if cli.publish_fixture.is_some() || cli.devnet_peer {
+        fault.ensure_implemented()?;
+    }
+
+    // ── publisher / peer mesh (CC-2Jd) ──────────────────────────────────────
+    if cli.publish_fixture.is_some() || cli.devnet_peer {
+        return run_devnet_mode(cli, fault).await;
+    }
+
+    // ── CC-20b path: identity before bind, swarm fatal, metrics ─────────────
     // Fail before any bind (CC-09/2): load config, then identity, then telemetry.
     let cfg = cc_config::load::<P2pConfig>(SERVICE)?;
 
@@ -188,4 +295,99 @@ async fn main() -> anyhow::Result<()> {
         }
         Err(e) => Err(e.into()),
     }
+}
+
+async fn run_devnet_mode(cli: Cli, fault: FaultMode) -> Result<()> {
+    // Minimal telemetry without full ServiceConfig file (compose injects env).
+    let telemetry = TelemetrySettings {
+        log_format: std::env::var("LOG_FORMAT").unwrap_or_else(|_| "json".into()),
+        log_filter: std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
+    };
+    let mut bs = cc_bootstrap::init(SERVICE, telemetry)?;
+    let metrics = P2pMetrics::register(&mut bs.registry);
+    // Take ownership of the registry for the metrics server.
+    let registry = Arc::new(std::mem::take(&mut bs.registry));
+
+    let role = if cli.publish_fixture.is_some() {
+        DevnetRole::Publisher
+    } else {
+        DevnetRole::Peer
+    };
+
+    let fixture_chain = cli
+        .publish_fixture
+        .clone()
+        .or_else(|| {
+            cli.config_yaml
+                .as_ref()
+                .and_then(|p| p.parent().map(|dir| dir.join("chain")))
+        })
+        .unwrap_or_else(|| PathBuf::from("devnet/out/chain"));
+
+    let config_yaml = cli
+        .config_yaml
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("devnet/out/config.yaml"));
+    let manifest = cli
+        .manifest
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("devnet/out/manifest.json"));
+    let node_key = cli
+        .node_key
+        .clone()
+        .context("--node-key / CC_P2P_NODE_KEY_PATH required in devnet mode")?;
+
+    let mut static_peers = Vec::new();
+    if let Some(file) = &cli.static_peers_file {
+        static_peers.extend(read_multiaddrs_file(file)?);
+    }
+    if !cli.static_peers.trim().is_empty() {
+        for part in cli.static_peers.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            static_peers.push(
+                part.parse()
+                    .map_err(|e| anyhow::anyhow!("static peer multiaddr {part:?}: {e}"))?,
+            );
+        }
+    }
+
+    // Peer mode: do not dial self; publisher may dial nothing by default.
+    let disable_dial =
+        cli.disable_dial || (role == DevnetRole::Publisher && static_peers.is_empty());
+
+    let cfg = DevnetRuntimeConfig {
+        role,
+        fixture_chain,
+        config_yaml,
+        manifest_json: manifest,
+        node_key_path: node_key,
+        listen: parse_listen(&cli.listen)?,
+        static_peers,
+        disable_dial,
+        fault_mode: fault,
+        metrics_addr: parse_socket_addr(&cli.metrics_addr)?,
+        grpc_addr: parse_socket_addr(&cli.grpc_addr)?,
+        genesis_time_override: cli.genesis_time,
+        seconds_per_slot_override: cli.seconds_per_slot,
+        start_slot: cli.start_slot,
+        max_slots: cli.max_slots,
+    };
+
+    if cfg.role == DevnetRole::Publisher && !cfg.config_yaml.exists() {
+        bail!(
+            "missing {}; generate with cc-devnet-gen first",
+            cfg.config_yaml.display()
+        );
+    }
+
+    run_devnet(cfg, metrics, registry).await
+}
+
+// Silence unused BootnodeSpec in some builds.
+#[allow(dead_code)]
+fn _specs() -> Vec<BootnodeSpec> {
+    default_bootnode_specs()
 }

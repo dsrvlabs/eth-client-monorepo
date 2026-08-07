@@ -31,10 +31,15 @@ discv5 = { workspace = true }
 futures = { workspace = true }
 prometheus-client = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 tonic-health = { workspace = true }
+# CC-2Jd publisher CLI + fixture / key derivation
+clap = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
