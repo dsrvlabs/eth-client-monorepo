@@ -18,8 +18,12 @@ lint:
   ignore_only:
     RPC_RESPONSE_STANDARD_NAME:
       - eth/chain/v1/chain.proto
+      # EngineStream uses EngineToP2p / P2pToEngine (Architecture §5.2), not
+      # EngineStreamRequest/Response — same house style as P2pStream.
+      - eth/p2p/v1/p2p.proto
     RPC_REQUEST_STANDARD_NAME:
       - eth/chain/v1/chain.proto
+      - eth/p2p/v1/p2p.proto
 breaking:
   use:
     - FILE

@@ -22,6 +22,10 @@ service EngineService {
   // CC-32b declares the field set; el_offline maps 1:1 onto EngineState::Offline
   // (CC-3B / CC-36a). No Phase 3 caller — Phase 6 consumes for node/syncing.
   rpc GetEngineState(GetEngineStateRequest) returns (GetEngineStateResponse);
+  // CC-38a / Architecture §2.1, §5.1: chain block-branch fast-path trigger.
+  // Enqueues on the fastpath lane and returns immediately (never awaits EL).
+  // Column-branch triggers travel down EngineStream (P2pToEngine.fetch) instead.
+  rpc FetchBlobs(FetchBlobsRequest) returns (FetchBlobsResponse);
 }
 
 message GetInfoRequest {}
@@ -100,3 +104,38 @@ message GetEngineStateResponse {
   // synced | syncing | offline | auth_failed (Architecture §3.7 / §9.3).
   string internal_state = 2;
 }
+
+// ---------------------------------------------------------------------------
+// CC-38a / Architecture §5.2 — SidecarTemplate + FetchBlobs (Stream F append).
+//
+// The template is ~6.5 KB (signed header + ≤ 21 × 48 B commitments + 4 × 32 B
+// inclusion proof). Only the *response* is large (~353 KB of subscribed
+// columns), and it leaves engine for p2p directly via InjectColumns — never
+// through chain (CC-38 /6).
+// ---------------------------------------------------------------------------
+
+// Block/gossip-owned fields needed to assemble DataColumnSidecars after
+// getBlobsV2. Inclusion proof is a depth-4 Merkle branch over the block body
+// — never supplied by the EL (CC-37b / §5.3).
+message SidecarTemplate {
+  // SignedBeaconBlockHeader, SSZ-encoded. Never re-modelled as proto fields.
+  bytes signed_block_header_ssz = 1;
+  // blob_kzg_commitments from the block body (48 B each, ≤ max_blobs_per_block).
+  repeated bytes kzg_commitments = 2;
+  // Exactly 4 × 32 B (KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH = 4).
+  repeated bytes kzg_commitments_inclusion_proof = 3;
+}
+
+// Chain block-branch (unary FetchBlobs) and p2p column-branch (P2pToEngine.fetch)
+// share this shape. Both are template-sized; neither carries cell payloads.
+message FetchBlobsRequest {
+  bytes beacon_block_root = 1;
+  uint64 slot = 2;
+  // 32 B each, ≤ max_blobs_per_block (CC-1G runtime bound).
+  repeated bytes versioned_hashes = 3;
+  SidecarTemplate template = 4;
+}
+
+// Empty success body — enqueue on the fastpath lane and return immediately
+// (Architecture §2.1). Outcome is observed via metrics / inject stream.
+message FetchBlobsResponse {}

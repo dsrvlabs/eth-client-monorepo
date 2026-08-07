@@ -40,7 +40,7 @@ use tonic::Status;
 
 use crate::apply_attestations::apply_attestations;
 use crate::da::{DEFAULT_DA_PENDING_TIMEOUT_SLOTS, PendingDa};
-use crate::engine_client::poll_engine_online;
+use crate::engine_client::{fire_fetch_blobs, poll_engine_online};
 use crate::epoch_context::{EpochContext, EpochContextStore};
 use crate::fcu_driver::{FcuDriver, GrpcFcuSink};
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
@@ -911,6 +911,13 @@ fn core_loop<P: Preset>(
                 );
                 metrics.set_da_pending_occupancy(pending_da.len() as u64);
                 metrics.set_pending_engine_occupancy(pending_engine.len() as u64);
+                // CC-38a: fire template-sized FetchBlobs on DA-defer (never cells).
+                if let Ok(ref o) = outcome
+                    && let Some(trigger) = o.block_branch.as_ref()
+                    && let Some(h) = poll_handle.as_ref()
+                {
+                    fire_fetch_blobs(h, &engine_uri, trigger.to_proto());
+                }
                 // Republish EpochContext when the head epoch advances (§16/4).
                 if outcome.is_ok() {
                     maybe_publish_epoch_context(
@@ -950,6 +957,13 @@ fn core_loop<P: Preset>(
                 );
                 metrics.set_da_pending_occupancy(pending_da.len() as u64);
                 metrics.set_pending_engine_occupancy(pending_engine.len() as u64);
+                // CC-38a block-branch (same as ImportBlock; template-only).
+                if let Ok(ref o) = outcome
+                    && let Some(trigger) = o.block_branch.as_ref()
+                    && let Some(h) = poll_handle.as_ref()
+                {
+                    fire_fetch_blobs(h, &engine_uri, trigger.to_proto());
+                }
                 if outcome.is_ok() {
                     maybe_publish_epoch_context(
                         &store,

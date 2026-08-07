@@ -42,7 +42,7 @@ use ssz::Encode;
 use tonic::Status;
 use tree_hash::TreeHash;
 
-use crate::da::{PendingDa, PendingDaEntry};
+use crate::da::{BlockBranchTrigger, PendingDa, PendingDaEntry, block_branch_trigger_from_signed};
 use crate::epoch_context::EpochContext;
 use crate::events::EventInput;
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
@@ -64,6 +64,11 @@ pub struct ImportOutcome {
     /// After early ACCEPT, import failed with [`GossipClass::Internal`] — no
     /// penalty and no REJECT.
     pub late_import_internal: bool,
+    /// CC-38a block-branch fast-path trigger (template-sized only).
+    ///
+    /// Set when import parks on `Deferred(DataUnavailable)` with non-empty
+    /// `blob_kzg_commitments`. Core fires unary `FetchBlobs` — never cells.
+    pub block_branch: Option<BlockBranchTrigger>,
 }
 
 /// Map `(early_accept, class)` → late-import flags (CC-27c / §5.3).
@@ -183,6 +188,7 @@ pub fn import_block_with_early<P: Preset>(
             early_accept: false,
             late_import_reject: false,
             late_import_internal: false,
+        block_branch: None,
         });
     }
 
@@ -219,6 +225,7 @@ pub fn import_block_with_early<P: Preset>(
             early_accept: false,
             late_import_reject: false,
             late_import_internal: false,
+        block_branch: None,
         });
     }
 
@@ -242,6 +249,7 @@ pub fn import_block_with_early<P: Preset>(
             early_accept,
             late_import_reject,
             late_import_internal,
+        block_branch: None,
         });
     }
 
@@ -288,6 +296,9 @@ pub fn import_block_with_early<P: Preset>(
                 metrics.set_da_pending_occupancy(pending.len() as u64);
             }
             metrics.inc_import_result(ImportResult::Deferred);
+            // CC-38a: template-sized block-branch trigger for unary FetchBlobs.
+            // Never carries cells; core fires engine FetchBlobs when present.
+            let block_branch = block_branch_trigger_from_signed(&signed, true_root);
             Ok(ImportOutcome {
                 response: ImportBlockResponse {
                     verdict: ImportBlockVerdict::DeferredDa as i32,
@@ -297,6 +308,7 @@ pub fn import_block_with_early<P: Preset>(
                 early_accept,
                 late_import_reject: false,
                 late_import_internal: false,
+                block_branch,
             })
         }
         Ok(BlockImport::Deferred(DeferralReason::UnknownParent)) => {
@@ -311,6 +323,7 @@ pub fn import_block_with_early<P: Preset>(
                 early_accept,
                 late_import_reject: false,
                 late_import_internal: false,
+            block_branch: None,
             })
         }
         Ok(BlockImport::Deferred(DeferralReason::FutureSlot)) => {
@@ -325,6 +338,7 @@ pub fn import_block_with_early<P: Preset>(
                 // Future slot is Ignore-class for gossip; not a late Reject penalty.
                 late_import_reject: false,
                 late_import_internal: false,
+            block_branch: None,
             })
         }
         Ok(BlockImport::Deferred(DeferralReason::ExecutionEngineUnavailable)) => {
@@ -359,6 +373,7 @@ pub fn import_block_with_early<P: Preset>(
                 early_accept,
                 late_import_reject: false,
                 late_import_internal: false,
+            block_branch: None,
             })
         }
         Err(e) => {
@@ -374,6 +389,7 @@ pub fn import_block_with_early<P: Preset>(
                 early_accept,
                 late_import_reject,
                 late_import_internal,
+            block_branch: None,
             })
         }
     }
@@ -670,6 +686,7 @@ fn finish_imported<P: Preset>(
         early_accept,
         late_import_reject: false,
         late_import_internal: false,
+    block_branch: None,
     })
 }
 

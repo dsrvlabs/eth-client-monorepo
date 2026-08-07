@@ -129,6 +129,11 @@ fn default_el_endpoint() -> String {
 fn default_jwt_secret_path() -> PathBuf {
     PathBuf::from("secrets/jwt.hex")
 }
+fn default_p2p_uri() -> String {
+    // Plain config URI — **not** under `[peers]` (ADR P3-02 / CC-38a).
+    // p2p restarting must not make engine NOT_SERVING.
+    "http://127.0.0.1:9002".into()
+}
 
 /// EL fork schedule TOML table (`[el_forks]`, CC-31 / §12/7).
 ///
@@ -185,6 +190,12 @@ pub struct EngineTransportConfig {
     /// always supplies `[el_forks]`.
     #[serde(default)]
     pub el_forks: Option<ElForksConfig>,
+    /// gRPC URI for the ninth-contract `EngineStream` client (CC-38a).
+    ///
+    /// **Plain config key — not a `[peers]` entry** (ADR P3-02): the fast path is
+    /// an accelerator, and `p2p` restarting must not make `engine` `NOT_SERVING`.
+    #[serde(default = "default_p2p_uri")]
+    pub p2p_uri: String,
 }
 
 impl Default for EngineTransportConfig {
@@ -196,6 +207,7 @@ impl Default for EngineTransportConfig {
             slot_duration_ms: DEFAULT_SLOT_DURATION_MS,
             attestation_due_bps: DEFAULT_ATTESTATION_DUE_BPS,
             el_forks: None,
+            p2p_uri: default_p2p_uri(),
         }
     }
 }
@@ -362,5 +374,41 @@ mod tests {
             method_for(schedule.osaka_time - 1, &schedule).unwrap(),
             names::NEW_PAYLOAD_V4
         );
+    }
+
+    /// CC-38a / ADR P3-02: `p2p_uri` is a plain config key, not a health peer.
+    #[test]
+    fn p2p_uri_is_plain_config_not_health_peer() {
+        use std::path::PathBuf;
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/engine.toml");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        assert!(
+            text.contains("p2p_uri"),
+            "config/engine.toml must declare p2p_uri"
+        );
+        // Parse as generic value so we can inspect tables without fighting
+        // the house-style "keys after [peers] until next table" layout.
+        let value: toml::Value = toml::from_str(&text).expect("engine.toml parses");
+        let p2p_uri = value
+            .get("p2p_uri")
+            .and_then(|v| v.as_str())
+            .expect("root-level p2p_uri");
+        assert!(
+            p2p_uri.starts_with("http://"),
+            "p2p_uri must be a plain gRPC URI"
+        );
+        let peers = value
+            .get("peers")
+            .and_then(|v| v.as_table())
+            .expect("[peers] table");
+        assert!(
+            !peers.contains_key("p2p"),
+            "p2p must not appear under [peers] (ADR P3-02): p2p restarting must not make engine NOT_SERVING"
+        );
+        assert!(peers.contains_key("chain"), "chain remains the health peer");
+        // Default constructor also carries the URI.
+        assert!(EngineTransportConfig::default().p2p_uri.starts_with("http://"));
     }
 }

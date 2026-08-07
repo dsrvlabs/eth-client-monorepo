@@ -20,6 +20,9 @@
 //! - **CC-37b**: `CellKzg::compute_cells` on `spawn_blocking`, zip with EL proofs,
 //!   128-way transpose, inclusion proof from the block, subscribe-only filter
 //!   before the process boundary (inject is CC-38)
+//! - **CC-38a**: ninth contract engine side — `EngineStream` client (`inject`),
+//!   Phase 2 §10.6 reconnect curve, `FetchBlobs` unary for the chain block branch,
+//!   column branch down the reverse stream direction (p2p server is CC-38b)
 
 #![allow(missing_docs)]
 
@@ -27,6 +30,7 @@ pub mod capabilities;
 pub mod config;
 pub mod errors;
 pub mod fastpath;
+pub mod inject;
 pub mod jwt;
 pub mod methods;
 pub mod metrics;
@@ -36,8 +40,8 @@ pub mod transport;
 pub mod version;
 
 pub use fastpath::{
-    COMPLETED_LOG_BOUND, EnqueueOutcome, FASTPATH_QUEUE_BOUND, FastpathLane, Trigger, TriggerOwner,
-    hoodi_blob_bound, reconstruct_and_filter, template_from_commitments,
+    COMPLETED_LOG_BOUND, EnqueueOutcome, FASTPATH_QUEUE_BOUND, FastpathLane, InjectItem, Trigger,
+    TriggerOwner, hoodi_blob_bound, reconstruct_and_filter, template_from_commitments,
 };
 pub use fastpath::cells::{
     CellsError, ZippedBlobMaterial, compute_cells_zipped_with_el_proofs, parse_el_proofs,
@@ -51,6 +55,14 @@ pub use fastpath::filter::{
     filter_subscribed,
 };
 pub use fastpath::sidecars::{AssembleError, SidecarTemplate, transpose_to_sidecars};
+pub use inject::{
+    BACKOFF_CAP, BACKOFF_INITIAL, INBOUND_QUEUE_BOUND, INJECT_QUEUE_BOUND,
+    SIDECAR_TEMPLATE_SIZE_SOFT_MAX, DecodedFetch, InjectQueue, InjectStreamConfig,
+    decode_fetch_blobs_request, decode_wire_template, encode_fetch_blobs_request,
+    encode_wire_template, fetch_blobs_request_wire_size, full_jitter, new_session_id, next_backoff,
+    run_inject_stream_client, sidecar_template_within_size_budget, subscription_from_wire,
+    subscription_to_wire, wait_reconnect_backoff,
+};
 pub use methods::eth_syncing::{EthSyncingResult, eth_syncing};
 pub use methods::fcu::{
     FcuDroppedStale, FcuGatedError, FcuSequenceGate, build_fcu_params, decode_fcu_payload_status,

@@ -19,6 +19,7 @@
 
 use std::sync::Mutex;
 
+use cc_proto::engine::FetchBlobsRequest;
 use cc_proto::engine::NewPayloadRequest as ProtoNewPayloadRequest;
 use cc_proto::engine::engine_service_client::EngineServiceClient;
 use cc_state_transition::error::EngineError;
@@ -148,6 +149,27 @@ impl EngineApiClient {
             }
         })
     }
+
+    /// Fire-and-forget CC-38a block-branch `FetchBlobs` (template-sized only).
+    ///
+    /// Enqueues on engine's fastpath and returns immediately on the server.
+    /// Transport errors are logged and swallowed — DA recovery still runs via
+    /// gossip / pending_da; the fast path is an accelerator.
+    pub fn fetch_blobs(&self, req: FetchBlobsRequest) {
+        let client = match self.client() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::debug!(error = %e, "FetchBlobs: no engine client");
+                return;
+            }
+        };
+        self.handle.block_on(async move {
+            let mut client = client;
+            if let Err(e) = client.fetch_blobs(req).await {
+                tracing::debug!(error = %e, "FetchBlobs transport failed (accelerator)");
+            }
+        });
+    }
 }
 
 /// Poll engine online via a one-shot client (core SlotTick; no shared mutex).
@@ -165,6 +187,24 @@ pub fn poll_engine_online(handle: &Handle, uri: &str) -> bool {
             Err(_) => false,
         }
     })
+}
+
+/// Fire unary `FetchBlobs` (CC-38a block branch) via a one-shot connect.
+///
+/// Template-sized only — never cells. Best-effort; errors are debug-logged.
+pub fn fire_fetch_blobs(handle: &Handle, uri: &str, req: FetchBlobsRequest) {
+    handle.block_on(async {
+        match EngineServiceClient::connect(uri.to_owned()).await {
+            Ok(mut client) => {
+                if let Err(e) = client.fetch_blobs(req).await {
+                    tracing::debug!(error = %e, "FetchBlobs transport failed (accelerator)");
+                }
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "FetchBlobs: engine dial failed (accelerator)");
+            }
+        }
+    });
 }
 
 impl<P: Preset> ExecutionEngine<P> for EngineApiClient {

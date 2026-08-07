@@ -25,12 +25,14 @@ use cc_libp2p::PeerId;
 use cc_proto::common::BuildInfo;
 use cc_proto::p2p::p2p_service_server::P2pService;
 use cc_proto::p2p::{
-    GetInfoRequest, GetInfoResponse, SetCustodyGroupCountRequest, SetCustodyGroupCountResponse,
+    EngineToP2p, GetInfoRequest, GetInfoResponse, P2pToEngine, SetCustodyGroupCountRequest,
+    SetCustodyGroupCountResponse,
 };
 use discv5::enr::NodeId;
+use futures::Stream;
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::service::Routes;
-use tonic::{Request, Response, Status};
+use tonic::{Request, Response, Status, Streaming};
 use tonic_health::ServingStatus;
 use tonic_health::server::HealthReporter;
 use tracing::{error, info};
@@ -1102,6 +1104,10 @@ impl P2pGrpcService {
     }
 }
 
+/// Server-streaming response type matching the generated trait (`BoxStream`).
+type BoxStreamP2pToEngine =
+    Pin<Box<dyn Stream<Item = Result<P2pToEngine, Status>> + Send + 'static>>;
+
 #[tonic::async_trait]
 impl P2pService for P2pGrpcService {
     async fn get_info(
@@ -1137,5 +1143,24 @@ impl P2pService for P2pGrpcService {
             }
             Err(CgcHookError::Enr(e)) => Err(Status::internal(format!("cgc hook enr: {e}"))),
         }
+    }
+
+    /// CC-38a stub: real `EngineStream` server is **CC-38b**.
+    ///
+    /// Present so regenerating protos does not break `cc-p2p` builds. Returns
+    /// `UNIMPLEMENTED` and does not accept inject traffic (fail-closed).
+    ///
+    /// # Security residual (S-38a-1 / S-38a-2 → CC-38b)
+    ///
+    /// When implementing: do **not** skip KZG re-verification solely on
+    /// `InjectColumns.trusted_local` until mutual auth exists; prefer single
+    /// session + re-verify-always. Compose host-publish of `:9002` elevates risk.
+    async fn engine_stream(
+        &self,
+        _request: Request<Streaming<EngineToP2p>>,
+    ) -> Result<Response<BoxStreamP2pToEngine>, Status> {
+        Err(Status::unimplemented(
+            "EngineStream server is CC-38b (ninth-contract p2p side); not yet implemented",
+        ))
     }
 }

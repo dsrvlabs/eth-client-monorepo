@@ -2,12 +2,14 @@ syntax = "proto3";
 package eth.p2p.v1;
 
 import "eth/common/v1/common.proto";
+import "eth/engine/v1/engine.proto";
 
 // libp2p stack: GossipSub, req/resp, discovery, column custody.
 //
 // Phase 2 (CC-27) adds: the bidirectional stream with chain (blocks/columns down,
 //   ACCEPT|REJECT|IGNORE verdicts up; outward publish for locally submitted blocks).
 // Phase 2 (CC-21d) adds: SetCustodyGroupCount (runtime CGC hook; Phase 6 caller).
+// Phase 3 (CC-38a) adds: EngineStream — the ninth internal contract (engine→p2p).
 // Phase 5 adds: publish RPCs for attestation-pool contents (aggregates, subnet
 //   attestations, sync messages, exits/slashings).
 service P2pService {
@@ -15,6 +17,12 @@ service P2pService {
   // CC-21d: runtime custody-group-count hook. Phase 2 has no production caller;
   // Phase 6's attached-validator tracker (or an operator) invokes this.
   rpc SetCustodyGroupCount(SetCustodyGroupCountRequest) returns (SetCustodyGroupCountResponse);
+  // CC-38a / Architecture §5.2 — THE NINTH CONTRACT.
+  // engine dials p2p (ADR P3-02: not a health peer). Sidecars go up; the
+  // subscription set and the column-triggered fetch come down. Bidirectional is
+  // what keeps the topology at nine rather than ten (ADR P3-06, ≠13/9).
+  // Server lives in services/p2p (CC-38b); client lives in services/engine.
+  rpc EngineStream(stream EngineToP2p) returns (stream P2pToEngine);
 }
 
 message GetInfoRequest {}
@@ -192,3 +200,63 @@ message SetCustodyGroupCountRequest {
 
 // Empty success body — effects are observable via ENR / MetaData / subscriptions.
 message SetCustodyGroupCountResponse {}
+
+// ---------------------------------------------------------------------------
+// CC-38a — EngineStream messages (Architecture §5.2). THE NINTH CONTRACT.
+// engine dials; sidecars go up; subscription set + column trigger come down.
+// Import graph: chain → p2p → engine → common (no cycle).
+// ---------------------------------------------------------------------------
+
+// engine → p2p (upward on the stream engine opens).
+message EngineToP2p {
+  uint64 seq = 1;
+  oneof msg {
+    // Session id; resets p2p-side dedup state (same mechanism as StreamHello / fcU).
+    EngineHello hello = 2;
+    InjectColumns inject = 3;
+  }
+}
+
+// Session open / reconnect. `session_id` is a per-process random u64 so a
+// reconnect cannot silently match the previous incarnation (Phase 2 §10.6).
+message EngineHello {
+  uint64 session_id = 1;
+}
+
+// Reconstructed sidecars. ONLY the subscribed indices are ever sent (§5.4).
+// `sidecar_ssz` is DataColumnSidecar, SSZ — never re-modelled (CC-3K /7).
+message InjectColumns {
+  bytes beacon_block_root = 1;
+  uint64 slot = 2;
+  repeated bytes sidecar_ssz = 3;
+  // Always true on the production path. The field exists so the trust
+  // assumption is explicit on the wire rather than implied by the RPC's name
+  // (§5.8). p2p may *read* it as a trust *hint*.
+  //
+  // SECURITY RESIDUAL (S-38a-1 → CC-38b): this is a client-asserted bool on an
+  // unauthenticated internal stream — **not** an authenticated claim. CC-38b
+  // MUST NOT skip KZG / inclusion-proof re-verification solely because this is
+  // true, until mutual auth (mTLS / allowlist / shared token) exists. Prefer
+  // re-verify-always + metric label, or fail-closed without auth. Compose
+  // publish of :9002 elevates this residual (S-38a-2).
+  bool trusted_local = 4;
+}
+
+// p2p → engine (downward on the reverse direction).
+message P2pToEngine {
+  uint64 seq = 1;
+  oneof msg {
+    // On hello and on every set_custody_group_count change.
+    SubscriptionSet subscriptions = 2;
+    // Column-triggered branch of the fast path (CC-38 / Architecture §5.1).
+    // Travels down this reverse direction so the topology stays at nine
+    // rather than gaining a separate p2p→engine edge (ADR P3-06, ≠13/9).
+    eth.engine.v1.FetchBlobsRequest fetch = 3;
+  }
+}
+
+// Custody-sampled column indices this node publishes (ADR P3-07).
+message SubscriptionSet {
+  repeated uint64 column_indices = 1;
+  uint64 cgc = 2;
+}

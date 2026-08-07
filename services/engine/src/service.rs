@@ -3,21 +3,25 @@
 //! `NewPayload` / `ForkchoiceUpdated` ride the ordered lane to the EL.
 //! `GetEngineState` reads a local snapshot and never blocks on the EL
 //! (el_offline answer is CC-3B / CC-36a; declared here so the field set is stable).
+//! `FetchBlobs` (CC-38a) enqueues on the fastpath lane and returns immediately.
 
 use std::sync::Arc;
 
 use cc_proto::common::BuildInfo;
 use cc_proto::engine::engine_service_server::EngineService;
 use cc_proto::engine::{
-    ForkchoiceUpdatedRequest, ForkchoiceUpdatedResponse, GetEngineStateRequest,
-    GetEngineStateResponse, GetInfoRequest, GetInfoResponse, NewPayloadRequest, NewPayloadResponse,
-    PayloadStatusV1,
+    FetchBlobsRequest, FetchBlobsResponse, ForkchoiceUpdatedRequest, ForkchoiceUpdatedResponse,
+    GetEngineStateRequest, GetEngineStateResponse, GetInfoRequest, GetInfoResponse,
+    NewPayloadRequest, NewPayloadResponse, PayloadStatusV1,
 };
 use tonic::{Request, Response, Status};
 
 use crate::config::EngineTransportConfig;
 use crate::errors::EngineError;
+use crate::fastpath::FastpathLane;
+use crate::inject::decode_fetch_blobs_request;
 use crate::methods::fcu::{FcuGatedError, FcuSequenceGate, forkchoice_updated_v3_gated};
+use crate::methods::get_blobs::NullContext;
 use crate::methods::new_payload::{DecodedPayloadStatus, new_payload_v4};
 use crate::metrics::EngineMetrics;
 use crate::state::{CachedForkchoiceState, EngineStateHandle, UpcheckOutcome};
@@ -40,6 +44,9 @@ pub struct EngineServiceImpl {
     fcu_gate: Arc<FcuSequenceGate>,
     /// Four-state engine machine (CC-36a / §3.7).
     state: Option<EngineStateHandle>,
+    /// Fast-path lane for `FetchBlobs` (CC-38a block branch). `None` ⇒ RPC
+    /// returns `UNAVAILABLE` (lane not wired — tests / early bootstrap).
+    fastpath: Option<FastpathLane>,
 }
 
 impl EngineServiceImpl {
@@ -65,6 +72,18 @@ impl EngineServiceImpl {
         metrics: Option<EngineMetrics>,
         state: Option<EngineStateHandle>,
     ) -> Self {
+        Self::new_with_fastpath(transport, cfg, metrics, state, None)
+    }
+
+    /// Construct with optional state + fastpath lane (CC-38a).
+    #[must_use]
+    pub fn new_with_fastpath(
+        transport: SharedTransport,
+        cfg: &EngineTransportConfig,
+        metrics: Option<EngineMetrics>,
+        state: Option<EngineStateHandle>,
+        fastpath: Option<FastpathLane>,
+    ) -> Self {
         let schedule = cfg.el_fork_schedule().unwrap_or(ElForkSchedule {
             osaka_time: 0,
             bpo1_time: None,
@@ -77,7 +96,13 @@ impl EngineServiceImpl {
             metrics,
             fcu_gate: Arc::new(FcuSequenceGate::new()),
             state,
+            fastpath,
         }
+    }
+
+    /// Attach / replace the fastpath lane after construction (bootstrap order).
+    pub fn set_fastpath(&mut self, lane: FastpathLane) {
+        self.fastpath = Some(lane);
     }
 
     /// Reset the fcU sequence high-water mark (reconnect / new session, §3.8/2).
@@ -243,6 +268,34 @@ impl EngineService for EngineServiceImpl {
             el_offline: false,
             internal_state: "synced".into(),
         }))
+    }
+
+    async fn fetch_blobs(
+        &self,
+        request: Request<FetchBlobsRequest>,
+    ) -> Result<Response<FetchBlobsResponse>, Status> {
+        // Architecture §2.1: enqueue on fastpath_tx, return immediately.
+        // Never awaits the EL. Column branch uses EngineStream instead.
+        let Some(lane) = &self.fastpath else {
+            return Err(Status::unavailable(
+                "FetchBlobs: fastpath lane not configured",
+            ));
+        };
+        let req = request.into_inner();
+        let Some(decoded) = decode_fetch_blobs_request(&req) else {
+            return Err(Status::invalid_argument(
+                "FetchBlobs: malformed template or empty commitments",
+            ));
+        };
+        let _outcome = lane
+            .trigger_from_block_with_template(
+                decoded.beacon_block_root,
+                decoded.slot,
+                decoded.template,
+                NullContext::PrunedPool,
+            )
+            .await;
+        Ok(Response::new(FetchBlobsResponse {}))
     }
 }
 

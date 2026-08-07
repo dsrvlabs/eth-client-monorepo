@@ -49,9 +49,41 @@ use self::fetch::{
 };
 use self::filter::{SubscriptionSet, filter_subscribed};
 use self::sidecars::{SidecarTemplate, transpose_to_sidecars};
+use cc_types::preset::Mainnet;
+use cc_types::sidecar::DataColumnSidecar;
+use ssz::Encode;
 
 /// Bound on the trigger queue (Architecture §2.3).
 pub const FASTPATH_QUEUE_BOUND: usize = 32;
+
+/// One block's filtered sidecars ready for `InjectColumns` (CC-38a).
+///
+/// Lives here (not in `inject`) so the fastpath worker can emit without a
+/// circular module edge; the stream client consumes these on `inject_tx`.
+#[derive(Debug, Clone)]
+pub struct InjectItem {
+    pub beacon_block_root: [u8; 32],
+    pub slot: u64,
+    /// SSZ-encoded `DataColumnSidecar`s (subscribed only).
+    pub sidecar_ssz: Vec<Vec<u8>>,
+}
+
+impl InjectItem {
+    /// Build from assembled + filtered sidecars (CC-37b → CC-38).
+    #[must_use]
+    pub fn from_sidecars(
+        beacon_block_root: [u8; 32],
+        slot: u64,
+        sidecars: &[DataColumnSidecar<Mainnet>],
+    ) -> Self {
+        let sidecar_ssz = sidecars.iter().map(|s| s.as_ssz_bytes()).collect();
+        Self {
+            beacon_block_root,
+            slot,
+            sidecar_ssz,
+        }
+    }
+}
 
 /// Ring bound for the in-memory completion log (tests / local observers).
 ///
@@ -171,6 +203,9 @@ struct FastpathInner {
     /// Test hook: completed fetch results (bounded).
     completed: Mutex<Vec<FastpathCompletion>>,
     completed_tx: Mutex<Option<mpsc::UnboundedSender<FastpathCompletion>>>,
+    /// Ninth-contract inject channel (CC-38a). `None` until the stream client
+    /// is wired; Assembled results are dropped rather than queued unboundedly.
+    inject_tx: Mutex<Option<mpsc::Sender<InjectItem>>>,
 }
 
 impl std::fmt::Debug for FastpathInner {
@@ -209,8 +244,14 @@ impl FastpathLane {
                 closed: Mutex::new(false),
                 completed: Mutex::new(Vec::new()),
                 completed_tx: Mutex::new(None),
+                inject_tx: Mutex::new(None),
             }),
         }
+    }
+
+    /// Attach the ninth-contract inject channel (worker → stream client).
+    pub async fn set_inject_tx(&self, tx: mpsc::Sender<InjectItem>) {
+        *self.inner.inject_tx.lock().await = Some(tx);
     }
 
     /// Replace the subscribe-only set (CC-38 / config). Read before every
@@ -481,12 +522,56 @@ async fn worker_loop(inner: Arc<FastpathInner>) {
                     )
                     .await
                     {
-                        Ok(outcome) => FetchResult::Assembled {
-                            n_blobs,
-                            published: outcome.published,
-                            dropped: outcome.dropped,
-                            published_bytes: outcome.published_bytes,
-                        },
+                        Ok(outcome) => {
+                            // CC-38a: push filtered sidecars to the inject stream.
+                            // Drop when the channel is full / absent — never block
+                            // the worker on p2p (Architecture §2.3 inject_tx).
+                            if !outcome.published.is_empty() {
+                                let item = InjectItem::from_sidecars(
+                                    trigger.beacon_block_root,
+                                    trigger.slot,
+                                    &outcome.published,
+                                );
+                                if let Some(tx) = inner.inject_tx.lock().await.as_ref() {
+                                    match tx.try_send(item) {
+                                        Ok(()) => {
+                                            if let Some(m) = &inner.metrics {
+                                                use crate::metrics::{
+                                                    InjectOutcome, InjectOutcomeLabels,
+                                                };
+                                                for _ in 0..outcome.published.len() {
+                                                    m.sidecars_injected
+                                                        .get_or_create(&InjectOutcomeLabels {
+                                                            outcome: InjectOutcome::New
+                                                                .as_str()
+                                                                .to_owned(),
+                                                        })
+                                                        .inc();
+                                                }
+                                            }
+                                        }
+                                        Err(mpsc::error::TrySendError::Full(_)) => {
+                                            tracing::debug!(
+                                                root = ?trigger.beacon_block_root,
+                                                "inject_tx full; dropping assembled sidecars"
+                                            );
+                                        }
+                                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                                            tracing::debug!(
+                                                root = ?trigger.beacon_block_root,
+                                                "inject_tx closed; dropping assembled sidecars"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            FetchResult::Assembled {
+                                n_blobs,
+                                published: outcome.published,
+                                dropped: outcome.dropped,
+                                published_bytes: outcome.published_bytes,
+                            }
+                        }
                         Err(e) => {
                             tracing::warn!(
                                 error = %e,

@@ -13,6 +13,8 @@
 //!   [`cc_fork_choice::PeerDasAvailability`]; Phase-1 optimistic DA stub deleted
 //! - **CC-36a**: third deferral outcome — [`pending_engine`] (64 / 8 slots),
 //!   separate from `pending_da`
+//! - **CC-38a**: block-branch fast-path trigger in [`da`] (template-sized
+//!   `FetchBlobsRequest` only; no cell payload through chain)
 //!
 //! The binary (`main.rs`) binds first, then checkpoint-bootstraps when
 //! `checkpoint_providers` is configured (CC-19b): self health SERVING while
@@ -57,15 +59,17 @@ pub use core::{
     SHUTDOWN_JOIN_TIMEOUT, spawn_core_thread, spawn_core_thread_with_epoch,
 };
 pub use da::{
-    DEFAULT_DA_PENDING_TIMEOUT_SLOTS, DEFAULT_RECOVERY_MAX_ATTEMPTS, DEFAULT_RECOVERY_MAX_PEERS,
-    DEFAULT_SECONDS_PER_SLOT, PENDING_DA_BOUND, PendingDa, PendingDaEntry, RESP_TIMEOUT_SECS,
-    TTFB_TIMEOUT_SECS, assert_timeout_outlasts_recovery, chain_pending_timeout_secs,
-    default_timeout_ordering_ok, recovery_ladder_worst_case_secs,
+    CELL_PAYLOAD_SOFT_MIN, DEFAULT_DA_PENDING_TIMEOUT_SLOTS, DEFAULT_RECOVERY_MAX_ATTEMPTS,
+    DEFAULT_RECOVERY_MAX_PEERS, DEFAULT_SECONDS_PER_SLOT, PENDING_DA_BOUND, PendingDa,
+    PendingDaEntry, RESP_TIMEOUT_SECS, TEMPLATE_WIRE_SOFT_MAX, TTFB_TIMEOUT_SECS, BlockBranchTrigger,
+    OutboundTriggerBytes, assert_timeout_outlasts_recovery, block_branch_trigger_from_signed,
+    chain_pending_timeout_secs, default_timeout_ordering_ok, kzg_commitment_to_versioned_hash,
+    recovery_ladder_worst_case_secs, versioned_hashes_from_commitments,
 };
 pub use pending_engine::{
     DEFAULT_ENGINE_PENDING_TIMEOUT_SLOTS, PENDING_ENGINE_BOUND, PendingEngine, PendingEngineEntry,
 };
-pub use engine_client::{DEFAULT_ENGINE_URI, EngineApiClient, poll_engine_online};
+pub use engine_client::{DEFAULT_ENGINE_URI, EngineApiClient, fire_fetch_blobs, poll_engine_online};
 pub use fcu_driver::{
     FcuBuildError, FcuDriver, FcuSink, FcuSkip, ForkchoiceState, GrpcFcuSink, RecordingFcuSink,
     build_forkchoice_state, safe_is_ancestor_of_head,

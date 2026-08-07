@@ -17,6 +17,9 @@ use cc_bootstrap::{PeerSpec, ServiceSpec, TelemetrySettings};
 use cc_config::ServiceConfig;
 use cc_engine::capabilities::CapabilityCache;
 use cc_engine::config::EngineTransportConfig;
+use cc_engine::fastpath::{FastpathLane, hoodi_blob_bound};
+use cc_engine::SubscriptionSet;
+use cc_engine::inject::{INJECT_QUEUE_BOUND, InjectStreamConfig, run_inject_stream_client};
 use cc_engine::jwt::JwtSecret;
 use cc_engine::metrics::EngineMetrics;
 use cc_engine::service::EngineServiceImpl;
@@ -26,6 +29,7 @@ use cc_engine::transport::EngineTransport;
 use cc_types::preset::Mainnet;
 use serde::Deserialize;
 use std::time::Duration;
+use tokio::sync::{mpsc, watch};
 use tonic::service::Routes;
 
 /// Process name and config slug (`config/engine.toml`, `CC_ENGINE_*`).
@@ -39,6 +43,7 @@ const GET_INFO_METHOD: &str = "/eth.engine.v1.EngineService/GetInfo";
 const NEW_PAYLOAD_METHOD: &str = "/eth.engine.v1.EngineService/NewPayload";
 const FORKCHOICE_UPDATED_METHOD: &str = "/eth.engine.v1.EngineService/ForkchoiceUpdated";
 const GET_ENGINE_STATE_METHOD: &str = "/eth.engine.v1.EngineService/GetEngineState";
+const FETCH_BLOBS_METHOD: &str = "/eth.engine.v1.EngineService/FetchBlobs";
 
 /// Per-service config: shared [`ServiceConfig`] plus engine transport (CC-30a).
 #[derive(Debug, Deserialize)]
@@ -72,6 +77,7 @@ impl EngineConfig {
                 NEW_PAYLOAD_METHOD.to_owned(),
                 FORKCHOICE_UPDATED_METHOD.to_owned(),
                 GET_ENGINE_STATE_METHOD.to_owned(),
+                FETCH_BLOBS_METHOD.to_owned(),
             ],
         }
     }
@@ -118,14 +124,44 @@ async fn main() -> anyhow::Result<()> {
         slot_duration,
     );
 
-    // CC-32b: real EngineService (NewPayload / ForkchoiceUpdated / GetEngineState).
+    // CC-37a/b + CC-38a: fastpath lane + ninth-contract inject stream.
+    // Subscription starts empty (fail-closed) until p2p pushes SubscriptionSet.
+    // KZG backend is optional here — reconstruction activates when wired (CC-37b).
+    let lane = FastpathLane::new(
+        Arc::clone(&transport),
+        Some(engine_metrics.clone()),
+        hoodi_blob_bound(),
+        None,
+        None,
+        SubscriptionSet::empty(),
+    );
+    let _fastpath_worker = lane.spawn_worker();
+    let (inject_tx, inject_rx) = mpsc::channel(INJECT_QUEUE_BOUND);
+    lane.set_inject_tx(inject_tx).await;
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let inject_cfg = InjectStreamConfig {
+        p2p_uri: cfg.transport.p2p_uri.clone(),
+        ..InjectStreamConfig::default()
+    };
+    let _inject_client = tokio::spawn(run_inject_stream_client(
+        inject_cfg,
+        inject_rx,
+        lane.clone(),
+        Some(engine_metrics.clone()),
+        shutdown_rx,
+    ));
+    // Keep shutdown sender alive for process lifetime (drop → client exits).
+    let _shutdown_tx = shutdown_tx;
+
+    // CC-32b + CC-38a: EngineService (NewPayload / fcU / GetEngineState / FetchBlobs).
     // Preset pin: Mainnet — see module docs and chain main.rs:240 (≠13/5).
     let _preset_pin: std::marker::PhantomData<Mainnet> = std::marker::PhantomData;
-    let svc = EngineServiceImpl::new_with_state(
+    let svc = EngineServiceImpl::new_with_fastpath(
         transport,
         &cfg.transport,
         Some(engine_metrics),
         Some(state),
+        Some(lane),
     );
 
     // gRPC decode budget: tonic's default max_decoding_message_size is **4 MiB**.

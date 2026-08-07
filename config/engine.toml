@@ -6,6 +6,11 @@ metrics_addr = "127.0.0.1:9104"
 log_format = "json"
 log_filter = "info"
 
+# ── CC-38a ninth contract (Architecture §5.2, ADR P3-02) ────────────────────
+# Plain root-level URI for EngineStream — not a health peer. p2p restarting
+# must not make engine NOT_SERVING (the fast path is an accelerator).
+p2p_uri = "http://127.0.0.1:9002"
+
 [peers]
 chain = "http://127.0.0.1:9001"
 

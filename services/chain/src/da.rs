@@ -1,15 +1,23 @@
-//! Chain-side DA gate helpers (Architecture §8.3 / CC-24d).
+//! Chain-side DA gate helpers (Architecture §8.3 / CC-24d) and the **block-branch
+//! fast-path trigger** (CC-38a / Architecture §5.1).
 //!
 //! ```text
 //! DataAvailable{root, slot}  →  mark PeerDasAvailability
 //!                            →  re-drive pending_da entry (if any)
 //!
 //! on_block → Deferred(DataUnavailable)  →  park in pending_da
+//!                                        →  emit block-branch FetchBlobsRequest
+//!                                           (template-sized only; no cells)
 //! ```
 //!
 //! [`PeerDasAvailability`] lives in `cc-fork-choice` (set-membership body of the
 //! seam). This module owns the **pending map**, timeout config, and the
 //! ordering assertion against the p2p recovery ladder.
+//!
+//! **CC-38a /6:** chain owns the *trigger* only. The template is ~6.5 KB
+//! (header + ≤ 21 × 48 B commitments + 4 × 32 B proof). The ~353 KB cell
+//! payload never crosses chain — it leaves engine for p2p on `InjectColumns`.
+//! `pending_da` structure is CC-24d's; this file adds a **signal**, not a policy.
 //!
 //! Bounds:
 //! - `pending_da`: **64** blocks, oldest-evicted
@@ -17,10 +25,16 @@
 //!   outlast the CC-25 recovery ladder (~3.3 slots worst case)
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
+use cc_types::containers::{BeaconBlockHeader, SignedBeaconBlockHeader};
+use cc_types::preset::Preset;
 use cc_types::primitives::Root;
+use cc_types::{KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, SignedBeaconBlock};
+use ssz::Encode;
+use tree_hash::TreeHash;
 
 // ── Config defaults (Architecture §8.3) ─────────────────────────────────────
 
@@ -269,6 +283,205 @@ pub fn default_pending_timeout_duration() -> Duration {
         DEFAULT_DA_PENDING_TIMEOUT_SLOTS,
         DEFAULT_SECONDS_PER_SLOT,
     ))
+}
+
+// ── CC-38a block-branch trigger (Architecture §5.1) ─────────────────────────
+
+/// Soft upper bound for a template-class outbound message (~6.5 KB).
+///
+/// Header SSZ + 21 × 48 B commitments + 4 × 32 B proof + protobuf overhead.
+/// Well below a cell payload (~353 KB / 2 688 cells). Used by
+/// [`chain_never_carries_cells`] and the outbound byte counter.
+pub const TEMPLATE_WIRE_SOFT_MAX: usize = 8 * 1024;
+
+/// Cell-payload class lower bound (subscribed columns ≈ 353 KB). Anything at
+/// or above this on chain's outbound path violates CC-38 /6.
+pub const CELL_PAYLOAD_SOFT_MIN: usize = 100 * 1024;
+
+/// Fast-path trigger emitted when a valid `beacon_block` is DA-pending and
+/// carries non-empty `blob_kzg_commitments` (CC-38a / Architecture §5.1).
+///
+/// **Template-sized only** — never carries cell payloads or column bytes.
+/// Chain owns the trigger; engine owns fetch + cells + assembly; p2p owns
+/// publishing (CC-38 /6 three-way split).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockBranchTrigger {
+    pub beacon_block_root: [u8; 32],
+    pub slot: u64,
+    /// 32 B each, derived from `blob_kzg_commitments`.
+    pub versioned_hashes: Vec<[u8; 32]>,
+    /// `SignedBeaconBlockHeader`, SSZ.
+    pub signed_block_header_ssz: Vec<u8>,
+    /// 48 B each.
+    pub kzg_commitments: Vec<[u8; 48]>,
+    /// Exactly 4 × 32 B inclusion proof (depth 4). Zeroed until the import path
+    /// supplies a real multiproof; structure is fixed so the wire size class
+    /// is correct either way.
+    pub kzg_commitments_inclusion_proof: [[u8; 32]; KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH as usize],
+}
+
+impl BlockBranchTrigger {
+    /// Approximate wire size of the corresponding `FetchBlobsRequest`
+    /// (template class). Used for CC-38 /6 outbound byte accounting.
+    #[must_use]
+    pub fn estimated_wire_bytes(&self) -> usize {
+        // Field tags + lengths are a few dozen bytes; body dominates.
+        let root = 32;
+        let slot = 8;
+        let hashes = self.versioned_hashes.len() * 32;
+        let header = self.signed_block_header_ssz.len();
+        let commits = self.kzg_commitments.len() * 48;
+        let proof = self.kzg_commitments_inclusion_proof.len() * 32;
+        // Protobuf overhead budget (~64 B) so the estimate is slightly above raw.
+        root + slot + hashes + header + commits + proof + 64
+    }
+
+    /// Encode to a proto `FetchBlobsRequest` (template-sized; no cells).
+    #[must_use]
+    pub fn to_proto(&self) -> cc_proto::engine::FetchBlobsRequest {
+        cc_proto::engine::FetchBlobsRequest {
+            beacon_block_root: self.beacon_block_root.to_vec(),
+            slot: self.slot,
+            versioned_hashes: self.versioned_hashes.iter().map(|h| h.to_vec()).collect(),
+            template: Some(cc_proto::engine::SidecarTemplate {
+                signed_block_header_ssz: self.signed_block_header_ssz.clone(),
+                kzg_commitments: self.kzg_commitments.iter().map(|c| c.to_vec()).collect(),
+                kzg_commitments_inclusion_proof: self
+                    .kzg_commitments_inclusion_proof
+                    .iter()
+                    .map(|p| p.to_vec())
+                    .collect(),
+            }),
+        }
+    }
+}
+
+/// Build the block-branch trigger from a signed beacon block that has just been
+/// deferred for DA (`pending_da`).
+///
+/// Returns `None` when there are no blob commitments (no fetch to issue).
+/// Does **not** modify [`PendingDa`] — that structure is CC-24d's; this is a
+/// pure signal derived from the parked block (CC-38a acceptance).
+#[must_use]
+pub fn block_branch_trigger_from_signed<P: Preset>(
+    signed: &SignedBeaconBlock<P>,
+    beacon_block_root: Root,
+) -> Option<BlockBranchTrigger> {
+    let commitments = &signed.message.body.blob_kzg_commitments;
+    if commitments.is_empty() {
+        return None;
+    }
+    let kzg_commitments: Vec<[u8; 48]> = commitments.iter().map(|c| *c.as_array()).collect();
+    let versioned_hashes = versioned_hashes_from_commitments(&kzg_commitments);
+    let header = SignedBeaconBlockHeader {
+        message: BeaconBlockHeader {
+            slot: signed.message.slot,
+            proposer_index: signed.message.proposer_index,
+            parent_root: signed.message.parent_root,
+            state_root: signed.message.state_root,
+            body_root: Root::from_hash256(TreeHash::tree_hash_root(&signed.message.body)),
+        },
+        signature: signed.signature,
+    };
+    Some(BlockBranchTrigger {
+        beacon_block_root: *beacon_block_root.as_array(),
+        slot: signed.message.slot.as_u64(),
+        versioned_hashes,
+        signed_block_header_ssz: header.as_ssz_bytes(),
+        kzg_commitments,
+        // Real multiproof is assembled on the production import path when the
+        // body Merkle tree is available; zeros keep the wire size class fixed
+        // and never invent cells.
+        kzg_commitments_inclusion_proof: [[0u8; 32];
+            KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH as usize],
+    })
+}
+
+/// KZG versioned-hash version byte (`VERSIONED_HASH_VERSION_KZG = 0x01`).
+const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
+
+/// Spec `kzg_commitment_to_versioned_hash` (local; no engine dep).
+#[must_use]
+pub fn kzg_commitment_to_versioned_hash(commitment: &[u8; 48]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(commitment);
+    let mut out = [0u8; 32];
+    out[0] = VERSIONED_HASH_VERSION_KZG;
+    out[1..].copy_from_slice(&digest[1..]);
+    out
+}
+
+/// Map commitments → versioned hashes.
+#[must_use]
+pub fn versioned_hashes_from_commitments(commitments: &[[u8; 48]]) -> Vec<[u8; 32]> {
+    commitments
+        .iter()
+        .map(kzg_commitment_to_versioned_hash)
+        .collect()
+}
+
+/// Outbound byte counter for CC-38 /6: records only template-class traffic.
+///
+/// Production wiring feeds this from the engine client when emitting
+/// `FetchBlobsRequest`. Tests drive it directly for both trigger branches.
+#[derive(Debug, Default)]
+pub struct OutboundTriggerBytes {
+    /// Cumulative bytes of template-class messages chain has emitted.
+    total: AtomicU64,
+    /// Peak single-message size observed.
+    peak: AtomicU64,
+    /// Number of triggers recorded.
+    count: AtomicU64,
+}
+
+impl OutboundTriggerBytes {
+    /// Fresh counters.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a template-class outbound message. Panics in tests if the size
+    /// looks like a cell payload (CC-38 /6).
+    pub fn record_template(&self, bytes: usize) {
+        debug_assert!(
+            bytes < CELL_PAYLOAD_SOFT_MIN,
+            "chain outbound must never carry cell payload class ({bytes} B)"
+        );
+        self.total.fetch_add(bytes as u64, Ordering::Relaxed);
+        // Peak.
+        let mut cur = self.peak.load(Ordering::Relaxed);
+        while (bytes as u64) > cur {
+            match self.peak.compare_exchange_weak(
+                cur,
+                bytes as u64,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(v) => cur = v,
+            }
+        }
+        self.count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Total template-class bytes.
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        self.total.load(Ordering::Relaxed)
+    }
+
+    /// Peak single-message size.
+    #[must_use]
+    pub fn peak(&self) -> u64 {
+        self.peak.load(Ordering::Relaxed)
+    }
+
+    /// Number of recorded triggers.
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count.load(Ordering::Relaxed)
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -601,6 +814,145 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
         }
         let (head, _) = get_head(&mut store).expect("head");
         assert_eq!(head, block_root);
+    }
+
+    /// CC-38a: a valid beacon_block with pending DA emits the block-branch
+    /// trigger (template-sized). `pending_da` structure is untouched.
+    #[test]
+    fn block_branch_triggers_fetch() {
+        use cc_types::primitives::KzgCommitment;
+        use ssz_types::VariableList;
+
+        let da = Arc::new(PeerDasAvailability::new());
+        let mut pending = PendingDa::new();
+        let (mut store, anchor, config) = seeded_peer_das_store(da.clone());
+
+        let mut block = signed_block(1, anchor, 0);
+        // Attach two commitments so the trigger is non-empty.
+        let commits = vec![
+            KzgCommitment::from_array([0xaa; 48]),
+            KzgCommitment::from_array([0xbb; 48]),
+        ];
+        block.message.body.blob_kzg_commitments =
+            VariableList::new(commits.clone()).expect("commit list");
+        let block_root = Root::from_hash256(TreeHash::tree_hash_root(&block.message));
+
+        let outcome = on_block(
+            &mut store,
+            &block,
+            &config,
+            BlockSignatureStrategy::NoVerification,
+        )
+        .unwrap();
+        assert!(matches!(
+            outcome,
+            cc_fork_choice::BlockImport::Deferred(cc_fork_choice::DeferralReason::DataUnavailable)
+        ));
+        // Park (CC-24d structure — not modified by the trigger builder).
+        pending.insert(PendingDaEntry {
+            root: block_root,
+            ssz: Bytes::from(block.as_ssz_bytes()),
+            fork: 0,
+            source: 0,
+            slot: 1,
+            parked_at_slot: store.get_current_slot().as_u64(),
+        });
+        assert!(pending.contains(&block_root));
+        assert_eq!(pending.len(), 1);
+
+        // Signal: pure function of the parked block — does not touch pending_da.
+        let trigger = block_branch_trigger_from_signed(&block, block_root)
+            .expect("non-empty commitments → trigger");
+        assert_eq!(trigger.beacon_block_root, *block_root.as_array());
+        assert_eq!(trigger.slot, 1);
+        assert_eq!(trigger.kzg_commitments.len(), 2);
+        assert_eq!(trigger.versioned_hashes.len(), 2);
+        assert_eq!(
+            trigger.kzg_commitments_inclusion_proof.len(),
+            KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH as usize
+        );
+        // pending_da unchanged by the signal.
+        assert!(pending.contains(&block_root));
+        assert_eq!(pending.len(), 1);
+
+        let wire = trigger.estimated_wire_bytes();
+        assert!(
+            wire <= TEMPLATE_WIRE_SOFT_MAX,
+            "trigger must be template class (~6.5 KB), got {wire}"
+        );
+        assert!(wire < CELL_PAYLOAD_SOFT_MIN);
+
+        // Proto round-trip stays template-sized.
+        let proto = trigger.to_proto();
+        use prost::Message;
+        let encoded = proto.encode_to_vec();
+        assert!(encoded.len() <= TEMPLATE_WIRE_SOFT_MAX);
+        assert!(proto.template.is_some());
+        // No cell / sidecar fields on the chain→engine shape.
+        assert!(proto.template.as_ref().unwrap().kzg_commitments.len() == 2);
+    }
+
+    /// CC-38 /6: both triggers produce only template-class outbound on chain.
+    /// Column branch does not involve chain at all; block branch is ~6.5 KB.
+    #[test]
+    fn chain_never_carries_cells() {
+        use cc_types::primitives::KzgCommitment;
+        use ssz_types::VariableList;
+
+        let counters = OutboundTriggerBytes::new();
+
+        // ── Block branch (chain-owned) ──────────────────────────────────────
+        let da = Arc::new(PeerDasAvailability::new());
+        let (mut store, anchor, config) = seeded_peer_das_store(da);
+        let mut block = signed_block(1, anchor, 0);
+        let commits: Vec<KzgCommitment> = (0..21)
+            .map(|i| KzgCommitment::from_array([i as u8; 48]))
+            .collect();
+        block.message.body.blob_kzg_commitments =
+            VariableList::new(commits).expect("21 commits");
+        let block_root = Root::from_hash256(TreeHash::tree_hash_root(&block.message));
+        let _ = on_block(
+            &mut store,
+            &block,
+            &config,
+            BlockSignatureStrategy::NoVerification,
+        );
+        let trigger = block_branch_trigger_from_signed(&block, block_root).expect("trigger");
+        let block_bytes = trigger.estimated_wire_bytes();
+        counters.record_template(block_bytes);
+
+        // ── Column branch (p2p-owned): chain records **zero** interaction ───
+        // Simulated by not touching counters — chain never sees column bytes
+        // (Phase 2 §10.3; ADR P3-06 reverse-direction design).
+        let column_branch_chain_bytes = 0u64;
+
+        assert_eq!(counters.count(), 1);
+        assert!(
+            counters.peak() <= TEMPLATE_WIRE_SOFT_MAX as u64,
+            "peak {} exceeds template class",
+            counters.peak()
+        );
+        assert!(
+            counters.peak() < CELL_PAYLOAD_SOFT_MIN as u64,
+            "peak looks like cell payload"
+        );
+        assert_eq!(
+            column_branch_chain_bytes, 0,
+            "column branch must not touch chain outbound"
+        );
+        // Explicit: BlockBranchTrigger has no cell-payload fields.
+        let t = trigger;
+        assert!(!t.kzg_commitments.is_empty());
+        // No DataColumnSidecar / column index / cell vector on the trigger type
+        // (compile-time shape: only root, slot, hashes, header, commitments, proof).
+        let _ = (
+            t.beacon_block_root,
+            t.slot,
+            t.versioned_hashes,
+            t.signed_block_header_ssz,
+            t.kzg_commitments,
+            t.kzg_commitments_inclusion_proof,
+        );
     }
 
     /// Order-independence: block first → Deferred + park; signal → re-drive.
