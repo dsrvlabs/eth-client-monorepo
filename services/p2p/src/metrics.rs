@@ -98,6 +98,7 @@ pub(crate) struct ColumnSourceLabels {
 }
 
 /// Labels for `cc_p2p_queue_depth` (§2.2 — one gauge, eleven series).
+/// Labels for `cc_p2p_queue_depth` (§2.2 — one gauge, ten series).
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub(crate) struct QueueLabels {
     pub q: String,
@@ -195,16 +196,21 @@ impl PeerPenaltyReason {
 
 /// `result` label values for `cc_p2p_da_outcome_total`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum DaOutcome {
+pub enum DaOutcome {
+    /// All sampled columns arrived via gossip (or zero-blob).
     Imported,
+    /// Sampling incomplete after the block was seen (awaiting recovery).
     Deferred,
+    /// Completed with at least one column via by-root.
     Recovered,
+    /// Deadline / recovery exhausted without a full set.
     Abandoned,
 }
 
 impl DaOutcome {
     /// Prometheus label value.
-    pub(crate) const fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Imported => "imported",
             Self::Deferred => "deferred",
@@ -214,7 +220,7 @@ impl DaOutcome {
     }
 
     /// All four variants (seed + tests).
-    pub(crate) const ALL: [Self; 4] = [
+    pub const ALL: [Self; 4] = [
         Self::Imported,
         Self::Deferred,
         Self::Recovered,
@@ -248,11 +254,12 @@ impl ColumnSource {
     pub const ALL: [Self; 3] = [Self::Gossip, Self::ByRoot, Self::ByRange];
 }
 
-/// `q` label values for `cc_p2p_queue_depth` (§2.2 / CC-22/5 / CC-26a).
+/// `q` label values for `cc_p2p_queue_depth` (§2.2 / CC-22/5 / CC-24c / CC-26a).
 ///
-/// Eleven values on **one** gauge family — not eleven separate metrics.
+/// Twelve values on **one** gauge family — not twelve separate metrics.
 /// `SeenColumn` / `SeenBlock` hold gossip seen-set **entry counts** (not
 /// backfill cache bytes — those use `cc_p2p_cache_*` exclusively).
+/// `Sampling` is sampling-task map occupancy (CC-24c; bound 64).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueueName {
     Gossip,
@@ -268,6 +275,8 @@ pub enum QueueName {
     SeenColumn,
     /// Gossip block seen-set occupancy (entry count).
     SeenBlock,
+    /// Sampling-task map occupancy (CC-24c; bound 64).
+    Sampling,
 }
 
 impl QueueName {
@@ -286,11 +295,12 @@ impl QueueName {
             Self::PendingBlock => "pending_block",
             Self::SeenColumn => "seen_column",
             Self::SeenBlock => "seen_block",
+            Self::Sampling => "sampling",
         }
     }
 
     /// All variants (seed + tests).
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Gossip,
         Self::ReqrespIn,
         Self::Conn,
@@ -302,6 +312,7 @@ impl QueueName {
         Self::PendingBlock,
         Self::SeenColumn,
         Self::SeenBlock,
+        Self::Sampling,
     ];
 }
 
@@ -986,6 +997,25 @@ impl P2pMetrics {
             .get()
     }
 
+    /// Increment `cc_p2p_da_outcome_total{result}` (CC-24c).
+    pub fn inc_da_outcome(&self, result: DaOutcome) {
+        self.da_outcome
+            .get_or_create(&DaOutcomeLabels {
+                result: result.as_str().to_owned(),
+            })
+            .inc();
+    }
+
+    /// Read `cc_p2p_da_outcome_total{result}`.
+    #[must_use]
+    pub fn da_outcome(&self, result: DaOutcome) -> u64 {
+        self.da_outcome
+            .get_or_create(&DaOutcomeLabels {
+                result: result.as_str().to_owned(),
+            })
+            .get()
+    }
+
     /// Increment `cc_p2p_inclusion_proof_verifications_total`.
     pub fn inc_inclusion_proof_verifications(&self) {
         self.inclusion_proof_verifications.inc();
@@ -1346,8 +1376,8 @@ mod tests {
     }
 
     #[test]
-    fn queue_depth_q_label_has_exactly_eleven_values() {
-        assert_eq!(QueueName::ALL.len(), 11);
+    fn queue_depth_q_label_has_exactly_twelve_values() {
+        assert_eq!(QueueName::ALL.len(), 12);
         let labels: BTreeSet<&str> = QueueName::ALL.iter().map(|q| q.as_str()).collect();
         assert_eq!(
             labels,
@@ -1363,6 +1393,7 @@ mod tests {
                 "pending_block",
                 "seen_column",
                 "seen_block",
+                "sampling",
             ])
         );
     }

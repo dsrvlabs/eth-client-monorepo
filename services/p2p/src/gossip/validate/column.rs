@@ -32,7 +32,7 @@ use super::check_payload_len;
 use crate::gossip::pending::{PendingQueues, PendingSidecar, PendingSidecarReason};
 use crate::gossip::seen::{ColumnSeenKey, SeenSets};
 use crate::gossip::topics::TopicName;
-use crate::metrics::{ColumnSource, P2pMetrics};
+use crate::metrics::P2pMetrics;
 use crate::verdict::Verdict;
 
 // Re-export KZG seam used by the pool and tests.
@@ -509,9 +509,10 @@ pub fn validate_data_column_sidecar<P: Preset>(
     // 13. insert seen; ACCEPT; sampling feed
     steps.tick(ColumnStep::Accept);
     let _ = state.seen.columns.insert(seen_key);
+    // CC-24c: sampling tracker owns `cc_p2p_columns_received_total{source}`
+    // (gossip / byroot / byrange) so every path shares one counter site.
     sampling.on_column_accepted(slot, column_index, block_root);
     if let Some(m) = metrics {
-        m.inc_columns_received(ColumnSource::Gossip);
         // Align metric counter with cache miss total (idempotent absolute sync).
         let cache_verifs = match state.inclusion_cache.lock() {
             Ok(g) => g.verifications,
