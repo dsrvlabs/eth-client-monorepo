@@ -1566,6 +1566,10 @@ add_row(row_result(
 ))
 
 # ── Clause 2 · EL restart (local compose + EL) — both shapes ───────────────
+# CC-36b: two rows (clean / unclean), never averaged. Harness from
+# scripts/el-restart-drills.sh. One-pass is numerical when fields present:
+#   transitions_delta == outage_block_count
+#   newpayload_delta == new_blocks_in_interval
 c2 = harness.get("clause2") if isinstance(harness, dict) else None
 for shape_key, shape_label in (
     ("clean", "2a · EL restart clean (compose restart)"),
@@ -1578,16 +1582,28 @@ for shape_key, shape_label in (
         # Also allow flat harness keys
         if isinstance(harness, dict):
             shape = harness.get(f"clause2_{shape_key}")
-    sid = "2" if shape_key == "clean" else "2"
     # Both shapes share clause id 2 for --clause 2; distinguish in name.
-    # For filter: --clause 2 matches both via id "2".
     if not shape:
         add_row(row_result(
             "2",
             shape_label,
             VENUE_LOCAL,
-            "NOT_RUN (harness-json.clause2.%s absent — live discharge is CC-36b)"
-            % shape_key,
+            "NOT_RUN (harness-json.clause2.%s absent — live discharge is CC-36b / "
+            "scripts/el-restart-drills.sh)" % shape_key,
+            "during outage el_offline==1 + is_optimistic==1; fcU within 1 slot "
+            "of eth_syncing==false; one VALID clears optimistic set, no payload re-sub",
+            "NOT_RUN",
+        ))
+        continue
+    # Explicit NOT_RUN shape (drill script --emit-not-run or venue unavailable).
+    shape_status = str(shape.get("status") or "").upper()
+    if shape_status == "NOT_RUN":
+        notes = shape.get("notes") or shape.get("not_run_reason") or "venue unavailable"
+        add_row(row_result(
+            "2",
+            shape_label,
+            VENUE_LOCAL,
+            f"NOT_RUN ({notes})",
             "during outage el_offline==1 + is_optimistic==1; fcU within 1 slot "
             "of eth_syncing==false; one VALID clears optimistic set, no payload re-sub",
             "NOT_RUN",
@@ -1598,23 +1614,91 @@ for shape_key, shape_label in (
     fcu_slots = shape.get("fcu_slots_after_sync")
     cleared = shape.get("optimistic_cleared_single_valid")
     no_resub = shape.get("no_payload_resubmission")
-    ok = all([
+    # Extended CC-36b fields (optional — numerical one-pass when present).
+    outage_s = shape.get("outage_duration_s")
+    outage_blocks = shape.get("outage_block_count")
+    td = shape.get("transitions_delta")
+    one_pass = shape.get("one_pass_exact")
+    np_before = shape.get("newpayload_v4_before")
+    np_after = shape.get("newpayload_v4_after")
+    np_delta = shape.get("newpayload_delta")
+    new_blocks = shape.get("new_blocks_in_interval")
+    fcu_elapsed = shape.get("fcu_elapsed_s")
+    eth_ts = shape.get("eth_syncing_false_utc")
+    fcu_ts = shape.get("fcu_emission_utc")
+    opt_nodes_after = shape.get("optimistic_nodes_after")
+    auth_failed = shape.get("auth_failed_seen")
+    cap_ok = shape.get("capability_repopulated")
+    panics_delta = shape.get("worker_panics_delta")
+    panics_metric = shape.get("worker_panics_metric")
+
+    checks = [
         offline in (True, 1, "true", "1"),
         opt_during in (True, 1, "true", "1"),
         fcu_slots is not None and float(fcu_slots) <= 1,
         cleared in (True, 1, "true", "1"),
         no_resub in (True, 1, "true", "1"),
-    ])
+    ]
+    # Numerical one-pass: exact equality required when both sides present.
+    if outage_blocks is not None and td is not None:
+        checks.append(float(td) == float(outage_blocks))
+    if one_pass is not None:
+        checks.append(one_pass in (True, 1, "true", "1"))
+    if np_delta is not None and new_blocks is not None:
+        checks.append(float(np_delta) == float(new_blocks))
+    if auth_failed in (True, 1, "true", "1"):
+        checks.append(False)
+    if cap_ok is False:
+        checks.append(False)
+    if panics_delta is not None and float(panics_delta) != 0:
+        checks.append(False)  # P0 — recorded as FAIL, not omitted
+
+    ok = all(checks)
+    parts = [
+        f"el_offline_during={offline}",
+        f"is_optimistic_during={opt_during}",
+        f"fcu_slots_after_sync={fcu_slots}",
+        f"optimistic_cleared_single_valid={cleared}",
+        f"no_payload_resubmission={no_resub}",
+    ]
+    if outage_s is not None:
+        parts.append(f"outage_duration_s={outage_s}")
+    if outage_blocks is not None:
+        parts.append(f"outage_block_count={outage_blocks}")
+    if td is not None:
+        parts.append(f"transitions_delta={td}")
+    if one_pass is not None:
+        parts.append(f"one_pass_exact={one_pass}")
+    if np_before is not None and np_after is not None:
+        parts.append(f"newPayloadV4 {np_before}→{np_after} (Δ={np_delta})")
+    if new_blocks is not None:
+        parts.append(f"new_blocks_in_interval={new_blocks}")
+    if eth_ts or fcu_ts or fcu_elapsed is not None:
+        parts.append(
+            f"eth_syncing_false={eth_ts or 'n/a'}; fcu={fcu_ts or 'n/a'}; "
+            f"fcu_elapsed_s={fcu_elapsed}"
+        )
+    if opt_nodes_after is not None:
+        parts.append(f"optimistic_nodes_after={opt_nodes_after}")
+    if auth_failed is not None:
+        parts.append(f"auth_failed_seen={auth_failed}")
+    if cap_ok is not None:
+        parts.append(f"capability_repopulated={cap_ok}")
+    if panics_delta is not None or panics_metric:
+        parts.append(
+            f"worker_panics_delta={panics_delta} ({panics_metric or 'n/a'})"
+        )
+    if shape.get("fails"):
+        parts.append("fails=" + ";".join(str(x) for x in shape.get("fails") or []))
+
     add_row(row_result(
         "2",
         shape_label,
         VENUE_LOCAL,
-        f"el_offline_during={offline}; is_optimistic_during={opt_during}; "
-        f"fcu_slots_after_sync={fcu_slots}; "
-        f"optimistic_cleared_single_valid={cleared}; "
-        f"no_payload_resubmission={no_resub}",
+        "; ".join(str(p) for p in parts),
         "during outage el_offline==1 + is_optimistic==1; fcU within 1 slot "
-        "of eth_syncing==false; one VALID clears optimistic set, no payload re-sub",
+        "of eth_syncing==false; transitions_delta==outage_block_count; "
+        "optimistic_nodes→0; ΔnewPayloadV4==new_blocks only",
         "PASS" if ok else "FAIL",
     ))
 

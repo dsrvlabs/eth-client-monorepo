@@ -10,6 +10,7 @@ skeletons (Amendment 5). Later issues append numbers only:
 | `## Entry` | **CC-39b** |
 | `## Run record` skeleton | **CC-3Ab** (numbers: **CC-3Ac**) |
 | `## Clause table` skeleton | **CC-3Ab** (script) / **CC-3Ac** (numbers); clause 2 rows: **CC-36b** |
+| `## Clause 2 — EL restart` | **CC-36b** (append-only — Amendment 5) |
 | Gates and outstanding debt | **CC-3Kb** |
 
 **No invented numbers.** Unmeasured fields stay `NOT_RUN` / `_NOT_RUN_` with the
@@ -322,3 +323,129 @@ Empty placeholders only; **no invented numbers.**
   rows in this table.
 - **Phase 1's Clause 2 remains outstanding** (D-12) — see the note under the
   document title.
+
+## Clause 2 — EL restart
+
+**Owner:** CC-36b  
+**Venue:** `local compose + EL` *(on Hoodi data)* — the only clause whose venue
+is neither Hoodi nor the dev machine (D-7 / D-11).  
+**Status:** **`NOT_RUN`** for live discharge — full EL on Hoodi data with
+`eth_syncing == false` was not available in this session. Drill **scripts**,
+offline assertion proof, and soak-report wiring are landed; see **Offline /
+mock verification** below. **No invented live numbers.**
+
+### Why this venue
+
+Hoodi will not restart an EL on cue. Phase 2's self-devnet has **no EL
+containers** by design. The fault is induced at the container level:
+
+| Shape | Exact command |
+|---|---|
+| **clean** | `docker compose restart el` |
+| **unclean** | `docker kill -s KILL <el-container> && docker compose up -d el` |
+
+(`scripts/el-restart-drills.sh` resolves the compose container id via
+`docker compose ps -q el` so `docker kill -s KILL` targets the right box under
+a project-prefixed name.)
+
+Both shapes get **their own report row** — never averaged. A clean shutdown
+leaves geth at the last `forkchoiceUpdated` head; `kill -9` may leave it
+behind. Either answers `SYNCING` until re-acquire, but durations and client
+behaviour differ.
+
+**D-11 scheduling:** both drills run **before** clause 1's ≥ 6 h window opens
+(an EL restart drives `cc_chain_is_optimistic` to 1 for its whole duration and
+would void the ≥ 99 % bar). After both drills, `eth_syncing == false` is
+re-gated and re-timestamped; that fresh timestamp is what CC-3Ac's window
+starts from.
+
+### Three assertions per shape
+
+1. **During the outage:** `cc_engine_el_offline == 1`; blocks continue importing
+   with `cc_chain_is_optimistic == 1` and `cc_chain_optimistic_nodes > 0`.
+2. **After the EL answers:** a `forkchoiceUpdated` is issued **within one slot**
+   (Hoodi **12 s**) of `eth_syncing == false` — both timestamps recorded.
+3. **One `VALID` clears the whole optimistic set in one ancestor pass with zero
+   payload re-submission:**
+   - `cc_chain_optimistic_transitions_total{direction="validated"}` jump
+     **exactly equals** the recorded outage block count
+   - `cc_chain_optimistic_nodes` returns to **0**
+   - `cc_engine_request_seconds_count{method="newPayloadV4"}` delta equals only
+     new blocks arrived in that interval (asserted on the request count, not a
+     log line)
+
+Also recorded: `cc_engine_state` never enters `auth_failed` (JWT unchanged);
+`cc_engine_capability_missing` re-populates to pre-outage; any increment of
+`cc_engine_worker_panics_total` is a **P0** against §2.5 (reported, never
+hidden). The family is currently **ABSENT** on engine exposition — drills
+record `worker_panics_metric=ABSENT` rather than inventing zeros.
+
+### Report rows (live — NOT_RUN)
+
+| Field | 2a · clean (`compose restart`) | 2b · unclean (`kill -s KILL`) |
+|---|---|---|
+| Command | `docker compose restart el` | `docker kill -s KILL el && docker compose up -d el` |
+| Outage duration (s) | `_NOT_RUN_` | `_NOT_RUN_` |
+| Outage block count | `_NOT_RUN_` | `_NOT_RUN_` |
+| `cc_engine_el_offline == 1` throughout | `_NOT_RUN_` | `_NOT_RUN_` |
+| `cc_chain_is_optimistic == 1` throughout | `_NOT_RUN_` | `_NOT_RUN_` |
+| `cc_chain_optimistic_nodes > 0` throughout | `_NOT_RUN_` | `_NOT_RUN_` |
+| `eth_syncing == false` timestamp (UTC) | `_NOT_RUN_` | `_NOT_RUN_` |
+| `forkchoiceUpdated` emission timestamp (UTC) | `_NOT_RUN_` | `_NOT_RUN_` |
+| fcU elapsed (s) / within one slot (12 s) | `_NOT_RUN_` | `_NOT_RUN_` |
+| `transitions_validated` before → after / Δ | `_NOT_RUN_` | `_NOT_RUN_` |
+| Δ == outage_block_count (exact) | `_NOT_RUN_` | `_NOT_RUN_` |
+| `cc_chain_optimistic_nodes` after | `_NOT_RUN_` | `_NOT_RUN_` |
+| `newPayloadV4` request count before → after | `_NOT_RUN_` | `_NOT_RUN_` |
+| ΔnewPayloadV4 == new_blocks_in_interval | `_NOT_RUN_` | `_NOT_RUN_` |
+| States seen (`cc_engine_state`) | `_NOT_RUN_` | `_NOT_RUN_` |
+| `auth_failed` seen? | `_NOT_RUN_` | `_NOT_RUN_` |
+| `capability_missing` re-populated? | `_NOT_RUN_` | `_NOT_RUN_` |
+| `cc_engine_worker_panics_total` Δ | `_NOT_RUN_` (metric ABSENT today) | `_NOT_RUN_` |
+| Pass/Fail | **`NOT_RUN`** | **`NOT_RUN`** |
+
+#### D-11 after both drills
+
+| Field | Value |
+|---|---|
+| Both drills completed before clause 1 window? | `_NOT_RUN_` (live) — scheduling rule stated; scripts emit `d11.drills_before_clause1_window` |
+| Fresh `eth_syncing == false` after unclean re-acquire (UTC) | `_NOT_RUN_` — this is the timestamp CC-3Ac's window starts from |
+
+### Offline / mock verification (this commit)
+
+| Check | Result |
+|---|---|
+| `bash -n scripts/el-restart-drills.sh` | **PASS** |
+| `bash scripts/el-restart-drills.sh --self-test` | **PASS** — evaluate_shape PASS path; FAIL on one-pass mismatch, late fcU (>12 s), newPayload re-submission, and `auth_failed`; harness → soak-report emits **both** rows with **PASS** on fixtures |
+| `bash scripts/soak-report.sh --self-test` | **PASS** (phase 1 + 2 + 3; phase 3 clause 2 venue present) |
+| `bash scripts/soak-report.sh --phase 3 --clause 2 --venue 'local compose + EL' --harness-json .data/el-restart-drills.json` | **both rows emitted** with **`NOT_RUN`** (honest; live venue unavailable) |
+| `bash scripts/el-restart-drills.sh --check-prereqs` | **REFUSED** — this worktree has no `el` service up; foreign `subagent-019fdcaf-…` stack owns ports; `eth_syncing != false` (cold/empty snap-sync, no Hoodi snapshot restore) |
+| Live clean / unclean drill | **`NOT_RUN`** — would disrupt foreign stack and cannot discharge without synced Hoodi data |
+| Machinery exercised offline | CC-36a state machine / upcheck / fcU re-send (unit tests on develop); CC-34b ancestor pass + zero re-submission property; CC-33 fcU driver — **not re-built here** (D-7: split by venue) |
+
+### Operator recipe (exclusive machine, synced EL)
+
+```bash
+# 0) exclusive machine; sleep off; EL restored + eth_syncing==false (CC-39b)
+docker ps --format '{{.Names}}'   # only this stack
+bash scripts/el-snapshot-restore.sh --wait-synced --el-http http://127.0.0.1:8545
+
+# 1) both shapes (clean then unclean); writes harness JSON
+bash scripts/el-restart-drills.sh --shape both \
+  --out .data/el-restart-drills.json
+
+# 2) report both rows (venue machine-checked)
+bash scripts/soak-report.sh --phase 3 --clause 2 \
+  --venue 'local compose + EL' \
+  --harness-json .data/el-restart-drills.json
+
+# 3) re-gate eth_syncing==false — paste fresh timestamp into Run record field 2
+#    and into this section's D-11 table; then open CC-3Ac's window
+bash scripts/phase-3-acceptance.sh --phase b
+```
+
+**What voids a live run:** rebuild/redeploy between drills and the window;
+restarting **our** services (no persistence until Phase 4 — a `chain` restart
+re-checkpoint-syncs and is a failed run, never a recovered one); overlapping
+clause 1's window (D-11). An `el` container restart **is** clause 2 and is
+**void for clause 1**.
