@@ -28,11 +28,15 @@ cc-proto = { workspace = true }
 cc-types = { workspace = true }
 # Workspace pin from CC-2K; first consumer (CC-21a probe / EnrManager skeleton).
 discv5 = { workspace = true }
+futures = { workspace = true }
 prometheus-client = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+tonic-health = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+prometheus-client = { workspace = true }

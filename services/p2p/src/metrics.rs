@@ -237,7 +237,7 @@ impl ColumnSource {
 ///
 /// Nine values on **one** gauge family — not nine separate metrics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum QueueName {
+pub enum QueueName {
     Gossip,
     ReqrespIn,
     Conn,
@@ -251,7 +251,8 @@ pub(crate) enum QueueName {
 
 impl QueueName {
     /// Prometheus label value.
-    pub(crate) const fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Gossip => "gossip",
             Self::ReqrespIn => "reqresp_in",
@@ -266,7 +267,7 @@ impl QueueName {
     }
 
     /// All nine variants (seed + tests).
-    pub(crate) const ALL: [Self; 9] = [
+    pub const ALL: [Self; 9] = [
         Self::Gossip,
         Self::ReqrespIn,
         Self::Conn,
@@ -616,6 +617,44 @@ impl P2pMetrics {
         };
         metrics.seed_exposition();
         metrics
+    }
+
+    /// Set `cc_p2p_queue_depth{q}` (bounded channel occupancy).
+    pub fn set_queue_depth(&self, q: QueueName, depth: i64) {
+        self.queue_depth
+            .get_or_create(&QueueLabels {
+                q: q.as_str().to_owned(),
+            })
+            .set(depth);
+    }
+
+    /// Read `cc_p2p_queue_depth{q}`.
+    #[must_use]
+    pub fn queue_depth(&self, q: QueueName) -> i64 {
+        self.queue_depth
+            .get_or_create(&QueueLabels {
+                q: q.as_str().to_owned(),
+            })
+            .get()
+    }
+
+    /// Increment `cc_p2p_worker_panics_total{worker}` (cumulative across respawns).
+    pub fn inc_worker_panics(&self, worker: &str) {
+        self.worker_panics
+            .get_or_create(&WorkerLabels {
+                worker: worker.to_owned(),
+            })
+            .inc();
+    }
+
+    /// Read `cc_p2p_worker_panics_total{worker}`.
+    #[must_use]
+    pub fn worker_panics(&self, worker: &str) -> u64 {
+        self.worker_panics
+            .get_or_create(&WorkerLabels {
+                worker: worker.to_owned(),
+            })
+            .get()
     }
 
     /// Ensure every labelled family has its fixed series so HELP/TYPE appear

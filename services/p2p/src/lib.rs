@@ -1,5 +1,7 @@
 //! `cc-p2p` library surface.
 //!
+//! - **CC-20b**: runtime skeleton — swarm task sole owner, persisted identity,
+//!   supervisor, slot clock, §2.2 channel map
 //! - **CC-21a**: A-P2-4 ENR sequence probe + `EnrManager::apply` batching skeleton
 //! - **CC-21b**: Epoch-aware fork digest (`fork_digest`) — no libp2p/discv5/I/O
 //! - **CC-22a**: Topic registry, Fulu topic strings, Steady→Overlap→Drain skeleton
@@ -7,7 +9,13 @@
 
 #![allow(missing_docs)]
 
+pub mod channels;
+pub mod clock;
 pub mod discovery;
 pub mod fork_digest;
 pub mod gossip;
+pub mod host;
+pub mod identity;
 pub mod metrics;
+pub mod service;
+pub mod supervisor;

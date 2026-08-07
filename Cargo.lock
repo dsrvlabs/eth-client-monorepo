@@ -1117,11 +1117,14 @@ dependencies = [
  "cc-proto",
  "cc-types",
  "discv5",
+ "futures",
  "prometheus-client",
  "serde",
  "thiserror 2.0.19",
  "tokio",
  "tonic",
+ "tonic-health",
+ "tracing",
 ]
 
 [[package]]

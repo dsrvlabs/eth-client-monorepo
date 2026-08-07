@@ -1,0 +1,220 @@
+//! §2.2 channel map — bounds land verbatim; stub payloads until owning issues.
+//!
+//! Fan-out edges from the swarm task and the publish/cmd path into it. Each
+//! bound is a design value. Depth is reported on `cc_p2p_queue_depth{q=…}` for
+//! the six queue labels that map onto this surface; chain-stream edges use
+//! the same channel skeleton and report via the saturation metric later
+//! (CC-27b).
+
+use tokio::sync::mpsc;
+
+use crate::metrics::{P2pMetrics, QueueName};
+
+// ── §2.2 bounds (verbatim) ──────────────────────────────────────────────────
+
+/// swarm → gossip validation.
+pub const GOSSIP_BOUND: usize = 1024;
+/// swarm → req/resp server.
+pub const REQRESP_IN_BOUND: usize = 256;
+/// swarm → peer manager (connection events).
+pub const CONN_BOUND: usize = 256;
+/// gossip validation → KZG pool.
+pub const KZG_BOUND: usize = 256;
+/// any → chain-stream outbound.
+pub const CHAIN_OUT_BOUND: usize = 1024;
+/// chain-stream inbound → dispatch.
+pub const CHAIN_IN_BOUND: usize = 1024;
+/// publish queue → swarm.
+pub const PUBLISH_BOUND: usize = 256;
+/// peer manager → swarm (`cmd_tx`).
+pub const CMD_BOUND: usize = 512;
+
+/// Placeholder gossip-validation work item (claimed by CC-22*).
+#[derive(Debug, Clone)]
+pub struct GossipWork {
+    /// Opaque payload placeholder.
+    pub bytes: Vec<u8>,
+}
+
+/// Placeholder inbound req/resp request (claimed by CC-23*).
+#[derive(Debug, Clone)]
+pub struct ReqRespInbound {
+    /// Opaque payload placeholder.
+    pub bytes: Vec<u8>,
+}
+
+/// Placeholder connection event for the peer manager (claimed by CC-20c).
+#[derive(Debug, Clone)]
+pub struct ConnEvent {
+    /// Opaque event tag.
+    pub tag: &'static str,
+}
+
+/// Placeholder KZG verify job (claimed by CC-22d / DA path).
+#[derive(Debug, Clone)]
+pub struct KzgJob {
+    /// Opaque payload placeholder.
+    pub bytes: Vec<u8>,
+}
+
+/// Placeholder chain-stream outbound object (claimed by CC-27b).
+#[derive(Debug, Clone)]
+pub struct ChainOutbound {
+    /// Opaque payload placeholder.
+    pub bytes: Vec<u8>,
+}
+
+/// Placeholder chain-stream inbound message (claimed by CC-27b).
+#[derive(Debug, Clone)]
+pub struct ChainInbound {
+    /// Opaque payload placeholder.
+    pub bytes: Vec<u8>,
+}
+
+/// Local publish request → swarm (claimed by CC-27b / gossip publish path).
+#[derive(Debug, Clone)]
+pub struct PublishRequest {
+    /// Topic string placeholder.
+    pub topic: String,
+    /// Payload placeholder.
+    pub data: Vec<u8>,
+}
+
+/// Commands the swarm task accepts — **only** path that mutates `Swarm`.
+///
+/// Dial / discovery content lands in CC-20c / CC-21c; this issue owns the type
+/// and the cmd channel bound.
+#[derive(Debug, Clone)]
+pub enum SwarmCommand {
+    /// No-op (used by tests / keep-alive).
+    Noop,
+    /// Local publish (routed from the publish queue).
+    Publish(PublishRequest),
+    /// Subscribe to a gossip topic string (topic registry lands later).
+    Subscribe {
+        /// Full topic string.
+        topic: String,
+    },
+    /// Disconnect a peer by stringified peer id (typed PeerId in CC-20c).
+    Disconnect {
+        /// Peer id string.
+        peer_id: String,
+    },
+}
+
+/// All §2.2 edges: senders retained by producers, receivers by consumers.
+#[derive(Debug)]
+pub struct ChannelMap {
+    /// swarm → gossip validation.
+    pub gossip_tx: mpsc::Sender<GossipWork>,
+    /// gossip validation receiver (stub consumer / CC-22*).
+    pub gossip_rx: mpsc::Receiver<GossipWork>,
+    /// swarm → req/resp server.
+    pub reqresp_in_tx: mpsc::Sender<ReqRespInbound>,
+    /// req/resp inbound receiver.
+    pub reqresp_in_rx: mpsc::Receiver<ReqRespInbound>,
+    /// swarm → peer manager.
+    pub conn_tx: mpsc::Sender<ConnEvent>,
+    /// connection-event receiver.
+    pub conn_rx: mpsc::Receiver<ConnEvent>,
+    /// gossip validation → KZG pool.
+    pub kzg_tx: mpsc::Sender<KzgJob>,
+    /// KZG pool receiver.
+    pub kzg_rx: mpsc::Receiver<KzgJob>,
+    /// any → chain-stream outbound.
+    pub chain_out_tx: mpsc::Sender<ChainOutbound>,
+    /// chain-stream outbound receiver.
+    pub chain_out_rx: mpsc::Receiver<ChainOutbound>,
+    /// chain-stream inbound → dispatch.
+    pub chain_in_tx: mpsc::Sender<ChainInbound>,
+    /// chain-stream inbound receiver.
+    pub chain_in_rx: mpsc::Receiver<ChainInbound>,
+    /// publish queue → swarm (feeds cmd path; separate bound for depth metric).
+    pub publish_tx: mpsc::Sender<PublishRequest>,
+    /// publish queue receiver (bridged into cmd by a stub).
+    pub publish_rx: mpsc::Receiver<PublishRequest>,
+    /// peer manager → swarm.
+    pub cmd_tx: mpsc::Sender<SwarmCommand>,
+    /// swarm command receiver (owned by the swarm task).
+    pub cmd_rx: mpsc::Receiver<SwarmCommand>,
+}
+
+impl ChannelMap {
+    /// Allocate every §2.2 channel at its design bound and seed depth gauges to 0.
+    #[must_use]
+    pub fn new(metrics: &P2pMetrics) -> Self {
+        let (gossip_tx, gossip_rx) = mpsc::channel(GOSSIP_BOUND);
+        let (reqresp_in_tx, reqresp_in_rx) = mpsc::channel(REQRESP_IN_BOUND);
+        let (conn_tx, conn_rx) = mpsc::channel(CONN_BOUND);
+        let (kzg_tx, kzg_rx) = mpsc::channel(KZG_BOUND);
+        let (chain_out_tx, chain_out_rx) = mpsc::channel(CHAIN_OUT_BOUND);
+        let (chain_in_tx, chain_in_rx) = mpsc::channel(CHAIN_IN_BOUND);
+        let (publish_tx, publish_rx) = mpsc::channel(PUBLISH_BOUND);
+        let (cmd_tx, cmd_rx) = mpsc::channel(CMD_BOUND);
+
+        // Seed the six labelled depths that map to this map (chain stream uses
+        // saturation_ratio later; still create the channels here).
+        for q in [
+            QueueName::Gossip,
+            QueueName::ReqrespIn,
+            QueueName::Conn,
+            QueueName::Kzg,
+            QueueName::Publish,
+            QueueName::Cmd,
+        ] {
+            metrics.set_queue_depth(q, 0);
+        }
+
+        Self {
+            gossip_tx,
+            gossip_rx,
+            reqresp_in_tx,
+            reqresp_in_rx,
+            conn_tx,
+            conn_rx,
+            kzg_tx,
+            kzg_rx,
+            chain_out_tx,
+            chain_out_rx,
+            chain_in_tx,
+            chain_in_rx,
+            publish_tx,
+            publish_rx,
+            cmd_tx,
+            cmd_rx,
+        }
+    }
+
+    /// Design bounds as `(QueueName, bound)` for the six depth-labelled edges.
+    #[must_use]
+    pub const fn labelled_bounds() -> [(QueueName, usize); 6] {
+        [
+            (QueueName::Gossip, GOSSIP_BOUND),
+            (QueueName::ReqrespIn, REQRESP_IN_BOUND),
+            (QueueName::Conn, CONN_BOUND),
+            (QueueName::Kzg, KZG_BOUND),
+            (QueueName::Publish, PUBLISH_BOUND),
+            (QueueName::Cmd, CMD_BOUND),
+        ]
+    }
+}
+
+/// Drain a receiver forever, counting and dropping (stub consumer for later issues).
+pub async fn stub_consumer<T: Send + 'static>(
+    name: &'static str,
+    mut rx: mpsc::Receiver<T>,
+    metrics: P2pMetrics,
+    queue: Option<QueueName>,
+) {
+    let _ = name;
+    while rx.recv().await.is_some() {
+        if let Some(q) = queue {
+            // Approximate: after a successful recv the depth is at most bound-1;
+            // producers own precise depth updates. Keep gauge non-negative.
+            let depth = metrics.queue_depth(q);
+            if depth > 0 {
+                metrics.set_queue_depth(q, depth - 1);
+            }
+        }
+    }
+}

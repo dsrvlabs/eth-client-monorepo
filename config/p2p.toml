@@ -6,5 +6,19 @@ metrics_addr = "127.0.0.1:9102"
 log_format = "json"
 log_filter = "info"
 
+# CC-20b: persisted secp256k1 node key (custody input). Mode 0600.
+node_key_path = "./data/node_key"
+# libp2p listen (no dialling until CC-21c).
+listen_multiaddr = "/ip4/0.0.0.0/tcp/9000"
+
+[clock]
+# Until the first ChainView (CC-27a), slot clock is config-sourced.
+genesis_time = 0
+seconds_per_slot = 12
+slots_per_epoch = 32
+# MAXIMUM_GOSSIP_CLOCK_DISPARITY — read by clock.rs; never hard-coded there.
+maximum_gossip_clock_disparity_ms = 500
+slot_clock_offset_seconds = 0
+
 [peers]
 chain = "http://127.0.0.1:9001"
