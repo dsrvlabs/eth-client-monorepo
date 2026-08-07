@@ -1,4 +1,4 @@
-//! Fork choice (Architecture §6, CC-15–CC-17, CC-34a).
+//! Fork choice (Architecture §6, CC-15–CC-17, CC-34a, CC-34b).
 //!
 //! - CC-15a: proto-array, [`Store`] skeleton, [`on_tick`]
 //! - CC-15b: [`on_block`], [`compute_pulled_up_tip`], [`CheckpointContext`] LRU
@@ -7,6 +7,7 @@
 //! - CC-17 / CC-24d: data-availability seam in [`da_seam`]
 //!   ([`PeerDasAvailability`] substitutes the deleted Phase-1 optimistic stub)
 //! - CC-34a: [`ExecutionStatus`] on [`ProtoNode`], score-branch, viability, outbox read
+//! - CC-34b: [`propagate_execution_payload_validation`] upward pass, §4.8 hard error
 
 #![allow(missing_docs)]
 
@@ -19,6 +20,7 @@ pub mod on_block;
 pub mod on_tick;
 pub mod proto_array;
 pub mod store;
+pub mod validation;
 
 pub use checkpoint_context::{
     CheckpointContext, CheckpointContextKey, CommitteeCache, checkpoint_context_key,
@@ -46,4 +48,8 @@ pub use proto_array::{
 };
 pub use store::{
     CachedHead, DEFAULT_CHECKPOINT_CONTEXT_CAPACITY, LatestMessage, Store, StoreError, VoteTracker,
+};
+pub use validation::{
+    PropagateValidationOutcome, ValidationError, propagate_execution_payload_validation,
+    try_mark_execution_invalid,
 };

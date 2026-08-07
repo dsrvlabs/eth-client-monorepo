@@ -1105,6 +1105,8 @@ dependencies = [
  "snap",
  "ssz_types",
  "thiserror 2.0.19",
+ "tracing",
+ "tracing-subscriber",
  "tree_hash",
 ]
 

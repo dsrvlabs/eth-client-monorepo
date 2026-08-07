@@ -16,6 +16,7 @@ cc-state-transition = { workspace = true }
 thiserror = { workspace = true }
 lru = { workspace = true }
 tree_hash = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 ssz_types = { workspace = true }
@@ -24,6 +25,7 @@ serde_yaml = { workspace = true }
 snap = { workspace = true }
 ethereum_ssz = { workspace = true }
 cc-crypto = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [[bench]]
 name = "head"

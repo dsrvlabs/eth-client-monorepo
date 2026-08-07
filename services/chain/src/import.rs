@@ -348,7 +348,8 @@ pub fn on_block_error_gossip_class(err: &OnBlockError) -> GossipClass {
         OnBlockError::Transition(e) => e.gossip_class(),
         OnBlockError::ProtoArray(_)
         | OnBlockError::PulledUpTip(_)
-        | OnBlockError::PartialImportNeedsBody => GossipClass::Internal,
+        | OnBlockError::PartialImportNeedsBody
+        | OnBlockError::Validation(_) => GossipClass::Internal,
     }
 }
 
@@ -793,7 +794,7 @@ mod tests {
     fn on_block_error_gossip_class_is_total() {
         use cc_fork_choice::ProtoArrayError;
         use cc_state_transition::{BlockError, SignatureKind};
-        use cc_types::primitives::{Slot, ValidatorIndex};
+        use cc_types::primitives::{Hash256, Slot, ValidatorIndex};
 
         let samples: &[(OnBlockError, GossipClass)] = &[
             (OnBlockError::NotDescendedFromFinalized, GossipClass::Reject),
@@ -842,6 +843,16 @@ mod tests {
                     expected: ValidatorIndex::new(1),
                 }),
                 GossipClass::Reject,
+            ),
+            // CC-34b / §4.8 — EL consensus failure is Internal, not peer descore.
+            (
+                OnBlockError::Validation(
+                    cc_fork_choice::ValidationError::ValidExecutionStatusBecameInvalid {
+                        block_root: Root::ZERO,
+                        payload_block_hash: Hash256::ZERO,
+                    },
+                ),
+                GossipClass::Internal,
             ),
         ];
         for (err, expected) in samples {

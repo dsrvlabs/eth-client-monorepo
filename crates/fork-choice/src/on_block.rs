@@ -49,6 +49,7 @@ use crate::da_seam::{BlockImport, DeferralReason, ImportedBlock};
 use crate::execution_status::ExecutionStatus;
 use crate::proto_array::{ProtoArrayError, ProtoNodeBlock};
 use crate::store::Store;
+use crate::validation::{ValidationError, propagate_execution_payload_validation};
 
 /// Errors from `on_block` that are **not** deferrals.
 ///
@@ -73,6 +74,16 @@ pub enum OnBlockError {
     /// (case-2 sentinel). Caller falls through to the full import path.
     #[error("partial import declined: execution body not resident (H-3)")]
     PartialImportNeedsBody,
+    /// §4.8 / CC-34b: EL consensus failure around Valid/Invalid status.
+    ///
+    /// **Mutation is path-dependent** (see
+    /// [`ValidationError::ValidExecutionStatusBecameInvalid`]):
+    /// - Direct `try_mark_execution_invalid` on a Valid node → store unmutated.
+    /// - Upward pass hit an Invalid ancestor after `integrate_block` → tip and
+    ///   any Optimistic→Valid writes already applied **remain** (no rollback
+    ///   in this issue; import atomicity is a follow-on / CC-35).
+    #[error(transparent)]
+    Validation(#[from] ValidationError),
 }
 
 impl OnBlockError {
@@ -84,10 +95,12 @@ impl OnBlockError {
         match self {
             Self::NotDescendedFromFinalized => GossipClass::Reject,
             Self::Transition(e) => e.gossip_class(),
-            // Internal structure faults — not a peer descore from gossip alone.
-            Self::ProtoArray(_) | Self::PulledUpTip(_) | Self::PartialImportNeedsBody => {
-                GossipClass::Internal
-            }
+            // EL consensus failure / internal structure — not a peer descore
+            // from gossip alone. Operator action required for §4.8.
+            Self::ProtoArray(_)
+            | Self::PulledUpTip(_)
+            | Self::PartialImportNeedsBody
+            | Self::Validation(_) => GossipClass::Internal,
         }
     }
 }
@@ -261,6 +274,20 @@ pub fn on_block<P: Preset>(
         execution_status,
         execution_block_hash,
     )?;
+
+    // CC-34b / §4.6: one VALID clears the optimistic ancestor suffix.
+    // Tip was just inserted as Valid, so walk from the **parent** (Lighthouse
+    // shape) — the tip itself is already Valid and would be the stop floor.
+    if execution_status == ExecutionStatus::Valid {
+        let parent = store
+            .proto_array()
+            .get(&block_root)
+            .and_then(|n| n.parent)
+            .and_then(|p| store.proto_array().nodes().get(p).map(|n| n.root));
+        if let Some(parent_root) = parent {
+            propagate_execution_payload_validation(store, parent_root)?;
+        }
+    }
 
     // Spec `record_block_timeliness` + `update_proposer_boost_root`.
     record_block_timeliness(store, block_root);
