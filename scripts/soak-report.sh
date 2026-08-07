@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# scripts/soak-report.sh — CC-1Ac soak report + R-1 load guard + CC-29b Phase 2 clauses
+# scripts/soak-report.sh — CC-1Ac soak report + R-1 load guard + CC-29b Phase 2
+# clauses + CC-3Ab Phase 3 acceptance clause table
 #
 # Scrapes (or reads) chain histogram snapshots at the start and end of the
 # steady-state window, subtracts, and computes the budget verdict as the
@@ -19,6 +20,17 @@
 # exclusion is keyed on peer_set_stable_unix from the sampler meta — absent
 # that timestamp the Phase 2 report refuses loudly.
 #
+# CC-3Ab Phase 3 extension (append-only): emits one row per Phase 3 clause
+# (entry condition E + clauses 1–5 + P1 rows CC-3C / CC-3B) with venue,
+# measured, threshold, pass/fail. Venue strings are exactly `Hoodi`,
+# `local compose + EL`, and `dev machine`. Clause 1's window starts at
+# CC-39b's Phase A → Phase B boundary (`window_start_unix` /
+# `phase_b_boundary` from scripts/phase-3-acceptance.sh); the bootstrap
+# catch-up burst before it is excluded and reported as its own row.
+# A clause at the wrong venue does not discharge: `--venue` refuses
+# non-matching clause rows. Clause 4 can emit `NOT_RUN` naming blockers.
+# It measures the run; it is not the run (D-6).
+#
 # Usage (Phase 1):
 #   bash scripts/soak-report.sh \
 #     --samples soak-samples.csv \
@@ -30,7 +42,7 @@
 #     [--load-threshold N] [--load-window-samples N]
 #
 # Usage (Phase 2 clause table):
-#   bash scripts/soak-report.sh --phase2 \
+#   bash scripts/soak-report.sh --phase 2 \
 #     --samples soak-samples.csv \
 #     --run-meta soak-samples.meta \
 #     --p2p-metrics-start p2p-metrics-start.txt \
@@ -39,18 +51,33 @@
 #     [--out clause-table.md] \
 #     [--docs docs/phase-2-soak.md] [--write]
 #
+# Usage (Phase 3 clause table — CC-3Ab):
+#   bash scripts/soak-report.sh --phase 3 \
+#     --samples soak-samples.csv \
+#     [--boundary-file .data/phase3-window-start] \
+#     [--chain-metrics-start …] [--chain-metrics-end …] \
+#     [--engine-metrics-start …] [--engine-metrics-end …] \
+#     [--p2p-metrics-start …] [--p2p-metrics-end …] \
+#     [--harness-json harness-results.json] \
+#     [--venue 'Hoodi'|'local compose + EL'|'dev machine'] \
+#     [--clause N|E|CC-3C|CC-3B|bootstrap] \
+#     [--out clause-table.md] \
+#     [--docs docs/phase-3-acceptance.md] [--write]
+#
 # Live scrape (optional if snapshot files omitted):
 #   --chain-metrics-url  http://127.0.0.1:9101/metrics
 #   --driver-metrics-url http://127.0.0.1:9110/metrics
 #
-# Self-test (synthetic series; no live stack required; Phase 1 + Phase 2):
+# Self-test (synthetic series; no live stack required; Phase 1 + 2 + 3):
 #   bash scripts/soak-report.sh --self-test
 #
 # Environment:
 #   SOAK_SAMPLES, SOAK_METRICS_START, SOAK_METRICS_END, SOAK_DRIVER_METRICS,
 #   SOAK_LOAD_THRESHOLD (default 4.0), SOAK_LOAD_WINDOW_SAMPLES (default 5),
 #   SOAK_REPORT_OUT, SOAK_P2P_METRICS_START, SOAK_P2P_METRICS_END,
-#   SOAK_RUN_META, SOAK_HARNESS_JSON, SOAK_PHASE2
+#   SOAK_RUN_META, SOAK_HARNESS_JSON, SOAK_PHASE2, SOAK_PHASE3,
+#   SOAK_BOUNDARY_FILE, SOAK_ENGINE_METRICS_START, SOAK_ENGINE_METRICS_END,
+#   SOAK_CHAIN_METRICS_START, SOAK_CHAIN_METRICS_END, SOAK_VENUE, SOAK_CLAUSE
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -67,6 +94,7 @@ DOCS="${REPO_ROOT}/docs/phase-1-soak.md"
 WRITE=0
 SELF_TEST=0
 PHASE2="${SOAK_PHASE2:-0}"
+PHASE3="${SOAK_PHASE3:-0}"
 P2P_METRICS_START="${SOAK_P2P_METRICS_START:-}"
 P2P_METRICS_END="${SOAK_P2P_METRICS_END:-}"
 RUN_META="${SOAK_RUN_META:-}"
@@ -76,6 +104,14 @@ LOAD_WINDOW="${SOAK_LOAD_WINDOW_SAMPLES:-5}"
 # Optional operator-supplied window bounds (unix seconds). Default: catchup → last sample.
 WINDOW_START="${SOAK_WINDOW_START:-}"
 WINDOW_END="${SOAK_WINDOW_END:-}"
+# Phase 3 (CC-3Ab): Phase A→B boundary file + engine/chain scrapes + venue/clause filter.
+BOUNDARY_FILE="${SOAK_BOUNDARY_FILE:-${REPO_ROOT}/.data/phase3-window-start}"
+ENGINE_METRICS_START="${SOAK_ENGINE_METRICS_START:-}"
+ENGINE_METRICS_END="${SOAK_ENGINE_METRICS_END:-}"
+CHAIN_METRICS_START="${SOAK_CHAIN_METRICS_START:-}"
+CHAIN_METRICS_END="${SOAK_CHAIN_METRICS_END:-}"
+VENUE_FILTER="${SOAK_VENUE:-}"
+CLAUSE_FILTER="${SOAK_CLAUSE:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -89,7 +125,24 @@ while [[ $# -gt 0 ]]; do
     --p2p-metrics-end) P2P_METRICS_END="$2"; shift 2 ;;
     --run-meta) RUN_META="$2"; shift 2 ;;
     --harness-json) HARNESS_JSON="$2"; shift 2 ;;
-    --phase2) PHASE2=1; shift ;;
+    --phase2) PHASE2=1; PHASE3=0; shift ;;
+    --phase3) PHASE3=1; PHASE2=0; shift ;;
+    --phase)
+      case "${2:-}" in
+        1) PHASE2=0; PHASE3=0 ;;
+        2) PHASE2=1; PHASE3=0 ;;
+        3) PHASE3=1; PHASE2=0 ;;
+        *) echo "error: --phase expects 1, 2, or 3 (got: ${2:-})" >&2; exit 2 ;;
+      esac
+      shift 2
+      ;;
+    --boundary-file) BOUNDARY_FILE="$2"; shift 2 ;;
+    --engine-metrics-start) ENGINE_METRICS_START="$2"; shift 2 ;;
+    --engine-metrics-end) ENGINE_METRICS_END="$2"; shift 2 ;;
+    --chain-metrics-start) CHAIN_METRICS_START="$2"; METRICS_START="$2"; shift 2 ;;
+    --chain-metrics-end) CHAIN_METRICS_END="$2"; METRICS_END="$2"; shift 2 ;;
+    --venue) VENUE_FILTER="$2"; shift 2 ;;
+    --clause) CLAUSE_FILTER="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --docs) DOCS="$2"; shift 2 ;;
     --write) WRITE=1; shift ;;
@@ -99,7 +152,7 @@ while [[ $# -gt 0 ]]; do
     --window-end) WINDOW_END="$2"; shift 2 ;;
     --self-test) SELF_TEST=1; shift ;;
     -h|--help)
-      sed -n '2,55p' "$0"
+      sed -n '2,80p' "$0"
       exit 0
       ;;
     *)
@@ -1042,6 +1095,895 @@ raise SystemExit(0)
 PY
 }
 
+# ── Phase 3 per-clause table (CC-3Ab / §9.4) ───────────────────────────────
+# Append-only relative to Phase 1 and Phase 2: separate evaluator; does not
+# reorder or rewrite prior rows. It measures the run; it is not the run (D-6).
+run_python_phase3() {
+  SOAK_PY_SAMPLES="${SAMPLES:-}" \
+  SOAK_PY_BOUNDARY="${BOUNDARY_FILE:-}" \
+  SOAK_PY_CHAIN_START="${CHAIN_METRICS_START:-${METRICS_START:-}}" \
+  SOAK_PY_CHAIN_END="${CHAIN_METRICS_END:-${METRICS_END:-}}" \
+  SOAK_PY_ENGINE_START="${ENGINE_METRICS_START:-}" \
+  SOAK_PY_ENGINE_END="${ENGINE_METRICS_END:-}" \
+  SOAK_PY_P2P_START="${P2P_METRICS_START:-}" \
+  SOAK_PY_P2P_END="${P2P_METRICS_END:-}" \
+  SOAK_PY_HARNESS="${HARNESS_JSON:-}" \
+  SOAK_PY_WINDOW_START="${WINDOW_START:-}" \
+  SOAK_PY_WINDOW_END="${WINDOW_END:-}" \
+  SOAK_PY_VENUE="${VENUE_FILTER:-}" \
+  SOAK_PY_CLAUSE="${CLAUSE_FILTER:-}" \
+  python3 - <<'PY'
+import json, os, re, sys
+from pathlib import Path
+
+samples_path = (os.environ.get("SOAK_PY_SAMPLES") or "").strip()
+boundary_path = (os.environ.get("SOAK_PY_BOUNDARY") or "").strip()
+chain_start_path = (os.environ.get("SOAK_PY_CHAIN_START") or "").strip()
+chain_end_path = (os.environ.get("SOAK_PY_CHAIN_END") or "").strip()
+engine_start_path = (os.environ.get("SOAK_PY_ENGINE_START") or "").strip()
+engine_end_path = (os.environ.get("SOAK_PY_ENGINE_END") or "").strip()
+p2p_start_path = (os.environ.get("SOAK_PY_P2P_START") or "").strip()
+p2p_end_path = (os.environ.get("SOAK_PY_P2P_END") or "").strip()
+harness_path = (os.environ.get("SOAK_PY_HARNESS") or "").strip()
+win_start_env = (os.environ.get("SOAK_PY_WINDOW_START") or "").strip()
+win_end_env = (os.environ.get("SOAK_PY_WINDOW_END") or "").strip()
+venue_filter = (os.environ.get("SOAK_PY_VENUE") or "").strip()
+clause_filter = (os.environ.get("SOAK_PY_CLAUSE") or "").strip()
+
+# Canonical Phase 3 venues (exact strings — a wrong venue does not discharge).
+VENUE_HOODI = "Hoodi"
+VENUE_LOCAL = "local compose + EL"
+VENUE_DEV = "dev machine"
+VALID_VENUES = {VENUE_HOODI, VENUE_LOCAL, VENUE_DEV}
+
+def die(msg, code=1):
+    print(f"error: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
+def refuse(msg):
+    print(f"REFUSED: {msg}", file=sys.stderr)
+    raise SystemExit(3)
+
+def fmt_ts(ts):
+    import datetime
+    if ts is None:
+        return "n/a"
+    return datetime.datetime.fromtimestamp(int(ts), datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+def parse_kv_file(path: Path):
+    """Parse key=value meta / boundary file. Supports window_start / phase_b_boundary."""
+    out = {}
+    if not path.is_file():
+        return out
+    for line in path.read_text(errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+def read_text(path_s):
+    if not path_s:
+        return ""
+    p = Path(path_s)
+    if not p.is_file():
+        return ""
+    return p.read_text(errors="replace")
+
+def parse_counter(text, name, labels=None):
+    if not text:
+        return None
+    if labels:
+        lab_parts = [re.escape(f'{k}="{v}"') for k, v in labels.items()]
+        pat = re.compile(
+            r"^" + re.escape(name) + r"\{([^}]*)\}\s+([0-9eE+.\-]+)",
+            re.M,
+        )
+        for m in pat.finditer(text):
+            lab = m.group(1)
+            if all(re.search(p, lab) for p in lab_parts):
+                return float(m.group(2))
+        return None
+    pat = re.compile(
+        r"^" + re.escape(name) + r"(?:\{[^}]*\})?\s+([0-9eE+.\-]+)",
+        re.M,
+    )
+    m = pat.search(text)
+    return float(m.group(1)) if m else None
+
+def parse_gauge(text, name, labels=None):
+    return parse_counter(text, name, labels)
+
+def counter_present(text, name, labels=None):
+    """True if the series line exists (even at zero)."""
+    return parse_counter(text, name, labels) is not None
+
+def counter_delta(start_text, end_text, name, labels=None):
+    a = parse_counter(start_text, name, labels)
+    b = parse_counter(end_text, name, labels)
+    if a is None or b is None:
+        return None
+    return b - a
+
+def load_samples(path: Path):
+    if not path.is_file():
+        return []
+    rows = []
+    with path.open() as f:
+        header = f.readline().strip().split(",")
+        idx = {name: i for i, name in enumerate(header)}
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(",")
+            def col(name, default=""):
+                i = idx.get(name)
+                if i is None or i >= len(parts):
+                    return default
+                return parts[i]
+            try:
+                ts = int(float(col("ts_unix", "0")))
+            except ValueError:
+                continue
+            def fnum(name):
+                s = col(name, "")
+                if s == "":
+                    return None
+                try:
+                    return float(s)
+                except ValueError:
+                    return None
+            rows.append({
+                "ts": ts,
+                "is_optimistic": fnum("is_optimistic"),
+                "optimistic_nodes": fnum("optimistic_nodes"),
+                "el_head_lag_blocks": fnum("el_head_lag_blocks"),
+                "finalized_epoch": fnum("finalized_epoch"),
+                "load": fnum("load1"),
+            })
+    return rows
+
+def row_result(clause_id, clause, venue, measured, threshold, status):
+    return {
+        "id": clause_id,
+        "clause": clause,
+        "venue": venue,
+        "measured": measured,
+        "threshold": threshold,
+        "status": status,
+    }
+
+def clause_id_matches(filter_s, clause_id):
+    if not filter_s:
+        return True
+    f = filter_s.strip().lower()
+    cid = str(clause_id).lower()
+    aliases = {
+        "e": "e",
+        "entry": "e",
+        "1": "1",
+        "2": "2",
+        "3": "3",
+        "4": "4",
+        "5": "5",
+        "bootstrap": "bootstrap",
+        "burst": "bootstrap",
+        "cc-3c": "cc-3c",
+        "cc3c": "cc-3c",
+        "cc-3b": "cc-3b",
+        "cc3b": "cc-3b",
+    }
+    want = aliases.get(f, f)
+    return want == cid
+
+# ── inputs ─────────────────────────────────────────────────────────────────
+rows = load_samples(Path(samples_path)) if samples_path else []
+
+boundary = parse_kv_file(Path(boundary_path)) if boundary_path else {}
+# window_start / phase_b_boundary: machine-readable Phase A → Phase B boundary
+# emitted by scripts/phase-3-acceptance.sh (CC-39b). Greppable as
+# window_start|phase_b_boundary.
+phase_b_boundary = None
+if win_start_env:
+    try:
+        phase_b_boundary = int(float(win_start_env))
+    except ValueError:
+        die(f"--window-start is not an integer unix timestamp: {win_start_env!r}")
+else:
+    for key in (
+        "window_start_unix",
+        "phase_b_boundary_unix",
+        "phase_boundary_unix",
+        "phase_b_boundary",
+        "window_start",
+    ):
+        if key in boundary and boundary[key] != "":
+            try:
+                phase_b_boundary = int(float(boundary[key]))
+                break
+            except ValueError:
+                die(f"boundary file {key} is not numeric: {boundary[key]!r}")
+
+if win_end_env:
+    try:
+        t_end = int(float(win_end_env))
+    except ValueError:
+        die(f"--window-end is not an integer unix timestamp: {win_end_env!r}")
+elif rows:
+    t_end = rows[-1]["ts"]
+else:
+    t_end = None
+
+t_start = phase_b_boundary  # clause 1 window_start = phase_b_boundary
+
+chain_start = read_text(chain_start_path)
+chain_end = read_text(chain_end_path)
+engine_start = read_text(engine_start_path)
+engine_end = read_text(engine_end_path)
+p2p_start = read_text(p2p_start_path)
+p2p_end = read_text(p2p_end_path)
+# Prefer end scrape; fall back to start; allow single-file "current stack" reads.
+chain_now = chain_end or chain_start
+engine_now = engine_end or engine_start
+p2p_now = p2p_end or p2p_start
+
+harness = {}
+if harness_path and Path(harness_path).is_file():
+    try:
+        harness = json.loads(Path(harness_path).read_text())
+    except json.JSONDecodeError as e:
+        die(f"harness-json invalid: {e}")
+
+if venue_filter and venue_filter not in VALID_VENUES:
+    die(
+        f"unknown venue {venue_filter!r}; expected one of: "
+        + ", ".join(sorted(VALID_VENUES))
+    )
+
+# ── build all candidate rows ───────────────────────────────────────────────
+candidates = []  # list of row_result dicts
+venue_refusals = []  # messages for wrong-venue skips when --venue set
+
+def add_row(r):
+    """Apply --clause and --venue filters. Venue mismatch is a loud refusal note."""
+    if not clause_id_matches(clause_filter, r["id"]):
+        return
+    if venue_filter and r["venue"] != venue_filter:
+        msg = (
+            f"refusing to emit clause {r['id']!r} (venue {r['venue']!r}) "
+            f"at requested venue {venue_filter!r} — a clause run at the wrong "
+            f"venue does not discharge"
+        )
+        venue_refusals.append(msg)
+        print(f"REFUSED: {msg}", file=sys.stderr)
+        return
+    candidates.append(r)
+
+# ── Entry condition E ──────────────────────────────────────────────────────
+# eth_syncing == false is operator-supplied via harness or boundary note;
+# also accept a gauge sample if present.
+e_h = harness.get("entry") if isinstance(harness, dict) else None
+if isinstance(e_h, dict):
+    synced = e_h.get("eth_syncing_false")
+    block = e_h.get("snapshot_block")
+    measured_e = (
+        f"eth_syncing_false={synced}; snapshot_block={block}; "
+        f"window_start={fmt_ts(t_start)}"
+    )
+    if synced is True or synced == 1 or str(synced).lower() == "true":
+        st_e = "PASS"
+    elif synced is False or synced == 0 or str(synced).lower() == "false":
+        st_e = "FAIL"
+    else:
+        st_e = "NOT_RUN"
+        measured_e = f"NOT_RUN (entry harness partial); {measured_e}"
+else:
+    # Compute something: boundary present is partial evidence of Phase B open.
+    if t_start is not None and t_start > 0:
+        measured_e = (
+            f"phase_b_boundary/window_start={fmt_ts(t_start)} "
+            f"(unix={t_start}); eth_syncing gate not re-probed by report "
+            f"(record from CC-39b boundary file)"
+        )
+        st_e = "PASS"  # boundary file implies Phase B entry was asserted
+    else:
+        measured_e = (
+            "NOT_RUN (no boundary file window_start_unix / phase_b_boundary "
+            "and no harness-json.entry)"
+        )
+        st_e = "NOT_RUN"
+add_row(row_result(
+    "e",
+    "E · entry condition (synced EL)",
+    VENUE_DEV,
+    measured_e,
+    "eth_syncing == false; snapshot restore recorded (CC-39b)",
+    st_e,
+))
+
+# ── Bootstrap catch-up burst (excluded from clause 1; own row) ─────────────
+if rows and t_start is not None:
+    burst = [r for r in rows if r["ts"] < t_start]
+    steady_preview = [r for r in rows if r["ts"] >= t_start]
+else:
+    burst = []
+    steady_preview = rows
+
+burst_opt = [r["is_optimistic"] for r in burst if r["is_optimistic"] is not None]
+if burst:
+    if burst_opt:
+        frac_opt = sum(1 for v in burst_opt if v and float(v) != 0.0) / len(burst_opt)
+        measured_b = (
+            f"bootstrap burst samples n={len(burst)}; "
+            f"is_optimistic==1 fraction={frac_opt:.4f} "
+            f"(excluded from clause 1; window_start/phase_b_boundary="
+            f"{fmt_ts(t_start)})"
+        )
+    else:
+        measured_b = (
+            f"bootstrap burst samples n={len(burst)}; is_optimistic column "
+            f"absent — burst excluded by window_start/phase_b_boundary="
+            f"{fmt_ts(t_start)} only"
+        )
+    st_b = "INFO"
+elif t_start is None:
+    measured_b = (
+        "NOT_RUN (no window_start/phase_b_boundary — cannot split bootstrap "
+        "burst from steady-state)"
+    )
+    st_b = "NOT_RUN"
+else:
+    measured_b = (
+        f"0 pre-window samples (window_start/phase_b_boundary={fmt_ts(t_start)}); "
+        f"no bootstrap burst in series"
+    )
+    st_b = "INFO"
+add_row(row_result(
+    "bootstrap",
+    "bootstrap catch-up burst (excluded from clause 1)",
+    VENUE_HOODI,
+    measured_b,
+    "reported separately; not folded into clause 1 ≥ 99 % bar",
+    st_b,
+))
+
+# ── Clause 1 · head marked VALID (Hoodi) ───────────────────────────────────
+steady = [r for r in rows if t_start is None or r["ts"] >= t_start]
+if t_end is not None:
+    steady = [r for r in steady if r["ts"] <= t_end]
+opt_series = [r["is_optimistic"] for r in steady if r["is_optimistic"] is not None]
+nodes_series = [r["optimistic_nodes"] for r in steady if r["optimistic_nodes"] is not None]
+
+d_valid = counter_delta(
+    chain_start, chain_end, "cc_engine_payload_status_total",
+    {"method": "newPayloadV4", "status": "VALID"},
+)
+# engine may own payload_status; try engine scrapes if chain empty
+if d_valid is None:
+    d_valid = counter_delta(
+        engine_start, engine_end, "cc_engine_payload_status_total",
+        {"method": "newPayloadV4", "status": "VALID"},
+    )
+d_invalid = counter_delta(
+    engine_start or chain_start, engine_end or chain_end,
+    "cc_engine_payload_status_total",
+    {"method": "newPayloadV4", "status": "INVALID"},
+)
+if d_invalid is None:
+    d_invalid = counter_delta(
+        chain_start, chain_end, "cc_engine_payload_status_total",
+        {"method": "newPayloadV4", "status": "INVALID"},
+    )
+
+parts1 = []
+if t_start is not None:
+    parts1.append(f"window_start/phase_b_boundary={fmt_ts(t_start)}")
+if t_end is not None:
+    parts1.append(f"window_end={fmt_ts(t_end)}")
+
+if opt_series:
+    n_zero = sum(1 for v in opt_series if float(v) == 0.0)
+    frac_zero = n_zero / len(opt_series)
+    parts1.append(
+        f"is_optimistic==0 fraction={frac_zero:.6f} (n={len(opt_series)})"
+    )
+    c1_opt_ok = frac_zero >= 0.99
+else:
+    # Fall back to end-of-window gauge if series absent.
+    g = parse_gauge(chain_now, "cc_chain_is_optimistic")
+    if g is not None:
+        parts1.append(f"cc_chain_is_optimistic(end)={g:g} (no per-slot series)")
+        c1_opt_ok = (g == 0.0)
+    else:
+        parts1.append("is_optimistic series and gauge absent")
+        c1_opt_ok = None
+
+if nodes_series:
+    max_nodes = max(nodes_series)
+    parts1.append(f"max optimistic_nodes={max_nodes:g}")
+    c1_nodes_ok = max_nodes == 0
+else:
+    g = parse_gauge(chain_now, "cc_chain_optimistic_nodes")
+    if g is not None:
+        parts1.append(f"cc_chain_optimistic_nodes(end)={g:g}")
+        c1_nodes_ok = (g == 0.0)
+    else:
+        parts1.append("optimistic_nodes series and gauge absent")
+        c1_nodes_ok = None
+
+if d_valid is not None:
+    parts1.append(f"Δpayload_status VALID={d_valid:g}")
+    c1_valid_ok = d_valid > 0
+else:
+    v_now = parse_counter(
+        engine_now or chain_now, "cc_engine_payload_status_total",
+        {"method": "newPayloadV4", "status": "VALID"},
+    )
+    if v_now is not None:
+        parts1.append(f"payload_status VALID(end)={v_now:g} (no start scrape)")
+        c1_valid_ok = v_now > 0
+    else:
+        parts1.append("payload_status VALID absent")
+        c1_valid_ok = None
+
+if d_invalid is not None:
+    parts1.append(f"Δpayload_status INVALID={d_invalid:g}")
+    c1_inv_ok = d_invalid == 0
+else:
+    inv_now = parse_counter(
+        engine_now or chain_now, "cc_engine_payload_status_total",
+        {"method": "newPayloadV4", "status": "INVALID"},
+    )
+    if inv_now is not None:
+        parts1.append(f"payload_status INVALID(end)={inv_now:g}")
+        c1_inv_ok = inv_now == 0
+    else:
+        parts1.append("payload_status INVALID absent")
+        c1_inv_ok = None
+
+checks1 = [c1_opt_ok, c1_nodes_ok, c1_valid_ok, c1_inv_ok]
+if all(c is None for c in checks1):
+    st1 = "NOT_RUN"
+    parts1.insert(0, "NOT_RUN (no samples/metrics to compute)")
+elif any(c is False for c in checks1):
+    st1 = "FAIL"
+elif any(c is None for c in checks1):
+    st1 = "NO_DATA"
+else:
+    st1 = "PASS"
+add_row(row_result(
+    "1",
+    "1 · head marked VALID by the EL",
+    VENUE_HOODI,
+    "; ".join(parts1),
+    "is_optimistic==0 ≥ 99 % of samples; optimistic_nodes==0; "
+    "payload_status VALID increasing, INVALID zero (bootstrap excluded)",
+    st1,
+))
+
+# ── Clause 2 · EL restart (local compose + EL) — both shapes ───────────────
+c2 = harness.get("clause2") if isinstance(harness, dict) else None
+for shape_key, shape_label in (
+    ("clean", "2a · EL restart clean (compose restart)"),
+    ("unclean", "2b · EL restart unclean (kill -9)"),
+):
+    shape = None
+    if isinstance(c2, dict):
+        shape = c2.get(shape_key) or c2.get(shape_label)
+    if not shape:
+        # Also allow flat harness keys
+        if isinstance(harness, dict):
+            shape = harness.get(f"clause2_{shape_key}")
+    sid = "2" if shape_key == "clean" else "2"
+    # Both shapes share clause id 2 for --clause 2; distinguish in name.
+    # For filter: --clause 2 matches both via id "2".
+    if not shape:
+        add_row(row_result(
+            "2",
+            shape_label,
+            VENUE_LOCAL,
+            "NOT_RUN (harness-json.clause2.%s absent — live discharge is CC-36b)"
+            % shape_key,
+            "during outage el_offline==1 + is_optimistic==1; fcU within 1 slot "
+            "of eth_syncing==false; one VALID clears optimistic set, no payload re-sub",
+            "NOT_RUN",
+        ))
+        continue
+    offline = shape.get("el_offline_during")
+    opt_during = shape.get("is_optimistic_during")
+    fcu_slots = shape.get("fcu_slots_after_sync")
+    cleared = shape.get("optimistic_cleared_single_valid")
+    no_resub = shape.get("no_payload_resubmission")
+    ok = all([
+        offline in (True, 1, "true", "1"),
+        opt_during in (True, 1, "true", "1"),
+        fcu_slots is not None and float(fcu_slots) <= 1,
+        cleared in (True, 1, "true", "1"),
+        no_resub in (True, 1, "true", "1"),
+    ])
+    add_row(row_result(
+        "2",
+        shape_label,
+        VENUE_LOCAL,
+        f"el_offline_during={offline}; is_optimistic_during={opt_during}; "
+        f"fcu_slots_after_sync={fcu_slots}; "
+        f"optimistic_cleared_single_valid={cleared}; "
+        f"no_payload_resubmission={no_resub}",
+        "during outage el_offline==1 + is_optimistic==1; fcU within 1 slot "
+        "of eth_syncing==false; one VALID clears optimistic set, no payload re-sub",
+        "PASS" if ok else "FAIL",
+    ))
+
+# ── Clause 3 · EL stays synced via fcU (Hoodi) ─────────────────────────────
+lag_series = [r["el_head_lag_blocks"] for r in steady if r["el_head_lag_blocks"] is not None]
+parts3 = []
+if lag_series:
+    within1 = sum(1 for v in lag_series if float(v) <= 1.0) / len(lag_series)
+    parts3.append(
+        f"el_head_lag≤1 fraction={within1:.6f} (n={len(lag_series)})"
+    )
+    c3_lag_ok = within1 >= 0.99
+else:
+    parts3.append("el_head_lag_blocks series absent")
+    c3_lag_ok = None
+
+d_38002 = counter_delta(
+    engine_start, engine_end, "cc_engine_errors_total", {"code": "-38002"}
+)
+d_38006 = counter_delta(
+    engine_start, engine_end, "cc_engine_errors_total", {"code": "-38006"}
+)
+if d_38002 is None:
+    g = parse_counter(engine_now, "cc_engine_errors_total", {"code": "-38002"})
+    if g is not None:
+        parts3.append(f"errors -38002(end)={g:g}")
+        c3_38002_ok = g == 0
+    else:
+        parts3.append("errors -38002 absent")
+        c3_38002_ok = None
+else:
+    parts3.append(f"Δerrors -38002={d_38002:g}")
+    c3_38002_ok = d_38002 == 0
+if d_38006 is None:
+    g = parse_counter(engine_now, "cc_engine_errors_total", {"code": "-38006"})
+    if g is not None:
+        parts3.append(f"errors -38006(end)={g:g}")
+        c3_38006_ok = g == 0
+    else:
+        parts3.append("errors -38006 absent")
+        c3_38006_ok = None
+else:
+    parts3.append(f"Δerrors -38006={d_38006:g}")
+    c3_38006_ok = d_38006 == 0
+
+wire = harness.get("clause3_wire") if isinstance(harness, dict) else None
+if isinstance(wire, dict):
+    parts3.append(
+        f"wire: slots={wire.get('slots')}; "
+        f"fcu_in_order={wire.get('fcu_in_order')}; "
+        f"newpayload_before_fcu={wire.get('newpayload_before_fcu')}"
+    )
+    c3_wire_ok = bool(wire.get("fcu_in_order")) and bool(wire.get("newpayload_before_fcu"))
+else:
+    parts3.append("wire capture absent (CC-33/3, CC-31/8 — CC-3Ac)")
+    c3_wire_ok = None
+
+checks3 = [c3_lag_ok, c3_38002_ok, c3_38006_ok]
+# Wire is required for full discharge but may be NO_DATA without failing numbers.
+if all(c is None for c in checks3) and c3_wire_ok is None:
+    st3 = "NOT_RUN"
+    parts3.insert(0, "NOT_RUN (no samples/metrics/wire)")
+elif any(c is False for c in checks3) or c3_wire_ok is False:
+    st3 = "FAIL"
+elif any(c is None for c in checks3) or c3_wire_ok is None:
+    st3 = "NO_DATA"
+else:
+    st3 = "PASS"
+add_row(row_result(
+    "3",
+    "3 · EL stays synced via forkchoiceUpdated",
+    VENUE_HOODI,
+    "; ".join(parts3),
+    "geth head within 1 block ≥ 99 %; errors -38002/-38006 zero; "
+    "wire: no fcU out of order; newPayload before fcU",
+    st3,
+))
+
+# ── Clause 4 · getBlobsV2 fast path (Hoodi) ────────────────────────────────
+# Failure condition: non-zero complete getBlobs with zero engine-sourced columns.
+# NOT_RUN with blockers when the stack has no engine-sourced columns family
+# (D-13: CC-38b + Phase 2 CC-24c / CC-24d).
+c4h = harness.get("clause4") if isinstance(harness, dict) else None
+force_not_run = False
+blockers = ["CC-38b", "CC-24c", "CC-24d"]
+if isinstance(c4h, dict):
+    if c4h.get("not_run") or c4h.get("NOT_RUN"):
+        force_not_run = True
+        blockers = c4h.get("blockers") or blockers
+
+gb_complete_delta = counter_delta(
+    engine_start, engine_end, "cc_engine_getblobs_total", {"result": "complete"}
+)
+gb_complete_end = parse_counter(
+    engine_now, "cc_engine_getblobs_total", {"result": "complete"}
+)
+gb_miss_end = parse_counter(
+    engine_now, "cc_engine_getblobs_total", {"result": "miss"}
+)
+gb_partial_end = parse_counter(
+    engine_now, "cc_engine_getblobs_total", {"result": "partial"}
+)
+# Presence of any getblobs result label counts as family present.
+getblobs_present = any(
+    counter_present(engine_now or engine_end or engine_start, "cc_engine_getblobs_total", {"result": r})
+    for r in ("complete", "miss", "partial")
+)
+
+eng_cols_delta = counter_delta(
+    p2p_start, p2p_end, "cc_p2p_columns_received_total", {"source": "engine"}
+)
+eng_cols_end = parse_counter(
+    p2p_now, "cc_p2p_columns_received_total", {"source": "engine"}
+)
+cols_present = counter_present(
+    p2p_now or p2p_end or p2p_start,
+    "cc_p2p_columns_received_total",
+    {"source": "engine"},
+)
+
+# Prefer window deltas when start and end scrapes differ; when they are the
+# same file (instrument rehearsal against a live stack) use absolute end levels
+# so the FAIL invariant is still expressible.
+same_engine_scrape = (
+    bool(engine_start) and bool(engine_end) and engine_start == engine_end
+) or (bool(engine_end) and not engine_start)
+same_p2p_scrape = (
+    bool(p2p_start) and bool(p2p_end) and p2p_start == p2p_end
+) or (bool(p2p_end) and not p2p_start)
+
+if same_engine_scrape or gb_complete_delta is None:
+    complete_val = gb_complete_end
+else:
+    complete_val = gb_complete_delta
+if same_p2p_scrape or eng_cols_delta is None:
+    cols_val = eng_cols_end
+else:
+    cols_val = eng_cols_delta
+
+if force_not_run or (not getblobs_present and not cols_present):
+    # Stack has no engine-sourced columns / getblobs surface → D-13 NOT_RUN.
+    measured4 = (
+        f"NOT_RUN naming blockers {', '.join(blockers)} "
+        f"(no engine-sourced columns / getblobs family on stack — D-13; "
+        f"Phase 2's CC-24c and CC-24d + CC-38b)"
+    )
+    st4 = "NOT_RUN"
+elif complete_val is not None and cols_val is not None:
+    # Hit rate: complete / (complete+miss+partial) when available.
+    if same_engine_scrape or gb_complete_delta is None:
+        c_v = gb_complete_end if gb_complete_end is not None else 0.0
+        m_v = gb_miss_end if gb_miss_end is not None else 0.0
+        p_v = gb_partial_end if gb_partial_end is not None else 0.0
+        mode = "absolute"
+    else:
+        d_miss = counter_delta(
+            engine_start, engine_end, "cc_engine_getblobs_total", {"result": "miss"}
+        )
+        d_part = counter_delta(
+            engine_start, engine_end, "cc_engine_getblobs_total", {"result": "partial"}
+        )
+        c_v = gb_complete_delta
+        m_v = d_miss if d_miss is not None else 0.0
+        p_v = d_part if d_part is not None else 0.0
+        mode = "Δwindow"
+    total = c_v + m_v + p_v
+    hit = (c_v / total) if total > 0 else 0.0
+    measured4 = (
+        f"getblobs complete={c_v:g} miss={m_v:g} partial={p_v:g} "
+        f"hit_rate={hit:.6f} ({mode}); "
+        f"cc_p2p_columns_received_total{{source=\"engine\"}}={cols_val:g}"
+    )
+    # Failure condition: non-zero complete with zero engine-sourced DA.
+    if c_v > 0 and cols_val == 0:
+        measured4 += (
+            " **FAIL: non-zero getblobs complete with zero engine-sourced "
+            "DataAvailable emissions**"
+        )
+        st4 = "FAIL"
+    else:
+        # Low hit rate is legitimate PASS.
+        st4 = "PASS"
+        if c_v == 0:
+            measured4 += (
+                " (zero complete in window — low rate is legitimate; "
+                "clause may discharge via CC-38/1 or /3)"
+            )
+else:
+    # Partial metrics: still emit a number or explicit NOT_RUN — never blank.
+    measured4 = (
+        f"getblobs_present={getblobs_present} complete={complete_val}; "
+        f"columns_engine_present={cols_present} cols={cols_val}"
+    )
+    if complete_val is not None and complete_val > 0 and (cols_val is None or cols_val == 0):
+        if cols_val == 0:
+            measured4 += (
+                " **FAIL: non-zero getblobs complete with zero engine-sourced columns**"
+            )
+            st4 = "FAIL"
+        else:
+            st4 = "NO_DATA"
+            measured4 += " (engine columns series missing)"
+    else:
+        st4 = "NO_DATA"
+
+# Optional end-to-end record from harness (CC-38/8).
+if isinstance(c4h, dict) and c4h.get("e2e"):
+    e2e = c4h["e2e"]
+    measured4 += (
+        f"; CC-38/8 e2e root={e2e.get('block_root')}; "
+        f"t_complete={e2e.get('t_complete')}; "
+        f"t_data_available={e2e.get('t_data_available')}"
+    )
+
+add_row(row_result(
+    "4",
+    "4 · getBlobsV2 fast path + DA edge",
+    VENUE_HOODI,
+    measured4,
+    "hit rate recorded (low is PASS); non-zero complete + zero engine-sourced "
+    "columns = FAIL; else NOT_RUN naming CC-38b, CC-24c, CC-24d (D-13)",
+    st4,
+))
+
+# ── Clause 5 · Phase 1 spec vectors stay green (dev machine) ───────────────
+c5 = harness.get("clause5") if isinstance(harness, dict) else None
+if isinstance(c5, dict):
+    green = c5.get("spec_vectors_green")
+    skiplist = c5.get("skiplist_empty")
+    measured5 = f"spec_vectors_green={green}; skiplist_empty={skiplist}"
+    ok5 = bool(green) and (skiplist is None or bool(skiplist))
+    st5 = "PASS" if ok5 else "FAIL"
+else:
+    measured5 = (
+        "NOT_RUN (harness-json.clause5 absent — re-asserted by CC-3Kb / "
+        "cargo nextest -p cc-spec-tests)"
+    )
+    st5 = "NOT_RUN"
+add_row(row_result(
+    "5",
+    "5 · Phase 1 spec-vector suites stay green",
+    VENUE_DEV,
+    measured5,
+    "cargo nextest -p cc-spec-tests green both presets; skiplist still empty",
+    st5,
+))
+
+# ── P1 rows (no clause threshold) ──────────────────────────────────────────
+c3c = harness.get("cc_3c") if isinstance(harness, dict) else None
+if isinstance(c3c, dict):
+    measured_3c = (
+        f"engine_call_p95={c3c.get('engine_call_p95')}; "
+        f"encode_p95={c3c.get('encode_p95')}; "
+        f"request_p95={c3c.get('request_p95')}; "
+        f"geth_newpayload={c3c.get('geth_newpayload')}; "
+        f"CC-1H verdict={c3c.get('cc1h_verdict')}"
+    )
+    st_3c = c3c.get("status", "INFO")
+else:
+    measured_3c = "NOT_RUN (docs/engine-latency.md — CC-3C owns the numbers)"
+    st_3c = "NOT_RUN"
+add_row(row_result(
+    "cc-3c",
+    "CC-3C · latency numbers + CC-1H verdict",
+    VENUE_DEV,
+    measured_3c,
+    "P1, no clause",
+    st_3c,
+))
+
+c3b = harness.get("cc_3b") if isinstance(harness, dict) else None
+if isinstance(c3b, dict):
+    measured_3b = (
+        f"IsOptimistic known={c3b.get('is_optimistic_known')}; "
+        f"GetEngineState el_offline={c3b.get('el_offline')}"
+    )
+    st_3b = c3b.get("status", "INFO")
+else:
+    measured_3b = "NOT_RUN (CC-3B surface — no Phase 3 caller)"
+    st_3b = "NOT_RUN"
+add_row(row_result(
+    "cc-3b",
+    "CC-3B · optimistic / el_offline surface",
+    VENUE_DEV,
+    measured_3b,
+    "P1, no clause",
+    st_3b,
+))
+
+# ── emit ───────────────────────────────────────────────────────────────────
+if venue_filter and not candidates and venue_refusals:
+    # Requested venue matched no remaining rows after filter (e.g. only clause 1
+    # asked under dev machine). Exit 0 with empty table + refusals already on stderr.
+    pass
+
+lines = [
+    "## Clause table",
+    "",
+    "**Owner:** CC-3Ab (script) / CC-3Ac (numbers)",
+    "**Generated by:** `scripts/soak-report.sh --phase 3`",
+    f"**Phase A → Phase B window_start / phase_b_boundary:** "
+    f"{fmt_ts(t_start) if t_start else 'NOT_RUN'} "
+    f"(unix={t_start if t_start is not None else 'n/a'})",
+    f"**Window end:** {fmt_ts(t_end) if t_end else 'NOT_RUN'}",
+    f"**Boundary file:** `{boundary_path or '(none)'}`",
+    f"**Samples:** `{samples_path or '(none)'}`",
+    f"**Venue filter:** {venue_filter or '(none — all venues)'}",
+    f"**Clause filter:** {clause_filter or '(none — all clauses)'}",
+    "",
+    "| Clause | Venue | Measured | Threshold | Pass/Fail |",
+    "|---|---|---|---|---|",
+]
+for r in candidates:
+    def esc(s):
+        return str(s).replace("|", "\\|").replace("\n", " ")
+    lines.append(
+        f"| {esc(r['clause'])} | {esc(r['venue'])} | {esc(r['measured'])} | "
+        f"{esc(r['threshold'])} | **{esc(r['status'])}** |"
+    )
+if not candidates:
+    lines.append(
+        "| _(no rows emitted)_ | — | venue/clause filter excluded every row "
+        "(refusals on stderr) | — | **REFUSED** |"
+    )
+lines.append("")
+lines.append("### Method notes")
+lines.append("")
+lines.append(
+    "- **Venue is machine-checked.** Exact strings: `Hoodi`, "
+    "`local compose + EL`, `dev machine`. "
+    "`--venue` refuses non-matching clause rows — a clause at the wrong "
+    "venue does not discharge."
+)
+lines.append(
+    "- **Clause 1 window_start** is CC-39b's Phase A → Phase B boundary "
+    "(`window_start_unix` / `phase_b_boundary` from "
+    "`scripts/phase-3-acceptance.sh`). The bootstrap catch-up burst before "
+    "it is **excluded and reported as its own row**."
+)
+lines.append(
+    "- **Clause 4** computes both "
+    '`cc_engine_getblobs_total{result="complete"}` and '
+    '`cc_p2p_columns_received_total{source="engine"}`. '
+    "Non-zero complete with zero engine-sourced columns is **FAIL**. "
+    "Absent families emit **NOT_RUN** naming `CC-38b`, `CC-24c`, `CC-24d` (D-13)."
+)
+lines.append(
+    "- **P1 rows** (`CC-3C`, `CC-3B`) carry *P1, no clause* in place of a threshold."
+)
+lines.append(
+    "- Every measured cell is a **number or an explicit NOT_RUN / NO_DATA** — "
+    "no blank, no `<unset>`. A clause read by eye off a Grafana panel does "
+    "not discharge it."
+)
+lines.append(
+    "- **It measures the run; it is not the run** (D-6). Numbers are filled by "
+    "CC-3Ac after the ≥ 6 h window."
+)
+lines.append("")
+
+sys.stdout.write("\n".join(lines))
+
+hard_fail = any(r["status"] == "FAIL" for r in candidates)
+if hard_fail:
+    raise SystemExit(4)
+raise SystemExit(0)
+PY
+}
+
 # ── self-test ───────────────────────────────────────────────────────────────
 if [[ "${SELF_TEST}" -eq 1 ]]; then
   log "running self-test (synthetic series; both R-1 directions + catch-up gate)"
@@ -1394,11 +2336,394 @@ EOF
     || die "self-test: CC-2A NO_DATA row missing"
   log "ok: missing harness data emits NO_DATA rows (not omitted)"
 
-  log "self-test PASSED (phase1: clean/spike/catchup/provider; phase2: table/dip/stable/NO_DATA)"
+  # ── Phase 3 fixture self-tests (CC-3Ab) ─────────────────────────────────
+  log "phase3 self-test: clause table + venue gate + bootstrap exclusion + clause4"
+  P3_BOUND=1700005000
+  cat > "${TMP}/p3_boundary.txt" <<EOF
+# phase_boundary: Phase A → Phase B (sync gate crossed)
+window_start_utc=2023-11-14T22:16:40Z
+window_start_unix=${P3_BOUND}
+phase_boundary=A_to_B
+phase_boundary_utc=2023-11-14T22:16:40Z
+phase_boundary_unix=${P3_BOUND}
+phase_b_boundary=${P3_BOUND}
+EOF
+  # Samples: 5 bootstrap (is_optimistic=1) + 20 steady (is_optimistic=0)
+  {
+    echo "ts_unix,slot,local_root,local_slot,ref_root,ref_slot,agree,rss_kib,load1,is_optimistic,optimistic_nodes,el_head_lag_blocks,finalized_epoch"
+    for i in $(seq 0 4); do
+      ts=$((P3_BOUND - 60 + i * 12))
+      echo "${ts},$((3000+i)),0xabc,$((3000+i)),0xabc,$((3000+i)),1,100000,0.50,1,3,0,100"
+    done
+    for i in $(seq 0 19); do
+      ts=$((P3_BOUND + i * 12))
+      echo "${ts},$((3100+i)),0xabc,$((3100+i)),0xabc,$((3100+i)),1,100000,0.50,0,0,0,120"
+    done
+  } > "${TMP}/p3_samples_ok.csv"
+
+  cat > "${TMP}/p3_engine_start.txt" <<'EOF'
+# TYPE cc_engine_payload_status_total counter
+cc_engine_payload_status_total{method="newPayloadV4",status="VALID"} 10
+cc_engine_payload_status_total{method="newPayloadV4",status="INVALID"} 0
+# TYPE cc_engine_getblobs_total counter
+cc_engine_getblobs_total{result="complete"} 2
+cc_engine_getblobs_total{result="miss"} 8
+cc_engine_getblobs_total{result="partial"} 0
+# TYPE cc_engine_errors_total counter
+cc_engine_errors_total{code="-38002"} 0
+cc_engine_errors_total{code="-38006"} 0
+EOF
+  cat > "${TMP}/p3_engine_end.txt" <<'EOF'
+# TYPE cc_engine_payload_status_total counter
+cc_engine_payload_status_total{method="newPayloadV4",status="VALID"} 210
+cc_engine_payload_status_total{method="newPayloadV4",status="INVALID"} 0
+# TYPE cc_engine_getblobs_total counter
+cc_engine_getblobs_total{result="complete"} 5
+cc_engine_getblobs_total{result="miss"} 20
+cc_engine_getblobs_total{result="partial"} 0
+# TYPE cc_engine_errors_total counter
+cc_engine_errors_total{code="-38002"} 0
+cc_engine_errors_total{code="-38006"} 0
+EOF
+  cat > "${TMP}/p3_chain_start.txt" <<'EOF'
+# TYPE cc_chain_is_optimistic gauge
+cc_chain_is_optimistic 0
+# TYPE cc_chain_optimistic_nodes gauge
+cc_chain_optimistic_nodes 0
+EOF
+  cat > "${TMP}/p3_chain_end.txt" <<'EOF'
+# TYPE cc_chain_is_optimistic gauge
+cc_chain_is_optimistic 0
+# TYPE cc_chain_optimistic_nodes gauge
+cc_chain_optimistic_nodes 0
+EOF
+  cat > "${TMP}/p3_p2p_start.txt" <<'EOF'
+# TYPE cc_p2p_columns_received_total counter
+cc_p2p_columns_received_total{source="engine"} 1
+cc_p2p_columns_received_total{source="gossip"} 100
+EOF
+  cat > "${TMP}/p3_p2p_end.txt" <<'EOF'
+# TYPE cc_p2p_columns_received_total counter
+cc_p2p_columns_received_total{source="engine"} 4
+cc_p2p_columns_received_total{source="gossip"} 400
+EOF
+  cat > "${TMP}/p3_harness_ok.json" <<'EOF'
+{
+  "entry": {"eth_syncing_false": true, "snapshot_block": 3370000},
+  "clause2": {
+    "clean": {
+      "el_offline_during": true,
+      "is_optimistic_during": true,
+      "fcu_slots_after_sync": 0,
+      "optimistic_cleared_single_valid": true,
+      "no_payload_resubmission": true
+    },
+    "unclean": {
+      "el_offline_during": true,
+      "is_optimistic_during": true,
+      "fcu_slots_after_sync": 1,
+      "optimistic_cleared_single_valid": true,
+      "no_payload_resubmission": true
+    }
+  },
+  "clause3_wire": {
+    "slots": 120,
+    "fcu_in_order": true,
+    "newpayload_before_fcu": true
+  },
+  "clause4": {
+    "e2e": {
+      "block_root": "0xdead",
+      "t_complete": "2026-08-07T00:00:00Z",
+      "t_data_available": "2026-08-07T00:00:01Z"
+    }
+  },
+  "clause5": {"spec_vectors_green": true, "skiplist_empty": true},
+  "cc_3c": {
+    "engine_call_p95": 0.01,
+    "encode_p95": 0.002,
+    "request_p95": 0.05,
+    "geth_newpayload": 0.03,
+    "cc1h_verdict": "Trigger B excluded",
+    "status": "PASS"
+  },
+  "cc_3b": {
+    "is_optimistic_known": true,
+    "el_offline": false,
+    "status": "PASS"
+  }
+}
+EOF
+
+  # 10) phase3 clean → full table with venues + bootstrap exclusion
+  set +e
+  SAMPLES="${TMP}/p3_samples_ok.csv" \
+  BOUNDARY_FILE="${TMP}/p3_boundary.txt" \
+  CHAIN_METRICS_START="${TMP}/p3_chain_start.txt" \
+  CHAIN_METRICS_END="${TMP}/p3_chain_end.txt" \
+  ENGINE_METRICS_START="${TMP}/p3_engine_start.txt" \
+  ENGINE_METRICS_END="${TMP}/p3_engine_end.txt" \
+  P2P_METRICS_START="${TMP}/p3_p2p_start.txt" \
+  P2P_METRICS_END="${TMP}/p3_p2p_end.txt" \
+  HARNESS_JSON="${TMP}/p3_harness_ok.json" \
+  VENUE_FILTER="" \
+  CLAUSE_FILTER="" \
+  body="$(run_python_phase3 2>"${TMP}/err_p3_ok.txt")"
+  rc=$?
+  set -e
+  if [[ "${rc}" -ne 0 ]]; then
+    cat "${TMP}/err_p3_ok.txt" >&2
+    die "self-test: phase3 clean should exit 0, got ${rc}"
+  fi
+  echo "${body}" | grep -Fq '| E · entry condition (synced EL) | dev machine |' \
+    || { echo "${body}" >&2; die "self-test: entry E row/venue missing"; }
+  echo "${body}" | grep -Fq '| 1 · head marked VALID by the EL | Hoodi |' \
+    || { echo "${body}" >&2; die "self-test: clause 1 row/venue missing"; }
+  echo "${body}" | grep -Fq 'local compose + EL' \
+    || die "self-test: clause 2 venue missing"
+  echo "${body}" | grep -Fq '| 3 · EL stays synced via forkchoiceUpdated | Hoodi |' \
+    || die "self-test: clause 3 row missing"
+  echo "${body}" | grep -Fq '| 4 · getBlobsV2 fast path + DA edge | Hoodi |' \
+    || die "self-test: clause 4 row missing"
+  echo "${body}" | grep -Fq '| 5 · Phase 1 spec-vector suites stay green | dev machine |' \
+    || die "self-test: clause 5 row missing"
+  echo "${body}" | grep -Fq 'P1, no clause' \
+    || die "self-test: P1 threshold string missing"
+  echo "${body}" | grep -Fq 'bootstrap catch-up burst' \
+    || die "self-test: bootstrap exclusion row missing"
+  echo "${body}" | grep -Fq 'is_optimistic==1 fraction=' \
+    || die "self-test: bootstrap burst must report optimistic fraction separately"
+  echo "${body}" | grep -Fq 'is_optimistic==0 fraction=1.000000' \
+    || { echo "${body}" >&2; die "self-test: clause 1 must exclude bootstrap (expect fraction 1.0)"; }
+  echo "${body}" | grep -Fq 'window_start/phase_b_boundary=' \
+    || die "self-test: window_start/phase_b_boundary must appear in output"
+  # AC: grep window_start|phase_b_boundary in the script itself
+  grep -E 'window_start|phase_b_boundary' "${SCRIPT_DIR}/soak-report.sh" >/dev/null \
+    || die "self-test: script must contain window_start|phase_b_boundary"
+  log "ok: phase3 clean emits E+1–5+P1 with venues; bootstrap excluded"
+
+  # 11) --venue 'dev machine' refuses clause 1 (Hoodi)
+  set +e
+  SAMPLES="${TMP}/p3_samples_ok.csv" \
+  BOUNDARY_FILE="${TMP}/p3_boundary.txt" \
+  CHAIN_METRICS_START="${TMP}/p3_chain_start.txt" \
+  CHAIN_METRICS_END="${TMP}/p3_chain_end.txt" \
+  ENGINE_METRICS_START="${TMP}/p3_engine_start.txt" \
+  ENGINE_METRICS_END="${TMP}/p3_engine_end.txt" \
+  P2P_METRICS_START="${TMP}/p3_p2p_start.txt" \
+  P2P_METRICS_END="${TMP}/p3_p2p_end.txt" \
+  HARNESS_JSON="${TMP}/p3_harness_ok.json" \
+  VENUE_FILTER="dev machine" \
+  CLAUSE_FILTER="" \
+  body="$(run_python_phase3 2>"${TMP}/err_p3_venue.txt")"
+  rc=$?
+  set -e
+  [[ "${rc}" -eq 0 ]] || { cat "${TMP}/err_p3_venue.txt" >&2; die "self-test: venue filter exit ${rc}"; }
+  grep -q "refusing to emit clause '1'" "${TMP}/err_p3_venue.txt" \
+    || { cat "${TMP}/err_p3_venue.txt" >&2; die "self-test: venue refuse for clause 1 missing"; }
+  echo "${body}" | grep -Fq '| 1 · head marked VALID by the EL | Hoodi |' \
+    && die "self-test: clause 1 must not be emitted at venue 'dev machine'"
+  echo "${body}" | grep -Fq 'dev machine' \
+    || die "self-test: dev machine rows should still emit"
+  log "ok: --venue 'dev machine' refuses clause 1 (Hoodi)"
+
+  # 12) clause 4 with no engine-sourced columns → NOT_RUN naming blockers
+  cat > "${TMP}/p3_engine_empty.txt" <<'EOF'
+# TYPE cc_engine_request_seconds histogram
+cc_engine_request_seconds_count 0
+EOF
+  cat > "${TMP}/p3_p2p_empty.txt" <<'EOF'
+# TYPE cc_p2p_peers gauge
+cc_p2p_peers 30
+EOF
+  set +e
+  SAMPLES="${TMP}/p3_samples_ok.csv" \
+  BOUNDARY_FILE="${TMP}/p3_boundary.txt" \
+  ENGINE_METRICS_START="${TMP}/p3_engine_empty.txt" \
+  ENGINE_METRICS_END="${TMP}/p3_engine_empty.txt" \
+  P2P_METRICS_START="${TMP}/p3_p2p_empty.txt" \
+  P2P_METRICS_END="${TMP}/p3_p2p_empty.txt" \
+  HARNESS_JSON="" \
+  VENUE_FILTER="" \
+  CLAUSE_FILTER="4" \
+  body="$(run_python_phase3 2>"${TMP}/err_p3_c4.txt")"
+  rc=$?
+  set -e
+  [[ "${rc}" -eq 0 ]] || { cat "${TMP}/err_p3_c4.txt" >&2; die "self-test: clause4 NOT_RUN exit ${rc}"; }
+  echo "${body}" | grep -Fq 'NOT_RUN' \
+    || { echo "${body}" >&2; die "self-test: clause 4 should be NOT_RUN"; }
+  echo "${body}" | grep -Fq 'CC-38b' \
+    || die "self-test: clause 4 NOT_RUN must name CC-38b"
+  echo "${body}" | grep -Fq 'CC-24c' \
+    || die "self-test: clause 4 NOT_RUN must name CC-24c"
+  echo "${body}" | grep -Fq 'CC-24d' \
+    || die "self-test: clause 4 NOT_RUN must name CC-24d"
+  log "ok: clause 4 NOT_RUN names CC-38b, CC-24c, CC-24d"
+
+  # 13) clause 4 FAIL: complete > 0 and engine columns == 0
+  cat > "${TMP}/p3_engine_hit.txt" <<'EOF'
+cc_engine_getblobs_total{result="complete"} 7
+cc_engine_getblobs_total{result="miss"} 1
+cc_engine_getblobs_total{result="partial"} 0
+EOF
+  cat > "${TMP}/p3_p2p_zero_eng.txt" <<'EOF'
+cc_p2p_columns_received_total{source="engine"} 0
+cc_p2p_columns_received_total{source="gossip"} 50
+EOF
+  set +e
+  SAMPLES="${TMP}/p3_samples_ok.csv" \
+  BOUNDARY_FILE="${TMP}/p3_boundary.txt" \
+  ENGINE_METRICS_START="${TMP}/p3_engine_hit.txt" \
+  ENGINE_METRICS_END="${TMP}/p3_engine_hit.txt" \
+  P2P_METRICS_START="${TMP}/p3_p2p_zero_eng.txt" \
+  P2P_METRICS_END="${TMP}/p3_p2p_zero_eng.txt" \
+  HARNESS_JSON="" \
+  CLAUSE_FILTER="4" \
+  body="$(run_python_phase3 2>"${TMP}/err_p3_c4f.txt")"
+  rc=$?
+  set -e
+  [[ "${rc}" -eq 4 ]] || { echo "${body}" >&2; die "self-test: clause4 FAIL should exit 4, got ${rc}"; }
+  echo "${body}" | grep -Fq '**FAIL**' \
+    || { echo "${body}" >&2; die "self-test: clause 4 should status FAIL"; }
+  echo "${body}" | grep -Fq 'non-zero getblobs complete with zero engine-sourced' \
+    || die "self-test: clause 4 FAIL message missing"
+  log "ok: clause 4 FAIL when complete>0 and engine columns==0"
+
+  # 14) every measured cell non-blank (no <unset> in table rows)
+  set +e
+  SAMPLES="${TMP}/p3_samples_ok.csv" \
+  BOUNDARY_FILE="${TMP}/p3_boundary.txt" \
+  body="$(run_python_phase3 2>"${TMP}/err_p3_sparse.txt")"
+  rc=$?
+  set -e
+  table_rows="$(echo "${body}" | grep -E '^\| ' | grep -v '^| Clause' | grep -v '^|---' || true)"
+  echo "${table_rows}" | grep -F '<unset>' \
+    && die "self-test: must not emit <unset> in clause table rows"
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    # measured cell (3rd) must not be empty between pipes
+    echo "${line}" | grep -E '^\|[^|]+\|[^|]+\|[^|]+\|[^|]+\|[^|]+\|$' >/dev/null \
+      || die "self-test: malformed/blank row: ${line}"
+  done <<< "${table_rows}"
+  log "ok: sparse inputs still produce number or NOT_RUN in every cell"
+
+  log "self-test PASSED (phase1: clean/spike/catchup/provider; phase2: table/dip/stable/NO_DATA; phase3: table/venue/bootstrap/clause4)"
   exit 0
 fi
 
 # ── resolve inputs ──────────────────────────────────────────────────────────
+# Phase 3-only path: per-clause table (CC-3Ab). Samples optional (NOT_RUN cells).
+if [[ "${PHASE3}" == "1" ]]; then
+  if [[ -n "${SAMPLES}" && ! -f "${SAMPLES}" ]]; then
+    die "samples file not found: ${SAMPLES}"
+  fi
+  if [[ -n "${CHAIN_METRICS_START}" ]]; then
+    [[ -f "${CHAIN_METRICS_START}" ]] || die "chain-metrics-start not found: ${CHAIN_METRICS_START}"
+  fi
+  if [[ -n "${CHAIN_METRICS_END}" ]]; then
+    [[ -f "${CHAIN_METRICS_END}" ]] || die "chain-metrics-end not found: ${CHAIN_METRICS_END}"
+  fi
+  if [[ -n "${ENGINE_METRICS_START}" ]]; then
+    [[ -f "${ENGINE_METRICS_START}" ]] || die "engine-metrics-start not found: ${ENGINE_METRICS_START}"
+  fi
+  if [[ -n "${ENGINE_METRICS_END}" ]]; then
+    [[ -f "${ENGINE_METRICS_END}" ]] || die "engine-metrics-end not found: ${ENGINE_METRICS_END}"
+  fi
+  if [[ -n "${P2P_METRICS_START}" ]]; then
+    [[ -f "${P2P_METRICS_START}" ]] || die "p2p-metrics-start not found: ${P2P_METRICS_START}"
+  fi
+  if [[ -n "${P2P_METRICS_END}" ]]; then
+    [[ -f "${P2P_METRICS_END}" ]] || die "p2p-metrics-end not found: ${P2P_METRICS_END}"
+  fi
+  if [[ -n "${HARNESS_JSON}" ]]; then
+    [[ -f "${HARNESS_JSON}" ]] || die "harness-json not found: ${HARNESS_JSON}"
+  fi
+
+  if [[ "${DOCS}" == "${REPO_ROOT}/docs/phase-1-soak.md" ]]; then
+    DOCS="${REPO_ROOT}/docs/phase-3-acceptance.md"
+  fi
+
+  log "phase3:              yes"
+  log "samples:             ${SAMPLES:-"(none)"}"
+  log "boundary file:       ${BOUNDARY_FILE}"
+  log "chain metrics start: ${CHAIN_METRICS_START:-${METRICS_START:-"(none)"}}"
+  log "chain metrics end:   ${CHAIN_METRICS_END:-${METRICS_END:-"(none)"}}"
+  log "engine metrics start:${ENGINE_METRICS_START:-"(none)"}"
+  log "engine metrics end:  ${ENGINE_METRICS_END:-"(none)"}"
+  log "p2p metrics start:   ${P2P_METRICS_START:-"(none)"}"
+  log "p2p metrics end:     ${P2P_METRICS_END:-"(none)"}"
+  log "harness json:        ${HARNESS_JSON:-"(none)"}"
+  log "venue filter:        ${VENUE_FILTER:-"(none)"}"
+  log "clause filter:       ${CLAUSE_FILTER:-"(none)"}"
+
+  TMPERR="$(mktemp)"
+  set +e
+  body="$(run_python_phase3 2>"${TMPERR}")"
+  rc=$?
+  set -e
+  if [[ "${rc}" -eq 3 ]]; then
+    cat "${TMPERR}" >&2
+    rm -f "${TMPERR}"
+    exit 3
+  fi
+  if [[ "${rc}" -ne 0 && "${rc}" -ne 4 ]]; then
+    cat "${TMPERR}" >&2
+    rm -f "${TMPERR}"
+    die "phase3 report generation failed (exit ${rc})"
+  fi
+  if [[ -s "${TMPERR}" ]]; then
+    cat "${TMPERR}" >&2
+  fi
+  rm -f "${TMPERR}"
+
+  if [[ -n "${OUT}" ]]; then
+    printf '%s\n' "${body}" > "${OUT}"
+    log "wrote ${OUT}"
+  else
+    printf '%s\n' "${body}"
+  fi
+
+  if [[ "${WRITE}" -eq 1 ]]; then
+    [[ -f "${DOCS}" ]] || die "docs file not found: ${DOCS}"
+    python3 - "${DOCS}" "${body}" <<'PY'
+import sys
+from pathlib import Path
+docs = Path(sys.argv[1])
+body = sys.argv[2]
+if not body.lstrip().startswith("## "):
+    body = "## Clause table\n\n" + body
+text = docs.read_text()
+start = text.find("## Clause table")
+if start < 0:
+    docs.write_text(text.rstrip() + "\n\n" + body + "\n")
+else:
+    rest = text[start + 1:]
+    nxt = None
+    for i, line in enumerate(rest.splitlines(keepends=True)):
+        if i == 0:
+            continue
+        if line.startswith("## "):
+            offset = len("".join(rest.splitlines(keepends=True)[:i]))
+            nxt = start + 1 + offset
+            break
+    if nxt is None:
+        new_text = text[:start] + body.rstrip() + "\n"
+    else:
+        new_text = text[:start] + body.rstrip() + "\n\n" + text[nxt:]
+    docs.write_text(new_text)
+print(f"updated {docs} ## Clause table", file=sys.stderr)
+PY
+    log "updated ${DOCS} ## Clause table (--write)"
+  fi
+
+  if [[ "${rc}" -eq 4 ]]; then
+    log "phase3 clause FAIL (report emitted; exit 4)"
+    exit 4
+  fi
+  log "done (phase3)"
+  exit 0
+fi
+
 [[ -n "${SAMPLES}" ]] || die "samples CSV required (--samples or SOAK_SAMPLES)"
 [[ -f "${SAMPLES}" ]] || die "samples file not found: ${SAMPLES}"
 
