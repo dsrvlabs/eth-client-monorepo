@@ -49,7 +49,7 @@ use cc_chain::import::encode_signed_block;
 use cc_chain::metrics::ChainMetrics;
 use cc_chain::service::ChainServiceImpl;
 use cc_crypto::INFINITY_SIGNATURE;
-use cc_fork_choice::{AlwaysAvailable, get_forkchoice_store, on_tick};
+use cc_fork_choice::{HarnessAvailability, get_forkchoice_store, on_tick};
 use cc_proto::chain::chain_service_client::ChainServiceClient;
 use cc_proto::chain::chain_service_server::ChainServiceServer;
 use cc_proto::chain::{EventKind, GetHeadRequest, ImportBlockRequest, ImportBlockVerdict};
@@ -525,7 +525,7 @@ fn seed_store(
         state,
         anchor,
         Arc::new(StubOptimisticEngine),
-        Arc::new(AlwaysAvailable),
+        Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )
     .expect("get_forkchoice_store");

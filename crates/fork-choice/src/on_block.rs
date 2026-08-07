@@ -527,7 +527,7 @@ mod tests {
     use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
 
     use super::*;
-    use crate::da_seam::{AlwaysAvailable, DataAvailability, DeferralReason};
+    use crate::da_seam::{HarnessAvailability, DataAvailability, DeferralReason};
     use crate::proto_array::ProtoNodeBlock;
     use crate::store::Store;
 
@@ -657,7 +657,7 @@ mod tests {
 
     #[test]
     fn unknown_parent_defers() {
-        let (mut store, _anchor, config) = seeded_store(Arc::new(AlwaysAvailable));
+        let (mut store, _anchor, config) = seeded_store(Arc::new(HarnessAvailability));
         store.set_time(12);
 
         let unknown_parent = root(0xEE);
@@ -683,7 +683,7 @@ mod tests {
 
     #[test]
     fn future_slot_defers() {
-        let (mut store, anchor, config) = seeded_store(Arc::new(AlwaysAvailable));
+        let (mut store, anchor, config) = seeded_store(Arc::new(HarnessAvailability));
         assert_eq!(store.get_current_slot().as_u64(), 0);
 
         let block = signed_block(5, anchor, 0);
@@ -703,7 +703,7 @@ mod tests {
 
     #[test]
     fn not_descended_from_finalized_is_reject_error() {
-        let (mut store, anchor, config) = seeded_store(Arc::new(AlwaysAvailable));
+        let (mut store, anchor, config) = seeded_store(Arc::new(HarnessAvailability));
         store.set_time(100);
 
         let foreign = root(0xFD);
@@ -724,7 +724,7 @@ mod tests {
 
     #[test]
     fn get_forkchoice_store_seeds_anchor_and_reimport_is_idempotent() {
-        let (store, anchor, config) = seeded_store(Arc::new(AlwaysAvailable));
+        let (store, anchor, config) = seeded_store(Arc::new(HarnessAvailability));
         assert!(store.blocks().contains_key(&anchor));
         assert!(store.block_state(&anchor).is_some());
         assert_eq!(store.proto_array().len(), 1);
@@ -762,7 +762,7 @@ mod tests {
     /// retry / resume completes proto-array membership.
     #[test]
     fn partial_header_without_proto_is_completed_not_false_imported() {
-        let (mut store, anchor, config) = seeded_store(Arc::new(AlwaysAvailable));
+        let (mut store, anchor, config) = seeded_store(Arc::new(HarnessAvailability));
         store.set_time(12);
 
         let child = root(0x22);
@@ -853,7 +853,7 @@ mod tests {
     /// Proto-array failure before `insert_block` must not leave a header.
     #[test]
     fn proto_array_unknown_parent_does_not_leave_header() {
-        let (mut store, anchor, _config) = seeded_store(Arc::new(AlwaysAvailable));
+        let (mut store, anchor, _config) = seeded_store(Arc::new(HarnessAvailability));
 
         // Parent present as header/state only (not in proto-array).
         let orphan_parent = root(0xAB);
@@ -894,7 +894,7 @@ mod tests {
     /// promotion bumps store justified when unrealized is newer.
     #[test]
     fn compute_pulled_up_tip_sets_unrealized_and_prior_epoch_promotes() {
-        let (mut store, anchor, _config) = seeded_store(Arc::new(AlwaysAvailable));
+        let (mut store, anchor, _config) = seeded_store(Arc::new(HarnessAvailability));
 
         // Block from epoch 0; store already in epoch 2 → prior-epoch branch.
         // Minimal: 8 slots/epoch × 6 s = 48 s/epoch → epoch 2 starts at t=96.

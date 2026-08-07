@@ -224,6 +224,12 @@ pub struct ChainMetrics {
     pub event_publish_dropped: Counter,
     /// Checkpoint bootstrap attempts per provider (CC-19a / §8.1).
     pub bootstrap_attempts: Family<BootstrapLabels, Counter>,
+    /// Blocks dropped from `pending_da` (timeout or capacity eviction; CC-24d).
+    pub da_pending_dropped: Counter,
+    /// Current `pending_da` occupancy (CC-24d).
+    pub da_pending_occupancy: Gauge,
+    /// Current PeerDAS available-root set occupancy (CC-24d).
+    pub da_available_occupancy: Gauge,
 }
 
 impl ChainMetrics {
@@ -257,6 +263,9 @@ impl ChainMetrics {
         let body_ring_len = Gauge::default();
         let event_publish_dropped = Counter::default();
         let bootstrap_attempts = Family::<BootstrapLabels, Counter>::default();
+        let da_pending_dropped = Counter::default();
+        let da_pending_occupancy = Gauge::default();
+        let da_available_occupancy = Gauge::default();
 
         registry.register_with_unit(
             "cc_chain_process_block",
@@ -357,6 +366,22 @@ impl ChainMetrics {
             "Checkpoint bootstrap attempts (provider URL, result=success|failure)",
             bootstrap_attempts.clone(),
         );
+        // OpenMetrics appends `_total` for counters — do not include it in the name.
+        registry.register(
+            "cc_chain_da_pending_dropped",
+            "Blocks dropped from pending_da (timeout or capacity eviction; CC-24d)",
+            da_pending_dropped.clone(),
+        );
+        registry.register(
+            "cc_chain_da_pending_occupancy",
+            "Current pending_da map occupancy (bound 64; CC-24d)",
+            da_pending_occupancy.clone(),
+        );
+        registry.register(
+            "cc_chain_da_available_occupancy",
+            "Current PeerDAS available-root set occupancy (CC-24d)",
+            da_available_occupancy.clone(),
+        );
 
         let metrics = Self {
             process_block,
@@ -378,6 +403,9 @@ impl ChainMetrics {
             body_ring_len,
             event_publish_dropped,
             bootstrap_attempts,
+            da_pending_dropped,
+            da_pending_occupancy,
+            da_available_occupancy,
         };
         metrics.seed_exposition();
         metrics
@@ -462,6 +490,26 @@ impl ChainMetrics {
                 result: BootstrapResult::Failure.as_str().to_owned(),
             })
             .get();
+        let _ = self.da_pending_dropped.get();
+        self.da_pending_occupancy.set(0);
+        self.da_available_occupancy.set(0);
+    }
+
+    /// Increment `cc_chain_da_pending_dropped_total` by `n`.
+    pub fn inc_da_pending_dropped(&self, n: u64) {
+        for _ in 0..n {
+            self.da_pending_dropped.inc();
+        }
+    }
+
+    /// Set `cc_chain_da_pending_occupancy`.
+    pub fn set_da_pending_occupancy(&self, n: u64) {
+        self.da_pending_occupancy.set(n as i64);
+    }
+
+    /// Set `cc_chain_da_available_occupancy`.
+    pub fn set_da_available_occupancy(&self, n: u64) {
+        self.da_available_occupancy.set(n as i64);
     }
 
     // ── process_block / process_epoch (budgeted) ───────────────────────────

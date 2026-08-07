@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use cc_fork_choice::{
-    AlwaysAvailable, DataAvailability, get_forkchoice_store, get_head, get_proposer_head,
+    HarnessAvailability, DataAvailability, get_forkchoice_store, get_head, get_proposer_head,
     on_attestation, on_attester_slashing, on_block, on_tick, store_target_checkpoint_context,
 };
 use cc_state_transition::helpers::accessors::get_indexed_attestation;
@@ -261,7 +261,7 @@ impl<P: Preset> ExecutionEngine<P> for AcceptEngine {
 
 /// Vector-suite DA: optional per-root availability overrides for PeerDAS cases.
 ///
-/// Default is available (AlwaysAvailable). A `columns: []` step marks the
+/// Default is available (optimistic). A `columns: []` step marks the
 /// upcoming block root unavailable; non-empty `columns` marks it available.
 /// Structural failures on column sidecars also mark unavailable.
 #[derive(Debug, Default)]
@@ -996,6 +996,6 @@ mod hex {
 // Silence unused import in some configs.
 #[allow(dead_code)]
 fn _use_always_available() {
-    let _ = AlwaysAvailable;
+    let _ = HarnessAvailability;
     let _ = HashSet::<Root>::new();
 }

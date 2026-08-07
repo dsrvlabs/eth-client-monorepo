@@ -25,7 +25,7 @@ use cc_chain::head::HeadSnapshotStore;
 use cc_chain::import::encode_signed_block;
 use cc_chain::metrics::{ChainMetrics, HashPath};
 use cc_chain::service::{ChainServiceImpl, REASON_NOT_BOOTSTRAPPED};
-use cc_fork_choice::{AlwaysAvailable, get_forkchoice_store};
+use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
 use cc_proto::chain::chain_service_server::{ChainService, ChainServiceServer};
 use cc_proto::chain::{GetHeadRequest, ImportBlockRequest, ImportBlockVerdict};
 use cc_proto::error_info_from_status;
@@ -288,7 +288,7 @@ async fn install_core_clears_not_bootstrapped_for_get_head() {
             state,
             &anchor_block,
             Arc::new(StubOptimisticEngine),
-            Arc::new(AlwaysAvailable),
+            Arc::new(HarnessAvailability),
             config.seconds_per_slot,
         )
         .unwrap();
@@ -376,7 +376,7 @@ fn warm_then_forkchoice_store_seed_retains_warm_caches() {
         state,
         &signed.message,
         Arc::new(StubOptimisticEngine),
-        Arc::new(AlwaysAvailable),
+        Arc::new(HarnessAvailability),
         6,
     )
     .expect("get_forkchoice_store");
@@ -491,7 +491,7 @@ async fn pre_drain_joins_core_within_shutdown_budget() {
         state,
         &anchor_block,
         Arc::new(StubOptimisticEngine),
-        Arc::new(AlwaysAvailable),
+        Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )
     .unwrap();

@@ -42,6 +42,7 @@ use ssz::Encode;
 use tonic::Status;
 use tree_hash::TreeHash;
 
+use crate::da::{PendingDa, PendingDaEntry};
 use crate::epoch_context::EpochContext;
 use crate::events::EventInput;
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
@@ -126,6 +127,7 @@ pub fn import_block<P: Preset>(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -140,6 +142,9 @@ pub fn import_block<P: Preset>(
 ///
 /// `inject_after_early` (tests only): if set, after early ACCEPT skip `on_block` and
 /// treat the injected error as the import failure (non-vacuous late-flag tests).
+///
+/// `pending_da` (CC-24d): when `on_block` returns `Deferred(DataUnavailable)`,
+/// the signed block is parked for re-drive on `DataAvailable`.
 #[allow(clippy::too_many_arguments)]
 pub fn import_block_with_early<P: Preset>(
     store: &mut Store<P>,
@@ -155,6 +160,7 @@ pub fn import_block_with_early<P: Preset>(
     epoch_ctx: Option<&EpochContext>,
     early_accept_tx: Option<tokio::sync::oneshot::Sender<()>>,
     inject_after_early: Option<OnBlockError>,
+    pending_da: Option<&mut PendingDa>,
 ) -> Result<ImportOutcome, Status> {
     let gossip_path = early_accept_tx.is_some() || inject_after_early.is_some();
     // --- 1. decode-free dedup probe (ADR-P1-10 / SEC-4) ----------------------
@@ -257,6 +263,25 @@ pub fn import_block_with_early<P: Preset>(
             )
         }
         Ok(BlockImport::Deferred(DeferralReason::DataUnavailable)) => {
+            // Park for re-drive when DataAvailable lands (CC-24d / §8.3).
+            if let Some(pending) = pending_da {
+                let entry = PendingDaEntry {
+                    root: true_root,
+                    ssz: Bytes::from(signed.as_ssz_bytes()),
+                    fork: request.fork,
+                    source: request.source,
+                    slot: signed.message.slot.as_u64(),
+                    parked_at_slot: store.get_current_slot().as_u64(),
+                };
+                if let Some(evicted) = pending.insert(entry) {
+                    metrics.inc_da_pending_dropped(1);
+                    tracing::debug!(
+                        root = %evicted.root,
+                        "pending_da capacity eviction"
+                    );
+                }
+                metrics.set_da_pending_occupancy(pending.len() as u64);
+            }
             metrics.inc_import_result(ImportResult::Deferred);
             Ok(ImportOutcome {
                 response: ImportBlockResponse {

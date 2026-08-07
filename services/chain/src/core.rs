@@ -18,10 +18,11 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use cc_fork_choice::Store;
+use cc_fork_choice::{PeerDasAvailability, Store};
 use cc_proto::chain::{
     ApplyAttestationsRequest, ApplyAttestationsResponse, ImportBlockRequest, ImportBlockResponse,
 };
+use cc_proto::common::Source;
 use cc_state_transition::helpers::accessors::get_active_validator_indices;
 use cc_state_transition::{
     BlockSignatureStrategy, compute_shuffled_active_indices, decision_root_for_epoch,
@@ -36,9 +37,10 @@ use tokio::sync::{mpsc, oneshot};
 use tonic::Status;
 
 use crate::apply_attestations::apply_attestations;
+use crate::da::{DEFAULT_DA_PENDING_TIMEOUT_SLOTS, PendingDa};
 use crate::epoch_context::{EpochContext, EpochContextStore};
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
-use crate::import::{ImportCounters, ImportOutcome, import_block, import_block_with_early};
+use crate::import::{ImportCounters, ImportOutcome, import_block_with_early};
 use crate::metrics::ChainMetrics;
 use crate::residency::{DEFAULT_BODY_RING_CAPACITY, DEFAULT_MAX_RESIDENT_STATES, Residency};
 
@@ -90,6 +92,14 @@ pub enum CoreCommand {
         duration: Duration,
         reply: oneshot::Sender<()>,
     },
+    /// Sampling complete for `root` (CC-24d / Architecture §8.3).
+    ///
+    /// Marks [`PeerDasAvailability`] and re-drives a parked `pending_da` entry
+    /// when present. Order-independent with block arrival.
+    DataAvailable {
+        root: Root,
+        slot: u64,
+    },
     /// Graceful shutdown.
     Shutdown { done: oneshot::Sender<()> },
 }
@@ -137,6 +147,12 @@ pub struct CoreConfig {
     pub max_resident_states: usize,
     pub body_ring_capacity: usize,
     pub verify: BlockSignatureStrategy,
+    /// Shared PeerDAS available-root set (same `Arc` as the store's DA).
+    ///
+    /// `None` when the store was seeded with a non-PeerDAS harness DA (tests).
+    pub peer_das: Option<Arc<PeerDasAvailability>>,
+    /// Slots a deferred block may wait for `DataAvailable` (default 4).
+    pub da_pending_timeout_slots: u64,
 }
 
 impl Default for CoreConfig {
@@ -145,6 +161,8 @@ impl Default for CoreConfig {
             max_resident_states: DEFAULT_MAX_RESIDENT_STATES,
             body_ring_capacity: DEFAULT_BODY_RING_CAPACITY,
             verify: BlockSignatureStrategy::NoVerification,
+            peer_das: None,
+            da_pending_timeout_slots: DEFAULT_DA_PENDING_TIMEOUT_SLOTS,
         }
     }
 }
@@ -308,6 +326,23 @@ impl CoreHandle {
         rx.await
             .map_err(|_| Status::unavailable("core thread dropped block_for reply"))?;
         Ok(())
+    }
+
+    /// Notify the core that sampling completed for `root` (CC-24d).
+    ///
+    /// Fire-and-forget on the command channel (no reply). Uses the same 2 s
+    /// send timeout as import so a stalled core surfaces as unavailable.
+    pub async fn notify_data_available(&self, root: Root, slot: u64) -> Result<(), Status> {
+        let cmd = CoreCommand::DataAvailable { root, slot };
+        match self.cmd_tx.send_timeout(cmd, IMPORT_SEND_TIMEOUT).await {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::SendTimeoutError::Timeout(_)) => Err(Status::resource_exhausted(
+                "data_available command channel full after 2s send_timeout",
+            )),
+            Err(mpsc::error::SendTimeoutError::Closed(_)) => {
+                Err(Status::unavailable("chain core thread is shut down"))
+            }
+        }
     }
 
     /// Enqueue [`CoreCommand::Shutdown`] and return the done receiver (no wait).
@@ -744,12 +779,25 @@ fn core_loop<P: Preset>(
     let mut epoch_sequence: u64 = epoch.load().sequence;
     let mut last_published_epoch = epoch.load().epoch.as_u64();
     let verify = core_cfg.verify;
+    let peer_das = core_cfg.peer_das;
+    let da_timeout_slots = core_cfg.da_pending_timeout_slots.max(1);
+    let mut pending_da = PendingDa::new();
 
     while let Some(cmd) = cmd_rx.blocking_recv() {
         metrics.set_import_queue_depth(cmd_rx.len() as u64);
+        // Slot-bounded timeout: drop permanently unavailable parked blocks.
+        expire_pending_da(
+            &mut pending_da,
+            store.get_current_slot().as_u64(),
+            da_timeout_slots,
+            &metrics,
+        );
+        if let Some(ref da) = peer_das {
+            metrics.set_da_available_occupancy(da.len() as u64);
+        }
         match cmd {
             CoreCommand::ImportBlock { request, reply } => {
-                let outcome = import_block(
+                let outcome = import_block_with_early(
                     &mut store,
                     &mut residency,
                     &config,
@@ -760,7 +808,12 @@ fn core_loop<P: Preset>(
                     &mut snapshot_sequence,
                     request,
                     verify,
+                    None,
+                    None,
+                    None,
+                    Some(&mut pending_da),
                 );
+                metrics.set_da_pending_occupancy(pending_da.len() as u64);
                 // Republish EpochContext when the head epoch advances (§16/4).
                 if outcome.is_ok() {
                     maybe_publish_epoch_context(
@@ -793,7 +846,9 @@ fn core_loop<P: Preset>(
                     Some(epoch_snapshot.as_ref()),
                     early_accept,
                     None, // production: no inject
+                    Some(&mut pending_da),
                 );
+                metrics.set_da_pending_occupancy(pending_da.len() as u64);
                 if outcome.is_ok() {
                     maybe_publish_epoch_context(
                         &store,
@@ -824,12 +879,132 @@ fn core_loop<P: Preset>(
                 thread::sleep(duration);
                 let _ = reply.send(());
             }
+            CoreCommand::DataAvailable { root, slot } => {
+                handle_data_available(
+                    &mut store,
+                    &mut residency,
+                    &config,
+                    &head,
+                    &event_tx,
+                    &metrics,
+                    &counters,
+                    &mut snapshot_sequence,
+                    &mut pending_da,
+                    peer_das.as_ref(),
+                    verify,
+                    root,
+                    slot,
+                    &mut epoch_sequence,
+                    &mut last_published_epoch,
+                    &epoch,
+                );
+            }
             CoreCommand::Shutdown { done } => {
                 let _ = done.send(());
                 break;
             }
         }
         metrics.set_import_queue_depth(cmd_rx.len() as u64);
+    }
+}
+
+/// Drop timed-out `pending_da` entries and bump the metric.
+fn expire_pending_da(
+    pending: &mut PendingDa,
+    current_slot: u64,
+    timeout_slots: u64,
+    metrics: &ChainMetrics,
+) {
+    let dropped = pending.expire(current_slot, timeout_slots);
+    if !dropped.is_empty() {
+        metrics.inc_da_pending_dropped(dropped.len() as u64);
+        for e in &dropped {
+            tracing::debug!(
+                root = %e.root,
+                slot = e.slot,
+                parked_at_slot = e.parked_at_slot,
+                current_slot,
+                "pending_da entry dropped after timeout"
+            );
+        }
+    }
+    metrics.set_da_pending_occupancy(pending.len() as u64);
+}
+
+/// Mark root available and re-drive a parked block when present (CC-24d).
+#[allow(clippy::too_many_arguments)]
+fn handle_data_available<P: Preset>(
+    store: &mut Store<P>,
+    residency: &mut Residency<P>,
+    config: &ChainConfig,
+    head: &HeadSnapshotStore,
+    event_tx: &mpsc::Sender<crate::events::EventInput>,
+    metrics: &ChainMetrics,
+    counters: &ImportCounters,
+    snapshot_sequence: &mut u64,
+    pending_da: &mut PendingDa,
+    peer_das: Option<&Arc<PeerDasAvailability>>,
+    verify: BlockSignatureStrategy,
+    root: Root,
+    slot: u64,
+    epoch_sequence: &mut u64,
+    last_published_epoch: &mut u64,
+    epoch: &EpochContextStore,
+) {
+    if let Some(da) = peer_das {
+        da.mark_available(root);
+        metrics.set_da_available_occupancy(da.len() as u64);
+    } else {
+        tracing::trace!(
+            %root,
+            slot,
+            "DataAvailable received but no PeerDasAvailability handle; mark skipped"
+        );
+    }
+
+    let Some(entry) = pending_da.take(&root) else {
+        // Signal arrived before the block — import will succeed on first attempt.
+        metrics.set_da_pending_occupancy(pending_da.len() as u64);
+        tracing::debug!(%root, slot, "DataAvailable; no pending_da entry");
+        return;
+    };
+    metrics.set_da_pending_occupancy(pending_da.len() as u64);
+    tracing::debug!(%root, slot, "DataAvailable; re-driving pending_da entry");
+
+    let request = ImportBlockRequest {
+        ssz: entry.ssz.to_vec(),
+        fork: entry.fork,
+        root: root.as_slice().to_vec(),
+        source: if entry.source == 0 {
+            Source::Gossip as i32
+        } else {
+            entry.source
+        },
+    };
+    let outcome = import_block_with_early(
+        store,
+        residency,
+        config,
+        head,
+        event_tx,
+        metrics,
+        counters,
+        snapshot_sequence,
+        request,
+        verify,
+        None,
+        None,
+        None,
+        Some(pending_da),
+    );
+    if outcome.is_ok() {
+        maybe_publish_epoch_context(
+            store,
+            config,
+            epoch,
+            epoch_sequence,
+            last_published_epoch,
+        );
     }
 }
 
@@ -861,7 +1036,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use cc_fork_choice::{AlwaysAvailable, get_forkchoice_store};
+    use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
     use cc_state_transition::StubOptimisticEngine;
     use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
     use cc_types::preset::Minimal;
@@ -916,7 +1091,7 @@ mod tests {
             state,
             &anchor_block,
             Arc::new(StubOptimisticEngine),
-            Arc::new(AlwaysAvailable),
+            Arc::new(HarnessAvailability),
             config.seconds_per_slot,
         )
         .unwrap();

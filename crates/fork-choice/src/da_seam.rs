@@ -1,8 +1,8 @@
-//! Data-availability seam (Architecture §6.5, CC-17).
+//! Data-availability seam (Architecture §6.5 / §8.3, CC-17 → CC-24d).
 //!
-//! The whole Phase 1 DA surface lives in this file so Phase 2 (CC-24) can
-//! substitute real PeerDAS sampling by changing one body, not `on_block` or
-//! other fork-choice logic. Symmetrical with the CC-14 engine seam.
+//! The whole DA surface lives in this file so Phase 2 substitutes real PeerDAS
+//! sampling by changing one body, not `on_block` or other fork-choice logic.
+//! Symmetrical with the CC-14 engine seam.
 //!
 //! # Fulu signature
 //!
@@ -20,10 +20,27 @@
 //!
 //! # Call site
 //!
-//! **Intended** sole production call site (CC-15b): top of `on_block`, before
-//! the state transition. This module defines the seam and enums only; the
-//! production call lands with `on_block`. It does **not** call the CC-14
-//! engine seam (that call site stays sole inside `process_execution_payload`).
+//! **Sole production call site** (CC-15b / CC-24/4): top of `on_block`, before
+//! the state transition. **Sole production implementation**: [`PeerDasAvailability`]
+//! — a set-membership test against roots signalled available by the sampling
+//! tracker (`DataAvailable` on the p2p stream). Phase 1's optimistic DA stub is
+//! **deleted** (not feature-gated).
+//!
+//! # Two-process shape (Architecture §8.3)
+//!
+//! ```text
+//! services/p2p                          │  services/chain
+//! ──────────────────────────────────────┼───────────────────────────────────────────
+//! sampling tracker completes root R     │
+//!   → DataAvailable{root, slot} ────────┼──► p2p_stream → core command
+//!                                       │      → PeerDasAvailability.mark_available
+//!                                       │      → re-drive pending_da
+//!                                       │
+//!                                       │  is_data_available(r) // set lookup only
+//! ```
+
+use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use cc_state_transition::GossipClass;
 use cc_types::primitives::Root;
@@ -31,7 +48,7 @@ use cc_types::primitives::Root;
 /// Spec-shaped data-availability seam (Architecture §6.5).
 ///
 /// Object-safe: `dyn DataAvailability` is the store field type so CC-24 can
-/// swap `PeerDasAvailability` without touching fork-choice logic.
+/// swap [`PeerDasAvailability`] without touching fork-choice logic.
 ///
 /// # Fulu
 ///
@@ -45,15 +62,154 @@ pub trait DataAvailability: Send + Sync {
     fn is_data_available(&self, beacon_block_root: Root) -> bool;
 }
 
-/// Phase 1 optimistic stub: every root is data-available.
+/// Bound on the available-root set (Architecture §8.3 — peer-supplied roots).
 ///
-/// Phase 2 (CC-24) **deletes** this type and substitutes `PeerDasAvailability`
-/// against the sampling tracker. Not feature-gated — a gated stub is a path
-/// that can be re-enabled by accident.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct AlwaysAvailable;
+/// Headroom for two epochs of slots plus sampling reordering; oldest-evicted
+/// when full. Finalization pruning is the primary reclaim path.
+pub const AVAILABLE_ROOTS_BOUND: usize = 256;
 
-impl DataAvailability for AlwaysAvailable {
+/// PeerDAS set-membership data-availability (Architecture §8.3 / CC-24d).
+///
+/// The **sole production** [`DataAvailability`] implementation. `is_data_available`
+/// is a pure set lookup — no I/O, no consensus-structure lock, no network.
+/// Roots enter the set when sampling completes (`DataAvailable` on the p2p
+/// stream); the chain core calls [`Self::mark_available`].
+///
+/// Cheap to clone: all clones share the same bounded set via [`Arc`].
+#[derive(Debug, Clone)]
+pub struct PeerDasAvailability {
+    inner: Arc<Mutex<AvailableSet>>,
+}
+
+#[derive(Debug)]
+struct AvailableSet {
+    /// Membership set (O(1) lookup).
+    roots: HashSet<Root>,
+    /// Insertion order for oldest-eviction when at capacity.
+    order: VecDeque<Root>,
+    /// Hard cap ([`AVAILABLE_ROOTS_BOUND`] by default).
+    bound: usize,
+}
+
+impl PeerDasAvailability {
+    /// Empty available set with the default bound.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_bound(AVAILABLE_ROOTS_BOUND)
+    }
+
+    /// Empty available set with a custom bound (tests).
+    #[must_use]
+    pub fn with_bound(bound: usize) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(AvailableSet {
+                roots: HashSet::new(),
+                order: VecDeque::new(),
+                bound: bound.max(1),
+            })),
+        }
+    }
+
+    /// Mark `root` data-available (sampling complete).
+    ///
+    /// Idempotent. When at capacity, the oldest root is evicted first.
+    /// Returns `true` if this call newly inserted the root.
+    pub fn mark_available(&self, root: Root) -> bool {
+        let Ok(mut g) = self.inner.lock() else {
+            return false;
+        };
+        if g.roots.contains(&root) {
+            return false;
+        }
+        while g.roots.len() >= g.bound {
+            if let Some(old) = g.order.pop_front() {
+                g.roots.remove(&old);
+            } else {
+                break;
+            }
+        }
+        g.roots.insert(root);
+        g.order.push_back(root);
+        true
+    }
+
+    /// Current occupancy of the available set (for gauges / tests).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .map(|g| g.roots.len())
+            .unwrap_or(0)
+    }
+
+    /// Whether the available set is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Whether `root` is currently marked available (same as the trait method).
+    #[must_use]
+    pub fn contains(&self, root: Root) -> bool {
+        self.inner
+            .lock()
+            .map(|g| g.roots.contains(&root))
+            .unwrap_or(false)
+    }
+
+    /// Drop roots that are no longer needed after finalization.
+    ///
+    /// `keep` is the set of roots that must remain (e.g. finalized checkpoint
+    /// root and any still-pending imports). All other available roots are
+    /// removed. Returns the number of roots pruned.
+    pub fn prune_except(&self, keep: &HashSet<Root>) -> usize {
+        let Ok(mut g) = self.inner.lock() else {
+            return 0;
+        };
+        let before = g.roots.len();
+        g.roots.retain(|r| keep.contains(r));
+        let still: HashSet<Root> = g.roots.iter().copied().collect();
+        g.order.retain(|r| still.contains(r));
+        before.saturating_sub(g.roots.len())
+    }
+
+    /// Remove a single root (tests / explicit forget).
+    pub fn remove(&self, root: Root) -> bool {
+        let Ok(mut g) = self.inner.lock() else {
+            return false;
+        };
+        if g.roots.remove(&root) {
+            g.order.retain(|r| *r != root);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Default for PeerDasAvailability {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DataAvailability for PeerDasAvailability {
+    fn is_data_available(&self, beacon_block_root: Root) -> bool {
+        self.contains(beacon_block_root)
+    }
+}
+
+/// Harness DA that admits every root.
+///
+/// **Not production.** Phase 1's optimistic production stub is deleted;
+/// production wiring must construct [`PeerDasAvailability`] only. This type
+/// exists so unit tests that do not exercise the PeerDAS gate can seed a
+/// [`crate::store::Store`] without a sampling tracker (vector suite, head
+/// cache, residency, …).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct HarnessAvailability;
+
+impl DataAvailability for HarnessAvailability {
     fn is_data_available(&self, _beacon_block_root: Root) -> bool {
         true
     }
@@ -163,8 +319,8 @@ mod tests {
     /// Minimal stand-in for `on_block`'s DA gate + post-gate path.
     ///
     /// Mirrors Architecture §6.5 / CC-15b order: DA first, then state
-    /// transition, then store write. Real `on_block` lands in CC-15b and
-    /// re-runs the same assertions against the production function.
+    /// transition, then store write. Real `on_block` re-runs the same
+    /// assertions against the production function.
     fn on_block_with_da(
         da: &dyn DataAvailability,
         root: Root,
@@ -217,28 +373,78 @@ mod tests {
         );
     }
 
-    /// AlwaysAvailable admits the root; the post-gate path runs once.
+    /// PeerDasAvailability admits a root only after `mark_available`.
     #[test]
-    fn always_available_imports() {
-        let da: &dyn DataAvailability = &AlwaysAvailable;
+    fn peer_das_imports_only_after_mark_available() {
+        let da = PeerDasAvailability::new();
         let root = Root::from_array([0xcd; 32]);
         let transition_counter = AtomicU32::new(0);
         let mut blocks: HashMap<Root, ()> = HashMap::new();
 
-        let outcome = on_block_with_da(da, root, &transition_counter, &mut blocks);
+        let outcome = on_block_with_da(&da, root, &transition_counter, &mut blocks);
+        assert!(matches!(
+            outcome,
+            BlockImport::Deferred(DeferralReason::DataUnavailable)
+        ));
+        assert_eq!(transition_counter.load(Ordering::SeqCst), 0);
 
+        assert!(da.mark_available(root));
+        let outcome = on_block_with_da(&da, root, &transition_counter, &mut blocks);
         assert_eq!(outcome, BlockImport::Imported(ImportedBlock { root }));
         assert_eq!(transition_counter.load(Ordering::SeqCst), 1);
         assert!(blocks.contains_key(&root));
         assert_eq!(outcome.gossip_class(), None);
     }
 
-    /// Direct AlwaysAvailable predicate — Phase 1 stub is unconditional true.
+    /// Set membership is independent of root bit patterns (empty → false).
     #[test]
-    fn always_available_returns_true_for_any_root() {
-        let da = AlwaysAvailable;
-        assert!(da.is_data_available(Root::ZERO));
-        assert!(da.is_data_available(Root::from_array([0xff; 32])));
+    fn peer_das_empty_returns_false_for_any_root() {
+        let da = PeerDasAvailability::new();
+        assert!(!da.is_data_available(Root::ZERO));
+        assert!(!da.is_data_available(Root::from_array([0xff; 32])));
+    }
+
+    /// Available set is bounded; oldest root is evicted.
+    #[test]
+    fn peer_das_available_set_is_bounded_oldest_evicted() {
+        let da = PeerDasAvailability::with_bound(2);
+        let r0 = Root::from_array([1; 32]);
+        let r1 = Root::from_array([2; 32]);
+        let r2 = Root::from_array([3; 32]);
+        da.mark_available(r0);
+        da.mark_available(r1);
+        assert_eq!(da.len(), 2);
+        da.mark_available(r2);
+        assert_eq!(da.len(), 2);
+        assert!(!da.contains(r0), "oldest must be evicted");
+        assert!(da.contains(r1));
+        assert!(da.contains(r2));
+    }
+
+    /// Finalization prune drops roots not in the keep set.
+    #[test]
+    fn peer_das_prune_except_keeps_only_named_roots() {
+        let da = PeerDasAvailability::new();
+        let keep_root = Root::from_array([9; 32]);
+        let drop_root = Root::from_array([8; 32]);
+        da.mark_available(keep_root);
+        da.mark_available(drop_root);
+        let mut keep = HashSet::new();
+        keep.insert(keep_root);
+        let pruned = da.prune_except(&keep);
+        assert_eq!(pruned, 1);
+        assert!(da.contains(keep_root));
+        assert!(!da.contains(drop_root));
+    }
+
+    /// Clone shares the same set (core + store share one Arc).
+    #[test]
+    fn peer_das_clone_shares_set() {
+        let a = PeerDasAvailability::new();
+        let b = a.clone();
+        let root = Root::from_array([0x11; 32]);
+        a.mark_available(root);
+        assert!(b.is_data_available(root));
     }
 
     /// `Deferred(DataUnavailable)` → `GossipClass::Ignore`, never `Reject`.
@@ -278,7 +484,19 @@ mod tests {
         fn assert_one_arg(da: &dyn DataAvailability, root: Root) -> bool {
             da.is_data_available(root)
         }
-        assert!(assert_one_arg(&AlwaysAvailable, Root::ZERO));
+        let da = PeerDasAvailability::new();
+        da.mark_available(Root::ZERO);
+        assert!(assert_one_arg(&da, Root::ZERO));
         assert!(!assert_one_arg(&NeverAvailable, Root::ZERO));
+    }
+
+    /// No I/O / no network: mark + lookup complete without any async runtime.
+    #[test]
+    fn is_data_available_is_set_membership_no_io() {
+        let da = PeerDasAvailability::new();
+        let root = Root::from_array([0x22; 32]);
+        assert!(!da.is_data_available(root));
+        da.mark_available(root);
+        assert!(da.is_data_available(root));
     }
 }

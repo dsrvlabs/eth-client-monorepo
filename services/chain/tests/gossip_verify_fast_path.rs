@@ -24,7 +24,7 @@ use cc_crypto::{
     compute_signing_root, get_domain, SecretKey, DOMAIN_BEACON_PROPOSER,
 };
 use cc_fork_choice::{
-    AlwaysAvailable, DataAvailability, OnBlockError, get_forkchoice_store, on_tick,
+    HarnessAvailability, DataAvailability, OnBlockError, get_forkchoice_store, on_tick,
 };
 use cc_proto::p2p::{
     Acceptance, GossipObject, ImportResult, ObjectKind, P2pToChain, Reason, StreamHello,
@@ -218,7 +218,7 @@ fn signed_child(
 #[test]
 fn gossip_path_no_early_accept_without_valid_proposer_sig() {
     let (mut store, anchor, config, _sk) =
-        seeded_store_signed(Arc::new(AlwaysAvailable));
+        seeded_store_signed(Arc::new(HarnessAvailability));
     // Unsigned / zero signature block.
     let block = SignedBeaconBlock::<Minimal> {
         message: BeaconBlock {
@@ -260,6 +260,7 @@ fn gossip_path_no_early_accept_without_valid_proposer_sig() {
         cc_state_transition::BlockSignatureStrategy::NoVerification, // ST strategy ignored for gossip BLS
         None,
         Some(early_tx),
+        None,
         None,
     )
     .expect("outcome");
@@ -316,6 +317,7 @@ fn early_accept_fires_before_two_second_da_stall() {
             None,
             Some(early_tx),
             None,
+            None,
         )
     });
 
@@ -338,7 +340,7 @@ fn early_accept_fires_before_two_second_da_stall() {
 
 #[test]
 fn late_import_reject_forced_after_early_accept() {
-    let (mut store, anchor, config, sk) = seeded_store_signed(Arc::new(AlwaysAvailable));
+    let (mut store, anchor, config, sk) = seeded_store_signed(Arc::new(HarnessAvailability));
     let block = signed_child(&store, anchor, &sk, 1);
     let true_root = Root::from_hash256(TreeHash::tree_hash_root(&block.message));
     let request = cc_proto::chain::ImportBlockRequest {
@@ -378,6 +380,7 @@ fn late_import_reject_forced_after_early_accept() {
         None,
         Some(early_tx),
         Some(inject),
+        None,
     )
     .expect("outcome");
 
@@ -393,7 +396,7 @@ fn late_import_reject_forced_after_early_accept() {
 
 #[test]
 fn late_import_internal_forced_after_early_accept() {
-    let (mut store, anchor, config, sk) = seeded_store_signed(Arc::new(AlwaysAvailable));
+    let (mut store, anchor, config, sk) = seeded_store_signed(Arc::new(HarnessAvailability));
     let block = signed_child(&store, anchor, &sk, 1);
     let true_root = Root::from_hash256(TreeHash::tree_hash_root(&block.message));
     let request = cc_proto::chain::ImportBlockRequest {
@@ -435,6 +438,7 @@ fn late_import_internal_forced_after_early_accept() {
         None,
         Some(early_tx),
         Some(inject),
+        None,
     )
     .expect("outcome");
 
@@ -499,7 +503,7 @@ fn gossip_class_mapping_reject_vs_internal() {
 
 #[test]
 fn future_slot_is_terminal_ignore_reason() {
-    let (mut store, anchor, config, sk) = seeded_store_signed(Arc::new(AlwaysAvailable));
+    let (mut store, anchor, config, sk) = seeded_store_signed(Arc::new(HarnessAvailability));
     // Store is at slot ~2; request a far-future slot.
     let parent_state = store.block_state(&anchor).unwrap().clone();
     let message = BeaconBlock {
@@ -539,6 +543,7 @@ fn future_slot_is_terminal_ignore_reason() {
         cc_state_transition::BlockSignatureStrategy::NoVerification,
         None,
         None, // unary-style — still hits cheap future_slot
+        None,
         None,
     )
     .expect("outcome");

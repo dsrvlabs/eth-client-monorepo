@@ -9,7 +9,7 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use cc_fork_choice::{AlwaysAvailable, ProtoArray, ProtoNodeBlock, Store, get_head};
+use cc_fork_choice::{HarnessAvailability, ProtoArray, ProtoNodeBlock, Store, get_head};
 use cc_state_transition::StubOptimisticEngine;
 use cc_types::containers::Checkpoint;
 use cc_types::preset::{Minimal, Preset};
@@ -102,7 +102,7 @@ fn main() {
         anchor,
         0,
         Arc::new(StubOptimisticEngine),
-        Arc::new(AlwaysAvailable),
+        Arc::new(HarnessAvailability),
     );
     let _ = get_head(&mut store);
 

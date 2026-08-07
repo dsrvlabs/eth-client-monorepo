@@ -544,8 +544,22 @@ where
             // CC-27c: may emit the gossip Verdict before the state transition.
             handle_gossip_object(deps, obj, out_tx, next_seq).await
         }
-        p2p_to_chain::Msg::DataAvailable(_da) => {
-            // DA seam lands in CC-24d; acknowledge without import work.
+        p2p_to_chain::Msg::DataAvailable(da) => {
+            // CC-24d: mark PeerDasAvailability + re-drive pending_da on the core.
+            let Some(core) = deps.core_handle() else {
+                tracing::debug!("DataAvailable while core absent; dropping");
+                return Ok(());
+            };
+            let root = match crate::import::parse_root(&da.root) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(error = %e, "DataAvailable with invalid root");
+                    return Ok(());
+                }
+            };
+            if let Err(e) = core.notify_data_available(root, da.slot).await {
+                tracing::warn!(error = %e, %root, slot = da.slot, "DataAvailable notify failed");
+            }
             Ok(())
         }
         p2p_to_chain::Msg::Column(col) => {

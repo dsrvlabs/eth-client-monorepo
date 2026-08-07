@@ -16,7 +16,7 @@ use cc_chain::events::{EventsConfig, EventsHandle};
 use cc_chain::head::HeadSnapshotStore;
 use cc_chain::metrics::ChainMetrics;
 use cc_chain::service::ChainServiceImpl;
-use cc_fork_choice::{AlwaysAvailable, get_forkchoice_store};
+use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
 use cc_proto::chain::chain_service_server::ChainService;
 use cc_proto::chain::{GetCommitteeShufflingRequest, GetValidatorPubkeysRequest};
 use cc_state_transition::helpers::constants::{FAR_FUTURE_EPOCH, MAX_EFFECTIVE_BALANCE};
@@ -146,7 +146,7 @@ fn spawn_svc_with_state(
         state,
         &anchor_block,
         Arc::new(StubOptimisticEngine),
-        Arc::new(AlwaysAvailable),
+        Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )
     .unwrap();

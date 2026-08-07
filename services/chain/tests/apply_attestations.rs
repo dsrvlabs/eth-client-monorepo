@@ -13,7 +13,7 @@ use cc_chain::metrics::ChainMetrics;
 use cc_chain::service::ChainServiceImpl;
 use cc_chain::MAX_APPLY_ATTESTATIONS;
 use cc_fork_choice::{
-    AlwaysAvailable, ProtoNodeBlock, Store, get_forkchoice_store, on_tick,
+    HarnessAvailability, ProtoNodeBlock, Store, get_forkchoice_store, on_tick,
 };
 use cc_proto::chain::chain_service_server::ChainService;
 use cc_proto::chain::{ApplyAttestationsRequest, AttestationApplyVerdict, GetHeadRequest};
@@ -183,7 +183,7 @@ fn forked_store(validators: usize) -> (Store<Minimal>, Root, Root, Root, ChainCo
         state,
         &anchor_block,
         Arc::new(StubOptimisticEngine),
-        Arc::new(AlwaysAvailable),
+        Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )
     .unwrap();

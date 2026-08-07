@@ -9,6 +9,8 @@
 //! - **CC-27a**: `P2pStream` server, `ChainView` producer, `ArcSwap<EpochContext>`,
 //!   `GetValidatorRecords`
 //! - **CC-27c**: gossip-verify fast path — block acceptance before state transition
+//! - **CC-24d**: DA seam substitution — [`da`] (`pending_da`) +
+//!   [`cc_fork_choice::PeerDasAvailability`]; Phase-1 optimistic DA stub deleted
 //!
 //! The binary (`main.rs`) binds first, then checkpoint-bootstraps when
 //! `checkpoint_providers` is configured (CC-19b): self health SERVING while
@@ -22,6 +24,7 @@
 pub mod apply_attestations;
 pub mod checkpoint_sync;
 pub mod core;
+pub mod da;
 pub mod epoch_context;
 pub mod events;
 pub mod head;
@@ -46,6 +49,12 @@ pub use core::{
     COMMAND_CHANNEL_CAPACITY, CoreCommand, CoreConfig, CoreHandle, CoreThread, IMPORT_SEND_TIMEOUT,
     MAX_VALIDATOR_PUBKEYS_PER_REQUEST, MAX_VALIDATOR_RECORDS_PER_REQUEST, QueryReply, QueryRequest,
     SHUTDOWN_JOIN_TIMEOUT, spawn_core_thread, spawn_core_thread_with_epoch,
+};
+pub use da::{
+    DEFAULT_DA_PENDING_TIMEOUT_SLOTS, DEFAULT_RECOVERY_MAX_ATTEMPTS, DEFAULT_RECOVERY_MAX_PEERS,
+    DEFAULT_SECONDS_PER_SLOT, PENDING_DA_BOUND, PendingDa, PendingDaEntry, RESP_TIMEOUT_SECS,
+    TTFB_TIMEOUT_SECS, assert_timeout_outlasts_recovery, chain_pending_timeout_secs,
+    default_timeout_ordering_ok, recovery_ladder_worst_case_secs,
 };
 pub use epoch_context::{EpochContext, EpochContextStore};
 pub use events::{

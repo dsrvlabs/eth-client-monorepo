@@ -572,7 +572,7 @@ mod tests {
     use ssz_types::VariableList;
 
     use super::*;
-    use crate::da_seam::AlwaysAvailable;
+    use crate::da_seam::HarnessAvailability;
     use crate::on_block::get_forkchoice_store;
     use crate::proto_array::ProtoNodeBlock;
     use crate::store::{LatestMessage, Store, VoteTracker};
@@ -640,7 +640,7 @@ mod tests {
             state,
             &anchor_block,
             Arc::new(StubOptimisticEngine),
-            Arc::new(AlwaysAvailable),
+            Arc::new(HarnessAvailability),
             6,
         )
         .unwrap();
@@ -870,7 +870,7 @@ mod tests {
             state,
             &anchor_block,
             Arc::new(StubOptimisticEngine),
-            Arc::new(AlwaysAvailable),
+            Arc::new(HarnessAvailability),
             6,
         )
         .unwrap();

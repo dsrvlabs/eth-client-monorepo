@@ -25,7 +25,7 @@ use cc_chain::p2p_stream::{
     build_chain_view,
 };
 use cc_chain::service::ChainServiceImpl;
-use cc_fork_choice::{AlwaysAvailable, get_forkchoice_store};
+use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
 use cc_proto::chain::chain_service_server::ChainService;
 use cc_proto::chain::{GetHeadRequest, GetValidatorRecordsRequest};
 use cc_proto::error_info_from_status;
@@ -128,7 +128,7 @@ fn spawn_svc() -> (ChainServiceImpl, cc_chain::CoreThread, EventsHandle) {
         state,
         &anchor_block,
         Arc::new(StubOptimisticEngine),
-        Arc::new(AlwaysAvailable),
+        Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )
     .unwrap();
@@ -555,7 +555,7 @@ async fn install_core_visible_to_live_session() {
         state,
         &anchor_block,
         Arc::new(StubOptimisticEngine),
-        Arc::new(AlwaysAvailable),
+        Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )
     .unwrap();

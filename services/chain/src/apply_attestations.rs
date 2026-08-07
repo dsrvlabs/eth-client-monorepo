@@ -186,7 +186,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use cc_fork_choice::{AlwaysAvailable, get_forkchoice_store};
+    use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
     use cc_state_transition::StubOptimisticEngine;
     use cc_types::containers::{AttestationData, BeaconBlockHeader, Checkpoint};
     use cc_types::operations::IndexedAttestation;
@@ -256,7 +256,7 @@ mod tests {
             state,
             &anchor_block,
             Arc::new(StubOptimisticEngine),
-            Arc::new(AlwaysAvailable),
+            Arc::new(HarnessAvailability),
             6,
         )
         .unwrap();

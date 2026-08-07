@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn ensure_in_store_increments_reorg_gaps() {
-        use cc_fork_choice::{AlwaysAvailable, Store};
+        use cc_fork_choice::{HarnessAvailability, Store};
         use cc_state_transition::StubOptimisticEngine;
         use cc_types::containers::Checkpoint;
         use cc_types::primitives::Epoch;
@@ -506,7 +506,7 @@ mod tests {
         // Empty store, no pins, root not re-derivable → gap.
         let engine: Arc<dyn cc_state_transition::ExecutionEngine<Minimal>> =
             Arc::new(StubOptimisticEngine);
-        let da: Arc<dyn cc_fork_choice::DataAvailability> = Arc::new(AlwaysAvailable);
+        let da: Arc<dyn cc_fork_choice::DataAvailability> = Arc::new(HarnessAvailability);
         let mut store = Store::<Minimal>::new(
             0,
             0,
@@ -559,14 +559,14 @@ mod tests {
 
     #[test]
     fn settle_after_head_pins_fc_head_not_imported() {
-        use cc_fork_choice::{AlwaysAvailable, Store};
+        use cc_fork_choice::{HarnessAvailability, Store};
         use cc_state_transition::StubOptimisticEngine;
         use cc_types::containers::{BeaconBlockHeader, Checkpoint};
         use cc_types::primitives::Epoch;
 
         let engine: Arc<dyn cc_state_transition::ExecutionEngine<Minimal>> =
             Arc::new(StubOptimisticEngine);
-        let da: Arc<dyn cc_fork_choice::DataAvailability> = Arc::new(AlwaysAvailable);
+        let da: Arc<dyn cc_fork_choice::DataAvailability> = Arc::new(HarnessAvailability);
         let mut store = Store::<Minimal>::new(
             12,
             0,

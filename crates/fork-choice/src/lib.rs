@@ -4,7 +4,8 @@
 //! - CC-15b: [`on_block`], [`compute_pulled_up_tip`], [`CheckpointContext`] LRU
 //! - CC-15c: [`get_head`], proposer boost as delta, head cache, reorg detection
 //! - CC-16: [`on_attestation`], [`on_attester_slashing`], [`compute_deltas`]
-//! - CC-17: data-availability seam in [`da_seam`]
+//! - CC-17 / CC-24d: data-availability seam in [`da_seam`]
+//!   ([`PeerDasAvailability`] substitutes the deleted Phase-1 optimistic stub)
 
 #![allow(missing_docs)]
 
@@ -20,7 +21,10 @@ pub mod store;
 pub use checkpoint_context::{
     CheckpointContext, CheckpointContextKey, CommitteeCache, checkpoint_context_key,
 };
-pub use da_seam::{AlwaysAvailable, BlockImport, DataAvailability, DeferralReason, ImportedBlock};
+pub use da_seam::{
+    AVAILABLE_ROOTS_BOUND, BlockImport, DataAvailability, DeferralReason, HarnessAvailability,
+    ImportedBlock, PeerDasAvailability,
+};
 pub use head_cache::{
     ChainReorg, GetHeadError, PROPOSER_SCORE_BOOST, compute_proposer_boost_score, get_head,
     get_proposer_head,

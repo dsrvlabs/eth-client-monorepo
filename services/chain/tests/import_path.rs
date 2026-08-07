@@ -15,7 +15,7 @@ use cc_chain::import::{encode_signed_block, publish_snapshot_then_events};
 use cc_chain::metrics::{ChainMetrics, ImportResult};
 use cc_chain::residency::{DEFAULT_BODY_RING_CAPACITY, DEFAULT_MAX_RESIDENT_STATES, Residency};
 use cc_chain::{BodyRingEntry, HeadSnapshot, ResidentRole, StateProvider};
-use cc_fork_choice::{AlwaysAvailable, get_forkchoice_store};
+use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
 use cc_proto::chain::{EventKind, ImportBlockRequest, ImportBlockVerdict};
 use cc_state_transition::StubOptimisticEngine;
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
@@ -79,7 +79,7 @@ fn seeded_store() -> (
         state,
         &anchor_block,
         Arc::new(StubOptimisticEngine),
-        Arc::new(AlwaysAvailable),
+        Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )
     .unwrap();

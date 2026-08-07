@@ -74,7 +74,7 @@ mod tests {
     use cc_types::primitives::{Epoch, Root};
 
     use super::*;
-    use crate::da_seam::AlwaysAvailable;
+    use crate::da_seam::HarnessAvailability;
     use crate::store::Store;
 
     fn root(b: u8) -> Root {
@@ -101,7 +101,7 @@ mod tests {
             anchor,
             16,
             Arc::new(StubOptimisticEngine),
-            Arc::new(AlwaysAvailable),
+            Arc::new(HarnessAvailability),
         )
     }
 

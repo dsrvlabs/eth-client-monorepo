@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use cc_fork_choice::{AlwaysAvailable, Store, get_forkchoice_store, on_tick};
+use cc_fork_choice::{PeerDasAvailability, Store, get_forkchoice_store, on_tick};
 use cc_state_transition::{BlockSignatureStrategy, StubOptimisticEngine};
 use cc_types::config::{BlobParameters, BlobSchedule, BlobScheduleError, ChainConfig};
 use cc_types::preset::Preset;
@@ -1141,11 +1141,14 @@ pub fn spawn_core_from_checkpoint_with_epoch<P: Preset + 'static>(
         "anchor state caches warmed via canonical_root"
     );
 
+    // Shared PeerDAS available set: store DA + core mark/re-drive (CC-24d).
+    let peer_das = Arc::new(PeerDasAvailability::new());
+    let da_for_store: Arc<dyn cc_fork_choice::DataAvailability> = peer_das.clone();
     let mut store: Store<P> = get_forkchoice_store(
         fetched.state,
         &fetched.signed_block.message,
         Arc::new(StubOptimisticEngine),
-        Arc::new(AlwaysAvailable),
+        da_for_store,
         chain_config.seconds_per_slot,
     )
     .map_err(|e| CheckpointError::Store(e.to_string()))?;
@@ -1164,6 +1167,8 @@ pub fn spawn_core_from_checkpoint_with_epoch<P: Preset + 'static>(
 
     // CoreConfig.verify defaults to NoVerification; soak/prod may raise later.
     let _ = BlockSignatureStrategy::NoVerification;
+    let mut core_cfg = core_cfg;
+    core_cfg.peer_das = Some(peer_das);
     Ok(spawn_core_thread_with_epoch(
         store,
         chain_config,

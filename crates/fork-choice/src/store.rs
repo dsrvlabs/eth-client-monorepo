@@ -646,7 +646,7 @@ mod tests {
 
     use super::*;
     use crate::checkpoint_context::{CheckpointContext, CommitteeCache};
-    use crate::da_seam::AlwaysAvailable;
+    use crate::da_seam::HarnessAvailability;
 
     fn root(b: u8) -> Root {
         let mut a = [0u8; 32];
@@ -686,7 +686,7 @@ mod tests {
             anchor,
             0,
             Arc::new(StubOptimisticEngine),
-            Arc::new(AlwaysAvailable),
+            Arc::new(HarnessAvailability),
         )
     }
 
