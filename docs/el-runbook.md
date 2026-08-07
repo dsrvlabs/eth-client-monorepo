@@ -155,3 +155,91 @@ Engine prints the same message shape as geth (`Loaded JWT secret file` +
 path) or fails louder on write; our engine **aborts before bind** on the
 missing/unreadable secret (CC-30a). The two crc32 values then **differ** (or
 engine never starts) — that is the evidence the grep is a real check.
+
+## Snapshot restore
+
+**Owner:** CC-39b. Stream-extract only — downloading the tarball to disk and
+then extracting needs the compressed **and** uncompressed footprints at once
+and is the failure mode that costs both.
+
+### V-5 procedure (every restore)
+
+Re-read the live pointer **immediately before** the restore. The planning-era
+block number / size is not the restore input; pointer staleness is catch-up cost.
+
+```bash
+# 1) block number
+curl -sS https://snapshots.ethpandaops.io/hoodi/geth/latest
+# 2) HEAD the resolved tarball — record content-length + last-modified + read time
+BLOCK=$(curl -sS https://snapshots.ethpandaops.io/hoodi/geth/latest | tr -d '[:space:]')
+curl -sI "https://snapshots.ethpandaops.io/hoodi/geth/${BLOCK}/snapshot.tar.zst"
+```
+
+URL shape:
+
+```text
+https://snapshots.ethpandaops.io/hoodi/geth/<block_number>/snapshot.tar.zst
+```
+
+Record block number, `content-length`, `last-modified`, and a one-line age /
+catch-up note into `docs/phase-3-acceptance.md` § Entry.
+
+### Stream-extract invocation
+
+Script: `scripts/el-snapshot-restore.sh` (resolves `latest`, HEADs, path-safe
+extract, `du -sh`).
+
+**Operator form** (no second copy):
+
+```bash
+# GNU tar required for `tar -I zstd` (macOS: brew install gnu-tar;
+# PATH="/opt/homebrew/opt/gnu-tar/libexec/gnubin:$PATH").
+export ELSTORE="${ELSTORE:-./.data/elstore}"
+mkdir -p "$ELSTORE"
+# empty elstore required for restore — script refuses to mix with partial state
+
+wget --tries=0 --retry-connrefused -O - \
+  "https://snapshots.ethpandaops.io/hoodi/geth/${BLOCK}/snapshot.tar.zst" \
+  | tar -I zstd -xvf - -C "$ELSTORE"
+
+# Measured once. Do not invent an uncompressed size from content-length (OQ-P3-5).
+du -sh "$ELSTORE"
+```
+
+**Script path** uses the same stream (`wget -O -` → zstd → members) with
+`assert_safe_member` / `assert_safe_tarball` checks (reject absolute paths and
+`..` components; post-extract realpath confinement under `ELSTORE`). Prefer the
+script over a raw pipe on untrusted networks.
+
+**URL safety:** `SNAPSHOT_BASE_URL` must be `https://` and the host must be in
+`ALLOWED_SNAPSHOT_HOSTS` (default `snapshots.ethpandaops.io`).
+
+**Publisher checksum residual:** ethPandaOps does not publish
+`snapshot.tar.zst` digests (no adjacent `.sha256` / `SHA256SUMS`). Integrity is
+TLS + host allowlist + path-safe extract. The geth **image** digest is the
+table under **Image and digest** (CC-39a), not a content hash of this tarball.
+
+Wire the restored datadir into compose (`elstore` named volume or bind mount at
+`/data`), start `el`, then poll the gate:
+
+```bash
+# Wait-only — does not re-extract; elstore may already be populated
+bash scripts/el-snapshot-restore.sh --wait-synced --el-http http://127.0.0.1:8545
+
+# or raw:
+curl -sS -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_syncing","params":[]}'
+# gate: result == false — timestamp it in docs/phase-3-acceptance.md § Entry
+```
+
+R-3 early-warning: if the first ten minutes of download project a **download
+alone** past 4 h, re-plan the milestone start rather than the milestone
+(`scripts/el-snapshot-restore.sh --probe-throughput`).
+
+### A-P3-3 fallback — cold snap-sync
+
+If the snapshot service is unavailable, start geth with an empty `--datadir`
+and `--syncmode=snap` (compose default). **No primary source publishes a
+Hoodi-specific cold-sync wall clock** — measure it once when used and record
+the figure; do not plan against a guess (OQ-P3-4).
