@@ -297,3 +297,50 @@ Rig self-check (no live stack):
 bash scripts/soak-report.sh --self-test
 ```
 
+## Phase 2 stack (post driver retirement)
+
+Phase 2 retires the Phase 1 HTTP block-feed scaffold (`bin/driver`, CC-28). The
+compose stack is again **six services only** — `chain`, `p2p`, `attestation`,
+`engine`, `beacon-api`, `storage` — with **no driver service in the file**.
+
+What the stack is now:
+
+| Input | Path | Lifetime |
+|---|---|---|
+| Checkpoint bootstrap | HTTP (`chain.checkpoint_providers`, CC-19) | **Once** at process start, before the import path exists |
+| Blocks, columns, attestations, peer discovery | **P2P only** (`services/p2p` ↔ `chain` stream) | Continuous after bootstrap |
+| HTTP block poller (`bin/driver`) | **Removed** | Gone; do not re-add to compose |
+
+### Bring-up (Phase 2)
+
+Same six-service sequence as [Compose stack](#compose-stack); nothing extra to
+start for a block source. Configure `chain.checkpoint_providers` (and
+`chain.network_config`) when the node must checkpoint-sync; empty providers keep
+Phase 0 compose healthy with `NOT_BOOTSTRAPPED` fork-choice RPCs.
+
+```bash
+export CC_GIT_SHA="$(git rev-parse --short HEAD)"
+docker compose build
+docker compose up -d
+bash scripts/wait-healthy.sh                        # all six healthy within 90 s
+```
+
+Head then follows over gossip alone (with PeerDAS DA gating once CC-24d is live).
+Assert structural retirement locally:
+
+```bash
+test ! -d bin/driver
+grep -c driver docker-compose.yml                   # must print 0
+bash scripts/check-no-http-import-path.sh           # no HTTP on ImportBlock path; p2p tree clean
+```
+
+### Standing limitation (read before a soak)
+
+**The node is not restartable until Phase 4; a restart re-checkpoint-syncs and empties the backfill cache.**
+
+A restart voids a 24 h run **by design, not by accident**. There is no durable
+chain state and no backfill-cache resume in Phase 2; process death returns the
+node to a cold checkpoint bootstrap. The restart-policy table in the Phase 2
+plan is the long form of the same sentence. Treat every `docker compose up` as a
+fresh process lifetime for soak purposes.
+

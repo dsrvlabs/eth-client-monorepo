@@ -19,7 +19,7 @@ METADATA="$(cargo metadata --no-deps --format-version 1 --locked)"
 # Allowed intra-workspace edges (Architecture §2.2 / Phase 1 §1.2).
 # Empty list = root with no workspace deps.
 # Services may take cc-types/cc-crypto only for chain and p2p (Phase 1 allowance).
-# cc-driver may depend only on {cc-proto, cc-config} (ADR-P1-13).
+# cc-driver edge rule removed with the crate at CC-28 (was ADR-P1-13: {cc-proto, cc-config}).
 # cc-spec-tests has no workspace edges (zero outgoing); cc-types may take it as a
 # test-only harness edge for ssz_static / vector runners (dev-dependency).
 allowed_deps() {
@@ -34,7 +34,6 @@ allowed_deps() {
     cc-state-transition)  echo "cc-types cc-crypto" ;;
     cc-fork-choice)       echo "cc-state-transition cc-types cc-crypto" ;;
     cc-spec-tests)        echo "" ;;
-    cc-driver)            echo "cc-proto cc-config" ;;
     # Self-devnet generator (CC-2K member; content is CC-2Ja).
     cc-devnet-gen)        echo "cc-types cc-crypto cc-state-transition cc-config" ;;
     cc-chain)             echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-state-transition cc-fork-choice" ;;

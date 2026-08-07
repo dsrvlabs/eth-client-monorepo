@@ -36,12 +36,10 @@ use cc_libp2p::reexport::request_response::{
     Event as RequestResponseEvent, Message as RequestResponseMessage,
 };
 use cc_libp2p::reexport::{Multiaddr, PeerId, SwarmEvent};
-use cc_libp2p::{CcBehaviour, CcBehaviourEvent, SwarmConfig, build_swarm};
-use cc_types::{compute_columns_for_custody_group, ChainConfig, Epoch, Root};
 use cc_libp2p::{
     build_swarm, CcBehaviour, CcBehaviourEvent, ReqRespRequest, ReqRespResponse, SwarmConfig,
 };
-use cc_types::{ChainConfig, Epoch, Root};
+use cc_types::{compute_columns_for_custody_group, ChainConfig, Epoch, Root};
 use discv5::Enr;
 use discv5::enr::{CombinedKey, NodeId};
 use sha2::{Digest, Sha256};
@@ -293,34 +291,13 @@ impl FaultMode {
         bail!("unknown fault mode {s:?}; expected none|withhold-column|misbehave:<kind>")
     }
 
-    /// Returns `Ok(())` for plain + withhold-column. Misbehave stays CC-2Jc.
-    pub fn ensure_implemented(&self) -> Result<()> {
-        match self {
-            Self::None | Self::WithholdColumn { .. } => Ok(()),
-            Self::Misbehave { kind } => {
-                bail!("fault mode misbehave ({kind}) is not implemented (CC-2Jc)")
-    /// Returns `Ok(())` for plain publisher and all CC-2Jc misbehave kinds.
-    /// `withhold-column` still errors (CC-2Jb).
-    pub fn ensure_implemented(&self) -> Result<()> {
-        match self {
-            Self::None | Self::Misbehave { .. } => Ok(()),
-            Self::WithholdColumn { .. } => {
-                bail!("fault mode withhold-column is not implemented (CC-2Jb)")
-            }
-        }
-    }
-
-    /// No-op relay: identity transform of a payload.
+    /// Returns `Ok(())` for plain, withhold-column (CC-2Jb), and misbehave (CC-2Jc).
     ///
-    /// Blocks always pass through for [`Self::None`] and [`Self::WithholdColumn`].
-    /// Column gossip skip is **not** done here — it goes through
-    /// [`decide_column_publish`] so the Track D seam stays greppable.
-    #[must_use]
-    pub fn relay(&self, payload: &[u8]) -> Option<Vec<u8>> {
+    /// Both fault modes have landed; this is the post-merge form of the two
+    /// temporary stubs that previously failed closed for the other stream.
+    pub fn ensure_implemented(&self) -> Result<()> {
         match self {
-            Self::None | Self::WithholdColumn { .. } => Some(payload.to_vec()),
-            // Inert until 2Jc: refuse to mutate.
-            Self::Misbehave { .. } => None,
+            Self::None | Self::WithholdColumn { .. } | Self::Misbehave { .. } => Ok(()),
         }
     }
 
@@ -1310,7 +1287,7 @@ fn handle_publisher_reqresp(
         for col_idx in id.columns.iter() {
             let held = store.sidecar_by_root(&root, *col_idx).is_some();
             // Track D seam (same named decision as reqresp/columns.rs).
-            let decision = decide_by_root_column_serve(held, policy);
+            let decision = decide_by_root_column_serve(held, *col_idx, policy);
             match decision {
                 ByRootServeDecision::Serve | ByRootServeDecision::Stall => {
                     if decision == ByRootServeDecision::Stall {

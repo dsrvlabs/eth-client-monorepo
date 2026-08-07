@@ -33,7 +33,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     cargo build --workspace --release --locked && \
     mkdir -p /out && \
-    for b in cc-chain cc-p2p cc-attestation cc-engine cc-beacon-api cc-storage cc-driver; do \
+    for b in cc-chain cc-p2p cc-attestation cc-engine cc-beacon-api cc-storage; do \
       cp "target/release/${b}" /out/; \
     done
 

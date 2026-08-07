@@ -140,27 +140,6 @@ services:
       <<: *hc
       test: ["CMD", "/usr/local/bin/grpc-health-probe", "-addr=:9005"]
 
-  # Phase 1 scaffold (CC-1Aa). Removed with bin/driver/ at CC-28 — two-ish blocks.
-  driver:
-    <<: *cc-runtime
-    build:
-      context: .
-      args:
-        SERVICE: cc-driver
-        CC_GIT_SHA: ${CC_GIT_SHA:-unknown}
-    environment:
-      <<: *cc-env
-      CC_DRIVER_GRPC_ADDR: 0.0.0.0:9010
-      CC_DRIVER_METRICS_ADDR: 0.0.0.0:9110
-      CC_DRIVER_PEERS__CHAIN: http://chain:9001
-      # Override with a live Hoodi provider for soak; empty in default compose
-      # keeps the binary from starting until operators set providers.
-      # CC_DRIVER_BEACON_PROVIDERS: '["https://checkpoint-sync.hoodi.ethpandaops.io"]'
-    ports: ["9110:9110"]
-    depends_on:
-      chain:
-        condition: service_healthy
-
   # ── Phase 3 (CC-3x) fills this slot. Deliberately commented, not absent, so the
   #    port allocation and the JWT-volume gap are visible now. A7 / A-P0-5: no secrets
   #    in Phases 0-2, so there is no jwt volume here yet.

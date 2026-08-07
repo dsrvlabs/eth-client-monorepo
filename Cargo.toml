@@ -16,7 +16,7 @@ members = [
   "services/engine",
   "services/beacon-api",
   "services/storage",
-  "bin/driver",
+  # bin/driver retired at CC-28 — member count 17 → 16; bin/ keeps devnet-gen.
   "bin/devnet-gen",
 ]
 

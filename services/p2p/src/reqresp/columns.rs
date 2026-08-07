@@ -397,36 +397,30 @@ pub fn stall_first_byte_delay() -> std::time::Duration {
 /// by-root column sidecar.
 ///
 /// CC-2Jb: held columns that are still withheld refuse until the release flag
-/// file flips. CC-2Jc attaches `custody-refuse` / `stall-reqresp` on this same
-/// branch.
-#[inline]
-#[must_use]
-pub fn decide_by_root_column_serve(held: bool, column_index: u64) -> ByRootServeDecision {
-    // ── Track D seam (fault_mode.rs) ──────────────────────────────────────
-    // Single named branch: withhold-column (CC-2Jb) + custody-refuse (CC-2Jc).
-    if held && crate::fault_mode::active_allows_by_root_serve(column_index) {
-        ByRootServeDecision::Serve
-    } else {
-        ByRootServeDecision::ResourceUnavailable
+/// file flips (`active_allows_by_root_serve`). CC-2Jc attaches `custody-refuse`
+/// / `stall-reqresp` via [`ByRootFaultPolicy`] on this same branch.
+///
 /// `policy` is the CC-2Jc branch selector — [`ByRootFaultPolicy::Honest`] is the
 /// production default; fault modes map onto the other two variants.
 #[inline]
 #[must_use]
 pub fn decide_by_root_column_serve(
     held: bool,
+    column_index: u64,
     policy: ByRootFaultPolicy,
 ) -> ByRootServeDecision {
     // ── Track D seam (fault_mode.rs) ──────────────────────────────────────
-    // Single named branch for CC-2Jc: custody-refuse / stall-reqresp attach here.
-    match policy {
-        ByRootFaultPolicy::CustodyRefuse => ByRootServeDecision::ResourceUnavailable,
-        ByRootFaultPolicy::StallReqresp if held => ByRootServeDecision::Stall,
-        ByRootFaultPolicy::StallReqresp | ByRootFaultPolicy::Honest if held => {
-            ByRootServeDecision::Serve
-        }
-        ByRootFaultPolicy::StallReqresp | ByRootFaultPolicy::Honest => {
-            ByRootServeDecision::ResourceUnavailable
-        }
+    // Single named branch: withhold-column (CC-2Jb) + custody-refuse / stall (CC-2Jc).
+    if matches!(policy, ByRootFaultPolicy::CustodyRefuse) {
+        return ByRootServeDecision::ResourceUnavailable;
+    }
+    let effectively_held =
+        held && crate::fault_mode::active_allows_by_root_serve(column_index);
+    match (effectively_held, policy) {
+        (true, ByRootFaultPolicy::StallReqresp) => ByRootServeDecision::Stall,
+        (true, ByRootFaultPolicy::Honest) => ByRootServeDecision::Serve,
+        (true, ByRootFaultPolicy::CustodyRefuse) => ByRootServeDecision::ResourceUnavailable,
+        (false, _) => ByRootServeDecision::ResourceUnavailable,
     }
 }
 
@@ -585,10 +579,8 @@ pub fn serve_columns_by_root<P: Preset>(
         for col_idx in id.columns.iter() {
             let held = ctx.cache.contains_column(slot, &id.block_root, *col_idx);
             // Track D sanctioned seam — greppable single branch for CC-2Jb/2Jc.
-            match decide_by_root_column_serve(held, *col_idx) {
-                ByRootServeDecision::Serve => {
-            // Track D sanctioned seam — greppable single branch for CC-2Jc.
-            let decision = decide_by_root_column_serve(held, ctx.by_root_fault);
+            let decision =
+                decide_by_root_column_serve(held, *col_idx, ctx.by_root_fault);
             match decision {
                 ByRootServeDecision::Serve | ByRootServeDecision::Stall => {
                     if decision == ByRootServeDecision::Stall {
@@ -1050,31 +1042,24 @@ mod tests {
             "got {err:?}"
         );
 
-        // Seam unit: held → Serve, missing → ResourceUnavailable (no active fault).
+        // Seam unit: held → Serve, missing → ResourceUnavailable (honest, no withhold).
         crate::fault_mode::clear_active_fault();
         assert_eq!(
-            decide_by_root_column_serve(true, 0),
+            decide_by_root_column_serve(true, 0, ByRootFaultPolicy::Honest),
             ByRootServeDecision::Serve
         );
         assert_eq!(
-            decide_by_root_column_serve(false, 0),
-        // Seam unit: held → Serve, missing → ResourceUnavailable (honest).
-        assert_eq!(
-            decide_by_root_column_serve(true, ByRootFaultPolicy::Honest),
-            ByRootServeDecision::Serve
-        );
-        assert_eq!(
-            decide_by_root_column_serve(false, ByRootFaultPolicy::Honest),
+            decide_by_root_column_serve(false, 0, ByRootFaultPolicy::Honest),
             ByRootServeDecision::ResourceUnavailable
         );
         // CC-2Jc: custody-refuse never serves, even when held.
         assert_eq!(
-            decide_by_root_column_serve(true, ByRootFaultPolicy::CustodyRefuse),
+            decide_by_root_column_serve(true, 0, ByRootFaultPolicy::CustodyRefuse),
             ByRootServeDecision::ResourceUnavailable
         );
         // CC-2Jc: stall-reqresp delays first byte when held.
         assert_eq!(
-            decide_by_root_column_serve(true, ByRootFaultPolicy::StallReqresp),
+            decide_by_root_column_serve(true, 0, ByRootFaultPolicy::StallReqresp),
             ByRootServeDecision::Stall
         );
         assert!(stall_first_byte_delay() > crate::reqresp::TTFB_TIMEOUT);
@@ -1133,17 +1118,17 @@ mod tests {
         );
         // Held but withheld → refuse.
         assert_eq!(
-            decide_by_root_column_serve(true, 7),
+            decide_by_root_column_serve(true, 7, ByRootFaultPolicy::Honest),
             ByRootServeDecision::ResourceUnavailable
         );
         // Other held columns still serve.
         assert_eq!(
-            decide_by_root_column_serve(true, 0),
+            decide_by_root_column_serve(true, 0, ByRootFaultPolicy::Honest),
             ByRootServeDecision::Serve
         );
         fs::write(&flag, b"1").unwrap();
         assert_eq!(
-            decide_by_root_column_serve(true, 7),
+            decide_by_root_column_serve(true, 7, ByRootFaultPolicy::Honest),
             ByRootServeDecision::Serve
         );
         let _ = fs::remove_file(&flag);

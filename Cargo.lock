@@ -1043,29 +1043,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cc-driver"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "cc-config",
- "cc-proto",
- "futures",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "prometheus-client",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tonic",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "cc-engine"
 version = "0.1.0"
 dependencies = [
