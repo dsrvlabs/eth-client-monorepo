@@ -289,6 +289,31 @@ impl CustodyManager {
         let peer_groups = get_custody_groups(node_id_as_u256(peer_node_id), peer_cgc);
         peer_groups.intersection(&self.sampled.0).count() as u32
     }
+
+    /// Recompute both group sets for a new custody group count (CC-21d step 1).
+    ///
+    /// `sampling_size = max(SAMPLES_PER_SLOT, cgc)` — a shrink below
+    /// `SAMPLES_PER_SLOT` leaves the sampled set at the floor while custodied
+    /// tracks `cgc` (visible divergence).
+    pub fn set_cgc(&mut self, custody_group_count: u64) {
+        let cgc = custody_group_count.min(NUMBER_OF_CUSTODY_GROUPS);
+        let node_u256 = node_id_as_u256(self.node_id);
+        let samp = sampling_size(cgc);
+        let sampled = SampledGroups(get_custody_groups(node_u256, samp));
+        let custodied = CustodiedGroups(get_custody_groups(node_u256, cgc));
+
+        debug_assert!(
+            custodied.0.is_subset(&sampled.0),
+            "custody_groups must be ⊆ sampled_groups (cgc={cgc}, sampling_size={samp})"
+        );
+
+        let column_subnets = column_subnets_for_groups(&sampled.0);
+        self.cgc = cgc;
+        self.sampling_size = samp;
+        self.sampled = sampled;
+        self.custodied = custodied;
+        self.column_subnets = column_subnets;
+    }
 }
 
 // ── Peer compatibility (pure) ───────────────────────────────────────────────
@@ -461,7 +486,7 @@ mod tests {
         assert_eq!(mgr.custodied().len(), 4);
         assert_eq!(mgr.sampled().len(), 8);
 
-        let params = TopicParams { topic_weight: 1 };
+        let params = TopicParams { topic_weight: 1.0 };
         mgr.subscribe_sampled_columns(&mut reg, digest, params)
             .expect("subscribe sampled columns");
 
@@ -554,7 +579,7 @@ mod tests {
         }
 
         let mgr = CustodyManager::with_default_cgc(node_id_from_u64(42));
-        let params = TopicParams { topic_weight: 7 };
+        let params = TopicParams { topic_weight: 7.0 };
         mgr.subscribe_sampled_columns(&mut reg, digest, params.clone())
             .unwrap();
 

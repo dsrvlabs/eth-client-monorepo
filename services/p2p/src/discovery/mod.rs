@@ -3,12 +3,18 @@
 //! - **CC-21a**: A-P2-4 probe + `EnrManager::apply` batching skeleton
 //! - **CC-21c**: field encoders (`eth2`/`nfd`/`attnets`/`syncnets`/`cgc`),
 //!   predicates, discovery task, dial queue → peer manager
+//! - **CC-21d**: runtime `cgc` hook (`set_custody_group_count`) — five §6.4 effects
 
+pub mod cgc_hook;
 pub mod dial_queue;
 pub mod enr;
 pub mod predicate;
 pub mod task;
 
+pub use cgc_hook::{
+    column_family_total, column_family_total_is_half, set_custody_group_count, CgcEffectKind,
+    CgcHookError, CgcHookOutcome, CgcHookTarget,
+};
 pub use dial_queue::{DIAL_QUEUE_BOUND, DialCandidate, DialQueue};
 pub use enr::{
     ATTNETS_BIT_LEN, ENR_KEY_ATTNETS, ENR_KEY_CGC, ENR_KEY_ETH2, ENR_KEY_NFD, ENR_KEY_SYNCNETS,

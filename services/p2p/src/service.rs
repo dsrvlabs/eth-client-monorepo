@@ -1,9 +1,15 @@
-//! P2P runtime wiring — CC-20b.
+//! P2P runtime wiring — CC-20b + CC-21d gRPC surface.
 //!
 //! Starts the swarm task (sole `Swarm` owner), supervisor, clock, and §2.2
 //! channel map with stub consumers. **No dialling.** Keeps the Phase 0
 //! health / metrics surface startable via [`serve`] / [`run_process`].
+//!
+//! **CC-21d:** [`P2pGrpcService`] exposes `SetCustodyGroupCount` and a Rust
+//! [`P2pGrpcService::set_custody_group_count`] method. Phase 2 has **no
+//! production caller** — Phase 6 attaches a real invoker; until then the
+//! default invoker returns `failed_precondition`.
 
+use std::fmt;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -16,9 +22,15 @@ use cc_bootstrap::{
 };
 use cc_libp2p::reexport::{Multiaddr, Protocol};
 use cc_libp2p::PeerId;
+use cc_proto::common::BuildInfo;
+use cc_proto::p2p::p2p_service_server::P2pService;
+use cc_proto::p2p::{
+    GetInfoRequest, GetInfoResponse, SetCustodyGroupCountRequest, SetCustodyGroupCountResponse,
+};
 use discv5::enr::NodeId;
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::service::Routes;
+use tonic::{Request, Response, Status};
 use tonic_health::ServingStatus;
 use tonic_health::server::HealthReporter;
 use tracing::{error, info};
@@ -30,6 +42,7 @@ use crate::channels::{self, ChannelMap, SwarmCommand, stub_consumer};
 use crate::clock::{ClockConfig, SlotClock};
 use cc_types::ChainConfig;
 use std::sync::Arc;
+use crate::discovery::cgc_hook::CgcHookError;
 use crate::discovery::{
     DIAL_QUEUE_BOUND, DiscoveryConfig, DiscoveryPeerView, DiscoveryTask, build_enr_manager,
     run_discovery_task,
@@ -1013,6 +1026,115 @@ fn load_chain_config_for_validation(cfg: &RuntimeConfig) -> ChainConfig {
             // default-empty schedule only as last resort (validators will be
             // strict on blob bounds).
             unreachable!("embedded hoodi-config.yaml must parse as ChainConfig");
+        }
+    }
+}
+
+// ── CC-21d: gRPC + Rust `set_custody_group_count` surface ───────────────────
+
+/// Invoker behind [`P2pGrpcService::set_custody_group_count`].
+///
+/// Production Phase 2 leaves the default unattached invoker; tests and Phase 6
+/// install a real one that drives [`crate::discovery::set_custody_group_count`].
+pub trait CgcHookInvoker: Send + Sync {
+    /// Apply a new custody group count (five §6.4 effects).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`CgcHookError`] from the underlying hook.
+    fn set_custody_group_count(&self, n: u64) -> Result<(), CgcHookError>;
+}
+
+/// Default invoker: hook not attached to live EnrManager/registry yet.
+#[derive(Debug, Default)]
+pub struct UnattachedCgcHook;
+
+impl CgcHookInvoker for UnattachedCgcHook {
+    fn set_custody_group_count(&self, _n: u64) -> Result<(), CgcHookError> {
+        // Deliberately does **not** call the five-effect free function — there
+        // is no production caller in Phase 2 and the live registry/ENR are not
+        // co-owned by the gRPC task yet. Phase 6 attaches a real invoker.
+        Err(CgcHookError::NotAttached)
+    }
+}
+
+/// gRPC `eth.p2p.v1.P2pService` implementation (GetInfo + SetCustodyGroupCount).
+#[derive(Clone)]
+pub struct P2pGrpcService {
+    cgc: Arc<dyn CgcHookInvoker>,
+}
+
+impl fmt::Debug for P2pGrpcService {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("P2pGrpcService").finish_non_exhaustive()
+    }
+}
+
+impl Default for P2pGrpcService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl P2pGrpcService {
+    /// Construct with the unattached Phase-2 default invoker.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            cgc: Arc::new(UnattachedCgcHook),
+        }
+    }
+
+    /// Construct with a custom invoker (tests / Phase 6 wiring).
+    #[must_use]
+    pub fn with_invoker(invoker: Arc<dyn CgcHookInvoker>) -> Self {
+        Self { cgc: invoker }
+    }
+
+    /// Rust method: same entry point as the `SetCustodyGroupCount` RPC.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`CgcHookError`] from the attached invoker.
+    pub fn set_custody_group_count(&self, n: u64) -> Result<(), CgcHookError> {
+        self.cgc.set_custody_group_count(n)
+    }
+}
+
+#[tonic::async_trait]
+impl P2pService for P2pGrpcService {
+    async fn get_info(
+        &self,
+        _request: Request<GetInfoRequest>,
+    ) -> Result<Response<GetInfoResponse>, Status> {
+        Ok(Response::new(GetInfoResponse {
+            build_info: Some(BuildInfo {
+                service: SERVICE.to_owned(),
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                git_sha: cc_bootstrap::GIT_SHA.to_owned(),
+                rustc: cc_bootstrap::RUSTC.to_owned(),
+            }),
+        }))
+    }
+
+    async fn set_custody_group_count(
+        &self,
+        request: Request<SetCustodyGroupCountRequest>,
+    ) -> Result<Response<SetCustodyGroupCountResponse>, Status> {
+        let cgc = request.into_inner().cgc;
+        // Handler calls the Rust method of the same name (CC-21d).
+        match self.set_custody_group_count(cgc) {
+            Ok(()) => Ok(Response::new(SetCustodyGroupCountResponse {})),
+            Err(CgcHookError::NotAttached) => Err(Status::failed_precondition(
+                "set_custody_group_count: cgc hook not attached (Phase 2 — no production caller)",
+            )),
+            Err(CgcHookError::CgcOutOfRange { got }) => Err(Status::invalid_argument(format!(
+                "cgc {got} out of range"
+            ))),
+            Err(CgcHookError::Registry(e)) => {
+                Err(Status::internal(format!("cgc hook registry: {e}")))
+            }
+            Err(CgcHookError::Enr(e)) => Err(Status::internal(format!("cgc hook enr: {e}"))),
         }
     }
 }

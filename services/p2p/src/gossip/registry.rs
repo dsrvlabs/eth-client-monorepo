@@ -28,10 +28,10 @@
 //! Steady with current := next
 //! ```
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 
-use cc_types::{Epoch, ForkDigest};
+use cc_types::{Epoch, ForkDigest, SubnetId};
 
 use crate::fork_digest::ForkContext;
 
@@ -41,12 +41,13 @@ use super::topics::{SubnetCounts, TopicKey, TopicName, format_topic_string};
 
 /// Opaque per-topic scoring parameters.
 ///
-/// Numeric PeerScore topic weights land in **CC-22c**. This issue only
-/// establishes that params are supplied at subscribe time and applied first.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Column weight is `0.5 / sampling_size` ([`super::column_topic_weight`]) —
+/// recomputed by the CC-21d custody hook. Other families use the CC-22c table.
+/// `f64` so the column formula is expressible (not a placeholder integer).
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct TopicParams {
-    /// Placeholder topic weight (CC-22c replaces this with the full param set).
-    pub topic_weight: u64,
+    /// Topic weight (column family: `0.5 / sampling_size`).
+    pub topic_weight: f64,
 }
 
 /// Errors from the gossipsub control adapter (not registry policy errors).
@@ -90,7 +91,7 @@ pub trait GossipsubControl {
 }
 
 /// Recorded control call for ordering / ownership tests.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GossipCall {
     /// `set_topic_params` was invoked.
     SetTopicParams {
@@ -310,6 +311,84 @@ impl<G: GossipsubControl> TopicRegistry<G> {
             return Err(RegistryError::NoValidator(key.name));
         }
         self.subscribe_unchecked(key, params)
+    }
+
+    /// Apply scoring params for `key` **without** (un)subscribing.
+    ///
+    /// Sole external path for mid-lifetime weight updates (CC-21d column weight
+    /// recompute). Updates the bookkeeping map when the topic is already live.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError::Control`] on backend failure.
+    pub fn set_topic_params(
+        &mut self,
+        key: &TopicKey,
+        params: TopicParams,
+    ) -> Result<(), RegistryError> {
+        let topic = key.topic_string();
+        self.gossip.set_topic_params(&topic, &params)?;
+        if let Some(stored) = self.subscribed.get_mut(key) {
+            *stored = params;
+        }
+        Ok(())
+    }
+
+    /// Resync column-sidecar subscriptions for `digest` to `desired` subnets.
+    ///
+    /// §6.4 / §5.1 ordering (one mechanism, two triggers with the BPO machine):
+    /// 1. `set_topic_params` for **every** topic that remains or will be
+    ///    subscribed (new weight first — never score at GossipSub defaults);
+    /// 2. `subscribe` newly desired subnets (params-first via
+    ///    [`Self::subscribe`]);
+    /// 3. `unsubscribe` subnets no longer desired.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`RegistryError`] from params / subscribe / unsubscribe.
+    pub fn sync_column_subnets(
+        &mut self,
+        digest: ForkDigest,
+        desired: &BTreeSet<SubnetId>,
+        params: TopicParams,
+    ) -> Result<(), RegistryError> {
+        let current: BTreeSet<SubnetId> = self
+            .subscribed
+            .keys()
+            .filter_map(|k| {
+                if k.digest == digest
+                    && let TopicName::DataColumnSidecar(id) = k.name
+                {
+                    return Some(id);
+                }
+                None
+            })
+            .collect();
+
+        // Step 2 of §6.4: params for every column topic that will be live.
+        for &subnet in desired {
+            let key = TopicKey::new(digest, TopicName::DataColumnSidecar(subnet));
+            if current.contains(&subnet) {
+                // Already subscribed — re-apply weight only.
+                self.set_topic_params(&key, params.clone())?;
+            }
+            // New topics get params inside `subscribe` (params-first).
+        }
+
+        // Step 3: subscribe new, unsubscribe dropped.
+        for &subnet in desired {
+            if !current.contains(&subnet) {
+                let key = TopicKey::new(digest, TopicName::DataColumnSidecar(subnet));
+                self.subscribe(key, params.clone())?;
+            }
+        }
+        for &subnet in &current {
+            if !desired.contains(&subnet) {
+                let key = TopicKey::new(digest, TopicName::DataColumnSidecar(subnet));
+                self.unsubscribe(&key)?;
+            }
+        }
+        Ok(())
     }
 
     /// Unsubscribe `key` if present.
@@ -570,7 +649,7 @@ mod tests {
         );
         reg.register_validator(TopicName::BeaconBlock);
         let key = TopicKey::new(ctx.current_digest(), TopicName::BeaconBlock);
-        let params = TopicParams { topic_weight: 42 };
+        let params = TopicParams { topic_weight: 42.0 };
         reg.subscribe(key, params.clone()).unwrap();
 
         let calls = &reg.gossip().calls;
@@ -612,7 +691,7 @@ mod tests {
         // Subscribe one topic so Overlap mirrors it.
         reg.subscribe(
             TopicKey::new(d_current, TopicName::BeaconBlock),
-            TopicParams { topic_weight: 1 },
+            TopicParams { topic_weight: 1.0 },
         )
         .unwrap();
 
@@ -685,7 +764,7 @@ mod tests {
         let d_next = ctx.next().unwrap().2;
         reg.subscribe(
             TopicKey::new(d_current, TopicName::BeaconBlock),
-            TopicParams { topic_weight: 7 },
+            TopicParams { topic_weight: 7.0 },
         )
         .unwrap();
         reg.gossip_mut().calls.clear();

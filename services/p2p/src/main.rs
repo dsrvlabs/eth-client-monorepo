@@ -26,18 +26,18 @@ use cc_p2p::fault_mode::{
 use cc_p2p::identity::{self, DEFAULT_NODE_KEY_PATH};
 use cc_p2p::metrics::P2pMetrics;
 use cc_p2p::service::{
-    DEFAULT_LISTEN_MULTIADDR, RuntimeConfig, RuntimeError, SERVICE, run_process, service_spec,
+    DEFAULT_LISTEN_MULTIADDR, P2pGrpcService, RuntimeConfig, RuntimeError, SERVICE, run_process,
+    service_spec,
 };
-use cc_proto::common::BuildInfo;
-use cc_proto::p2p::p2p_service_server::{P2pService, P2pServiceServer};
-use cc_proto::p2p::{GetInfoRequest, GetInfoResponse};
+use cc_proto::p2p::p2p_service_server::P2pServiceServer;
 use clap::Parser;
 use serde::Deserialize;
 use tonic::service::Routes;
-use tonic::{Request, Response, Status};
 
 /// Full gRPC path for the Phase 0 RPC (metrics label normalisation).
 const GET_INFO_METHOD: &str = "/eth.p2p.v1.P2pService/GetInfo";
+/// CC-21d RPC path (metrics label normalisation).
+const SET_CGC_METHOD: &str = "/eth.p2p.v1.P2pService/SetCustodyGroupCount";
 
 /// CLI for CC-2Jd publisher / peer / bootnode emission; absent flags → CC-20b.
 #[derive(Debug, Parser)]
@@ -406,29 +406,8 @@ impl P2pConfig {
                     uri: uri.clone(),
                 })
                 .collect(),
-            vec![GET_INFO_METHOD.to_owned()],
+            vec![GET_INFO_METHOD.to_owned(), SET_CGC_METHOD.to_owned()],
         )
-    }
-}
-
-/// Phase 0 stub: only `GetInfo` is implemented.
-#[derive(Debug, Default)]
-struct P2pStub;
-
-#[tonic::async_trait]
-impl P2pService for P2pStub {
-    async fn get_info(
-        &self,
-        _request: Request<GetInfoRequest>,
-    ) -> Result<Response<GetInfoResponse>, Status> {
-        Ok(Response::new(GetInfoResponse {
-            build_info: Some(BuildInfo {
-                service: SERVICE.to_owned(),
-                version: env!("CARGO_PKG_VERSION").to_owned(),
-                git_sha: cc_bootstrap::GIT_SHA.to_owned(),
-                rustc: cc_bootstrap::RUSTC.to_owned(),
-            }),
-        }))
     }
 }
 
@@ -468,7 +447,8 @@ async fn main() -> Result<()> {
     let p2p_metrics = P2pMetrics::register(&mut bs.registry);
 
     let runtime_cfg = cfg.runtime_config()?;
-    let routes = Routes::default().add_service(P2pServiceServer::new(P2pStub));
+    // CC-21d: GetInfo + SetCustodyGroupCount (hook unattached in Phase 2).
+    let routes = Routes::default().add_service(P2pServiceServer::new(P2pGrpcService::new()));
 
     match run_process(
         bs,

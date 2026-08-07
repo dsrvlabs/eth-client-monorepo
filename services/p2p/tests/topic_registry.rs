@@ -199,7 +199,7 @@ fn params_applied_before_subscribe_on_recording_stub() {
     reg.register_validator(TopicName::VoluntaryExit);
 
     let key = TopicKey::new(ctx.current_digest(), TopicName::VoluntaryExit);
-    let params = TopicParams { topic_weight: 99 };
+    let params = TopicParams { topic_weight: 99.0 };
     reg.subscribe(key, params.clone()).unwrap();
 
     let calls = &reg.gossip().calls;
@@ -244,7 +244,7 @@ fn state_machine_live_set_across_bpo_with_hoodi_schedule() {
     reg.register_validator(TopicName::BeaconBlock);
     reg.subscribe(
         TopicKey::new(d_current, TopicName::BeaconBlock),
-        TopicParams { topic_weight: 1 },
+        TopicParams { topic_weight: 1.0 },
     )
     .unwrap();
 

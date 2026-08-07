@@ -12,6 +12,9 @@ import "eth/common/v1/common.proto";
 //   attestations, sync messages, exits/slashings).
 service P2pService {
   rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+  // CC-21d: runtime custody-group-count hook. Phase 2 has no production caller;
+  // Phase 6's attached-validator tracker (or an operator) invokes this.
+  rpc SetCustodyGroupCount(SetCustodyGroupCountRequest) returns (SetCustodyGroupCountResponse);
 }
 
 message GetInfoRequest {}
@@ -182,7 +185,10 @@ message ChainView {
   uint64 view_kind = 14;
 }
 
-// CC-21d's caller-facing half (message only here; RPC lands with CC-21d).
+// CC-21d's caller-facing half (request declared at CC-27a; RPC + response here).
 message SetCustodyGroupCountRequest {
   uint64 cgc = 1;
 }
+
+// Empty success body — effects are observable via ENR / MetaData / subscriptions.
+message SetCustodyGroupCountResponse {}

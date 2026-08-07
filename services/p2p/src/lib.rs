@@ -7,6 +7,7 @@
 //! - **CC-21a**: A-P2-4 ENR sequence probe + `EnrManager::apply` batching skeleton
 //! - **CC-21b**: Epoch-aware fork digest (`fork_digest`) — no libp2p/discv5/I/O
 //! - **CC-21c**: discv5 discovery task, ENR field encoders, predicates, dial queue
+//! - **CC-21d**: runtime `cgc` hook (`set_custody_group_count`) — five §6.4 effects, no Phase 2 caller
 //! - **CC-22a**: Topic registry, Fulu topic strings, Steady→Overlap→Drain skeleton
 //! - **CC-22b**: Message-id preimage + fixture, per-container SSZ max table, pre-decode check
 //! - **CC-22c**: GossipSub `ScoringConfig`, two score spaces, IDONTWANT, penalty table
