@@ -108,24 +108,60 @@ pub enum ConnectionState {
     Connected,
 }
 
-/// Placeholder MetaData v3 fields (populated by CC-23b).
+/// Peer MetaData v3 (CC-23b wire type, mirrored into the table).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MetaDataV3 {
     /// Sequence number.
     pub seq_number: u64,
-    /// Attestation subnet bitfield (raw placeholder).
+    /// Attestation subnet bitfield (`BitVector[64]` as `u64`).
     pub attnets: u64,
-    /// Sync-committee subnet bitfield (raw placeholder).
+    /// Sync-committee subnet bitfield (`BitVector[4]` as low nibble).
     pub syncnets: u8,
     /// Custody group count.
     pub cgc: u64,
 }
 
-/// Placeholder Status (populated by CC-23b).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+impl From<crate::reqresp::MetaDataV3> for MetaDataV3 {
+    fn from(m: crate::reqresp::MetaDataV3) -> Self {
+        Self {
+            seq_number: m.seq_number,
+            attnets: m.attnets,
+            syncnets: m.syncnets,
+            cgc: m.custody_group_count,
+        }
+    }
+}
+
+/// Peer `Status v2` six fields (CC-23b).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PeerStatus {
-    /// Opaque until CC-23b fills the six fields.
-    pub present: bool,
+    /// Fork digest from the peer's Status.
+    pub fork_digest: [u8; 4],
+    /// Finalized root.
+    pub finalized_root: [u8; 32],
+    /// Finalized epoch.
+    pub finalized_epoch: u64,
+    /// Head root.
+    pub head_root: [u8; 32],
+    /// Head slot.
+    pub head_slot: u64,
+    /// Peer-advertised earliest available slot.
+    pub earliest_available_slot: u64,
+}
+
+impl From<crate::reqresp::StatusV2> for PeerStatus {
+    fn from(s: crate::reqresp::StatusV2) -> Self {
+        let mut fork_digest = [0u8; 4];
+        fork_digest.copy_from_slice(s.fork_digest.as_slice());
+        Self {
+            fork_digest,
+            finalized_root: *s.finalized_root.as_array(),
+            finalized_epoch: s.finalized_epoch.as_u64(),
+            head_root: *s.head_root.as_array(),
+            head_slot: s.head_slot.as_u64(),
+            earliest_available_slot: s.earliest_available_slot.as_u64(),
+        }
+    }
 }
 
 /// Snapshot of a peer's advertised ENR fields relevant to dial policy.

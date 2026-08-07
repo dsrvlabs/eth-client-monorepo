@@ -1,16 +1,21 @@
-//! Req/resp shared half — Architecture §7.1–§7.3, §7.6 / CC-23a.
+//! Req/resp — Architecture §7.1–§7.6 / CC-23a + CC-23b.
 //!
-//! Stream R opens here. Handlers are CC-23b/c/d; this module owns:
+//! Stream R:
 //! - the nine protocol IDs and the exact-set test (CC-23/1)
 //! - SSZ+snappy framing helpers ([`codec`]) with per-chunk `ForkDigest` context
 //! - inbound token buckets + outbound in-flight caps ([`limits`])
 //! - client-side [`RequestScheduler`] ([`client`])
+//! - **CC-23b:** [`status`], [`ping`], [`metadata`], [`handshake`] (incl. Goodbye)
 //!
 //! Timeouts: [`TTFB_TIMEOUT`] 5 s / [`RESP_TIMEOUT`] 10 s (CC-23/6).
 
 pub mod client;
 pub mod codec;
+pub mod handshake;
 pub mod limits;
+pub mod metadata;
+pub mod ping;
+pub mod status;
 
 pub use client::{
     Exhausted, PeerPredicate, Priority, RequestPayload, RequestScheduler, RequestSpec,
@@ -20,11 +25,28 @@ pub use codec::{
     ResponseChunk, ResponseCode, SszLimits, SszSnappyFraming, CONTEXT_BYTES_LEN, MAX_ERROR_MESSAGE,
     MAX_PAYLOAD_SIZE, RESP_TIMEOUT, TTFB_TIMEOUT,
 };
+pub use handshake::{
+    decode_goodbye_ssz, encode_goodbye_ssz, handle_inbound_goodbye, GoodbyeReceipt, HandshakeBook,
+    HandshakeDeps, InboundStatusResult, OutboundAction, PeerHandshakeState,
+};
 pub use limits::{
     InboundRateLimiter, OutboundLimiter, RateLimitKind, RateLimitOutcome, TokenBucket,
     GLOBAL_MULTIPLIER, INBOUND_BLOCKS_CAPACITY, INBOUND_COLUMNS_CAPACITY, INBOUND_WINDOW,
     OUTBOUND_MAX_IN_FLIGHT_PER_PEER, OUTBOUND_MAX_IN_FLIGHT_PER_PROTOCOL,
     RATE_LIMIT_ERROR_MESSAGE,
+};
+pub use metadata::{
+    decode_metadata_response_framed, decode_metadata_ssz, encode_metadata_request,
+    encode_metadata_response, evaluate_peer_cgc, CgcEval, CgcPolicy, LocalMetaData, MetaDataV3,
+    METADATA_V3_SSZ_LEN,
+};
+pub use ping::{
+    decode_ping_response_framed, decode_ping_ssz, encode_ping_request, encode_ping_response,
+    seq_mismatch, Ping, PING_SSZ_LEN,
+};
+pub use status::{
+    build_local_status, decode_status_response_framed, decode_status_ssz, encode_status_request,
+    encode_status_response, evaluate_peer_status, StatusEval, StatusV2, STATUS_V2_SSZ_LEN,
 };
 
 use cc_libp2p::reexport::{ProtocolSupport, StreamProtocol};

@@ -144,6 +144,9 @@ struct P2pConfig {
     /// When false, do not spawn the discovery task.
     #[serde(default = "default_enable_discovery")]
     enable_discovery: bool,
+    /// CC-23b: reject peers with `cgc < CUSTODY_REQUIREMENT` (default false = accept).
+    #[serde(default)]
+    reject_low_cgc_peers: bool,
 }
 
 fn default_enable_discovery() -> bool {
@@ -387,6 +390,7 @@ impl P2pConfig {
             enable_chain_stream,
             heartbeat_interval: Duration::from_secs(1),
             test_swarm_panic: false,
+            reject_low_cgc_peers: self.reject_low_cgc_peers,
         })
     }
 

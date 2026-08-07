@@ -82,6 +82,12 @@ section is the version gate only.
   exchange (CC-23b). The name collision is a documentation annoyance only — do not drop
   libp2p ping to avoid it, and do not conflate the two protocol handlers.
 
+- **Req/resp control protocols use dedicated `request_response` behaviours (CC-23b).**
+  The pin's `send_request` always offers the full outbound protocol list to multistream-select.
+  Status / Goodbye / Ping / MetaData each own a single-protocol behaviour so outbound
+  negotiation proposes exactly one ID; block/column families remain multi-protocol on
+  `CcBehaviour::reqresp`.
+
 - **No `upnp` / `kad` / `mdns` / `autonat` / `relay` in `CcBehaviour`.** Lighthouse enables
   UPnP; we do not — soak hosts control their own port mappings; unrequested router
   mappings are a surprise. Discovery is discv5 (CC-21c), not Kademlia.
@@ -91,7 +97,12 @@ section is the version gate only.
   set to **512**). The 4 MiB figure is not settable through the public wrapper; underlying
   `yamux` crate defaults apply until a future pin surfaces the knob.
 
-<!-- CC-23b cgc-policy notes append here. -->
+- **`p2p.reject_low_cgc_peers` default = false (CC-23b / CC-23/2).** Spec permits
+  rejecting peers that advertise `custody_group_count < CUSTODY_REQUIREMENT` (4).
+  We **default to accept**: rejecting shrinks an already-thin custody-compatible
+  peer set, and the ≥ 8 custody-compatible peers clause needs every viable peer.
+  The knob is tested both ways (`CgcPolicy::accept_low_cgc` / `reject_low_cgc`);
+  set `reject_low_cgc_peers = true` only with an explicit ops reason.
 
 - **Phase 4 serve-window backfill (CC-26/5, A-P2-5).** Phase 2 advertises a short in-memory
   `earliest_available_slot` from the CC-26a cache (≤ 2 048 slots / 1 GiB) rather than the

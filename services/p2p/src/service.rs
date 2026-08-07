@@ -35,7 +35,8 @@ use crate::discovery::{
     run_discovery_task,
 };
 use crate::fork_digest::ForkContext;
-use crate::host::{SwarmTask, build_host_swarm, run_swarm_task};
+use crate::host::{build_host_swarm, run_swarm_task, HandshakeRuntime, SwarmTask};
+use crate::reqresp::{CgcPolicy, HandshakeDeps};
 use crate::identity::{self, IdentityError};
 use crate::metrics::{P2pMetrics, QueueName};
 use crate::peer_manager::{PeerManager, PeerManagerConfig, run_peer_manager};
@@ -84,6 +85,9 @@ pub struct RuntimeConfig {
     /// can be exercised through [`run_process`] without a real host crash.
     /// Production always leaves this `false`.
     pub test_swarm_panic: bool,
+    /// CC-23b: when true, peers advertising `cgc < CUSTODY_REQUIREMENT` are
+    /// Goodbye'd. Default **false** (accept) — see `docs/p2p-dependencies.md`.
+    pub reject_low_cgc_peers: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -102,6 +106,7 @@ impl Default for RuntimeConfig {
             // Match `cc_libp2p::BehaviourConfig::default().heartbeat_interval`.
             heartbeat_interval: Duration::from_secs(1),
             test_swarm_panic: false,
+            reject_low_cgc_peers: false,
         }
     }
 }
@@ -258,11 +263,15 @@ pub async fn serve(
     // Peer manager owns conn_rx + a clone of cmd_tx.
     let conn_rx = std::mem::replace(&mut channels.conn_rx, mpsc::channel(1).1);
     let peer_cmd_tx = channels.cmd_tx.clone();
+    // CC-23b: epoch → Status re-exchange (same cmd path as peer manager).
+    let status_epoch_cmd_tx = channels.cmd_tx.clone();
     let peer_cfg = cfg.peer_manager.clone();
 
     // Discovery → peer manager dial channel (bound = dial queue capacity).
     let (dial_tx, dial_rx) = mpsc::channel(DIAL_QUEUE_BOUND);
     let (peer_view_tx, peer_view_rx) = watch::channel(DiscoveryPeerView::default());
+    // Second receiver for StatusEpoch worker (same watch).
+    let status_epoch_peer_view = peer_view_rx.clone();
 
     // Chain-stream handle (view ArcSwap + publish drop counter) — shared.
     let chain_stream_handle = ChainStreamHandle::new();
@@ -314,6 +323,19 @@ pub async fn serve(
     } else {
         let swarm = build_host_swarm(identity.keypair().clone())?;
         assert_eq!(snapshot.peer_id, *swarm.local_peer_id());
+        // CC-23b handshake: ChainView from stream client, serve window seed empty,
+        // local MetaData at CUSTODY_REQUIREMENT, cgc policy from config.
+        let mut handshake_deps = HandshakeDeps::new(
+            cc_types::Slot::new(0),
+            cc_types::CUSTODY_REQUIREMENT,
+        );
+        handshake_deps.view = chain_stream_handle.view.clone();
+        handshake_deps.cgc_policy = if cfg.reject_low_cgc_peers {
+            CgcPolicy::reject_low_cgc()
+        } else {
+            CgcPolicy::accept_low_cgc()
+        };
+        let handshake = HandshakeRuntime::new(fork_ctx.clone(), handshake_deps);
         let swarm_task = SwarmTask::new(
             swarm,
             cmd_rx,
@@ -323,7 +345,8 @@ pub async fn serve(
             chain_out_tx,
             cfg.heartbeat_interval,
             metrics.clone(),
-        );
+        )
+        .with_handshake(handshake);
         let listen_for_swarm = cfg.listen_multiaddr.clone();
         let swarm_cell = Mutex::new(Some(swarm_task));
         let swarm_factory = factory_from_future("swarm", move || {
@@ -469,6 +492,46 @@ pub async fn serve(
     let idle_factory = factory_from_future("idle_worker", || async {
         std::future::pending::<()>().await;
     });
+
+    // CC-23b: live per-epoch Status re-exchange + handshake ForkContext advance.
+    // Driven by the same epoch_rx discovery uses; connected set from peer view.
+    {
+        let mut epoch_rx = epoch_rx.clone();
+        let peer_view_rx = status_epoch_peer_view;
+        let cmd_tx = status_epoch_cmd_tx;
+        let mut shutdown = shutdown_rx.clone();
+        cc_bootstrap::spawn("status-epoch", async move {
+            let mut last_epoch = *epoch_rx.borrow();
+            loop {
+                tokio::select! {
+                    _ = shutdown.changed() => {
+                        if *shutdown.borrow() {
+                            break;
+                        }
+                    }
+                    result = epoch_rx.changed() => {
+                        if result.is_err() {
+                            break;
+                        }
+                        let epoch = *epoch_rx.borrow();
+                        if epoch == last_epoch {
+                            continue;
+                        }
+                        last_epoch = epoch;
+                        let connected = peer_view_rx.borrow().active.clone();
+                        if cmd_tx
+                            .send(SwarmCommand::StatusEpoch { epoch, connected })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        info!(epoch, "status epoch re-exchange scheduled");
+                    }
+                }
+            }
+        });
+    }
 
     let tasks = vec![
         SupervisedTask {

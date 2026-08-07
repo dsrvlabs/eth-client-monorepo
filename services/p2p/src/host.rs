@@ -34,14 +34,46 @@ use crate::channels::{
     ChainOutbound, ConnEvent, ConnectionDirection, GossipWork, PublishRequest, ReqRespInbound,
     SwarmCommand,
 };
+use crate::fork_digest::ForkContext;
 use crate::gossip::validate::{check_payload_len, parse_topic_name};
 use crate::metrics::{P2pMetrics, PeerPenaltyReason, QueueName};
 use crate::reqresp::codec::{ResponseChunk, ResponseCode, SszSnappyFraming};
+use crate::reqresp::handshake::{
+    encode_goodbye_ssz, handle_inbound_goodbye, HandshakeBook, HandshakeDeps, OutboundAction,
+};
 use crate::reqresp::limits::{rate_limit_kind, InboundRateLimiter};
+use crate::reqresp::metadata::{encode_metadata_response, LocalMetaData};
+use crate::reqresp::ping::{decode_ping_ssz, encode_ping_response, Ping};
+use crate::reqresp::status::{decode_status_ssz, encode_status_response, StatusV2};
 use crate::reqresp::Protocol;
 use crate::verdict::{to_message_acceptance, Verdict};
 use cc_proto::p2p::Reason;
 use cc_types::preset::Mainnet;
+use cc_types::{Epoch, Slot};
+use cc_libp2p::reexport::StreamProtocol;
+
+/// CC-23b handshake state owned by the swarm task.
+#[derive(Debug)]
+pub struct HandshakeRuntime {
+    /// Chain view / serve window / local MetaData / cgc policy.
+    pub deps: HandshakeDeps,
+    /// Per-peer Status / MetaData / exchange counters.
+    pub book: HandshakeBook,
+    /// Fork digest source (Status.fork_digest).
+    pub fork_ctx: ForkContext,
+}
+
+impl HandshakeRuntime {
+    /// Build with the given fork context and deps.
+    #[must_use]
+    pub fn new(fork_ctx: ForkContext, deps: HandshakeDeps) -> Self {
+        Self {
+            deps,
+            book: HandshakeBook::new(),
+            fork_ctx,
+        }
+    }
+}
 
 /// Inputs owned exclusively by the swarm task after spawn.
 #[allow(missing_debug_implementations)] // `Swarm` is not Debug
@@ -62,8 +94,8 @@ pub struct SwarmTask {
     pub heartbeat_interval: Duration,
     /// Metric handles for queue depth.
     pub metrics: P2pMetrics,
-    /// Goodbye commands observed before wire handler (CC-23b) exists.
-    pub goodbye_dropped: u64,
+    /// Goodbye wire frames successfully enqueued (CC-23b).
+    pub goodbye_sent: u64,
     /// Durable buffer for lifecycle conn events that could not enter `conn_tx`
     /// without dropping (H1). Never holds `NewListenAddr` only.
     pending_conn: VecDeque<ConnEvent>,
@@ -71,6 +103,8 @@ pub struct SwarmTask {
     pub stall_fired: bool,
     /// Inbound req/resp rate limiter (Architecture §7.3 / CC-23a).
     pub inbound_limiter: InboundRateLimiter,
+    /// Status / Ping / MetaData / Goodbye handshake (CC-23b).
+    pub handshake: Option<HandshakeRuntime>,
 }
 
 impl SwarmTask {
@@ -96,11 +130,19 @@ impl SwarmTask {
             chain_out_tx,
             heartbeat_interval,
             metrics,
-            goodbye_dropped: 0,
+            goodbye_sent: 0,
             pending_conn: VecDeque::new(),
             stall_fired: false,
             inbound_limiter: InboundRateLimiter::new(),
+            handshake: None,
         }
+    }
+
+    /// Attach CC-23b handshake runtime (Status/Ping/MetaData/Goodbye).
+    #[must_use]
+    pub fn with_handshake(mut self, hs: HandshakeRuntime) -> Self {
+        self.handshake = Some(hs);
+        self
     }
 }
 
@@ -338,10 +380,20 @@ async fn route_swarm_event(
                     endpoint: remote,
                 },
             );
+            // CC-23b: Status handshake on connect (this side of the bidirectional exchange).
+            let actions = task.handshake.as_mut().map(|hs| {
+                hs.book.on_connect(peer_id, &hs.fork_ctx, &hs.deps)
+            });
+            if let Some(actions) = actions {
+                apply_outbound_actions(task, actions);
+            }
         }
         SwarmEvent::ConnectionClosed { peer_id, .. } => {
             debug!(%peer_id, "connection closed");
             task.inbound_limiter.on_peer_disconnected(peer_id);
+            if let Some(hs) = task.handshake.as_mut() {
+                hs.book.on_disconnected(peer_id);
+            }
             deliver_lifecycle(task, ConnEvent::ConnectionClosed { peer_id });
         }
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
@@ -480,8 +532,22 @@ async fn route_behaviour(task: &mut SwarmTask, bev: CcBehaviourEvent, shed: bool
                 }
             }
         }
+        // Control protocols: dedicated behaviours → known protocol for response dispatch (SEC H1).
+        CcBehaviourEvent::ReqrespStatus(ev) => {
+            handle_reqresp_event(task, ev, Some(Protocol::StatusV2));
+        }
+        CcBehaviourEvent::ReqrespGoodbye(ev) => {
+            handle_reqresp_event(task, ev, Some(Protocol::GoodbyeV1));
+        }
+        CcBehaviourEvent::ReqrespPing(ev) => {
+            handle_reqresp_event(task, ev, Some(Protocol::PingV1));
+        }
+        CcBehaviourEvent::ReqrespMetadata(ev) => {
+            handle_reqresp_event(task, ev, Some(Protocol::MetaDataV3));
+        }
+        // Block/column multi-protocol field.
         CcBehaviourEvent::Reqresp(ev) => {
-            handle_reqresp_event(task, ev);
+            handle_reqresp_event(task, ev, None);
         }
         CcBehaviourEvent::Identify(_)
         | CcBehaviourEvent::Ping(_)
@@ -492,11 +558,14 @@ async fn route_behaviour(task: &mut SwarmTask, bev: CcBehaviourEvent, shed: bool
     }
 }
 
-/// Fail-closed req/resp edge (CC-23a): always `send_response`, never drop the
-/// channel. Inbound rate limiter is live; handler bodies arrive in CC-23b+.
+/// Fail-closed req/resp edge: always `send_response`, never drop the channel.
+///
+/// `known_protocol` is set for dedicated control behaviours so outbound
+/// responses are classified by negotiated protocol, not body shape (SEC H1).
 fn handle_reqresp_event(
     task: &mut SwarmTask,
     ev: RequestResponseEvent<ReqRespRequest, ReqRespResponse>,
+    known_protocol: Option<Protocol>,
 ) {
     match ev {
         RequestResponseEvent::Message { peer, message, .. } => match message {
@@ -506,19 +575,21 @@ fn handle_reqresp_event(
                 handle_inbound_request(task, peer, request, channel);
             }
             RequestResponseMessage::Response { response, .. } => {
-                // Outbound responses are consumed by the scheduler (CC-25/26);
-                // count for observability.
-                task.metrics
-                    .inc_reqresp_outbound("response", "ok");
-                let _ = response;
+                if let Some(proto) = known_protocol {
+                    handle_outbound_response(task, peer, proto, &response.framed);
+                    task.metrics
+                        .inc_reqresp_outbound(proto.as_str(), "ok");
+                } else {
+                    task.metrics.inc_reqresp_outbound("response", "ok");
+                }
             }
         },
         RequestResponseEvent::OutboundFailure {
             peer, error, ..
         } => {
-            debug!(%peer, ?error, "req/resp outbound failure");
-            task.metrics
-                .inc_reqresp_outbound("unknown", "failure");
+            let label = known_protocol.map(Protocol::as_str).unwrap_or("unknown");
+            debug!(%peer, ?error, protocol = label, "req/resp outbound failure");
+            task.metrics.inc_reqresp_outbound(label, "failure");
             // CC-23/6: stalled / timed-out peer is disconnected, not held.
             if matches!(
                 error,
@@ -531,8 +602,9 @@ fn handle_reqresp_event(
             }
         }
         RequestResponseEvent::InboundFailure { peer, error, .. } => {
-            debug!(%peer, ?error, "req/resp inbound failure");
-            task.metrics.inc_reqresp_inbound("unknown", "failure");
+            let label = known_protocol.map(Protocol::as_str).unwrap_or("unknown");
+            debug!(%peer, ?error, protocol = label, "req/resp inbound failure");
+            task.metrics.inc_reqresp_inbound(label, "failure");
         }
         RequestResponseEvent::ResponseSent { .. } => {}
     }
@@ -548,7 +620,7 @@ fn handle_inbound_request(
     let protocol = Protocol::from_protocol_id(&protocol_id);
     let proto_label = protocol.map(Protocol::as_str).unwrap_or("unknown");
 
-    // Enqueue for the req/resp server task (handlers CC-23b+).
+    // Enqueue for observability / secondary consumers (CC-23c+ handlers may claim).
     let _ = task.reqresp_in_tx.try_send(ReqRespInbound {
         peer_id: peer,
         protocol: protocol_id.clone(),
@@ -571,27 +643,275 @@ fn handle_inbound_request(
             let _ = task
                 .swarm
                 .behaviour_mut()
-                .reqresp
-                .send_response(channel, ReqRespResponse::from_framed(framed));
+                .send_reqresp_response(channel, ReqRespResponse::from_framed(framed));
             task.metrics
                 .inc_reqresp_inbound(proto_label, "rate_limited");
             return;
         }
     }
 
-    // Fail-closed stub until CC-23b/c/d: ResourceUnavailable (code 3).
+    // CC-23b control protocols: Status / Ping / MetaData / Goodbye.
+    if let Some(proto) = protocol
+        && matches!(
+            proto,
+            Protocol::StatusV2 | Protocol::PingV1 | Protocol::MetaDataV3 | Protocol::GoodbyeV1
+        )
+    {
+        let framed = handle_control_protocol(task, peer, proto, &request.ssz);
+        let ok = task
+            .swarm
+            .behaviour_mut()
+            .send_reqresp_response(channel, ReqRespResponse::from_framed(framed))
+            .is_ok();
+        task.metrics.inc_reqresp_inbound(
+            proto_label,
+            if ok { "ok" } else { "channel_closed" },
+        );
+        return;
+    }
+
+    // Fail-closed stub until CC-23c/d: ResourceUnavailable (code 3).
     // Never drop the ResponseChannel (that looks like packet loss → retries).
     let framed = encode_resource_unavailable(protocol.unwrap_or(Protocol::StatusV2));
     let ok = task
         .swarm
         .behaviour_mut()
-        .reqresp
-        .send_response(channel, ReqRespResponse::from_framed(framed))
+        .send_reqresp_response(channel, ReqRespResponse::from_framed(framed))
         .is_ok();
     task.metrics.inc_reqresp_inbound(
         proto_label,
-        if ok { "resource_unavailable" } else { "channel_closed" },
+        if ok {
+            "resource_unavailable"
+        } else {
+            "channel_closed"
+        },
     );
+}
+
+/// Serve Status / Ping / MetaData / Goodbye (CC-23b).
+fn handle_control_protocol(
+    task: &mut SwarmTask,
+    peer: PeerId,
+    protocol: Protocol,
+    ssz: &[u8],
+) -> Vec<u8> {
+    match protocol {
+        Protocol::GoodbyeV1 => {
+            match handle_inbound_goodbye(ssz) {
+                Ok(receipt) => {
+                    debug!(%peer, reason = receipt.reason, "inbound goodbye; closing gracefully");
+                    let _ = task.swarm.disconnect_peer_id(peer);
+                    if let Some(hs) = task.handshake.as_mut() {
+                        hs.book.on_disconnected(peer);
+                    }
+                }
+                Err(e) => {
+                    debug!(%peer, error = %e, "malformed goodbye");
+                }
+            }
+            // Goodbye has no response body.
+            Vec::new()
+        }
+        Protocol::StatusV2 => handle_inbound_status(task, peer, ssz),
+        Protocol::PingV1 => handle_inbound_ping(task, peer, ssz),
+        Protocol::MetaDataV3 => handle_inbound_metadata(task),
+        _ => encode_resource_unavailable(protocol),
+    }
+}
+
+fn handle_inbound_status(task: &mut SwarmTask, peer: PeerId, ssz: &[u8]) -> Vec<u8> {
+    let peer_status = match decode_status_ssz(ssz) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!(%peer, error = %e, "invalid status request");
+            return encode_error_response(
+                &ResponseChunk::Error {
+                    code: ResponseCode::InvalidRequest.as_u8(),
+                    message: b"invalid status".to_vec(),
+                },
+                Protocol::StatusV2,
+            );
+        }
+    };
+
+    let (local_ssz, disconnect) = {
+        let Some(hs) = task.handshake.as_mut() else {
+            let empty = StatusV2 {
+                fork_digest: cc_types::ForkDigest::ZERO,
+                finalized_root: cc_types::Root::ZERO,
+                finalized_epoch: Epoch::new(0),
+                head_root: cc_types::Root::ZERO,
+                head_slot: Slot::new(0),
+                earliest_available_slot: Slot::new(u64::MAX),
+            };
+            return encode_status_response(&empty).unwrap_or_default();
+        };
+        let local_digest = hs.fork_ctx.current_digest();
+        let result =
+            hs.book
+                .on_inbound_status(peer, peer_status, local_digest, &hs.deps);
+        let local = hs.deps.local_status(&hs.fork_ctx);
+        let framed = encode_status_response(&local).unwrap_or_else(|_| {
+            encode_resource_unavailable(Protocol::StatusV2)
+        });
+        (framed, result.disconnect)
+    };
+    if let Some(action) = disconnect {
+        apply_outbound_actions(task, vec![action]);
+    }
+    local_ssz
+}
+
+fn handle_inbound_ping(task: &mut SwarmTask, peer: PeerId, ssz: &[u8]) -> Vec<u8> {
+    let peer_ping = match decode_ping_ssz(ssz) {
+        Ok(p) => p,
+        Err(e) => {
+            debug!(%peer, error = %e, "invalid ping");
+            return encode_error_response(
+                &ResponseChunk::Error {
+                    code: ResponseCode::InvalidRequest.as_u8(),
+                    message: b"invalid ping".to_vec(),
+                },
+                Protocol::PingV1,
+            );
+        }
+    };
+
+    let (reply_framed, actions) = {
+        let Some(hs) = task.handshake.as_mut() else {
+            return encode_ping_response(Ping::new(0)).unwrap_or_default();
+        };
+        let actions = hs.book.on_peer_ping(peer, peer_ping);
+        let reply = hs.deps.local_ping();
+        let framed = encode_ping_response(reply).unwrap_or_default();
+        (framed, actions)
+    };
+    for a in &actions {
+        if let OutboundAction::SendRequest {
+            protocol: Protocol::MetaDataV3,
+            ..
+        } = a
+        {
+            task.metrics.inc_reqresp_outbound("metadata", "scheduled");
+        }
+    }
+    apply_outbound_actions(task, actions);
+    reply_framed
+}
+
+fn handle_inbound_metadata(task: &mut SwarmTask) -> Vec<u8> {
+    let md = if let Some(hs) = task.handshake.as_ref() {
+        hs.deps.local_metadata()
+    } else {
+        LocalMetaData::default().load()
+    };
+    encode_metadata_response(&md)
+        .unwrap_or_else(|_| encode_resource_unavailable(Protocol::MetaDataV3))
+}
+
+fn apply_outbound_actions(task: &mut SwarmTask, actions: Vec<OutboundAction>) {
+    for action in actions {
+        match action {
+            OutboundAction::SendRequest {
+                peer_id,
+                protocol,
+                ssz,
+            } => {
+                send_reqresp(task, peer_id, protocol, ssz);
+            }
+            OutboundAction::Disconnect { peer_id, reason } => {
+                send_goodbye_wire(task, peer_id, reason);
+                let _ = task.swarm.disconnect_peer_id(peer_id);
+                if let Some(hs) = task.handshake.as_mut() {
+                    hs.book.on_disconnected(peer_id);
+                }
+            }
+        }
+    }
+}
+
+fn send_reqresp(task: &mut SwarmTask, peer_id: PeerId, protocol: Protocol, ssz: Vec<u8>) {
+    let req = ReqRespRequest {
+        protocol: StreamProtocol::new(protocol.protocol_id()),
+        ssz,
+    };
+    // Dedicated control behaviours negotiate exactly one protocol ID (CC-23b F2).
+    let _id = task.swarm.behaviour_mut().send_reqresp(&peer_id, req);
+    task.metrics
+        .inc_reqresp_outbound(protocol.as_str(), "sent");
+}
+
+fn send_goodbye_wire(
+    task: &mut SwarmTask,
+    peer_id: PeerId,
+    reason: crate::channels::GoodbyeReason,
+) {
+    let ssz = encode_goodbye_ssz(reason).to_vec();
+    send_reqresp(task, peer_id, Protocol::GoodbyeV1, ssz);
+    task.goodbye_sent = task.goodbye_sent.saturating_add(1);
+    debug!(
+        %peer_id,
+        reason = reason.as_u64(),
+        sent = task.goodbye_sent,
+        "goodbye wire frame enqueued"
+    );
+}
+
+/// Decode an outbound response using the **negotiated** protocol (SEC H1 — no body sniff).
+fn handle_outbound_response(
+    task: &mut SwarmTask,
+    peer: PeerId,
+    protocol: Protocol,
+    framed: &[u8],
+) {
+    let actions = {
+        let Some(hs) = task.handshake.as_mut() else {
+            return;
+        };
+        match protocol {
+            Protocol::MetaDataV3 => {
+                match crate::reqresp::decode_metadata_response_framed(framed) {
+                    Ok(md) => hs.book.on_peer_metadata(peer, md, &hs.deps),
+                    Err(e) => {
+                        debug!(%peer, error = %e, "invalid metadata response");
+                        Vec::new()
+                    }
+                }
+            }
+            Protocol::StatusV2 => match crate::reqresp::decode_status_response_framed(framed) {
+                Ok(status) => {
+                    let local_digest = hs.fork_ctx.current_digest();
+                    let result =
+                        hs.book
+                            .on_inbound_status(peer, status, local_digest, &hs.deps);
+                    result.disconnect.into_iter().collect()
+                }
+                Err(e) => {
+                    debug!(%peer, error = %e, "invalid status response");
+                    Vec::new()
+                }
+            },
+            Protocol::PingV1 => match crate::reqresp::decode_ping_response_framed(framed) {
+                Ok(ping) => hs.book.on_peer_ping(peer, ping),
+                Err(e) => {
+                    debug!(%peer, error = %e, "invalid ping response");
+                    Vec::new()
+                }
+            },
+            Protocol::GoodbyeV1 => Vec::new(),
+            _ => Vec::new(),
+        }
+    };
+    for a in &actions {
+        if let OutboundAction::SendRequest {
+            protocol: Protocol::MetaDataV3,
+            ..
+        } = a
+        {
+            task.metrics.inc_reqresp_outbound("metadata", "scheduled");
+        }
+    }
+    apply_outbound_actions(task, actions);
 }
 
 fn encode_error_response(chunk: &ResponseChunk, protocol: Protocol) -> Vec<u8> {
@@ -680,10 +1000,13 @@ async fn handle_command(task: &mut SwarmTask, cmd: SwarmCommand) {
             }
         }
         SwarmCommand::Goodbye { peer_id, reason } => {
-            record_goodbye(task, peer_id, reason);
+            send_goodbye_wire(task, peer_id, reason);
         }
         SwarmCommand::Disconnect { peer_id } => {
             let _ = task.swarm.disconnect_peer_id(peer_id);
+            if let Some(hs) = task.handshake.as_mut() {
+                hs.book.on_disconnected(peer_id);
+            }
             debug!(%peer_id, "disconnect command");
         }
         SwarmCommand::ClosePeer {
@@ -691,9 +1014,12 @@ async fn handle_command(task: &mut SwarmTask, cmd: SwarmCommand) {
             reason,
             ban,
         } => {
-            // Atomic policy close (H2): Goodbye bookkeeping → disconnect → optional ban.
-            record_goodbye(task, peer_id, reason);
+            // Atomic policy close (H2): Goodbye wire → disconnect → optional ban.
+            send_goodbye_wire(task, peer_id, reason);
             let _ = task.swarm.disconnect_peer_id(peer_id);
+            if let Some(hs) = task.handshake.as_mut() {
+                hs.book.on_disconnected(peer_id);
+            }
             if ban {
                 task.swarm.behaviour_mut().allow_block.block_peer(peer_id);
                 debug!(%peer_id, "close+ban peer");
@@ -709,22 +1035,36 @@ async fn handle_command(task: &mut SwarmTask, cmd: SwarmCommand) {
             task.swarm.behaviour_mut().allow_block.unblock_peer(peer_id);
             debug!(%peer_id, "unblock peer");
         }
+        SwarmCommand::SendReqResp {
+            peer_id,
+            protocol_id,
+            ssz,
+        } => {
+            if let Some(proto) = Protocol::from_protocol_id(&protocol_id) {
+                send_reqresp(task, peer_id, proto, ssz);
+            } else {
+                warn!(%protocol_id, "SendReqResp unknown protocol");
+            }
+        }
+        SwarmCommand::StatusEpoch { epoch, connected } => {
+            // H2: advance handshake ForkContext first so Status.fork_digest tracks
+            // the new epoch / BPO, then re-exchange Status with connected peers.
+            let actions = task.handshake.as_mut().map(|hs| {
+                let ep = Epoch::new(epoch);
+                hs.fork_ctx.on_epoch(ep);
+                debug!(
+                    epoch,
+                    digest = ?hs.fork_ctx.current_digest(),
+                    peers = connected.len(),
+                    "status epoch: fork_ctx advanced; re-exchanging Status"
+                );
+                hs.book.on_epoch(ep, &connected, &hs.fork_ctx, &hs.deps)
+            });
+            if let Some(actions) = actions {
+                apply_outbound_actions(task, actions);
+            }
+        }
     }
-}
-
-fn record_goodbye(
-    task: &mut SwarmTask,
-    peer_id: cc_libp2p::PeerId,
-    reason: crate::channels::GoodbyeReason,
-) {
-    // Wire format is CC-23b; assert the command path and count drops.
-    task.goodbye_dropped = task.goodbye_dropped.saturating_add(1);
-    debug!(
-        %peer_id,
-        reason = reason.as_u64(),
-        dropped = task.goodbye_dropped,
-        "goodbye command (wire handler CC-23b; dropped with counter)"
-    );
 }
 
 fn bump_depth(metrics: &P2pMetrics, q: QueueName, max_capacity: usize) {

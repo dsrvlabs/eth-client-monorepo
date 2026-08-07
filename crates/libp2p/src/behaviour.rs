@@ -1,9 +1,10 @@
 //! [`CcBehaviour`] composition (Architecture §3.2).
 //!
-//! One `request_response::Behaviour` for all nine Ethereum protocols (codec
-//! body is CC-23a — type stub only here). libp2p `ping` is kept alongside
-//! Ethereum `/eth2/…/ping/1/` (different jobs); see `docs/p2p-dependencies.md`
-//! §Deviations.
+//! Ethereum req/resp: dedicated single-protocol `request_response` behaviours
+//! for Status / Goodbye / Ping / MetaData (correct outbound multistream
+//! selection — CC-23b); block/column families share one multi-protocol field.
+//! libp2p `ping` is kept alongside Ethereum `/eth2/…/ping/1/` (different jobs);
+//! see `docs/p2p-dependencies.md` §Deviations.
 //!
 //! ## Message-id (CC-22b / SEC C1)
 //!
@@ -78,10 +79,25 @@ pub use crate::ssz_snappy_codec::{
 /// Composite network behaviour for the consensus client (Architecture §3.2).
 ///
 /// No kad / mdns / autonat / relay / upnp.
+///
+/// # Req/resp (CC-23b)
+///
+/// Control protocols each use a **single-protocol** behaviour so outbound
+/// multistream-select proposes exactly one protocol ID. Block/column families
+/// share [`Self::reqresp`].
 #[derive(NetworkBehaviour)]
 pub struct CcBehaviour {
     pub gossipsub: gossipsub::Behaviour<SnappyTransform, AllowAllSubscriptionFilter>,
+    /// Block + column req/resp (multi-protocol).
     pub reqresp: request_response::Behaviour<SszSnappyCodec>,
+    /// `/eth2/beacon_chain/req/status/2/` only.
+    pub reqresp_status: request_response::Behaviour<SszSnappyCodec>,
+    /// `/eth2/beacon_chain/req/goodbye/1/` only.
+    pub reqresp_goodbye: request_response::Behaviour<SszSnappyCodec>,
+    /// Ethereum `/eth2/beacon_chain/req/ping/1/` only (not libp2p ping).
+    pub reqresp_ping: request_response::Behaviour<SszSnappyCodec>,
+    /// `/eth2/beacon_chain/req/metadata/3/` only.
+    pub reqresp_metadata: request_response::Behaviour<SszSnappyCodec>,
     pub identify: identify::Behaviour,
     /// libp2p ping (RTT / liveness) — **not** Ethereum `/eth2/beacon_chain/req/ping/1/`.
     pub ping: ping::Behaviour,
@@ -91,15 +107,83 @@ pub struct CcBehaviour {
 
 impl std::fmt::Debug for CcBehaviour {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Child behaviours do not uniformly implement Debug; name the composition only.
         f.debug_struct("CcBehaviour")
             .field("gossipsub", &"gossipsub::Behaviour<SnappyTransform>")
-            .field("reqresp", &"request_response::Behaviour<SszSnappyCodec>")
+            .field("reqresp", &"request_response (blocks/columns)")
+            .field("reqresp_status", &"request_response (status)")
+            .field("reqresp_goodbye", &"request_response (goodbye)")
+            .field("reqresp_ping", &"request_response (eth ping)")
+            .field("reqresp_metadata", &"request_response (metadata)")
             .field("identify", &"identify::Behaviour")
             .field("ping", &"ping::Behaviour")
             .field("limits", &"connection_limits::Behaviour")
-            .field("allow_block", &"allow_block_list::Behaviour<BlockedPeers>")
+            .field("allow_block", &"allow_block_list::Behaviour")
             .finish()
+    }
+}
+
+const CTRL_STATUS: &str = "/eth2/beacon_chain/req/status/";
+const CTRL_GOODBYE: &str = "/eth2/beacon_chain/req/goodbye/";
+const CTRL_PING: &str = "/eth2/beacon_chain/req/ping/";
+const CTRL_METADATA: &str = "/eth2/beacon_chain/req/metadata/";
+
+/// Whether `protocol_id` is a control protocol with a dedicated behaviour.
+#[must_use]
+pub fn is_control_reqresp_protocol(protocol_id: &str) -> bool {
+    protocol_id.contains(CTRL_STATUS)
+        || protocol_id.contains(CTRL_GOODBYE)
+        || protocol_id.contains(CTRL_PING)
+        || protocol_id.contains(CTRL_METADATA)
+}
+
+fn single_protocol_behaviour(
+    protocol: StreamProtocol,
+    support: ProtocolSupport,
+    timeout: Duration,
+) -> request_response::Behaviour<SszSnappyCodec> {
+    request_response::Behaviour::with_codec(
+        SszSnappyCodec::default(),
+        std::iter::once((protocol, support)),
+        request_response::Config::default().with_request_timeout(timeout),
+    )
+}
+
+fn empty_reqresp(timeout: Duration) -> request_response::Behaviour<SszSnappyCodec> {
+    request_response::Behaviour::with_codec(
+        SszSnappyCodec::default(),
+        std::iter::empty::<(StreamProtocol, ProtocolSupport)>(),
+        request_response::Config::default().with_request_timeout(timeout),
+    )
+}
+
+impl CcBehaviour {
+    /// Send on the behaviour that owns `req.protocol` (one multistream ID for control).
+    pub fn send_reqresp(
+        &mut self,
+        peer: &libp2p::PeerId,
+        req: ReqRespRequest,
+    ) -> request_response::OutboundRequestId {
+        let id = req.protocol.as_ref();
+        if id.contains(CTRL_STATUS) {
+            self.reqresp_status.send_request(peer, req)
+        } else if id.contains(CTRL_GOODBYE) {
+            self.reqresp_goodbye.send_request(peer, req)
+        } else if id.contains(CTRL_PING) {
+            self.reqresp_ping.send_request(peer, req)
+        } else if id.contains(CTRL_METADATA) {
+            self.reqresp_metadata.send_request(peer, req)
+        } else {
+            self.reqresp.send_request(peer, req)
+        }
+    }
+
+    /// Deliver a response (channel is oneshot; any sibling `send_response` works).
+    pub fn send_reqresp_response(
+        &mut self,
+        channel: request_response::ResponseChannel<ReqRespResponse>,
+        response: ReqRespResponse,
+    ) -> Result<(), ReqRespResponse> {
+        self.reqresp.send_response(channel, response)
     }
 }
 
@@ -273,12 +357,49 @@ impl CcBehaviour {
         )
         .map_err(|e| BehaviourBuildError::GossipsubBehaviour(e.to_string()))?;
 
+        let timeout = cfg.reqresp_request_timeout;
+        // Partition: control → dedicated single-protocol behaviours; rest → multi.
+        let mut multi = Vec::new();
+        let mut status = None;
+        let mut goodbye = None;
+        let mut eth_ping = None;
+        let mut metadata = None;
+        for (proto, support) in cfg.reqresp_protocols {
+            let id = proto.as_ref();
+            if id.contains(CTRL_STATUS) {
+                status = Some((proto, support));
+            } else if id.contains(CTRL_GOODBYE) {
+                goodbye = Some((proto, support));
+            } else if id.contains(CTRL_PING) {
+                eth_ping = Some((proto, support));
+            } else if id.contains(CTRL_METADATA) {
+                metadata = Some((proto, support));
+            } else {
+                multi.push((proto, support));
+            }
+        }
+
         let reqresp = request_response::Behaviour::with_codec(
             SszSnappyCodec::default(),
-            cfg.reqresp_protocols,
-            request_response::Config::default()
-                .with_request_timeout(cfg.reqresp_request_timeout),
+            multi,
+            request_response::Config::default().with_request_timeout(timeout),
         );
+        let reqresp_status = match status {
+            Some((p, s)) => single_protocol_behaviour(p, s, timeout),
+            None => empty_reqresp(timeout),
+        };
+        let reqresp_goodbye = match goodbye {
+            Some((p, s)) => single_protocol_behaviour(p, s, timeout),
+            None => empty_reqresp(timeout),
+        };
+        let reqresp_ping = match eth_ping {
+            Some((p, s)) => single_protocol_behaviour(p, s, timeout),
+            None => empty_reqresp(timeout),
+        };
+        let reqresp_metadata = match metadata {
+            Some((p, s)) => single_protocol_behaviour(p, s, timeout),
+            None => empty_reqresp(timeout),
+        };
 
         let identify = identify::Behaviour::new(
             identify::Config::new(cfg.identify_protocol, keypair.public())
@@ -292,6 +413,10 @@ impl CcBehaviour {
         Ok(Self {
             gossipsub,
             reqresp,
+            reqresp_status,
+            reqresp_goodbye,
+            reqresp_ping,
+            reqresp_metadata,
             identify,
             ping,
             limits,

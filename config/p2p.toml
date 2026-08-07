@@ -15,6 +15,9 @@ listen_multiaddr = "/ip4/0.0.0.0/tcp/9000"
 network_config = "crates/types/tests/fixtures/hoodi-config.yaml"
 genesis_validators_root = "0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f"
 enable_discovery = true
+# CC-23b: reject peers advertising cgc < CUSTODY_REQUIREMENT (default accept).
+# Root-level key (not under [peers] — peers values are URIs). See docs/p2p-dependencies.md.
+reject_low_cgc_peers = false
 
 [clock]
 # Until the first ChainView (CC-27a), slot clock is config-sourced.

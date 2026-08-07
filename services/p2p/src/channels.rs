@@ -245,8 +245,7 @@ pub struct PublishRequest {
 /// Commands the swarm task accepts — **only** path that mutates `Swarm`.
 ///
 /// Dial / disconnect / ban policy is decided by the peer manager (CC-20c);
-/// discovery content lands in CC-21c. Goodbye wire body is CC-23b — until then
-/// the swarm drops `Goodbye` with a counter after asserting the command path.
+/// discovery content lands in CC-21c. Goodbye wire framing is CC-23b.
 #[derive(Debug, Clone)]
 pub enum SwarmCommand {
     /// No-op (used by tests / keep-alive).
@@ -277,7 +276,7 @@ pub enum SwarmCommand {
     },
     /// Send Ethereum `Goodbye` (standalone; prefer [`ClosePeer`] for intentional closes).
     ///
-    /// Wire handler is CC-23b; swarm currently records and continues.
+    /// Swarm emits the Goodbye req/resp body (CC-23b) then continues.
     Goodbye {
         /// Peer to notify.
         peer_id: PeerId,
@@ -310,6 +309,26 @@ pub enum SwarmCommand {
     UnblockPeer {
         /// Peer to unblock.
         peer_id: PeerId,
+    },
+    /// Outbound Ethereum req/resp (Status / Ping / MetaData / …) — CC-23b.
+    ///
+    /// `protocol_id` is the full `/eth2/.../ssz_snappy` string; `ssz` is the
+    /// uncompressed request body (empty for MetaData).
+    SendReqResp {
+        /// Target peer.
+        peer_id: PeerId,
+        /// Full protocol ID string.
+        protocol_id: String,
+        /// Uncompressed SSZ request body.
+        ssz: Vec<u8>,
+    },
+    /// Epoch tick for Status re-exchange (CC-23b). `connected` is the current
+    /// peer set the handshake book should re-Status.
+    StatusEpoch {
+        /// New wall-clock epoch.
+        epoch: u64,
+        /// Currently connected peers.
+        connected: Vec<PeerId>,
     },
 }
 

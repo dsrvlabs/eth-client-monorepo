@@ -14,6 +14,7 @@
 //! - **CC-22e**: hostile-input harness (tests/hostile_input.rs) — panic-is-failure + counting alloc
 //! - **CC-24a**: custody + sampling sets (`das::custody`), eight column subscriptions, custody-compatible metric
 //! - **CC-23a**: req/resp shared half — SszSnappy framing, nine protocols, rate limits, scheduler
+//! - **CC-23b**: Status v2, Ping, MetaData v3, Goodbye handshake (reqresp/{status,ping,metadata,handshake})
 //! - **CC-24b**: KZG verify pool (`das::verify_pool`) — dedicated OS threads, §8.2 three steps, ADR P2-08 batching
 //! - **CC-26a**: bounded backfill cache (1 GiB ceiling) + `earliest_available_slot` AtomicU64
 //! - **CC-24c**: sampling tracker (`das::sampling`) — all-or-nothing `BTreeSet` equality, 64-task bound, `DataAvailable`
