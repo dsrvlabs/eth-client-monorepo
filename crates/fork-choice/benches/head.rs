@@ -53,6 +53,13 @@ fn build_linear_proto_array(n: usize) -> ProtoArray {
 }
 
 fn main() {
+    // libtest-compatible listing so nextest `--all-targets` does not fail
+    // discovery on this harness=false binary.
+    if std::env::args().any(|a| a == "--list") {
+        println!("head: benchmark");
+        return;
+    }
+
     println!("cc-fork-choice head bench: {N_NODES} nodes, {SAMPLES} samples");
 
     // --- Pure proto-array score + find_head path (the O(N) kernel) ----------

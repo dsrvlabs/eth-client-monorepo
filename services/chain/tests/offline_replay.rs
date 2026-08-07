@@ -818,7 +818,18 @@ async fn offline_replay_40_slots_via_grpc() {
 /// included (process_slots + clone + process_justification_and_finalization).
 ///
 /// Prints machine-readable numbers for `docs/phase-1-soak.md` § CC-1H mid gate.
-/// **Hard-fails** if max epoch wall exceeds [`MID_GATE_MS`] (SEC-18d-2).
+/// **Hard-fails** if max **measured** epoch wall exceeds [`MID_GATE_MS`]
+/// (SEC-18d-2). One discarded warm-up epoch runs first so cold-start of
+/// `process_slots` / state-clone (often 1.5–2× steady wall) does not false-trip
+/// the bar under a full `make test` suite.
+///
+/// Skipped under `cfg(coverage)` (`cargo llvm-cov` / `make coverage`):
+/// instrumentation inflates wall times past the bar and is not comparable to
+/// the soak machine numbers in `docs/phase-1-soak.md`.
+#[cfg_attr(
+    coverage,
+    ignore = "wall-clock mid-gate is invalid under llvm-cov instrumentation"
+)]
 #[test]
 fn cc1h_mid_gate_with_fork_choice_clone() {
     require_fixtures();
@@ -837,6 +848,24 @@ fn cc1h_mid_gate_with_fork_choice_clone() {
     let slots_per_epoch = Mainnet::SLOTS_PER_EPOCH;
     let start_slot = state.slot().as_u64();
     let mut next_boundary = ((start_slot / slots_per_epoch) + 1) * slots_per_epoch;
+
+    // Discarded warm-up: first process_slots + FC clone pays page faults /
+    // allocator setup that are not representative of steady epoch cost.
+    {
+        let from = state.slot().as_u64();
+        let to = next_boundary;
+        process_slots(&mut state, Slot::new(to))
+            .unwrap_or_else(|e| panic!("warm-up process_slots {from}->{to}: {e}"));
+        let mut pull = state.clone();
+        process_justification_and_finalization(&mut pull)
+            .unwrap_or_else(|e| panic!("warm-up pulled-up J&F: {e}"));
+        next_boundary = next_boundary.saturating_add(slots_per_epoch);
+        println!(
+            "warmup_epoch from_slot={from} to_slot={to} (discarded from mid-gate max)"
+        );
+    }
+
+    let measure_start_slot = state.slot().as_u64();
 
     println!(
         "machine: {} / {}",
@@ -858,7 +887,8 @@ fn cc1h_mid_gate_with_fork_choice_clone() {
         println!("mem_gb: {:.1}", bytes as f64 / (1024.0 * 1024.0 * 1024.0));
     }
     println!(
-        "anchor_slot={start_slot} slots_per_epoch={slots_per_epoch} epochs={MID_GATE_EPOCHS}"
+        "anchor_slot={start_slot} measure_start_slot={measure_start_slot} \
+         slots_per_epoch={slots_per_epoch} epochs={MID_GATE_EPOCHS}"
     );
     println!("epoch_idx,from_slot,to_slot,wall_ms,hash_ms,hash_share_pct,root_calls,fc_clone_ms");
 

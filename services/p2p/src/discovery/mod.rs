@@ -34,9 +34,8 @@ pub use predicate::{
 };
 pub use subnet_manager::{
     attnets_bitvector, compute_subscribed_subnet, compute_subscribed_subnets, subscription_period,
-    SubnetApplyOutcome, SubnetApplyTarget, SubnetEffectKind, SubnetManager, SubnetManagerError,
-    SubnetError, SubnetManager, SyncSubnetEffect, SyncSubnetOutcome, SyncSubnetTarget,
-    SYNC_SUBNET_COUNT,
+    SubnetApplyOutcome, SubnetApplyTarget, SubnetEffectKind, SubnetError, SubnetManager,
+    SubnetManagerError, SyncSubnetEffect, SyncSubnetOutcome, SyncSubnetTarget, SYNC_SUBNET_COUNT,
 };
 pub use task::{
     DEFAULT_MIN_PEERS_PER_SUBNET, DiscoveredPeer, DiscoveryConfig, DiscoveryPeerView, DiscoveryTask,

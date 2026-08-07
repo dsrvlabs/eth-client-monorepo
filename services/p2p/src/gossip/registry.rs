@@ -432,27 +432,6 @@ impl<G: GossipsubControl> TopicRegistry<G> {
         )
     }
 
-    fn resync_subnet_family(
-        &mut self,
-        digest: ForkDigest,
-        desired: &BTreeSet<SubnetId>,
-        params: TopicParams,
-        make_name: impl Fn(SubnetId) -> TopicName,
-        extract: impl Fn(TopicName) -> Option<SubnetId>,
-    ) -> Result<(), RegistryError> {
-        let current: BTreeSet<SubnetId> = self
-            .subscribed
-            .keys()
-            .filter_map(|k| {
-                if k.digest == digest {
-                    return extract(k.name);
-                }
-                None
-            })
-            .collect();
-        self.sync_subnet_diff(digest, &current, desired, params, TopicName::DataColumnSidecar)
-    }
-
     /// Resync `beacon_attestation_{subnet_id}` subscriptions for `digest`.
     ///
     /// Same params-first ordering as [`Self::sync_column_subnets`] — the third
@@ -468,19 +447,37 @@ impl<G: GossipsubControl> TopicRegistry<G> {
         desired: &BTreeSet<SubnetId>,
         params: TopicParams,
     ) -> Result<(), RegistryError> {
+        self.resync_subnet_family(
+            digest,
+            desired,
+            params,
+            TopicName::BeaconAttestation,
+            |name| match name {
+                TopicName::BeaconAttestation(id) => Some(id),
+                _ => None,
+            },
+        )
+    }
+
+    fn resync_subnet_family(
+        &mut self,
+        digest: ForkDigest,
+        desired: &BTreeSet<SubnetId>,
+        params: TopicParams,
+        name_of: fn(SubnetId) -> TopicName,
+        extract: impl Fn(TopicName) -> Option<SubnetId>,
+    ) -> Result<(), RegistryError> {
         let current: BTreeSet<SubnetId> = self
             .subscribed
             .keys()
             .filter_map(|k| {
-                if k.digest == digest
-                    && let TopicName::BeaconAttestation(id) = k.name
-                {
-                    return Some(id);
+                if k.digest == digest {
+                    return extract(k.name);
                 }
                 None
             })
             .collect();
-        self.sync_subnet_diff(digest, &current, desired, params, TopicName::BeaconAttestation)
+        self.sync_subnet_diff(digest, &current, desired, params, name_of)
     }
 
     /// Params → subscribe new → unsubscribe dropped for one subnet family.
@@ -495,24 +492,21 @@ impl<G: GossipsubControl> TopicRegistry<G> {
         // Params for every topic that remains live (weight first).
         for &subnet in desired {
             let key = TopicKey::new(digest, name_of(subnet));
-        for &subnet in desired {
-            let key = TopicKey::new(digest, make_name(subnet));
             if current.contains(&subnet) {
                 self.set_topic_params(&key, params.clone())?;
             }
+            // New topics get params inside `subscribe` (params-first).
         }
 
         for &subnet in desired {
             if !current.contains(&subnet) {
                 let key = TopicKey::new(digest, name_of(subnet));
-                let key = TopicKey::new(digest, make_name(subnet));
                 self.subscribe(key, params.clone())?;
             }
         }
         for &subnet in current {
             if !desired.contains(&subnet) {
                 let key = TopicKey::new(digest, name_of(subnet));
-                let key = TopicKey::new(digest, make_name(subnet));
                 self.unsubscribe(&key)?;
             }
         }

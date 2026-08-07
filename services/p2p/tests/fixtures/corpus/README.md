@@ -42,10 +42,13 @@ Topic families (must match the registry's Fulu family set):
 - `attester_slashing`
 - `bls_to_execution_change`
 
-## Refresh from a capture (R-9)
+## Generate / refresh seeds
 
 ```bash
-# From repo root — overwrites seeds/ from a capture directory:
+# Synthetic Default containers (CI / first-time seed):
+cargo run -p cc-p2p --bin gen_hostile_corpus --locked
+
+# From a capture (R-9 — overwrites seeds/ from a capture directory):
 ./scripts/corpus-from-capture.sh path/to/capture services/p2p/tests/fixtures/corpus/seeds
 
 # Capture layouts accepted:

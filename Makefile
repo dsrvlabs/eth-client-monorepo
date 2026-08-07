@@ -12,6 +12,17 @@ CARGO_FLAGS ?= --locked
 CLIPPY_FLAGS ?= --workspace --all-targets --all-features $(CARGO_FLAGS)
 NEXTEST_FLAGS ?= --workspace $(CARGO_FLAGS) --profile ci
 
+# ── Coverage (cargo-llvm-cov; install: cargo install cargo-llvm-cov --locked) ─
+# HTML lands under target/llvm-cov/html; lcov under COVERAGE_LCOV by default.
+# Same test selection as `make test` (lib + integration). Do **not** pass
+# `--all-targets`: harness=false custom benches (e.g. cc-fork-choice head)
+# break nextest's `--list` discovery. Use `cargo bench` / scripts/bench-*.sh
+# for benches.
+COVERAGE_FLAGS ?= --workspace --all-features $(CARGO_FLAGS)
+COVERAGE_LCOV  ?= target/llvm-cov/lcov.info
+# Package filter for focused runs, e.g. `make coverage-html PKG=cc-p2p`
+PKG            ?=
+
 # ── Services (compose / binaries) ────────────────────────────────────────────
 SERVICES := chain p2p attestation engine beacon-api storage
 
@@ -54,6 +65,63 @@ test: ## Run tests with cargo-nextest (CI profile)
 .PHONY: test-cargo
 test-cargo: ## Run tests with cargo test (fallback without nextest)
 	$(CARGO) test --workspace $(CARGO_FLAGS)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Coverage (local; cargo-llvm-cov + nextest)
+# ══════════════════════════════════════════════════════════════════════════════
+# Requires: rustup component add llvm-tools-preview
+#           cargo install cargo-llvm-cov --locked
+# Matches `make test` target set (not benches/examples). Pass PKG=cc-types etc.
+# for a single crate.
+
+.PHONY: coverage
+coverage: ## Line coverage summary (nextest, workspace)
+	@command -v cargo-llvm-cov >/dev/null 2>&1 || { \
+		echo "error: cargo-llvm-cov not found; install with: cargo install cargo-llvm-cov --locked" >&2; \
+		exit 1; \
+	}
+	$(CARGO) llvm-cov nextest \
+		$(if $(PKG),-p $(PKG),$(COVERAGE_FLAGS)) \
+		--profile ci \
+		--summary-only
+
+.PHONY: coverage-html
+coverage-html: ## HTML report → target/llvm-cov/html/index.html
+	@command -v cargo-llvm-cov >/dev/null 2>&1 || { \
+		echo "error: cargo-llvm-cov not found; install with: cargo install cargo-llvm-cov --locked" >&2; \
+		exit 1; \
+	}
+	$(CARGO) llvm-cov nextest \
+		$(if $(PKG),-p $(PKG),$(COVERAGE_FLAGS)) \
+		--profile ci \
+		--html \
+		--output-dir target/llvm-cov/html
+	@echo "HTML report: target/llvm-cov/html/index.html"
+
+.PHONY: coverage-lcov
+coverage-lcov: ## LCOV report → $(COVERAGE_LCOV) (default target/llvm-cov/lcov.info)
+	@command -v cargo-llvm-cov >/dev/null 2>&1 || { \
+		echo "error: cargo-llvm-cov not found; install with: cargo install cargo-llvm-cov --locked" >&2; \
+		exit 1; \
+	}
+	@mkdir -p $(dir $(COVERAGE_LCOV))
+	$(CARGO) llvm-cov nextest \
+		$(if $(PKG),-p $(PKG),$(COVERAGE_FLAGS)) \
+		--profile ci \
+		--lcov \
+		--output-path $(COVERAGE_LCOV)
+	@echo "LCOV report: $(COVERAGE_LCOV)"
+
+.PHONY: coverage-open
+coverage-open: coverage-html ## HTML report and open in browser (macOS)
+	@open target/llvm-cov/html/index.html 2>/dev/null \
+		|| xdg-open target/llvm-cov/html/index.html 2>/dev/null \
+		|| echo "Open target/llvm-cov/html/index.html in a browser"
+
+.PHONY: coverage-clean
+coverage-clean: ## Remove llvm-cov artifacts (profraw + reports)
+	$(CARGO) llvm-cov clean --workspace
+	rm -rf target/llvm-cov
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Lint / format (required CI: fmt, clippy)
@@ -186,4 +254,4 @@ clean: ## cargo clean
 	$(CARGO) clean
 
 .PHONY: clean-all
-clean-all: clean compose-down ## cargo clean + compose down
+clean-all: clean coverage-clean compose-down ## cargo clean + coverage artifacts + compose down

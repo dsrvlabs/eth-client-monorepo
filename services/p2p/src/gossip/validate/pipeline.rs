@@ -1,18 +1,16 @@
 //! Validation pool: topic dispatch, report via swarm cmd.
 //!
 //! **CC-22/4**: every registered Fulu topic family has a non-default validator
-//! wired here. Operation / attestation families are IGNORE stubs (CC-2B /
-//! CC-2C replace them). **CC-2D** replaces the sync-committee IGNORE stubs.
-//! wired here. Operation topics are CC-2B real validators; attestation / sync
-//! families remain IGNORE stubs (CC-2C / CC-2D).
+//! wired here. Operation topics are CC-2B real validators; sync-committee topics
+//! are CC-2D real validators. Aggregates / attestation subnets remain IGNORE
+//! stubs until their CC-2C validators land.
 //!
 //! ## Ownership
 //!
 //! One [`ValidationPoolState`] owns a single [`ColumnValidatorState`] (seen +
-//! pending + inclusion cache) plus [`SyncSeenSets`]. Block and column paths
-//! share the column state — no dual sync.
-//! pending + inclusion cache) and the CC-2B [`OperationValidatorState`]. Block
-//! and column paths share the column state — no dual sync.
+//! pending + inclusion cache), [`SyncSeenSets`], and the CC-2B
+//! [`OperationValidatorState`]. Block and column paths share the column state —
+//! no dual sync.
 //!
 //! ## Pending redrive
 //!
@@ -43,6 +41,7 @@ use super::sync::{
     validate_sync_committee_message, validate_sync_contribution_and_proof, NoopSyncSource,
     SyncCommitteeSource, SyncContribValidateInput, SyncMessageValidateInput, SyncOutcome,
     SyncSeenSets,
+};
 use super::operations::{
     epoch_from_view, validate_operation, OperationValidateInput, OperationValidatorState,
 };
@@ -71,10 +70,9 @@ pub enum ValidatorKind {
     DataColumnSidecar,
     /// P2p-authoritative sync committee message / contribution (CC-2D).
     SyncCommittee,
-    /// IGNORE stub (CC-2B/C).
     /// P2p-authoritative operation topics (CC-2B).
     Operation,
-    /// IGNORE stub (CC-2C / CC-2D).
+    /// IGNORE stub (aggregates / attnets until CC-2C validators land).
     StubIgnore,
 }
 
@@ -87,20 +85,14 @@ pub fn validator_kind(name: TopicName) -> ValidatorKind {
         TopicName::SyncCommitteeContributionAndProof | TopicName::SyncCommittee(_) => {
             ValidatorKind::SyncCommittee
         }
-        TopicName::BeaconAggregateAndProof
-        | TopicName::BeaconAttestation(_)
-        | TopicName::VoluntaryExit
-        | TopicName::ProposerSlashing
-        | TopicName::AttesterSlashing
-        | TopicName::BlsToExecutionChange => ValidatorKind::StubIgnore,
         TopicName::VoluntaryExit
         | TopicName::ProposerSlashing
         | TopicName::AttesterSlashing
         | TopicName::BlsToExecutionChange => ValidatorKind::Operation,
-        TopicName::BeaconAggregateAndProof
-        | TopicName::BeaconAttestation(_)
-        | TopicName::SyncCommitteeContributionAndProof
-        | TopicName::SyncCommittee(_) => ValidatorKind::StubIgnore,
+        // Aggregates + attnets remain IGNORE stubs until CC-2C validators land.
+        TopicName::BeaconAggregateAndProof | TopicName::BeaconAttestation(_) => {
+            ValidatorKind::StubIgnore
+        }
     }
 }
 
@@ -518,6 +510,7 @@ async fn validate_one(pool: &ValidationPool, work: &GossipWork) -> Verdict {
                     verdict
                 }
             }
+        }
         ValidatorKind::Operation => {
             // p2p-authoritative: never forward GossipObject to chain (CC-2B/3, /4).
             // Clone the Arc under a short lock, then await without holding it.

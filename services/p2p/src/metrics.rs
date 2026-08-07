@@ -254,16 +254,11 @@ impl ColumnSource {
     pub const ALL: [Self; 3] = [Self::Gossip, Self::ByRoot, Self::ByRange];
 }
 
-/// `q` label values for `cc_p2p_queue_depth` (§2.2 / CC-22/5 / CC-24c / CC-26a / CC-2D).
+/// `q` label values for `cc_p2p_queue_depth` (§2.2 / CC-22/5 / CC-24c / CC-26a / CC-2B / CC-2D).
 ///
-/// Thirteen values on **one** gauge family — not thirteen separate metrics.
+/// Seventeen values on **one** gauge family — not seventeen separate metrics.
 /// `SeenColumn` / `SeenBlock` / `SeenSync` hold gossip seen-set **entry counts**
 /// (not backfill cache bytes — those use `cc_p2p_cache_*` exclusively).
-/// `q` label values for `cc_p2p_queue_depth` (§2.2 / CC-22/5 / CC-24c / CC-26a / CC-2B).
-///
-/// Sixteen values on **one** gauge family — not sixteen separate metrics.
-/// `SeenColumn` / `SeenBlock` hold gossip seen-set **entry counts** (not
-/// backfill cache bytes — those use `cc_p2p_cache_*` exclusively).
 /// `Sampling` is sampling-task map occupancy (CC-24c; bound 64).
 /// Operation index sets (`SeenVoluntaryExit` …) are CC-2B anti-replay occupancy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -321,8 +316,7 @@ impl QueueName {
     }
 
     /// All variants (seed + tests).
-    pub const ALL: [Self; 13] = [
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Gossip,
         Self::ReqrespIn,
         Self::Conn,
@@ -1425,10 +1419,8 @@ mod tests {
     }
 
     #[test]
-    fn queue_depth_q_label_has_exactly_thirteen_values() {
-        assert_eq!(QueueName::ALL.len(), 13);
-    fn queue_depth_q_label_has_exactly_sixteen_values() {
-        assert_eq!(QueueName::ALL.len(), 16);
+    fn queue_depth_q_label_has_exactly_seventeen_values() {
+        assert_eq!(QueueName::ALL.len(), 17);
         let labels: BTreeSet<&str> = QueueName::ALL.iter().map(|q| q.as_str()).collect();
         assert_eq!(
             labels,

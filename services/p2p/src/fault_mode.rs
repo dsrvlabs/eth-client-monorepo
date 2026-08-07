@@ -35,7 +35,6 @@ use cc_libp2p::{
     build_swarm, CcBehaviour, CcBehaviourEvent, ReqRespRequest, ReqRespResponse, SwarmConfig,
 };
 use cc_types::{compute_columns_for_custody_group, ChainConfig, Epoch, Root};
-use cc_types::{ChainConfig, Epoch, Root, compute_columns_for_custody_group};
 use discv5::Enr;
 use discv5::enr::{CombinedKey, NodeId};
 use sha2::{Digest, Sha256};
@@ -284,37 +283,10 @@ impl FaultMode {
         bail!("unknown fault mode {s:?}; expected none|withhold-column|misbehave:<kind>")
     }
 
-    /// Returns `Ok(())` for plain, withhold-column (CC-2Jb), and misbehave (CC-2Jc).
-    ///
-    /// Both fault modes have landed; this is the post-merge form of the two
-    /// temporary stubs that previously failed closed for the other stream.
     /// Returns `Ok(())` for all shipped fault modes (plain, withhold-column, misbehave).
-    pub fn ensure_implemented(&self) -> Result<()> {
-        match self {
-            Self::None | Self::WithholdColumn { .. } | Self::Misbehave { .. } => Ok(()),
-    /// Returns `Ok(())` when the mode is fully implemented (CC-2Jb + CC-2Jc).
-    pub fn ensure_implemented(&self) -> Result<()> {
-        match self {
-            Self::None | Self::WithholdColumn { .. } | Self::Misbehave { .. } => Ok(()),
-        }
-    }
-
-    /// Payload transform for gossip publish.
     ///
-    /// - [`Self::None`] / [`Self::WithholdColumn`]: identity (blocks always pass;
-    ///   column skip is [`decide_column_publish`] / [`Self::column_publish_payloads`]).
-    /// - [`Self::Misbehave`]: applies the kind's column mutation (block path still
-    ///   uses identity at the call site for honest-looking block bytes).
-    #[must_use]
-    pub fn relay(&self, payload: &[u8]) -> Option<Vec<u8>> {
-        match self {
-            Self::None | Self::WithholdColumn { .. } => Some(payload.to_vec()),
-            Self::Misbehave { kind } => Some(transform_column_payload(payload, *kind, 0)),
-    /// Returns `Ok(())` for all shipped modes (plain, withhold-column, misbehave).
-    pub fn ensure_implemented(&self) -> Result<()> {
-        match self {
-            Self::None | Self::WithholdColumn { .. } | Self::Misbehave { .. } => Ok(()),
-    /// Returns `Ok(())` for all modes implemented in Phase 2 (CC-2Jb + CC-2Jc).
+    /// Both fault modes have landed (CC-2Jb + CC-2Jc); this is the post-merge form of
+    /// the temporary stubs that previously failed closed for the other stream.
     pub fn ensure_implemented(&self) -> Result<()> {
         match self {
             Self::None | Self::WithholdColumn { .. } | Self::Misbehave { .. } => Ok(()),

@@ -420,42 +420,10 @@ pub fn decide_by_root_column_serve(
     policy: ByRootFaultPolicy,
 ) -> ByRootServeDecision {
     // ── Track D seam (fault_mode.rs) ──────────────────────────────────────
-    // Single named branch: withhold-column (CC-2Jb) + custody-refuse / stall (CC-2Jc).
+    // withhold-column (CC-2Jb) + custody-refuse / stall (CC-2Jc).
     if matches!(policy, ByRootFaultPolicy::CustodyRefuse) {
         return ByRootServeDecision::ResourceUnavailable;
     }
-    let effectively_held =
-        held && crate::fault_mode::active_allows_by_root_serve(column_index);
-    match (effectively_held, policy) {
-        (true, ByRootFaultPolicy::StallReqresp) => ByRootServeDecision::Stall,
-        (true, ByRootFaultPolicy::Honest) => ByRootServeDecision::Serve,
-        (true, ByRootFaultPolicy::CustodyRefuse) => ByRootServeDecision::ResourceUnavailable,
-        (false, _) => ByRootServeDecision::ResourceUnavailable,
-    match policy {
-        ByRootFaultPolicy::CustodyRefuse => ByRootServeDecision::ResourceUnavailable,
-        ByRootFaultPolicy::StallReqresp
-            if held && crate::fault_mode::active_allows_by_root_serve(column_index) =>
-        {
-            ByRootServeDecision::Stall
-        }
-        ByRootFaultPolicy::Honest | ByRootFaultPolicy::StallReqresp
-            if held && crate::fault_mode::active_allows_by_root_serve(column_index) =>
-        {
-            ByRootServeDecision::Serve
-        }
-        ByRootFaultPolicy::Honest | ByRootFaultPolicy::StallReqresp => {
-            ByRootServeDecision::ResourceUnavailable
-    // Single named branch for CC-2Jb withhold + CC-2Jc custody/stall.
-    match policy {
-        ByRootFaultPolicy::CustodyRefuse => ByRootServeDecision::ResourceUnavailable,
-        ByRootFaultPolicy::StallReqresp if held => ByRootServeDecision::Stall,
-        ByRootFaultPolicy::StallReqresp | ByRootFaultPolicy::Honest => {
-            if held && crate::fault_mode::active_allows_by_root_serve(column_index) {
-                ByRootServeDecision::Serve
-            } else {
-                ByRootServeDecision::ResourceUnavailable
-            }
-        }
     if !held {
         return ByRootServeDecision::ResourceUnavailable;
     }
@@ -626,8 +594,6 @@ pub fn serve_columns_by_root<P: Preset>(
         for col_idx in id.columns.iter() {
             let held = ctx.cache.contains_column(slot, &id.block_root, *col_idx);
             // Track D sanctioned seam — greppable single branch for CC-2Jb/2Jc.
-            let decision =
-                decide_by_root_column_serve(held, *col_idx, ctx.by_root_fault);
             let decision = decide_by_root_column_serve(held, *col_idx, ctx.by_root_fault);
             match decision {
                 ByRootServeDecision::Serve | ByRootServeDecision::Stall => {
