@@ -82,3 +82,29 @@ bash scripts/check-crate-dag.sh
 
 A deliberate new git dependency or disallowed license should fail `cargo deny`
 locally the same way the `deps` job fails in CI.
+
+## Phase 2 — libp2p git pin (CC-20/4 / CC-2K / OQ-7)
+
+| Field | Value |
+|---|---|
+| **Repository** | `https://github.com/libp2p/rust-libp2p` |
+| **Pinned rev** | `6348a0be4aeb5b48eecf17a5d0aae15ff8239984` |
+| **Review date** | 2026-08-07 |
+| **Allow-git entry** | `deny.toml` `[sources].allow-git` (exact URL; `unknown-git` stays deny) |
+
+**What was reviewed (this admission):**
+
+- Official `libp2p/rust-libp2p` tip at the pin (commit 2026-08-04), not a private fork.
+- Feature set required by Architecture §3 / CC-20: `identify`, `yamux`, `noise`, `dns`,
+  `tcp`, `tokio`, `secp256k1`, `macros`, `metrics`, `gossipsub`, plus `quic` (compiled;
+  transport config-disabled until CC-2F).
+- A-P2-3: resolved `libp2p-gossipsub` at this rev is **0.50.0** (≥ 0.48.0, `IDONTWANT`).
+- Source policy: pin listed in `allow-git`; no flip of `unknown-git`.
+- Declaration rule: only `cc-libp2p` may depend on `libp2p*` (`scripts/check-crate-dag.sh`
+  + `deps` CI grep for crates.io-style version requirements outside `crates/libp2p/`).
+
+**Re-review trigger (OQ-7):** any change of the 40-hex `rev` in root `Cargo.toml`, any
+addition of a further git source to `allow-git`, and every **phase boundary** (Phase 2→3,
+…). Re-review is manual against the pinned rev and the RUSTSEC advisory DB; a green
+`cargo deny` run alone does not discharge it (git sources sit outside crates.io advisory
+matching — see gap §2 above). Details of the pin also live in `docs/p2p-dependencies.md`.

@@ -1,0 +1,15 @@
+[package]
+name = "cc-libp2p"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Sole workspace member allowed to declare a libp2p* dependency (CC-20/1, CC-2K).
+libp2p = { workspace = true }

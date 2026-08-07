@@ -1,0 +1,19 @@
+[package]
+name = "cc-devnet-gen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cc-devnet-gen"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Allowed workspace edges (CC-2K / check-crate-dag.sh):
+# {cc-types, cc-crypto, cc-state-transition, cc-config}. Content is CC-2Ja.

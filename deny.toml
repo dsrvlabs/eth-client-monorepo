@@ -17,8 +17,10 @@ all-features = true
 version = 2
 yanked = "deny"
 ignore = [
-    # Add temporary ignores with a reason and a removal ticket, e.g.:
-    # { id = "RUSTSEC-0000-0000", reason = "…" },
+    # paste is unmaintained (RUSTSEC-2024-0436). Pulled transitively via
+    # alloy-primitives (Phase 1) and libp2p/if-watch/netlink (Phase 2 / CC-2K).
+    # No safe upgrade; drop when upstreams move off paste.
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; transitive via alloy-primitives and libp2p netlink stack (CC-2K)" },
 ]
 
 [licenses]
@@ -28,8 +30,11 @@ version = 2
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
     "BSD-3-Clause",
+    "ISC",
     "MIT",
+    "MIT-0",
     "Unicode-3.0",
     "Unlicense",
     "Zlib",
@@ -63,11 +68,7 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 
 # Phase 0 has no git dependencies (R-5 / --locked everywhere).
 #
-# Phase 2 entry point (CC-20): git-pinned libp2p.
-# When CC-20 lands, add the exact repo URL to `allow-git` (and pin the rev in
-# Cargo.toml / a named constant — see docs/supply-chain.md). Do not broaden
-# unknown-git; only the reviewed libp2p pin is anticipated here.
-#
-# Example (not active until CC-20):
-#   allow-git = ["https://github.com/libp2p/rust-libp2p"]
-allow-git = []
+# Phase 2 entry point (CC-20 / CC-2K): git-pinned libp2p.
+# Exact repo URL only — do not broaden unknown-git. Rev is pinned in
+# Cargo.toml and recorded in docs/p2p-dependencies.md / docs/supply-chain.md.
+allow-git = ["https://github.com/libp2p/rust-libp2p"]

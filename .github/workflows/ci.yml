@@ -342,6 +342,30 @@ jobs:
       - name: check crate DAG
         run: bash scripts/check-crate-dag.sh
 
+      # CC-20/1 / CC-2K: defense-in-depth grep for libp2p* declarations outside the
+      # allowed surfaces. Primary enforcement is scripts/check-crate-dag.sh (metadata
+      # declaration rule + pin-source integrity + docs/constant rev match). This step
+      # still fails string form (`libp2p = "0.56"`) and table form (`libp2p = { version = "…" }`,
+      # `libp2p = { git = … }`, `[dependencies.libp2p]`) outside crates/libp2p/ and root.
+      - name: no libp2p dependency keys outside crates/libp2p (and root pin)
+        run: |
+          set -euo pipefail
+          # Any libp2p* assignment or [dependencies.libp2p*] table key.
+          # Exclude: crates/libp2p (sole allowed consumer) and root Cargo.toml (workspace pin).
+          offenders="$(
+            grep -rnE --include='Cargo.toml' \
+              '^[[:space:]]*libp2p[a-zA-Z0-9_-]*[[:space:]]*=|^[[:space:]]*\[dependencies\.libp2p[a-zA-Z0-9_-]*\]' . \
+              | grep -vE '^./crates/libp2p/|^./Cargo.toml:' \
+              || true
+          )"
+          if [[ -n "${offenders}" ]]; then
+            echo "error: libp2p* dependency declaration outside crates/libp2p/ (and root pin):" >&2
+            echo "${offenders}" >&2
+            echo "note: primary gate is scripts/check-crate-dag.sh (pin source + declaration rule)" >&2
+            exit 1
+          fi
+          echo "ok: no libp2p* dependency keys outside crates/libp2p/ (and root pin)"
+
   # CC-04b — mutual-health compose proof (Architecture §6.5, §9, §12.6).
   # Non-required: deliberately outside CC-07/4's ten-minute budget (cold release
   # build of six binaries exceeds it). Purpose is to stop the headline Phase 0
