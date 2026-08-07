@@ -16,8 +16,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use cc_fork_choice::{
-    DataAvailability, HarnessAvailability, get_forkchoice_store, get_head, get_proposer_head,
-    on_attestation, on_attester_slashing, on_block, on_tick, store_target_checkpoint_context,
+    DataAvailability, ExecutionStatus, HarnessAvailability, get_forkchoice_store, get_head,
+    get_proposer_head, on_attestation, on_attester_slashing, on_block, on_tick,
+    store_target_checkpoint_context,
 };
 use cc_state_transition::helpers::accessors::get_indexed_attestation;
 use cc_state_transition::helpers::misc::compute_start_slot_at_epoch;
@@ -30,7 +31,7 @@ use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::containers::Checkpoint;
 use cc_types::operations::{Attestation, AttesterSlashing};
 use cc_types::preset::{Mainnet, Minimal, Preset};
-use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Root, Slot};
+use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Hash256, Root, Slot};
 use cc_types::{BeaconBlock, ForkName, SignedBeaconBlock};
 use ssz::Decode;
 use tree_hash::TreeHash;
@@ -247,15 +248,73 @@ fn spec_config_for_preset(preset: PresetName) -> ChainConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct AcceptEngine;
+/// Scriptable engine for vector `block_hash` / `payload_status` steps (CC-34d).
+///
+/// Default is `Valid` (same as the former unconditional accept engine) so cases
+/// without a prior `block_hash` step keep their Phase-1 behaviour. A
+/// `block_hash` step installs the reference [`PayloadStatus`] keyed by
+/// execution payload block hash; the subsequent `on_block` then receives that
+/// answer rather than unconditional `VALID` (§10.2 / tests/formats/fork_choice).
+#[derive(Debug, Default)]
+struct ScriptedEngine {
+    by_hash: Mutex<HashMap<Hash256, PayloadStatus>>,
+}
 
-impl<P: Preset> ExecutionEngine<P> for AcceptEngine {
+impl ScriptedEngine {
+    fn set(&self, block_hash: Hash256, status: PayloadStatus) {
+        self.by_hash.lock().unwrap().insert(block_hash, status);
+    }
+}
+
+impl<P: Preset> ExecutionEngine<P> for ScriptedEngine {
     fn verify_and_notify_new_payload(
         &self,
-        _request: NewPayloadRequest<'_, P>,
+        request: NewPayloadRequest<'_, P>,
     ) -> Result<PayloadStatus, EngineError> {
-        Ok(PayloadStatus::Valid)
+        let hash = request.execution_payload.block_hash.to_hash256();
+        Ok(self
+            .by_hash
+            .lock()
+            .unwrap()
+            .get(&hash)
+            .cloned()
+            .unwrap_or(PayloadStatus::Valid))
+    }
+}
+
+/// Parse a vector `payload_status` object (Engine API `PayloadStatusV1` shape).
+fn parse_payload_status(v: &serde_yaml::Value, rel: &str, step_i: usize) -> PayloadStatus {
+    let status = v
+        .get("status")
+        .and_then(|s| s.as_str())
+        .unwrap_or_else(|| panic!("payload_status.status missing {rel}@{step_i}"));
+    let latest_valid_hash = v.get("latest_valid_hash").and_then(|x| {
+        if x.is_null() {
+            None
+        } else {
+            x.as_str().map(|s| parse_root_hex(s).to_hash256())
+        }
+    });
+    match status {
+        "VALID" => PayloadStatus::Valid,
+        "SYNCING" => PayloadStatus::Syncing,
+        "ACCEPTED" => PayloadStatus::Accepted,
+        "INVALID_BLOCK_HASH" => PayloadStatus::InvalidBlockHash,
+        "INVALID" => PayloadStatus::Invalid { latest_valid_hash },
+        other => panic!("unknown payload_status.status `{other}` {rel}@{step_i}"),
+    }
+}
+
+/// Map a vector status string onto [`ExecutionStatus`] (CC-34a / CC-34d).
+fn execution_status_from_vector_str(s: &str) -> Option<ExecutionStatus> {
+    match s {
+        "VALID" => Some(ExecutionStatus::Valid),
+        "SYNCING" | "ACCEPTED" | "OPTIMISTIC" | "NOT_VALIDATED" => {
+            Some(ExecutionStatus::Optimistic)
+        }
+        "INVALID" | "INVALID_BLOCK_HASH" | "INVALIDATED" => Some(ExecutionStatus::Invalid),
+        "IRRELEVANT" => Some(ExecutionStatus::Irrelevant),
+        _ => None,
     }
 }
 
@@ -416,10 +475,11 @@ fn run_case<P: Preset>(rel: &str, case_dir: &Path, config: &ChainConfig, da: Arc
     let anchor_block = BeaconBlock::<P>::from_ssz_bytes(&anchor_block_bytes)
         .unwrap_or_else(|e| panic!("anchor_block {rel}: {e:?}"));
 
+    let engine = Arc::new(ScriptedEngine::default());
     let mut store = get_forkchoice_store(
         anchor_state,
         &anchor_block,
-        Arc::new(AcceptEngine),
+        engine.clone() as Arc<dyn ExecutionEngine<P>>,
         da.clone() as Arc<dyn DataAvailability>,
         config.seconds_per_slot,
     )
@@ -625,8 +685,22 @@ fn run_case<P: Preset>(rel: &str, case_dir: &Path, config: &ChainConfig, da: Arc
                     .unwrap_or_else(|| panic!("checks missing body step {i} {rel}"));
                 apply_checks::<P>(rel, i, checks, &mut store);
             }
-            // Merge / EL payload status setup — Phase 1 engine always accepts.
-            "pow_block" | "block_hash" => {}
+            // Pre-merge `get_pow_block` fixture (Bellatrix on_merge_block). A
+            // latest-fork-only checkpoint-synced client never produces
+            // `ExecutionStatus::Irrelevant` (CC-35 /6); deliberate no-op.
+            "pow_block" => {}
+            // `on_payload_info`: script the mock engine so the next `on_block`
+            // receives the vector's reference PayloadStatusV1 for this hash
+            // (CC-34d / §10.2 / tests/formats/fork_choice README).
+            "block_hash" => {
+                let hash = yaml_root(step, "block_hash").unwrap_or_else(|| {
+                    panic!("block_hash missing hex at step {i} of {rel}")
+                });
+                let ps = step.get("payload_status").unwrap_or_else(|| {
+                    panic!("block_hash step missing payload_status at step {i} of {rel}")
+                });
+                engine.set(hash.to_hash256(), parse_payload_status(ps, rel, i));
+            }
             // Gloas-only steps — not expected under Fulu, but fail loudly if they appear.
             "execution_payload" | "payload_attestation_message" => {
                 panic!("unrecognised step kind {primary} at step {i} of {rel} (Fulu runner)");
@@ -716,7 +790,38 @@ fn apply_checks<P: Preset>(
                 if let Some(root) = yaml_root(h, "root") {
                     assert_eq!(head_root, root, "head.root mismatch {rel}@{step_i}");
                 }
-                // Gloas payload_status ignored if present.
+                // CC-34d: assert head.payload_status against ProtoNode.execution_status
+                // when present as an Engine / ExecutionStatus string. Gloas integer
+                // form (payload presence flag) is out of Fulu scope and ignored.
+                if let Some(ps) = h.get("payload_status") {
+                    let want = if let Some(s) = ps.as_str() {
+                        execution_status_from_vector_str(s).unwrap_or_else(|| {
+                            panic!("unrecognised head.payload_status `{s}` {rel}@{step_i}")
+                        })
+                    } else if let Some(map_status) = ps.get("status").and_then(|v| v.as_str()) {
+                        execution_status_from_vector_str(map_status).unwrap_or_else(|| {
+                            panic!(
+                                "unrecognised head.payload_status.status `{map_status}` {rel}@{step_i}"
+                            )
+                        })
+                    } else if ps.as_u64().is_some() || ps.as_i64().is_some() {
+                        // Gloas integer payload_status — not Engine status.
+                        continue;
+                    } else {
+                        panic!("unrecognised head.payload_status shape {rel}@{step_i}: {ps:?}");
+                    };
+                    let got = store
+                        .proto_array()
+                        .get(&head_root)
+                        .map(|n| n.execution_status)
+                        .unwrap_or_else(|| {
+                            panic!("head root missing from proto-array {rel}@{step_i}")
+                        });
+                    assert_eq!(
+                        got, want,
+                        "head.payload_status / execution_status mismatch {rel}@{step_i}"
+                    );
+                }
             }
             "time" => {
                 let t = yaml_u64(checks, "time").unwrap();
