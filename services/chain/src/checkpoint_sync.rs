@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use cc_fork_choice::{PeerDasAvailability, Store, get_forkchoice_store, on_tick};
-use cc_state_transition::{BlockSignatureStrategy, StubOptimisticEngine};
+use cc_state_transition::BlockSignatureStrategy;
 use cc_types::config::{BlobParameters, BlobSchedule, BlobScheduleError, ChainConfig};
 use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, ForkVersion, Root, parse_hex_bytes};
@@ -1126,7 +1126,7 @@ pub fn spawn_core_from_checkpoint_with_epoch<P: Preset + 'static>(
     let mut store: Store<P> = get_forkchoice_store(
         fetched.state,
         &fetched.signed_block.message,
-        Arc::new(StubOptimisticEngine),
+        Arc::new(crate::engine_client::EngineApiClient::new(core_cfg.engine_uri.clone()).map_err(|e| CheckpointError::Store(e.to_string()))?),
         da_for_store,
         chain_config.seconds_per_slot,
     )

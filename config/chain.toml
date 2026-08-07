@@ -47,5 +47,10 @@ checkpoint_providers = []
 # optimistic-import gate lands (CC-3B family / import wiring).
 safe_slots_to_import_optimistically = 128
 
+# CC-32b: plain config URI to engine (NOT a health peer — ADR P3-02 / §1.3 Decision A).
+# When engine is down, chain stays SERVING; imports surface engine-unavailable.
+# Compose override: CC_CHAIN_ENGINE_URI=http://engine:9004
+engine_uri = "http://127.0.0.1:9004"
+
 # No health peers — chain is the root of the acyclic health DAG.
 [peers]

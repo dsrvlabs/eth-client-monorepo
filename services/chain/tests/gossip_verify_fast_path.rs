@@ -29,9 +29,7 @@ use cc_proto::p2p::{
     chain_to_p2p, p2p_to_chain,
 };
 use cc_state_transition::helpers::constants::{FAR_FUTURE_EPOCH, MAX_EFFECTIVE_BALANCE};
-use cc_state_transition::{
-    BlockError, EngineError, GossipClass, SignatureKind, StubOptimisticEngine,
-};
+use cc_state_transition::{BlockError, EngineError, GossipClass, SignatureKind};
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::containers::{BeaconBlockHeader, Validator};
 use cc_types::preset::{Minimal, Preset};
@@ -43,6 +41,20 @@ use futures::StreamExt;
 use prometheus_client::registry::Registry;
 use tokio::sync::oneshot;
 use tree_hash::TreeHash;
+
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
 
 fn minimal_config() -> ChainConfig {
     ChainConfig {
@@ -163,7 +175,7 @@ fn seeded_store_signed(
     let mut store = get_forkchoice_store(
         state,
         &anchor_block,
-        Arc::new(StubOptimisticEngine),
+        Arc::new(AcceptEngine),
         da,
         config.seconds_per_slot,
     )

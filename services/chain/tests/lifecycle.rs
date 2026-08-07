@@ -29,7 +29,6 @@ use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
 use cc_proto::chain::chain_service_server::{ChainService, ChainServiceServer};
 use cc_proto::chain::{GetHeadRequest, ImportBlockRequest, ImportBlockVerdict};
 use cc_proto::error_info_from_status;
-use cc_state_transition::StubOptimisticEngine;
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::preset::Minimal;
 use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Root, Slot, ValidatorIndex};
@@ -44,6 +43,20 @@ use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_check_response::ServingStatus as WireStatus;
 use tonic_health::pb::health_client::HealthClient;
 use tree_hash::TreeHash;
+
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
 
 const HEALTH_SERVICE_NAME: &str = "eth.chain.v1.ChainService";
 
@@ -287,7 +300,7 @@ async fn install_core_clears_not_bootstrapped_for_get_head() {
         let store = get_forkchoice_store(
             state,
             &anchor_block,
-            Arc::new(StubOptimisticEngine),
+            Arc::new(AcceptEngine),
             Arc::new(HarnessAvailability),
             config.seconds_per_slot,
         )
@@ -375,7 +388,7 @@ fn warm_then_forkchoice_store_seed_retains_warm_caches() {
     let store = get_forkchoice_store(
         state,
         &signed.message,
-        Arc::new(StubOptimisticEngine),
+        Arc::new(AcceptEngine),
         Arc::new(HarnessAvailability),
         6,
     )
@@ -490,7 +503,7 @@ async fn pre_drain_joins_core_within_shutdown_budget() {
     let store = get_forkchoice_store(
         state,
         &anchor_block,
-        Arc::new(StubOptimisticEngine),
+        Arc::new(AcceptEngine),
         Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )

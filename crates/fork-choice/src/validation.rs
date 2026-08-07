@@ -225,11 +225,23 @@ fn log_valid_became_invalid(block_root: Root, payload_block_hash: Hash256) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use cc_state_transition::{
-        ExecutionEngine, NewPayloadRequest, PayloadStatus, StubOptimisticEngine,
+    use cc_state_transition::{ExecutionEngine, NewPayloadRequest, PayloadStatus,
     };
     use cc_types::preset::Minimal;
     use cc_types::primitives::{Hash256, Root, Slot};
@@ -399,7 +411,7 @@ mod tests {
     /// are not visited (asserted on the visit counter / transitioned set).
     #[test]
     fn upward_pass_stops_at_valid() {
-        let (mut store, anchor) = seeded(Arc::new(StubOptimisticEngine));
+        let (mut store, anchor) = seeded(Arc::new(AcceptEngine));
 
         // Chain: anchor(Valid) ← 1..29 Optimistic ← 30 Valid ← 31..64 Optimistic.
         for i in 1u16..=64 {
@@ -489,7 +501,7 @@ mod tests {
     /// error! names it an EL consensus failure with both hashes.
     #[test]
     fn valid_became_invalid_is_hard_error() {
-        let (mut store, anchor) = seeded(Arc::new(StubOptimisticEngine));
+        let (mut store, anchor) = seeded(Arc::new(AcceptEngine));
 
         // Valid child of the anchor.
         let justified = store.justified_checkpoint();
@@ -620,7 +632,7 @@ mod tests {
     /// Prior Optimistic→Valid writes remain (not an unmutated-store guarantee).
     #[test]
     fn upward_pass_errors_on_invalid_ancestor() {
-        let (mut store, anchor) = seeded(Arc::new(StubOptimisticEngine));
+        let (mut store, anchor) = seeded(Arc::new(AcceptEngine));
         // anchor(Valid) ← Invalid ← Optimistic tip
         let justified = store.justified_checkpoint();
         let finalized = store.finalized_checkpoint();
@@ -695,7 +707,7 @@ mod tests {
     /// F2: status writes bump mutation_counter (clears head cache).
     #[test]
     fn status_writes_bump_mutation_counter() {
-        let (mut store, anchor) = seeded(Arc::new(StubOptimisticEngine));
+        let (mut store, anchor) = seeded(Arc::new(AcceptEngine));
         let justified = store.justified_checkpoint();
         let finalized = store.finalized_checkpoint();
         store

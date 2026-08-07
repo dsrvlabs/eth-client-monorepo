@@ -57,7 +57,7 @@ use cc_state_transition::helpers::accessors::{
     compute_time_at_slot, get_beacon_proposer_index, get_current_epoch, get_randao_mix,
 };
 use cc_state_transition::{
-    BlockSignatureStrategy, StubOptimisticEngine, TransitionContext, get_expected_withdrawals,
+    BlockSignatureStrategy, TransitionContext, get_expected_withdrawals,
     process_block, process_justification_and_finalization, process_slots,
     take_canonical_root_call_count, take_canonical_root_elapsed_ns,
 };
@@ -73,6 +73,20 @@ use ssz_types::VariableList;
 use tokio::sync::oneshot;
 use tonic::transport::{Channel, Endpoint, Server};
 use tree_hash::TreeHash;
+
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
 
 const FETCH_HINT: &str = "run scripts/fetch-hoodi-fixtures.sh";
 const ANCHOR_SLOT: u64 = 3_649_472;
@@ -357,7 +371,7 @@ fn make_next_block(
     parent_root: Root,
     config: &ChainConfig,
 ) -> (SignedBeaconBlock<Mainnet>, BeaconState<Mainnet>) {
-    let engine = StubOptimisticEngine;
+    let engine = AcceptEngine;
     let ctx = TransitionContext::new(config, &engine);
 
     let mut st = parent_state.clone();
@@ -520,7 +534,7 @@ fn seed_store(
     let mut store = get_forkchoice_store(
         state,
         anchor,
-        Arc::new(StubOptimisticEngine),
+        Arc::new(AcceptEngine),
         Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )

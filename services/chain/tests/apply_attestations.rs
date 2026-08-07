@@ -12,17 +12,18 @@ use cc_chain::events::{EventsConfig, EventsHandle};
 use cc_chain::head::HeadSnapshotStore;
 use cc_chain::metrics::ChainMetrics;
 use cc_chain::service::ChainServiceImpl;
-use cc_fork_choice::{HarnessAvailability, ProtoNodeBlock, Store, get_forkchoice_store, on_tick, ExecutionStatus};
+use cc_fork_choice::{
+    ExecutionStatus, HarnessAvailability, ProtoNodeBlock, Store, get_forkchoice_store, on_tick,
+};
 use cc_proto::chain::chain_service_server::ChainService;
 use cc_proto::chain::{ApplyAttestationsRequest, AttestationApplyVerdict, GetHeadRequest};
-use cc_state_transition::StubOptimisticEngine;
 use cc_state_transition::helpers::constants::{FAR_FUTURE_EPOCH, MAX_EFFECTIVE_BALANCE};
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::containers::{AttestationData, BeaconBlockHeader, Checkpoint, Validator};
 use cc_types::operations::IndexedAttestation;
 use cc_types::preset::Minimal;
-use cc_types::primitives::{Hash256, 
-    BlsPublicKey, Epoch, ExecutionAddress, ForkVersion, Root, Slot, ValidatorIndex,
+use cc_types::primitives::{
+    BlsPublicKey, Epoch, ExecutionAddress, ForkVersion, Hash256, Root, Slot, ValidatorIndex,
 };
 use cc_types::{BeaconBlock, BeaconState};
 use prometheus_client::registry::Registry;
@@ -30,6 +31,20 @@ use ssz::Encode;
 use ssz_types::VariableList;
 use tonic::{Code, Request};
 use tree_hash::TreeHash;
+
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
 
 fn active_validator(i: u64) -> Validator {
     Validator {
@@ -182,7 +197,7 @@ fn forked_store(validators: usize) -> (Store<Minimal>, Root, Root, Root, ChainCo
     let mut store = get_forkchoice_store(
         state,
         &anchor_block,
-        Arc::new(StubOptimisticEngine),
+        Arc::new(AcceptEngine),
         Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )

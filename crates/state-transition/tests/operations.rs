@@ -1377,7 +1377,7 @@ fn multi_committee_electra_attestation_and_nonzero_index_from_vectors() {
 
 #[test]
 fn operation_count_overflow_is_reject() {
-    use cc_state_transition::{process_operations, StubOptimisticEngine};
+    use cc_state_transition::{process_operations};
     use cc_types::operations::ProposerSlashing;
 
     // Construct a body that would overflow if VariableList allowed it —
@@ -1401,7 +1401,7 @@ fn operation_count_overflow_is_reject() {
     // Expect min(MAX_DEPOSITS, 100) = 16 deposits but body has 0.
     let block = BeaconBlock::<Minimal>::default();
     let config = spec_config_for_preset(PresetName::Minimal);
-    let engine = StubOptimisticEngine;
+    let engine = AcceptEngine;
     let ctx = TransitionContext::<Minimal>::new(&config, &engine);
     let err = process_operations(&mut state, &block, &ctx, false).unwrap_err();
     match err {

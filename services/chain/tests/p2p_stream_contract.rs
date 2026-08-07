@@ -30,7 +30,6 @@ use cc_proto::error_info_from_status;
 use cc_proto::p2p::{
     ObjectKind, P2pToChain, PublishRequest, StreamHello, chain_to_p2p, p2p_to_chain,
 };
-use cc_state_transition::StubOptimisticEngine;
 use cc_state_transition::helpers::constants::{FAR_FUTURE_EPOCH, MAX_EFFECTIVE_BALANCE};
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::containers::{Checkpoint, Validator};
@@ -42,6 +41,20 @@ use cc_types::{BeaconBlock, BeaconState};
 use futures::StreamExt;
 use prometheus_client::registry::Registry;
 use tonic::{Code, Request};
+
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
 
 const VALIDATORS: usize = 64;
 
@@ -125,7 +138,7 @@ fn spawn_svc() -> (ChainServiceImpl, cc_chain::CoreThread, EventsHandle) {
     let store = get_forkchoice_store(
         state,
         &anchor_block,
-        Arc::new(StubOptimisticEngine),
+        Arc::new(AcceptEngine),
         Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )
@@ -547,7 +560,7 @@ async fn install_core_visible_to_live_session() {
     let store = get_forkchoice_store(
         state,
         &anchor_block,
-        Arc::new(StubOptimisticEngine),
+        Arc::new(AcceptEngine),
         Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )

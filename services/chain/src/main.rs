@@ -119,6 +119,14 @@ struct ChainConfig {
     /// **CC-3B** consume). Changing this value today does not change behaviour.
     #[serde(default = "default_safe_slots_to_import_optimistically")]
     safe_slots_to_import_optimistically: u64,
+    /// gRPC URI for `EngineService` (CC-32b). Plain config key — not under
+    /// `[peers]` (ADR P3-02 / health DAG must stay acyclic).
+    #[serde(default = "default_engine_uri")]
+    engine_uri: String,
+}
+
+fn default_engine_uri() -> String {
+    cc_chain::engine_client::DEFAULT_ENGINE_URI.to_owned()
 }
 
 fn default_max_resident_states() -> usize {
@@ -166,7 +174,9 @@ impl ChainConfig {
     }
 }
 
-#[tokio::main]
+// Explicit multi-thread runtime: §2.4 engine bridge parks `chain-core` via
+// `Handle::block_on`; a `current_thread` runtime would deadlock that path.
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
     // Fail before any bind (CC-09/2): load config, then telemetry, then serve.
     let cfg = cc_config::load::<ChainConfig>(SERVICE)?;
@@ -236,6 +246,7 @@ async fn main() -> anyhow::Result<()> {
         let core_cfg = CoreConfig {
             max_resident_states: cfg.max_resident_states,
             body_ring_capacity: cfg.body_ring_capacity,
+            engine_uri: cfg.engine_uri.clone(),
             ..CoreConfig::default()
         };
         let svc_boot = svc.clone();

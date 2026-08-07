@@ -8,6 +8,8 @@
 //!   typed errors, geth-format `crc32` line (`tests/auth_container.rs`)
 //! - **CC-31**: Method set, fork gate (`method_for` on payload timestamp),
 //!   `ADVERTISED_CAPABILITIES`, capability cache clear edges
+//! - **CC-32b**: `NewPayload` / `ForkchoiceUpdated` / `GetEngineState` server,
+//!   SSZ→JSON encode, `cc_engine_payload_status_total` observations
 
 #![allow(missing_docs)]
 
@@ -17,5 +19,6 @@ pub mod errors;
 pub mod jwt;
 pub mod methods;
 pub mod metrics;
+pub mod service;
 pub mod transport;
 pub mod version;

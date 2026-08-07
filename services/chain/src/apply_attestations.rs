@@ -183,15 +183,27 @@ fn recompute_and_publish_head<P: Preset>(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
     use super::*;
     use std::sync::Arc;
 
     use cc_fork_choice::{ExecutionStatus, HarnessAvailability, get_forkchoice_store};
-    use cc_state_transition::StubOptimisticEngine;
     use cc_types::containers::{AttestationData, BeaconBlockHeader, Checkpoint};
     use cc_types::operations::IndexedAttestation;
     use cc_types::preset::Minimal;
-    use cc_types::primitives::{Hash256, Epoch, Root, Slot, ValidatorIndex};
+    use cc_types::primitives::{Epoch, Hash256, Root, Slot, ValidatorIndex};
     use cc_types::{BeaconBlock, BeaconState};
     use prometheus_client::registry::Registry;
     use ssz::Encode;
@@ -255,7 +267,7 @@ mod tests {
         let mut store = get_forkchoice_store(
             state,
             &anchor_block,
-            Arc::new(StubOptimisticEngine),
+            Arc::new(AcceptEngine),
             Arc::new(HarnessAvailability),
             6,
         )

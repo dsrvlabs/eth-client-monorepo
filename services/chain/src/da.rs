@@ -277,15 +277,30 @@ pub fn default_pending_timeout_duration() -> Duration {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
     use super::*;
     use cc_fork_choice::{
         DataAvailability, ExecutionStatus, PeerDasAvailability, get_forkchoice_store, get_head,
         on_block, on_tick,
     };
-    use cc_state_transition::{BlockSignatureStrategy, StubOptimisticEngine};
+    use cc_state_transition::BlockSignatureStrategy;
     use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
     use cc_types::preset::Minimal;
-    use cc_types::primitives::{Hash256, Epoch, ExecutionAddress, ForkVersion, Slot, ValidatorIndex};
+    use cc_types::primitives::{
+        Epoch, ExecutionAddress, ForkVersion, Hash256, Slot, ValidatorIndex,
+    };
     use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
     use std::sync::Arc;
     use tree_hash::TreeHash;
@@ -441,7 +456,7 @@ mod tests {
         let mut store = get_forkchoice_store(
             state,
             &anchor_block,
-            Arc::new(StubOptimisticEngine),
+            Arc::new(AcceptEngine),
             da_for_store,
             config.seconds_per_slot,
         )

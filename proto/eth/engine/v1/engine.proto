@@ -5,12 +5,22 @@ import "eth/common/v1/common.proto";
 
 // Execution-layer bridge: Engine API client and payload validation.
 //
-// Phase 3 adds: NewPayload / ForkchoiceUpdated / GetPayload surface toward the EL,
-//   plus the payload-status feed consumed by chain fork choice.
+// Phase 3 adds: NewPayload / ForkchoiceUpdated / GetEngineState surface toward
+//   the EL, plus the payload-status feed consumed by chain fork choice.
 // Phase 0 stubs EL validation as optimistic; Phase 3 makes the node a fully
 //   verifying follower.
+//
+// Invariant (CC-3K /7, Architecture §1.2): consensus / execution containers
+// cross as `bytes ssz` + scalars only — never remodelled as proto field trees
+// (remodelling ExecutionPayload as proto fields is the single most natural wrong turn).
 service EngineService {
   rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+  // CC-32b: chain → engine newPayload bridge (ordered lane → engine_newPayloadV4).
+  rpc NewPayload(NewPayloadRequest) returns (NewPayloadResponse);
+  // CC-32b declares the RPC; the fcU driver that fills it is CC-33.
+  rpc ForkchoiceUpdated(ForkchoiceUpdatedRequest) returns (ForkchoiceUpdatedResponse);
+  // CC-32b declares the field set; the el_offline answer is CC-3B / CC-36a.
+  rpc GetEngineState(GetEngineStateRequest) returns (GetEngineStateResponse);
 }
 
 message GetInfoRequest {}
@@ -31,4 +41,50 @@ message PayloadStatusV1 {
   // Present 32 non-zero bytes ≜ case 1 execution block hash.
   optional bytes latest_valid_hash = 2;
   optional string validation_error = 3;
+}
+
+// Spec-shaped NewPayloadRequest fields as SSZ + scalars (CC-32b).
+//
+// `ssz` is the SSZ encoding of `ExecutionPayload` (Mainnet preset hard-wired
+// on the engine binary — Architecture ≠13/5). JSON/hex encoding to the EL
+// happens exactly once inside services/engine.
+message NewPayloadRequest {
+  // ExecutionPayload, SSZ-encoded. Never remodelled as a proto message tree.
+  bytes ssz = 1;
+  // Versioned hashes derived from blob_kzg_commitments (32 B each).
+  repeated bytes versioned_hashes = 2;
+  // Parent beacon block root (32 B).
+  bytes parent_beacon_block_root = 3;
+  // Flattened execution requests: type || ssz_serialize(request_data),
+  // ascending type order, empty lists omitted (get_execution_requests_list).
+  repeated bytes execution_requests = 4;
+}
+
+message NewPayloadResponse {
+  PayloadStatusV1 payload_status = 1;
+}
+
+// ForkchoiceStateV1 triple + chain sequence (CC-33 driver owns emission order).
+// payloadAttributes is always null on the wire (Phase 3 / CC-31 /8) — not a field.
+message ForkchoiceUpdatedRequest {
+  bytes head_block_hash = 1;
+  bytes safe_block_hash = 2;
+  bytes finalized_block_hash = 3;
+  // Monotonic sequence assigned by chain's fcU driver; engine drops stale.
+  uint64 sequence = 4;
+}
+
+message ForkchoiceUpdatedResponse {
+  PayloadStatusV1 payload_status = 1;
+  // Always absent when payloadAttributes is null (Phase 3).
+  optional bytes payload_id = 2;
+}
+
+message GetEngineStateRequest {}
+
+// Surface Phase 6 consumes (CC-3B). el_offline answer lands with CC-36a.
+message GetEngineStateResponse {
+  bool el_offline = 1;
+  // synced | syncing | offline | auth_failed (Architecture §3.7 / §9.3).
+  string internal_state = 2;
 }

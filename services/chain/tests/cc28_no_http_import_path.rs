@@ -24,13 +24,26 @@ use cc_chain::metrics::ChainMetrics;
 use cc_chain::service::ChainServiceImpl;
 use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
 use cc_proto::chain::{ImportBlockRequest, ImportBlockVerdict};
-use cc_state_transition::StubOptimisticEngine;
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::preset::Minimal;
 use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Root, Slot, ValidatorIndex};
 use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
 use prometheus_client::registry::Registry;
 use tree_hash::TreeHash;
+
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
 
 fn chain_src_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -151,7 +164,7 @@ async fn bootstrap_http_not_reachable_after_anchor_set() {
     let store = get_forkchoice_store(
         state,
         &anchor_block,
-        std::sync::Arc::new(StubOptimisticEngine),
+        std::sync::Arc::new(AcceptEngine),
         std::sync::Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )

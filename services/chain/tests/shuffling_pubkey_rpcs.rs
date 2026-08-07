@@ -21,8 +21,8 @@ use cc_proto::chain::chain_service_server::ChainService;
 use cc_proto::chain::{GetCommitteeShufflingRequest, GetValidatorPubkeysRequest};
 use cc_state_transition::helpers::constants::{FAR_FUTURE_EPOCH, MAX_EFFECTIVE_BALANCE};
 use cc_state_transition::{
-    StubOptimisticEngine, compute_shuffled_active_indices, decision_root_for_epoch,
-    get_beacon_committee, get_current_epoch,
+    compute_shuffled_active_indices, decision_root_for_epoch, get_beacon_committee,
+    get_current_epoch,
 };
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::containers::Validator;
@@ -34,6 +34,20 @@ use cc_types::{BeaconBlock, BeaconState};
 use prometheus_client::registry::Registry;
 use tonic::{Code, Request};
 use tree_hash::TreeHash;
+
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
 
 const VALIDATORS: usize = 64;
 /// Minimal SLOTS_PER_EPOCH = 8 → epoch 1 starts at slot 8.
@@ -145,7 +159,7 @@ fn spawn_svc_with_state(
     let store = get_forkchoice_store(
         state,
         &anchor_block,
-        Arc::new(StubOptimisticEngine),
+        Arc::new(AcceptEngine),
         Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )

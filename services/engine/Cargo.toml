@@ -20,10 +20,14 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+alloy-primitives = { workspace = true }
 cc-bootstrap = { workspace = true }
 cc-config = { workspace = true }
 cc-proto = { workspace = true }
+# CC-32b: SSZ decode of ExecutionPayload (Mainnet) — DAG row appends cc-types.
+cc-types = { workspace = true }
 crc32fast = { workspace = true }
+ethereum_ssz = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 jsonwebtoken = { workspace = true }

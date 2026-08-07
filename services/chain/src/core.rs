@@ -147,6 +147,8 @@ pub struct CoreConfig {
     pub peer_das: Option<Arc<PeerDasAvailability>>,
     /// Slots a deferred block may wait for `DataAvailable` (default 4).
     pub da_pending_timeout_slots: u64,
+    /// gRPC URI for `EngineService` (CC-32b). Not a health peer (ADR P3-02).
+    pub engine_uri: String,
 }
 
 impl Default for CoreConfig {
@@ -157,6 +159,7 @@ impl Default for CoreConfig {
             verify: BlockSignatureStrategy::NoVerification,
             peer_das: None,
             da_pending_timeout_slots: DEFAULT_DA_PENDING_TIMEOUT_SLOTS,
+            engine_uri: crate::engine_client::DEFAULT_ENGINE_URI.to_owned(),
         }
     }
 }
@@ -1029,11 +1032,23 @@ fn maybe_publish_epoch_context<P: Preset>(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
     use super::*;
     use std::sync::Arc;
 
     use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
-    use cc_state_transition::StubOptimisticEngine;
     use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
     use cc_types::preset::Minimal;
     use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Slot, ValidatorIndex};
@@ -1086,7 +1101,7 @@ mod tests {
         let store = get_forkchoice_store(
             state,
             &anchor_block,
-            Arc::new(StubOptimisticEngine),
+            Arc::new(AcceptEngine),
             Arc::new(HarnessAvailability),
             config.seconds_per_slot,
         )

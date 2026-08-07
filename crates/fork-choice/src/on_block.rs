@@ -32,8 +32,7 @@
 use std::sync::Arc;
 
 use cc_state_transition::helpers::misc::compute_start_slot_at_epoch;
-use cc_state_transition::{
-    BlockError, BlockSignatureStrategy, GossipClass, TransitionContext, compute_epoch_at_slot,
+use cc_state_transition::{BlockError, BlockSignatureStrategy, GossipClass, TransitionContext, compute_epoch_at_slot,
     process_justification_and_finalization, state_transition,
 };
 use cc_types::config::ChainConfig;
@@ -617,9 +616,22 @@ pub fn update_proposer_boost_root<P: Preset>(store: &mut Store<P>, head: Root, r
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
     use std::sync::Arc;
 
-    use cc_state_transition::{BlockSignatureStrategy, StubOptimisticEngine};
+    use cc_state_transition::{BlockSignatureStrategy};
     use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
     use cc_types::containers::{BeaconBlockHeader, Checkpoint};
     use cc_types::preset::Minimal;
@@ -715,7 +727,7 @@ mod tests {
         let store = get_forkchoice_store(
             state,
             &anchor_block,
-            Arc::new(StubOptimisticEngine),
+            Arc::new(AcceptEngine),
             da,
             config.seconds_per_slot,
         )

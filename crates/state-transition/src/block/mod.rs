@@ -88,14 +88,10 @@ impl<'a, P: Preset> TransitionContext<'a, P> {
     ///
     /// `pub(crate)` so only this crate's `process_execution_payload` may write;
     /// external crates (fork-choice) consume via [`Self::take_payload_status`] only.
-    /// Panics in debug builds if written twice (outbox is single-shot per transition).
+    /// Overwrites any prior value so a shared context can drive multi-block
+    /// vector runners without an intervening take (CC-32a outbox; CC-32b).
     pub(crate) fn set_payload_status(&self, status: PayloadStatus) {
-        let mut slot = self.payload_status_outbox.borrow_mut();
-        debug_assert!(
-            slot.is_none(),
-            "payload_status_outbox written twice in one transition"
-        );
-        *slot = Some(status);
+        *self.payload_status_outbox.borrow_mut() = Some(status);
     }
 
     /// Take the recorded payload status (if any). Used by tests; production
@@ -171,8 +167,23 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use crate::engine_seam::StubOptimisticEngine;
+    use crate::engine_seam::{ExecutionEngine, NewPayloadRequest, PayloadStatus};
+    use crate::error::EngineError;
     use crate::root_measure::{canonical_root_call_count, take_canonical_root_call_count};
+
+    /// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+    #[derive(Debug, Default, Clone, Copy)]
+    struct AcceptEngine;
+
+    impl<P: Preset> ExecutionEngine<P> for AcceptEngine {
+        fn verify_and_notify_new_payload(
+            &self,
+            _request: NewPayloadRequest<'_, P>,
+        ) -> Result<PayloadStatus, EngineError> {
+            Ok(PayloadStatus::Valid)
+        }
+    }
+
     use crate::slots::{process_slot, process_slots};
     use cc_types::containers::{BeaconBlockHeader, Validator};
     use cc_types::primitives::{Gwei, Slot, ValidatorIndex};
@@ -272,7 +283,7 @@ mod tests {
             body,
         };
         let config = minimal_test_config();
-        let engine = StubOptimisticEngine;
+        let engine = AcceptEngine;
         let ctx = TransitionContext::<Minimal>::new(&config, &engine);
         process_block(&mut state, &block, &ctx, pre).expect("full process_block should complete");
     }

@@ -25,6 +25,7 @@ pub mod apply_attestations;
 pub mod checkpoint_sync;
 pub mod core;
 pub mod da;
+pub mod engine_client;
 pub mod epoch_context;
 pub mod events;
 pub mod head;
@@ -57,6 +58,7 @@ pub use da::{
     TTFB_TIMEOUT_SECS, assert_timeout_outlasts_recovery, chain_pending_timeout_secs,
     default_timeout_ordering_ok, recovery_ladder_worst_case_secs,
 };
+pub use engine_client::{DEFAULT_ENGINE_URI, EngineApiClient};
 pub use epoch_context::{EpochContext, EpochContextStore};
 pub use events::{
     DEFAULT_RING_CAPACITY, DEFAULT_SUBSCRIBER_QUEUE_CAPACITY, ERROR_DOMAIN, EventInput,
@@ -68,9 +70,7 @@ pub use import::{
     ImportCounters, ImportOutcome, decode_signed_block, encode_signed_block,
     import_block_with_early, late_import_flags, on_block_error_gossip_class, parse_root,
 };
-pub use invalidation::{
-    ExitFn, handle_justified_checkpoint_invalidated, process_exit,
-};
+pub use invalidation::{ExitFn, handle_justified_checkpoint_invalidated, process_exit};
 pub use metrics::{
     AUX_DURATION_BUCKETS, BLOCK_BUDGET_SECS, BUFFER_RING, BUFFER_SUBSCRIBER, BootstrapResult,
     BudgetOp, CI_BLOCK_CEILING_SECS, CI_EPOCH_CEILING_SECS, ChainMetrics, EPOCH_BUDGET_SECS,

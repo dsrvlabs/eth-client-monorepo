@@ -48,7 +48,8 @@ METADATA="$(cargo metadata --no-deps --format-version 1 --locked)"
 
 # Allowed intra-workspace edges (Architecture §2.2 / Phase 1 §1.2).
 # Empty list = root with no workspace deps.
-# Services may take cc-types/cc-crypto only for chain and p2p (Phase 1 allowance).
+# Services may take cc-types/cc-crypto for chain, p2p, and engine (Phase 1
+# allowance + Phase 3 CC-32b: engine decodes ExecutionPayload SSZ via cc-types).
 # cc-driver edge rule removed with the crate at CC-28 (was ADR-P1-13: {cc-proto, cc-config}).
 # cc-spec-tests has no workspace edges (zero outgoing); cc-types may take it as a
 # test-only harness edge for ssz_static / vector runners (dev-dependency).
@@ -70,7 +71,8 @@ allowed_deps() {
     # Phase 2: services/p2p may take cc-libp2p (CC-2K / Architecture §1.2).
     cc-p2p)               echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-libp2p" ;;
     cc-attestation)       echo "cc-bootstrap cc-config cc-proto" ;;
-    cc-engine)            echo "cc-bootstrap cc-config cc-proto" ;;
+    # CC-32b: append cc-types (never re-sort). cc-crypto is CC-37b's append.
+    cc-engine)            echo "cc-bootstrap cc-config cc-proto cc-types" ;;
     cc-beacon-api)        echo "cc-bootstrap cc-config cc-proto" ;;
     cc-storage)           echo "cc-bootstrap cc-config cc-proto" ;;
     *)

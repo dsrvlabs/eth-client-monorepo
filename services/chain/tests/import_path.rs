@@ -17,7 +17,6 @@ use cc_chain::residency::{DEFAULT_BODY_RING_CAPACITY, DEFAULT_MAX_RESIDENT_STATE
 use cc_chain::{BodyRingEntry, HeadSnapshot, ResidentRole, StateProvider};
 use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
 use cc_proto::chain::{EventKind, ImportBlockRequest, ImportBlockVerdict};
-use cc_state_transition::StubOptimisticEngine;
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::preset::Minimal;
 use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Root, Slot, ValidatorIndex};
@@ -25,6 +24,20 @@ use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
 use prometheus_client::registry::Registry;
 use tokio::sync::oneshot;
 use tree_hash::TreeHash;
+
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
 
 fn minimal_config() -> ChainConfig {
     ChainConfig {
@@ -78,7 +91,7 @@ fn seeded_store() -> (
     let store = get_forkchoice_store(
         state,
         &anchor_block,
-        Arc::new(StubOptimisticEngine),
+        Arc::new(AcceptEngine),
         Arc::new(HarnessAvailability),
         config.seconds_per_slot,
     )

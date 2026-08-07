@@ -79,21 +79,10 @@ pub trait ExecutionEngine<P: Preset>: Send + Sync {
     ) -> Result<PayloadStatus, EngineError>;
 }
 
-/// Phase 1 optimistic stub: returns [`PayloadStatus::Valid`] unconditionally.
-///
-/// Phase 3 replaces this with an authenticated JSON-RPC `engine_newPayloadV5`
-/// client that implements the same trait.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct StubOptimisticEngine;
-
-impl<P: Preset> ExecutionEngine<P> for StubOptimisticEngine {
-    fn verify_and_notify_new_payload(
-        &self,
-        _request: NewPayloadRequest<'_, P>,
-    ) -> Result<PayloadStatus, EngineError> {
-        Ok(PayloadStatus::Valid)
-    }
-}
+// Phase-1 optimistic always-Valid production stub **deleted** at CC-32b (not
+// renamed, not feature-gated, not exported). Production uses
+// `services/chain/src/engine_client.rs` (`EngineApiClient`). Unit tests that
+// need always-Valid define a private harness type in their own module.
 
 #[cfg(test)]
 mod tests {
@@ -106,6 +95,19 @@ mod tests {
     use cc_types::preset::Mainnet;
     use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Slot, ValidatorIndex};
     use cc_types::{BeaconBlock, BeaconState};
+
+    /// Private always-Valid harness for this module only (not a library export).
+    #[derive(Debug, Default, Clone, Copy)]
+    struct AcceptEngine;
+
+    impl<P: Preset> ExecutionEngine<P> for AcceptEngine {
+        fn verify_and_notify_new_payload(
+            &self,
+            _request: NewPayloadRequest<'_, P>,
+        ) -> Result<PayloadStatus, EngineError> {
+            Ok(PayloadStatus::Valid)
+        }
+    }
 
     /// Test-only engine that always reports the payload invalid.
     ///
@@ -226,23 +228,23 @@ mod tests {
         assert_eq!(err.gossip_class(), GossipClass::Internal);
     }
 
-    /// Stub returns Valid; `process_execution_payload` accepts when local checks pass.
+    /// Accept engine returns Valid; `process_execution_payload` accepts when local checks pass.
     #[test]
-    fn stub_optimistic_engine_accepts() {
+    fn accept_engine_accepts() {
         let config = test_config();
-        let engine: &dyn ExecutionEngine<Mainnet> = &StubOptimisticEngine;
+        let engine: &dyn ExecutionEngine<Mainnet> = &AcceptEngine;
         let ctx = TransitionContext::<Mainnet>::new(&config, engine);
 
         let (mut state, block) = ready_state_and_block(&config);
 
-        process_execution_payload(&mut state, &block, &ctx).expect("stub accepts");
+        process_execution_payload(&mut state, &block, &ctx).expect("accept engine accepts");
     }
 
     /// Blob bound exceeded classifies as [`GossipClass::Reject`].
     #[test]
     fn blob_bound_exceeded_is_gossip_reject() {
         let config = test_config(); // max 9 at epoch 0
-        let engine: &dyn ExecutionEngine<Mainnet> = &StubOptimisticEngine;
+        let engine: &dyn ExecutionEngine<Mainnet> = &AcceptEngine;
         let ctx = TransitionContext::<Mainnet>::new(&config, engine);
 
         let (mut state, mut block) = ready_state_and_block(&config);

@@ -1071,11 +1071,14 @@ dependencies = [
 name = "cc-engine"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "anyhow",
  "cc-bootstrap",
  "cc-config",
  "cc-proto",
+ "cc-types",
  "crc32fast",
+ "ethereum_ssz",
  "futures",
  "hex",
  "jsonwebtoken",

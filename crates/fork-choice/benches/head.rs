@@ -11,11 +11,24 @@ use std::time::{Duration, Instant};
 
 use cc_fork_choice::ExecutionStatus;
 use cc_fork_choice::{HarnessAvailability, ProtoArray, ProtoNodeBlock, Store, get_head};
-use cc_state_transition::StubOptimisticEngine;
 use cc_types::containers::Checkpoint;
 use cc_types::preset::{Minimal, Preset};
 use cc_types::primitives::Hash256;
 use cc_types::primitives::{Epoch, Root, Slot};
+
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
 
 const N_NODES: usize = 100_000;
 const SAMPLES: usize = 50;
@@ -112,7 +125,7 @@ fn main() {
         anchor,
         anchor,
         0,
-        Arc::new(StubOptimisticEngine),
+        Arc::new(AcceptEngine),
         Arc::new(HarnessAvailability),
     );
     let _ = get_head(&mut store);

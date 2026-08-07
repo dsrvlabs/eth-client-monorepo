@@ -26,9 +26,7 @@ pub use block::{
     process_sync_aggregate_with_opts, process_voluntary_exit, process_withdrawal_request,
     process_withdrawals, state_transition,
 };
-pub use engine_seam::{
-    ExecutionEngine, NewPayloadRequest, PayloadStatus, StubOptimisticEngine, VersionedHash,
-};
+pub use engine_seam::{ExecutionEngine, NewPayloadRequest, PayloadStatus, VersionedHash};
 pub use epoch::{
     RewardPenalties, apply_pending_deposit, get_flag_index_deltas, get_inactivity_penalty_deltas,
     process_effective_balance_updates, process_epoch, process_eth1_data_reset,

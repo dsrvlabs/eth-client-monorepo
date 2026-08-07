@@ -21,9 +21,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use cc_fork_choice::Store;
-use cc_state_transition::{
-    BlockSignatureStrategy, StubOptimisticEngine, TransitionContext, state_transition,
-};
+use cc_state_transition::{BlockSignatureStrategy, TransitionContext, state_transition};
 use cc_types::config::ChainConfig;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Root, Slot};
@@ -261,9 +259,10 @@ impl<P: Preset> Residency<P> {
         }
 
         // Replay path oldest-first (parent → child).
+        // Use the store's engine (CC-32b) — same seam as import, never a local stub.
         path.reverse();
-        let engine = StubOptimisticEngine;
-        let ctx = TransitionContext::new(config, &engine);
+        let engine = std::sync::Arc::clone(store.engine_arc());
+        let ctx = TransitionContext::new(config, engine.as_ref());
         for block_root in path {
             let Some(entry) = self.body(&block_root) else {
                 self.reorg_gaps = self.reorg_gaps.saturating_add(1);
@@ -406,6 +405,19 @@ impl<P: Preset> StateProvider<P> for Residency<P> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
     use super::*;
     use cc_types::preset::Minimal;
 
@@ -492,7 +504,6 @@ mod tests {
     #[test]
     fn ensure_in_store_increments_reorg_gaps() {
         use cc_fork_choice::{HarnessAvailability, Store};
-        use cc_state_transition::StubOptimisticEngine;
         use cc_types::containers::Checkpoint;
         use cc_types::primitives::Epoch;
 
@@ -504,8 +515,7 @@ mod tests {
             block: Arc::new(dummy_block(1, Root::ZERO)),
         });
         // Empty store, no pins, root not re-derivable → gap.
-        let engine: Arc<dyn cc_state_transition::ExecutionEngine<Minimal>> =
-            Arc::new(StubOptimisticEngine);
+        let engine: Arc<dyn cc_state_transition::ExecutionEngine<Minimal>> = Arc::new(AcceptEngine);
         let da: Arc<dyn cc_fork_choice::DataAvailability> = Arc::new(HarnessAvailability);
         let mut store = Store::<Minimal>::new(
             0,
@@ -560,12 +570,10 @@ mod tests {
     #[test]
     fn settle_after_head_pins_fc_head_not_imported() {
         use cc_fork_choice::{HarnessAvailability, Store};
-        use cc_state_transition::StubOptimisticEngine;
         use cc_types::containers::{BeaconBlockHeader, Checkpoint};
         use cc_types::primitives::Epoch;
 
-        let engine: Arc<dyn cc_state_transition::ExecutionEngine<Minimal>> =
-            Arc::new(StubOptimisticEngine);
+        let engine: Arc<dyn cc_state_transition::ExecutionEngine<Minimal>> = Arc::new(AcceptEngine);
         let da: Arc<dyn cc_fork_choice::DataAvailability> = Arc::new(HarnessAvailability);
         let mut store = Store::<Minimal>::new(
             12,

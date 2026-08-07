@@ -8,9 +8,8 @@ use cc_crypto::{
     compute_signing_root, get_domain, SecretKey, DOMAIN_BEACON_PROPOSER, DOMAIN_RANDAO,
     INFINITY_SIGNATURE,
 };
-use cc_state_transition::{
-    get_beacon_proposer_index, get_current_epoch, get_randao_mix, process_block, process_slots,
-    measured_canonical_root, StubOptimisticEngine, TransitionContext,
+use cc_state_transition::{get_beacon_proposer_index, get_current_epoch, get_randao_mix, process_block, process_slots,
+    measured_canonical_root, TransitionContext,
 };
 use cc_types::block::{BeaconBlock, BeaconBlockBody, SignedBeaconBlock};
 use cc_types::config::ChainConfig;
@@ -27,6 +26,20 @@ use crate::inclusion::{kzg_commitments_inclusion_proof, verify_inclusion_proof};
 use crate::keys::ValidatorKey;
 use crate::kzg_columns::{columns_from_materials, compute_blob_materials, ColumnBundle};
 use crate::params::DevnetParams;
+
+/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+#[derive(Debug, Default, Clone, Copy)]
+struct AcceptEngine;
+
+impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
 
 /// One generated slot's artifacts (in memory).
 #[derive(Debug, Clone)]
@@ -55,7 +68,7 @@ pub fn generate_chain<P: Preset>(
     chain_dir: &Path,
 ) -> Result<Vec<SlotArtifacts<P>>> {
     fs::create_dir_all(chain_dir).with_context(|| format!("mkdir {}", chain_dir.display()))?;
-    let engine = StubOptimisticEngine;
+    let engine = AcceptEngine;
     let ctx = TransitionContext::<P>::new(config, &engine);
     let seed = params.seed_bytes()?;
     let slots_per_epoch = P::SLOTS_PER_EPOCH;
