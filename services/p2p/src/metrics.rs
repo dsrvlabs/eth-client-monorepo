@@ -254,11 +254,11 @@ impl ColumnSource {
     pub const ALL: [Self; 3] = [Self::Gossip, Self::ByRoot, Self::ByRange];
 }
 
-/// `q` label values for `cc_p2p_queue_depth` (§2.2 / CC-22/5 / CC-24c / CC-26a).
+/// `q` label values for `cc_p2p_queue_depth` (§2.2 / CC-22/5 / CC-24c / CC-26a / CC-2D).
 ///
-/// Twelve values on **one** gauge family — not twelve separate metrics.
-/// `SeenColumn` / `SeenBlock` hold gossip seen-set **entry counts** (not
-/// backfill cache bytes — those use `cc_p2p_cache_*` exclusively).
+/// Thirteen values on **one** gauge family — not thirteen separate metrics.
+/// `SeenColumn` / `SeenBlock` / `SeenSync` hold gossip seen-set **entry counts**
+/// (not backfill cache bytes — those use `cc_p2p_cache_*` exclusively).
 /// `Sampling` is sampling-task map occupancy (CC-24c; bound 64).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueueName {
@@ -275,6 +275,8 @@ pub enum QueueName {
     SeenColumn,
     /// Gossip block seen-set occupancy (entry count).
     SeenBlock,
+    /// Gossip sync-committee seen-set occupancy (entry count; CC-2D, bound 4096).
+    SeenSync,
     /// Sampling-task map occupancy (CC-24c; bound 64).
     Sampling,
 }
@@ -295,12 +297,13 @@ impl QueueName {
             Self::PendingBlock => "pending_block",
             Self::SeenColumn => "seen_column",
             Self::SeenBlock => "seen_block",
+            Self::SeenSync => "seen_sync",
             Self::Sampling => "sampling",
         }
     }
 
     /// All variants (seed + tests).
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Gossip,
         Self::ReqrespIn,
         Self::Conn,
@@ -312,6 +315,7 @@ impl QueueName {
         Self::PendingBlock,
         Self::SeenColumn,
         Self::SeenBlock,
+        Self::SeenSync,
         Self::Sampling,
     ];
 }
@@ -1398,8 +1402,8 @@ mod tests {
     }
 
     #[test]
-    fn queue_depth_q_label_has_exactly_twelve_values() {
-        assert_eq!(QueueName::ALL.len(), 12);
+    fn queue_depth_q_label_has_exactly_thirteen_values() {
+        assert_eq!(QueueName::ALL.len(), 13);
         let labels: BTreeSet<&str> = QueueName::ALL.iter().map(|q| q.as_str()).collect();
         assert_eq!(
             labels,
@@ -1415,6 +1419,7 @@ mod tests {
                 "pending_block",
                 "seen_column",
                 "seen_block",
+                "seen_sync",
                 "sampling",
             ])
         );

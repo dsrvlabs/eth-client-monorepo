@@ -394,14 +394,58 @@ impl<G: GossipsubControl> TopicRegistry<G> {
         desired: &BTreeSet<SubnetId>,
         params: TopicParams,
     ) -> Result<(), RegistryError> {
+        self.resync_subnet_family(
+            digest,
+            desired,
+            params,
+            TopicName::DataColumnSidecar,
+            |name| match name {
+                TopicName::DataColumnSidecar(id) => Some(id),
+                _ => None,
+            },
+        )
+    }
+
+    /// Resync `sync_committee_{id}` subscriptions for `digest` to `desired`.
+    ///
+    /// Same params-first ordering as [`Self::sync_column_subnets`] (CC-2D /
+    /// §6.6). Called only from [`crate::discovery::SubnetManager`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`RegistryError`] from params / subscribe / unsubscribe.
+    pub fn sync_sync_committee_subnets(
+        &mut self,
+        digest: ForkDigest,
+        desired: &BTreeSet<SubnetId>,
+        params: TopicParams,
+    ) -> Result<(), RegistryError> {
+        self.resync_subnet_family(
+            digest,
+            desired,
+            params,
+            TopicName::SyncCommittee,
+            |name| match name {
+                TopicName::SyncCommittee(id) => Some(id),
+                _ => None,
+            },
+        )
+    }
+
+    fn resync_subnet_family(
+        &mut self,
+        digest: ForkDigest,
+        desired: &BTreeSet<SubnetId>,
+        params: TopicParams,
+        make_name: impl Fn(SubnetId) -> TopicName,
+        extract: impl Fn(TopicName) -> Option<SubnetId>,
+    ) -> Result<(), RegistryError> {
         let current: BTreeSet<SubnetId> = self
             .subscribed
             .keys()
             .filter_map(|k| {
-                if k.digest == digest
-                    && let TopicName::DataColumnSidecar(id) = k.name
-                {
-                    return Some(id);
+                if k.digest == digest {
+                    return extract(k.name);
                 }
                 None
             })
@@ -451,21 +495,24 @@ impl<G: GossipsubControl> TopicRegistry<G> {
         // Params for every topic that remains live (weight first).
         for &subnet in desired {
             let key = TopicKey::new(digest, name_of(subnet));
+        for &subnet in desired {
+            let key = TopicKey::new(digest, make_name(subnet));
             if current.contains(&subnet) {
                 self.set_topic_params(&key, params.clone())?;
             }
-            // New topics get params inside `subscribe` (params-first).
         }
 
         for &subnet in desired {
             if !current.contains(&subnet) {
                 let key = TopicKey::new(digest, name_of(subnet));
+                let key = TopicKey::new(digest, make_name(subnet));
                 self.subscribe(key, params.clone())?;
             }
         }
         for &subnet in current {
             if !desired.contains(&subnet) {
                 let key = TopicKey::new(digest, name_of(subnet));
+                let key = TopicKey::new(digest, make_name(subnet));
                 self.unsubscribe(&key)?;
             }
         }

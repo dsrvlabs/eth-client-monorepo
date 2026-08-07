@@ -1,13 +1,14 @@
 //! Validation pool: topic dispatch, stub validators, report via swarm cmd.
 //!
 //! **CC-22/4**: every registered Fulu topic family has a non-default validator
-//! wired here. Operation / attestation / sync families are IGNORE stubs
-//! (CC-2B / CC-2C / CC-2D replace them).
+//! wired here. Operation / attestation families are IGNORE stubs (CC-2B /
+//! CC-2C replace them). **CC-2D** replaces the sync-committee IGNORE stubs.
 //!
 //! ## Ownership
 //!
 //! One [`ValidationPoolState`] owns a single [`ColumnValidatorState`] (seen +
-//! pending + inclusion cache). Block and column paths share it — no dual sync.
+//! pending + inclusion cache) plus [`SyncSeenSets`]. Block and column paths
+//! share the column state — no dual sync.
 //!
 //! ## Pending redrive
 //!
@@ -34,6 +35,11 @@ use super::column::{
     production_kzg_verify, validate_data_column_sidecar, ColumnOutcome, ColumnValidateInput,
     ColumnValidatorState, KzgVerify, NoopSamplingFeed, SamplingFeed,
 };
+use super::sync::{
+    validate_sync_committee_message, validate_sync_contribution_and_proof, NoopSyncSource,
+    SyncCommitteeSource, SyncContribValidateInput, SyncMessageValidateInput, SyncOutcome,
+    SyncSeenSets,
+};
 use crate::channels::{
     ChainInbound, ChainOutbound, GossipWork, PeerPenaltyCmd, SwarmCommand, VerdictResolution,
     GOSSIP_BOUND,
@@ -53,7 +59,9 @@ pub enum ValidatorKind {
     BeaconBlock,
     /// P2p-authoritative column sidecar.
     DataColumnSidecar,
-    /// IGNORE stub (CC-2B/C/D).
+    /// P2p-authoritative sync committee message / contribution (CC-2D).
+    SyncCommittee,
+    /// IGNORE stub (CC-2B/C).
     StubIgnore,
 }
 
@@ -63,10 +71,11 @@ pub fn validator_kind(name: TopicName) -> ValidatorKind {
     match name {
         TopicName::BeaconBlock => ValidatorKind::BeaconBlock,
         TopicName::DataColumnSidecar(_) => ValidatorKind::DataColumnSidecar,
+        TopicName::SyncCommitteeContributionAndProof | TopicName::SyncCommittee(_) => {
+            ValidatorKind::SyncCommittee
+        }
         TopicName::BeaconAggregateAndProof
         | TopicName::BeaconAttestation(_)
-        | TopicName::SyncCommitteeContributionAndProof
-        | TopicName::SyncCommittee(_)
         | TopicName::VoluntaryExit
         | TopicName::ProposerSlashing
         | TopicName::AttesterSlashing
@@ -84,6 +93,7 @@ pub fn all_topics_have_validators(counts: &crate::gossip::topics::SubnetCounts) 
                 validator_kind(n),
                 ValidatorKind::BeaconBlock
                     | ValidatorKind::DataColumnSidecar
+                    | ValidatorKind::SyncCommittee
                     | ValidatorKind::StubIgnore
             )
         })
@@ -150,6 +160,8 @@ pub struct ReportedEntry {
 pub struct ValidationPoolState {
     /// Column + block seen/pending/inclusion (one owner).
     pub column: ColumnValidatorState,
+    /// Sync-committee message / contribution seen sets (CC-2D).
+    pub sync: SyncSeenSets,
     /// Bounded map of ACCEPTed correlation ids → entry (historical / late path).
     pub reported: LruCache<Vec<u8>, ReportedEntry>,
     /// ACCEPT entries **pinned** until late import resolves (CC-27c H2).
@@ -166,6 +178,7 @@ impl ValidationPoolState {
         let cap = NonZeroUsize::new(REPORTED_ACCEPT_BOUND).unwrap_or(NonZeroUsize::MIN);
         Self {
             column: ColumnValidatorState::new(),
+            sync: SyncSeenSets::new(),
             reported: LruCache::new(cap),
             late_open: std::collections::HashMap::new(),
         }
@@ -197,9 +210,10 @@ impl ValidationPoolState {
         let (cs, bs) = self.column.seen.occupancy();
         // Seen-set entry counts — **not** `cc_p2p_cache_*` (those are backfill
         // bytes only, CC-26a / OQ-P2-4). Bounds are the compile-time constants
-        // `COLUMN_SEEN_BOUND` / `BLOCK_SEEN_BOUND` on the seen-set types.
+        // `COLUMN_SEEN_BOUND` / `BLOCK_SEEN_BOUND` / `SYNC_SEEN_BOUND`.
         metrics.set_queue_depth(QueueName::SeenColumn, cs as i64);
         metrics.set_queue_depth(QueueName::SeenBlock, bs as i64);
+        metrics.set_queue_depth(QueueName::SeenSync, self.sync.occupancy() as i64);
     }
 }
 
@@ -232,12 +246,15 @@ pub struct ValidationPool {
     pub kzg: Arc<dyn KzgVerify>,
     /// Sampling seam.
     pub sampling: Arc<dyn SamplingFeed>,
+    /// Sync-committee pubkey / membership source (CC-1F cache; Phase 2 default
+    /// is [`NoopSyncSource`] until the query client is wired).
+    pub sync_source: Arc<dyn SyncCommitteeSource>,
     /// Gossip channel bound.
     pub in_flight_cap: usize,
 }
 
 impl ValidationPool {
-    /// Production pool: real/fail-closed KZG, noop sampling.
+    /// Production pool: real/fail-closed KZG, noop sampling, noop sync source.
     #[must_use]
     pub fn new(
         config: Arc<ChainConfig>,
@@ -259,6 +276,7 @@ impl ValidationPool {
             metrics,
             kzg: production_kzg_verify(),
             sampling: Arc::new(NoopSamplingFeed),
+            sync_source: Arc::new(NoopSyncSource),
             in_flight_cap: GOSSIP_BOUND,
         }
     }
@@ -324,10 +342,73 @@ async fn validate_one(pool: &ValidationPool, work: &GossipWork) -> Verdict {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.column.seen.prune_at_finalization(finalized_slot);
+        guard.sync.prune_at_finalization(finalized_slot);
     }
 
     match validator_kind(name) {
         ValidatorKind::StubIgnore => Verdict::ignore(Reason::AlreadyKnown, vec![]),
+        ValidatorKind::SyncCommittee => {
+            let gvr = view.genesis_validators_root.clone();
+            let mut guard = pool
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let outcome = match name {
+                TopicName::SyncCommittee(subnet) => {
+                    let input = SyncMessageValidateInput {
+                        payload: &work.data,
+                        topic_subnet: subnet,
+                        current_slot,
+                        disparity_slots,
+                        config: &pool.config,
+                        slots_per_epoch,
+                        genesis_validators_root: gvr.as_slice(),
+                    };
+                    validate_sync_committee_message::<Mainnet>(
+                        &mut guard.sync,
+                        pool.sync_source.as_ref(),
+                        &input,
+                        None,
+                    )
+                }
+                TopicName::SyncCommitteeContributionAndProof => {
+                    let input = SyncContribValidateInput {
+                        payload: &work.data,
+                        current_slot,
+                        disparity_slots,
+                        config: &pool.config,
+                        slots_per_epoch,
+                        genesis_validators_root: gvr.as_slice(),
+                    };
+                    validate_sync_contribution_and_proof::<Mainnet>(
+                        &mut guard.sync,
+                        pool.sync_source.as_ref(),
+                        &input,
+                        None,
+                    )
+                }
+                _ => {
+                    return Verdict::internal(vec![]);
+                }
+            };
+            guard.export_occupancy(&pool.metrics);
+            match outcome {
+                SyncOutcome::Done(v) => v,
+                SyncOutcome::AcceptForward { verdict, object } => {
+                    // Phase 5/6 seam: validated sync messages travel up the
+                    // CC-27 stream; chain discards them (no pool). Fire-and-
+                    // forget so the gossip ACCEPT is not blocked on chain.
+                    let outbound = ChainOutbound {
+                        object,
+                        reply: None,
+                    };
+                    // Drop the state lock before await.
+                    drop(guard);
+                    let _ = pool.chain_out_tx.try_send(outbound);
+                    verdict
+                }
+            }
+        }
         ValidatorKind::DataColumnSidecar => {
             let TopicName::DataColumnSidecar(subnet) = name else {
                 return Verdict::internal(vec![]);
@@ -718,6 +799,14 @@ mod tests {
         assert_eq!(
             validator_kind(TopicName::VoluntaryExit),
             ValidatorKind::StubIgnore
+        );
+        assert_eq!(
+            validator_kind(TopicName::SyncCommittee(0)),
+            ValidatorKind::SyncCommittee
+        );
+        assert_eq!(
+            validator_kind(TopicName::SyncCommitteeContributionAndProof),
+            ValidatorKind::SyncCommittee
         );
     }
 

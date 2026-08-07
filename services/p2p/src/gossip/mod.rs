@@ -9,7 +9,8 @@
 //! | [`seen`] | CC-22d | bounded column/block seen sets |
 //! | [`pending`] | CC-22d | pending-sidecar (256) / pending-block (64) queues |
 //!
-//! Operation / attestation / sync validators are IGNORE stubs until CC-2B/C/D.
+//! Operation / attestation validators are IGNORE stubs until CC-2B/C.
+//! Sync-committee validators land in CC-2D ([`validate::sync`]).
 //!
 //! ## Spec delta 13 — `blob_sidecar_{subnet_id}`
 //!

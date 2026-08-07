@@ -310,6 +310,10 @@ impl FaultMode {
         match self {
             Self::None | Self::WithholdColumn { .. } => Some(payload.to_vec()),
             Self::Misbehave { kind } => Some(transform_column_payload(payload, *kind, 0)),
+    /// Returns `Ok(())` for all shipped modes (plain, withhold-column, misbehave).
+    pub fn ensure_implemented(&self) -> Result<()> {
+        match self {
+            Self::None | Self::WithholdColumn { .. } | Self::Misbehave { .. } => Ok(()),
         }
     }
 
@@ -400,10 +404,19 @@ impl FaultMode {
     /// - [`Self::Misbehave`]: mutates for invalid/malformed; identity for
     ///   custody-refuse / stall. Prefer [`Self::column_publish_payloads`] for
     ///   multi-publish spam.
+    /// Block/column payload transform for the publisher path.
+    ///
+    /// Blocks always pass through for [`Self::None`] and [`Self::WithholdColumn`]
+    /// (column **skip** is via [`Self::allows_publish_column`] /
+    /// [`Self::column_publish_payloads`], not here). Misbehave mutates when the
+    /// kind is a payload-level fault.
     #[must_use]
     pub fn relay(&self, payload: &[u8]) -> Option<Vec<u8>> {
         match self {
             Self::None | Self::WithholdColumn { .. } => Some(payload.to_vec()),
+            Self::Misbehave {
+                kind: MisbehaveKind::CustodyRefuse | MisbehaveKind::StallReqresp,
+            } => Some(payload.to_vec()),
             Self::Misbehave { kind } => Some(transform_column_payload(payload, *kind, 0)),
         }
     }

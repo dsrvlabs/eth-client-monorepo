@@ -5,6 +5,8 @@
 //!   predicates, discovery task, dial queue → peer manager
 //! - **CC-21d**: runtime `cgc` hook (`set_custody_group_count`) — five §6.4 effects
 //! - **CC-2C**: attestation-subnet backbone (`SubnetManager` single writer)
+//! - **CC-2D**: `syncnets` half of [`SubnetManager`] + Phase 6
+//!   `subscribe_sync_subnets` hook (empty-by-default)
 
 pub mod cgc_hook;
 pub mod dial_queue;
@@ -33,6 +35,8 @@ pub use predicate::{
 pub use subnet_manager::{
     attnets_bitvector, compute_subscribed_subnet, compute_subscribed_subnets, subscription_period,
     SubnetApplyOutcome, SubnetApplyTarget, SubnetEffectKind, SubnetManager, SubnetManagerError,
+    SubnetError, SubnetManager, SyncSubnetEffect, SyncSubnetOutcome, SyncSubnetTarget,
+    SYNC_SUBNET_COUNT,
 };
 pub use task::{
     DEFAULT_MIN_PEERS_PER_SUBNET, DiscoveredPeer, DiscoveryConfig, DiscoveryPeerView, DiscoveryTask,

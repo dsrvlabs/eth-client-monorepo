@@ -380,7 +380,7 @@ impl ExerciseCtx {
                     None,
                 );
             }
-            // IGNORE stubs today (CC-2B/C/D): still SSZ-decode the container so
+            // IGNORE stubs today (CC-2B/C): still SSZ-decode the container so
             // mutated-valid bytes reach deep decoders; panic-is-failure applies.
             TopicName::BeaconAggregateAndProof => {
                 let _ = SignedAggregateAndProof::<Mainnet>::from_ssz_bytes(payload);
@@ -388,11 +388,40 @@ impl ExerciseCtx {
             TopicName::BeaconAttestation(_) => {
                 let _ = Attestation::<Mainnet>::from_ssz_bytes(payload);
             }
+            // CC-2D: real validators — exercise the ordered path (cold source
+            // → IGNORE at signature; SSZ still reaches the decoder).
             TopicName::SyncCommitteeContributionAndProof => {
                 let _ = SignedContributionAndProof::<Mainnet>::from_ssz_bytes(payload);
+                let mut seen = cc_p2p::gossip::validate::SyncSeenSets::new();
+                let source = cc_p2p::gossip::validate::NoopSyncSource;
+                let input = cc_p2p::gossip::validate::SyncContribValidateInput {
+                    payload,
+                    current_slot: 1,
+                    disparity_slots: 2,
+                    config: &self.config,
+                    slots_per_epoch: 32,
+                    genesis_validators_root: &[0u8; 32],
+                };
+                let _ = cc_p2p::gossip::validate::validate_sync_contribution_and_proof::<Mainnet>(
+                    &mut seen, &source, &input, None,
+                );
             }
             TopicName::SyncCommittee(_) => {
                 let _ = SyncCommitteeMessage::from_ssz_bytes(payload);
+                let mut seen = cc_p2p::gossip::validate::SyncSeenSets::new();
+                let source = cc_p2p::gossip::validate::NoopSyncSource;
+                let input = cc_p2p::gossip::validate::SyncMessageValidateInput {
+                    payload,
+                    topic_subnet: 0,
+                    current_slot: 1,
+                    disparity_slots: 2,
+                    config: &self.config,
+                    slots_per_epoch: 32,
+                    genesis_validators_root: &[0u8; 32],
+                };
+                let _ = cc_p2p::gossip::validate::validate_sync_committee_message::<Mainnet>(
+                    &mut seen, &source, &input, None,
+                );
             }
             TopicName::VoluntaryExit => {
                 let _ = SignedVoluntaryExit::from_ssz_bytes(payload);

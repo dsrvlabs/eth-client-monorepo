@@ -17,6 +17,21 @@
 //! All five networking values come from [`cc_config::AttestationSubnetConfig`]
 //! (defaults in `crates/config`). This file never inlines `2`, `64`, `256`, or
 //! the prefix-bit / offset-modulus literals.
+//! Subnet manager — Architecture §6.6 / CC-2C + **CC-2D**.
+//!
+//! Single writer for the ENR / MetaData / gossip subscription triple.
+//!
+//! | Half | Issue | Phase-2 default |
+//! |------|-------|-----------------|
+//! | `attnets` | CC-2C | backbone of 2 (not owned here yet) |
+//! | `syncnets` | **CC-2D** | **empty — correct, not a bug** |
+//!
+//! ## CC-2D: `syncnets`
+//!
+//! `syncnets` is a `BitVector[4]`. With no attached validators the subscription
+//! set is empty; the Phase 6 hook [`SubnetManager::subscribe_sync_subnets`] is
+//! the only writer. It is exercised by synthetic injection in tests — there is
+//! **no Phase 2 production caller**.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -32,6 +47,13 @@ use crate::discovery::enr::{
     encode_attnets, node_id_as_u256, read_attnets, EnrApplyError, EnrFieldChange, EnrManager,
     ENR_KEY_ATTNETS,
 };
+use cc_types::{ForkDigest, Mainnet, Preset, SubnetId};
+use thiserror::Error;
+
+use crate::discovery::enr::{
+    encode_syncnets, read_syncnets, EnrApplyError, EnrFieldChange, EnrManager, ENR_KEY_SYNCNETS,
+};
+use crate::gossip::scoring::WEIGHT_SYNC_COMMITTEE;
 use crate::gossip::{
     GossipsubControl, RegistryError, TopicName, TopicParams, TopicRegistry,
 };
@@ -42,6 +64,14 @@ use crate::reqresp::LocalMetaData;
 /// Errors from [`SubnetManager::apply`].
 #[derive(Debug, Error)]
 pub enum SubnetManagerError {
+/// Sync-committee subnet count (`BitVector[4]` / `SYNC_COMMITTEE_SUBNET_COUNT`).
+pub const SYNC_SUBNET_COUNT: u8 = Mainnet::SYNC_COMMITTEE_SUBNET_COUNT as u8;
+
+// ── Errors ──────────────────────────────────────────────────────────────────
+
+/// Errors from subnet-manager mutations.
+#[derive(Debug, Error)]
+pub enum SubnetError {
     /// Topic registry refused params / subscribe / unsubscribe.
     #[error(transparent)]
     Registry(#[from] RegistryError),
@@ -85,6 +115,36 @@ pub struct SubnetApplyOutcome {
     pub epoch: Epoch,
     /// Subscription period index: `(epoch + node_offset) // epochs_per_subnet_subscription`.
     pub period: u64,
+    /// Requested sync subnet id is out of range.
+    #[error("sync subnet {got} >= SYNC_COMMITTEE_SUBNET_COUNT ({SYNC_SUBNET_COUNT})")]
+    SyncSubnetOutOfRange {
+        /// Requested subnet id.
+        got: u8,
+    },
+}
+
+// ── Effect trace (tests) ────────────────────────────────────────────────────
+
+/// One effect of [`SubnetManager::subscribe_sync_subnets`] for ordered asserts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncSubnetEffect {
+    /// `set_topic_params` for at least one sync-committee topic.
+    TopicParams,
+    /// At least one new `sync_committee_{id}` subscription.
+    Subscribe,
+    /// At least one `sync_committee_{id}` unsubscription.
+    Unsubscribe,
+    /// ENR `syncnets` applied (one seq bump).
+    EnrApply,
+    /// MetaData `syncnets` updated (seq_number bump when value changes).
+    MetaData,
+}
+
+/// Outcome of one [`SubnetManager::subscribe_sync_subnets`] call.
+#[derive(Debug, Clone)]
+pub struct SyncSubnetOutcome {
+    /// Resulting `syncnets` bitmask (low 4 bits).
+    pub syncnets: u8,
     /// ENR sequence before the apply.
     pub enr_seq_before: u64,
     /// ENR sequence after the apply.
@@ -255,6 +315,21 @@ pub struct SubnetManager {
 
 /// Mutable targets for one [`SubnetManager::apply`] call.
 pub struct SubnetApplyTarget<'a, G: GossipsubControl> {
+    pub effects: Vec<SyncSubnetEffect>,
+}
+
+impl SyncSubnetOutcome {
+    /// ENR seq increased by exactly one.
+    #[must_use]
+    pub fn enr_bumped_once(&self) -> bool {
+        self.enr_seq_after == self.enr_seq_before.saturating_add(1)
+    }
+}
+
+// ── Target handles ──────────────────────────────────────────────────────────
+
+/// Mutable targets for one sync-subnet subscription update.
+pub struct SyncSubnetTarget<'a, G: GossipsubControl> {
     /// Sole gossip subscription owner.
     pub registry: &'a mut TopicRegistry<G>,
     /// Local ENR writer (batched apply).
@@ -268,6 +343,13 @@ pub struct SubnetApplyTarget<'a, G: GossipsubControl> {
 impl<G: GossipsubControl> fmt::Debug for SubnetApplyTarget<'_, G> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SubnetApplyTarget")
+    /// Digest whose sync topics are live.
+    pub digest: ForkDigest,
+}
+
+impl<G: GossipsubControl> fmt::Debug for SyncSubnetTarget<'_, G> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SyncSubnetTarget")
             .field("digest", &self.digest)
             .finish_non_exhaustive()
     }
@@ -415,6 +497,147 @@ impl SubnetManager {
             subnets,
             epoch,
             period,
+// ── Manager ─────────────────────────────────────────────────────────────────
+
+/// Authoritative owner of subnet bitvectors and the sole mutation path.
+///
+/// **CC-2D**: owns `syncnets`. CC-2C will own `attnets` rotation in this same
+/// type; until then attnets remains untouched here.
+#[derive(Debug, Clone)]
+pub struct SubnetManager {
+    /// Authoritative `syncnets` (`BitVector[4]`, low nibble).
+    syncnets: u8,
+}
+
+impl Default for SubnetManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SubnetManager {
+    /// Construct with **empty** syncnets.
+    ///
+    /// # Empty-by-default is correct (CC-2D/2)
+    ///
+    /// With no attached validators the sync-committee subscription set is
+    /// empty. That is **intentional**, not a bug: Phase 6's attached-validator
+    /// tracker is the production caller of [`Self::subscribe_sync_subnets`].
+    /// Do not "fix" an all-zero bitvector.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { syncnets: 0 }
+    }
+
+    /// Current authoritative `syncnets` bitmask (low 4 bits).
+    #[must_use]
+    pub const fn syncnets(&self) -> u8 {
+        self.syncnets
+    }
+
+    /// Whether any sync subnet is subscribed.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.syncnets == 0
+    }
+
+    /// Subscription set as subnet ids (`0..4` with bit set).
+    #[must_use]
+    pub fn sync_subscription_set(&self) -> BTreeSet<SubnetId> {
+        let mut out = BTreeSet::new();
+        for s in 0..SYNC_SUBNET_COUNT {
+            if self.syncnets & (1u8 << s) != 0 {
+                out.insert(u64::from(s));
+            }
+        }
+        out
+    }
+
+    /// Phase 6 hook: set the desired sync-committee subscription set.
+    ///
+    /// **No Phase 2 production caller** — definition and tests only
+    /// (`grep subscribe_sync_subnets` must not find a live service path).
+    ///
+    /// Effects (in order):
+    /// 1. `set_topic_params` then subscribe newly desired `sync_committee_{id}`
+    ///    topics (and unsubscribe dropped) via the registry;
+    /// 2. update ENR `syncnets` through [`EnrManager::apply`] (**exactly one**
+    ///    seq bump when the value changes, or when re-applying a non-empty
+    ///    change set — we always apply when bits differ; when equal, ENR is
+    ///    left alone);
+    /// 3. update `MetaData v3.syncnets` (seq_number bump on change).
+    ///
+    /// # Errors
+    ///
+    /// - [`SubnetError::SyncSubnetOutOfRange`] for id ≥ 4
+    /// - registry / ENR failures from the underlying writers
+    pub fn subscribe_sync_subnets<G: GossipsubControl>(
+        &mut self,
+        set: impl IntoIterator<Item = u8>,
+        target: SyncSubnetTarget<'_, G>,
+    ) -> Result<SyncSubnetOutcome, SubnetError> {
+        let mut bits: u8 = 0;
+        for s in set {
+            if s >= SYNC_SUBNET_COUNT {
+                return Err(SubnetError::SyncSubnetOutOfRange { got: s });
+            }
+            bits |= 1u8 << s;
+        }
+        bits &= 0x0f;
+
+        let SyncSubnetTarget {
+            registry,
+            enr,
+            metadata,
+            digest,
+        } = target;
+
+        let mut effects = Vec::with_capacity(5);
+        let desired = bitset_to_subnets(bits);
+        let before = bitset_to_subnets(self.syncnets);
+        let added: Vec<_> = desired.difference(&before).copied().collect();
+        let removed: Vec<_> = before.difference(&desired).copied().collect();
+
+        // ── 1. registry: params first, then subscribe / unsubscribe ────────
+        let params = TopicParams {
+            topic_weight: WEIGHT_SYNC_COMMITTEE,
+        };
+        registry.sync_sync_committee_subnets(digest, &desired, params)?;
+        if !desired.is_empty() || !before.is_empty() {
+            effects.push(SyncSubnetEffect::TopicParams);
+        }
+        if !added.is_empty() {
+            effects.push(SyncSubnetEffect::Subscribe);
+        }
+        if !removed.is_empty() {
+            effects.push(SyncSubnetEffect::Unsubscribe);
+        }
+
+        // ── 2. ENR syncnets (coalesced single bump when we apply) ───────────
+        let enr_seq_before = enr.local_enr().seq();
+        // Always re-publish when the authoritative bits change so the ENR
+        // matches the subscription set. No-op when already equal.
+        let enr_seq_after = if bits != self.syncnets
+            || read_syncnets(&enr.local_enr()) != Some(bits)
+        {
+            enr.apply([EnrFieldChange::new(
+                ENR_KEY_SYNCNETS,
+                encode_syncnets(bits),
+            )])?;
+            effects.push(SyncSubnetEffect::EnrApply);
+            enr.local_enr().seq()
+        } else {
+            enr_seq_before
+        };
+
+        // ── 3. MetaData v3 ─────────────────────────────────────────────────
+        let meta_seq = metadata.set_syncnets(bits);
+        effects.push(SyncSubnetEffect::MetaData);
+
+        self.syncnets = bits;
+
+        Ok(SyncSubnetOutcome {
+            syncnets: bits,
             enr_seq_before,
             enr_seq_after,
             meta_seq,
@@ -428,6 +651,13 @@ impl SubnetManager {
     /// Returns `(enr_attnets, meta_attnets, gossip_attnets_bitvector)`.
     #[must_use]
     pub fn consistency_triple<G: GossipsubControl>(
+        })
+    }
+
+    /// Three-way consistency: ENR `syncnets` == MetaData `syncnets` == live
+    /// gossip subscriptions for `digest`, and all equal this manager's set.
+    #[must_use]
+    pub fn syncnets_three_way_consistent<G: GossipsubControl>(
         &self,
         registry: &TopicRegistry<G>,
         enr: &EnrManager,
@@ -451,6 +681,42 @@ impl SubnetManager {
         let gossip_bits = attnets_bitvector(&gossip_subnets);
         (enr_bits, meta_bits, gossip_bits)
     }
+}
+
+    ) -> bool {
+        let want = self.syncnets;
+        let enr_bits = read_syncnets(&enr.local_enr()).unwrap_or(0xFF);
+        let md_bits = metadata.load().syncnets & 0x0f;
+        if enr_bits != want || md_bits != want {
+            return false;
+        }
+        let live = live_sync_subnets(registry, digest);
+        live == self.sync_subscription_set()
+    }
+}
+
+fn bitset_to_subnets(bits: u8) -> BTreeSet<SubnetId> {
+    let mut out = BTreeSet::new();
+    for s in 0..SYNC_SUBNET_COUNT {
+        if bits & (1u8 << s) != 0 {
+            out.insert(u64::from(s));
+        }
+    }
+    out
+}
+
+fn live_sync_subnets<G: GossipsubControl>(
+    registry: &TopicRegistry<G>,
+    digest: ForkDigest,
+) -> BTreeSet<SubnetId> {
+    registry
+        .subscribed_keys()
+        .iter()
+        .filter_map(|k| match k.name {
+            TopicName::SyncCommittee(id) if k.digest == digest => Some(id),
+            _ => None,
+        })
+        .collect()
 }
 
 // ── tests ───────────────────────────────────────────────────────────────────
@@ -487,6 +753,34 @@ mod tests {
         let cfg = ChainConfig {
             preset_base: PresetName::Mainnet,
             config_name: "synthetic-attnets".into(),
+    use crate::discovery::enr::{phase2_default_field_changes, EnrSeqStrategy};
+    use crate::fork_digest::ForkContext;
+    use std::collections::HashSet;
+
+    use crate::gossip::{
+        format_topic_string, GossipCall, RecordingGossipsub, SubnetCounts, TopicRegistry,
+    };
+    use crate::reqresp::LocalMetaData;
+    use cc_types::{
+        BlobParameters, BlobSchedule, ChainConfig, Epoch, ForkVersion, PresetName, Root,
+        CUSTODY_REQUIREMENT,
+    };
+
+    fn synthetic_ctx() -> ForkContext {
+        let schedule = BlobSchedule::try_from_entries(vec![
+            BlobParameters {
+                epoch: Epoch::new(0),
+                max_blobs_per_block: 15,
+            },
+            BlobParameters {
+                epoch: Epoch::new(10_000),
+                max_blobs_per_block: 21,
+            },
+        ])
+        .expect("schedule");
+        let cfg = ChainConfig {
+            preset_base: PresetName::Mainnet,
+            config_name: "synthetic-syncnets".into(),
             genesis_fork_version: ForkVersion::from_array([0, 0, 0, 1]),
             altair_fork_version: ForkVersion::from_array([1, 0, 0, 1]),
             altair_fork_epoch: Epoch::new(0),
@@ -506,6 +800,8 @@ mod tests {
             deposit_contract_address: Default::default(),
         };
         ForkContext::new(cfg, Root::from_array([0xaa; 32]), Epoch::new(0))
+        let gvr = Root::from_array([0xcc; 32]);
+        ForkContext::new(cfg, gvr, Epoch::new(50))
     }
 
     struct Fixture {
@@ -535,6 +831,27 @@ mod tests {
             let metadata = LocalMetaData::default();
             Self {
                 mgr,
+        fn new() -> Self {
+            let ctx = synthetic_ctx();
+            let digest = ctx.current_digest();
+            let counts = SubnetCounts {
+                attestation: 0,
+                sync_committee: Mainnet::SYNC_COMMITTEE_SUBNET_COUNT,
+                data_column_sidecar: 0,
+            };
+            let mut registry = TopicRegistry::new(RecordingGossipsub::default(), &ctx, counts);
+            // Validators required before subscribe (CC-22/4).
+            for id in 0..Mainnet::SYNC_COMMITTEE_SUBNET_COUNT {
+                registry.register_validator(TopicName::SyncCommittee(id));
+            }
+
+            let enr = EnrManager::new_ephemeral(EnrSeqStrategy::EnrInsert).expect("enr");
+            enr.apply(phase2_default_field_changes(CUSTODY_REQUIREMENT))
+                .expect("phase2 defaults");
+            let metadata = LocalMetaData::new(CUSTODY_REQUIREMENT);
+
+            Self {
+                mgr: SubnetManager::new(),
                 registry,
                 enr,
                 metadata,
@@ -546,6 +863,11 @@ mod tests {
             self.mgr
                 .apply(
                     SubnetApplyTarget {
+        fn subscribe(&mut self, set: impl IntoIterator<Item = u8>) -> SyncSubnetOutcome {
+            self.mgr
+                .subscribe_sync_subnets(
+                    set,
+                    SyncSubnetTarget {
                         registry: &mut self.registry,
                         enr: &self.enr,
                         metadata: &self.metadata,
@@ -806,5 +1128,178 @@ mod tests {
         s.insert(3);
         s.insert(63);
         assert_eq!(attnets_bitvector(&s), (1u64 << 0) | (1u64 << 3) | (1u64 << 63));
+                )
+                .expect("subscribe_sync_subnets")
+        }
+
+        fn live_sync(&self) -> BTreeSet<u64> {
+            live_sync_subnets(&self.registry, self.digest)
+        }
+
+        fn assert_three_way(&self) {
+            assert!(
+                self.mgr.syncnets_three_way_consistent(
+                    &self.registry,
+                    &self.enr,
+                    &self.metadata,
+                    self.digest,
+                ),
+                "three-way drift: mgr={:#x} enr={:?} md={:#x} live={:?}",
+                self.mgr.syncnets(),
+                read_syncnets(&self.enr.local_enr()),
+                self.metadata.load().syncnets,
+                self.live_sync()
+            );
+        }
+    }
+
+    /// CC-2D/2: empty-by-default is correct, not a bug.
+    #[test]
+    fn empty_by_default_is_correct_not_a_bug() {
+        // With no attached validators the subscription set is empty, the ENR
+        // syncnets is all-zero, and MetaData v3.syncnets is all-zero.
+        //
+        // This is **correct rather than a bug** (CC-2D/2) — Phase 6 attaches
+        // validators and calls subscribe_sync_subnets. Do not "fix" zeros.
+        let fx = Fixture::new();
+        assert!(fx.mgr.is_empty(), "subscription set must start empty");
+        assert_eq!(fx.mgr.syncnets(), 0);
+        assert_eq!(
+            read_syncnets(&fx.enr.local_enr()),
+            Some(0),
+            "ENR syncnets all-zero by default"
+        );
+        assert_eq!(
+            fx.metadata.load().syncnets, 0,
+            "MetaData v3.syncnets all-zero by default"
+        );
+        assert!(fx.live_sync().is_empty());
+        fx.assert_three_way();
+        // BitVector[4] width invariant.
+        assert_eq!(crate::discovery::enr::SYNCNETS_BIT_LEN, 4);
+        assert_eq!(SYNC_SUBNET_COUNT, 4);
+    }
+
+    /// CC-2D/1 + CC-2D/3: synthetic injection asserts all four effects.
+    #[test]
+    fn subscribe_sync_subnets_synthetic_injection_four_effects() {
+        let mut fx = Fixture::new();
+        let enr_seq0 = fx.enr.local_enr().seq();
+        let meta_seq0 = fx.metadata.seq_number();
+
+        // Clear any residual call log from construction.
+        fx.registry.gossip_mut().calls.clear();
+
+        let out = fx.subscribe([0u8, 2]);
+
+        // 1. subnets subscribed (params first).
+        assert_eq!(fx.live_sync(), BTreeSet::from([0, 2]));
+        assert_eq!(fx.mgr.syncnets(), 0b0101);
+        assert_params_before_subscribe(&fx.registry.gossip().calls);
+
+        // 2. ENR bitvector updates; seq + exactly one.
+        assert_eq!(read_syncnets(&fx.enr.local_enr()), Some(0b0101));
+        assert!(out.enr_bumped_once(), "enr {}→{}", out.enr_seq_before, out.enr_seq_after);
+        assert_eq!(out.enr_seq_after, enr_seq0 + 1);
+
+        // 3. MetaData v3.syncnets + seq_number bump.
+        let md = fx.metadata.load();
+        assert_eq!(md.syncnets, 0b0101);
+        assert_eq!(md.seq_number, meta_seq0 + 1);
+        assert_eq!(out.meta_seq, meta_seq0 + 1);
+
+        // 4. three-way consistency after synthetic subscription (CC-2D/1).
+        fx.assert_three_way();
+
+        assert!(out.effects.contains(&SyncSubnetEffect::TopicParams));
+        assert!(out.effects.contains(&SyncSubnetEffect::Subscribe));
+        assert!(out.effects.contains(&SyncSubnetEffect::EnrApply));
+        assert_eq!(out.effects.last(), Some(&SyncSubnetEffect::MetaData));
+        // Advertise after subscribe.
+        let sub = out
+            .effects
+            .iter()
+            .position(|e| *e == SyncSubnetEffect::Subscribe)
+            .unwrap();
+        let enr = out
+            .effects
+            .iter()
+            .position(|e| *e == SyncSubnetEffect::EnrApply)
+            .unwrap();
+        assert!(sub < enr, "subscribe before ENR advertise: {:?}", out.effects);
+    }
+
+    #[test]
+    fn subscribe_then_clear_unsubscribes() {
+        let mut fx = Fixture::new();
+        let _ = fx.subscribe([1u8, 3]);
+        fx.assert_three_way();
+        fx.registry.gossip_mut().calls.clear();
+
+        let out = fx.subscribe([]); // empty set → clear
+        assert!(fx.mgr.is_empty());
+        assert!(fx.live_sync().is_empty());
+        assert_eq!(read_syncnets(&fx.enr.local_enr()), Some(0));
+        assert_eq!(fx.metadata.load().syncnets, 0);
+        assert!(out.effects.contains(&SyncSubnetEffect::Unsubscribe));
+        fx.assert_three_way();
+    }
+
+    #[test]
+    fn rejects_out_of_range_subnet() {
+        let mut fx = Fixture::new();
+        let err = fx
+            .mgr
+            .subscribe_sync_subnets(
+                [4u8],
+                SyncSubnetTarget {
+                    registry: &mut fx.registry,
+                    enr: &fx.enr,
+                    metadata: &fx.metadata,
+                    digest: fx.digest,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, SubnetError::SyncSubnetOutOfRange { got: 4 }));
+    }
+
+    #[test]
+    fn topic_string_shape_stable() {
+        let ctx = synthetic_ctx();
+        let d = ctx.current_digest();
+        let s = format_topic_string(&d, TopicName::SyncCommittee(2));
+        assert!(s.contains("sync_committee_2"));
+    }
+
+    #[test]
+    fn idempotent_same_set_no_enr_bump() {
+        let mut fx = Fixture::new();
+        let _ = fx.subscribe([0u8]);
+        let seq = fx.enr.local_enr().seq();
+        let meta = fx.metadata.seq_number();
+        fx.registry.gossip_mut().calls.clear();
+        let out = fx.subscribe([0u8]);
+        assert_eq!(fx.enr.local_enr().seq(), seq, "no ENR bump on no-op");
+        assert_eq!(fx.metadata.seq_number(), meta, "no meta bump on no-op");
+        assert!(!out.effects.contains(&SyncSubnetEffect::EnrApply));
+        fx.assert_three_way();
+    }
+
+    fn assert_params_before_subscribe(calls: &[GossipCall]) {
+        let mut params_seen: HashSet<String> = HashSet::new();
+        for c in calls {
+            match c {
+                GossipCall::SetTopicParams { topic, .. } => {
+                    params_seen.insert(topic.clone());
+                }
+                GossipCall::Subscribe { topic } => {
+                    assert!(
+                        params_seen.contains(topic),
+                        "subscribe without prior set_topic_params for {topic}: {calls:?}"
+                    );
+                }
+                GossipCall::Unsubscribe { .. } => {}
+            }
+        }
     }
 }

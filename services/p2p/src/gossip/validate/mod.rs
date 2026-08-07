@@ -6,6 +6,7 @@
 //! | `crate::verdict` | CC-22d | one `Verdict` + `to_message_acceptance` |
 //! | [`block`] | CC-22d | chain-authoritative `beacon_block` local stage |
 //! | [`column`] | CC-22d | p2p-authoritative `data_column_sidecar` §5.5 list |
+//! | [`sync`] | CC-2D | p2p-authoritative sync-committee family |
 //! | [`pipeline`] | CC-22d | validation pool, stubs, topic dispatch |
 //!
 //! Four-layer bound stack (Architecture §5.2):
@@ -23,6 +24,7 @@ pub mod block;
 pub mod column;
 pub mod kzg_verify;
 pub mod pipeline;
+pub mod sync;
 
 pub use block::{
     note_accepted_block, validate_beacon_block_local, BlockForward, BlockOutcome,
@@ -39,6 +41,13 @@ pub use pipeline::{
     all_topics_have_validators, apply_late_chain_verdict, parse_topic_name, run_chain_in_late_verdicts,
     run_validation_pool, validator_kind, ReportedEntry, ValidationPool, ValidationPoolState,
     ValidatorKind, IN_FLIGHT_VALIDATION_CAP, REPORTED_ACCEPT_BOUND,
+};
+pub use sync::{
+    is_sync_committee_aggregator, validate_sync_committee_message,
+    validate_sync_contribution_and_proof, NoopSyncSource, SyncCommitteeSource, SyncContribSeenKey,
+    SyncContribValidateInput, SyncMessageStep, SyncMessageStepCounters, SyncMessageValidateInput,
+    SyncOutcome, SyncSeenKey, SyncSeenSets, SYNC_CONTRIB_SEEN_BOUND, SYNC_SEEN_BOUND,
+    TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE,
 };
 
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -10,6 +10,8 @@
 //! - Live sessions re-read `core` via shared `Arc<RwLock<…>>` so `install_core`
 //!   is visible without reconnect.
 //! - `GossipObject` of kind `BLOCK` → `ImportBlock` on the core; reply `Verdict`.
+//! - Non-block kinds (attestation / sync / operations) are **discarded** with a
+//!   counter (CC-2C/2D/2B Phase-5 seam — no pool in Phase 2).
 //! - `PublishRequest` outward path: topic validation + enqueue onto live sessions
 //!   (§10.5). Unknown topic → structured `INVALID_ARGUMENT` / `UNKNOWN_TOPIC`.
 //! - `ColumnSidecar` has **no producer** (ADR P2-11); inbound is IGNORE.
@@ -102,6 +104,13 @@ pub struct P2pStreamDeps {
     pub publish_tx: broadcast::Sender<PublishRequest>,
     /// Live session counter for the concurrent-session bound.
     session_count: Arc<AtomicU64>,
+    /// Non-block gossip objects discarded (CC-2B/C/D — no pool in Phase 2).
+    ///
+    /// Proves validated sync / attestation / operation messages **arrive** on
+    /// the stream even though chain retains nothing.
+    pub gossip_discarded: Arc<AtomicU64>,
+    /// Sync-committee family discards specifically (CC-2D counter).
+    pub sync_discarded: Arc<AtomicU64>,
 }
 
 impl P2pStreamDeps {
@@ -123,7 +132,21 @@ impl P2pStreamDeps {
             ticks,
             publish_tx,
             session_count: Arc::new(AtomicU64::new(0)),
+            gossip_discarded: Arc::new(AtomicU64::new(0)),
+            sync_discarded: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Total non-block gossip objects discarded (tests / CC-2D seam).
+    #[must_use]
+    pub fn gossip_discarded_count(&self) -> u64 {
+        self.gossip_discarded.load(Ordering::Relaxed)
+    }
+
+    /// Sync-committee family discards (tests / CC-2D).
+    #[must_use]
+    pub fn sync_discarded_count(&self) -> u64 {
+        self.sync_discarded.load(Ordering::Relaxed)
     }
 
     /// Notify all sessions of a view tick (tests + internal drivers).
@@ -601,8 +624,10 @@ where
     let kind = ObjectKind::try_from(obj.kind).unwrap_or(ObjectKind::Unspecified);
 
     // Only BLOCK is chain-authoritative in Phase 2 (ADR P2-04). Other kinds
-    // should not arrive here; IGNORE if they do.
+    // travel up the stream so Phase 5/6 can later attach pools; until then
+    // **discard** with a counter and reply IGNORE. No pool state is retained.
     if kind != ObjectKind::Block {
+        note_non_block_discard(deps, kind);
         return send_verdict(
             out_tx,
             next_seq,
@@ -828,6 +853,17 @@ fn map_import_verdict(correlation_id: Vec<u8>, verdict: i32, detail: &str) -> Ve
     }
 }
 
+/// Count a non-block gossip object as discarded (CC-2B/C/D Phase-5 seam).
+fn note_non_block_discard(deps: &P2pStreamDeps, kind: ObjectKind) {
+    deps.gossip_discarded.fetch_add(1, Ordering::Relaxed);
+    if matches!(
+        kind,
+        ObjectKind::SyncCommittee | ObjectKind::SyncContribution
+    ) {
+        deps.sync_discarded.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -838,6 +874,37 @@ mod tests {
 
     use crate::epoch_context::EpochContext;
     use crate::head::HeadSnapshot;
+
+    #[test]
+    fn sync_discard_counter_proves_arrival_no_pool() {
+        // CC-2D: validated sync messages travel up the stream; chain discards
+        // them with a counter. No pool state exists.
+        // Construct deps without `new()` so we do not spawn wall-clock drivers
+        // (those require a tokio runtime).
+        let (ticks, _) = broadcast::channel(4);
+        let (publish_tx, _) = broadcast::channel(4);
+        let deps = P2pStreamDeps {
+            head: HeadSnapshotStore::default(),
+            epoch: EpochContextStore::default(),
+            core: Arc::new(RwLock::new(None)),
+            ticks,
+            publish_tx,
+            session_count: Arc::new(AtomicU64::new(0)),
+            gossip_discarded: Arc::new(AtomicU64::new(0)),
+            sync_discarded: Arc::new(AtomicU64::new(0)),
+        };
+        assert_eq!(deps.sync_discarded_count(), 0);
+        assert_eq!(deps.gossip_discarded_count(), 0);
+
+        note_non_block_discard(&deps, ObjectKind::SyncCommittee);
+        note_non_block_discard(&deps, ObjectKind::SyncContribution);
+        note_non_block_discard(&deps, ObjectKind::Attestation);
+
+        assert_eq!(deps.sync_discarded_count(), 2);
+        assert_eq!(deps.gossip_discarded_count(), 3);
+        // Counter is the only retained state — deps hold no pool/queue for
+        // these kinds.
+    }
 
     #[test]
     fn validate_publish_topic_accepts_known_families() {

@@ -409,6 +409,7 @@ pub fn stall_first_byte_delay() -> std::time::Duration {
 ///
 /// Production callers pass [`ByRootFaultPolicy::Honest`].
 /// / `stall-reqresp` on this same branch via `policy`.
+/// / `stall-reqresp` via [`ByRootFaultPolicy`].
 #[inline]
 #[must_use]
 pub fn decide_by_root_column_serve(
@@ -443,6 +444,18 @@ pub fn decide_by_root_column_serve(
         ByRootFaultPolicy::Honest | ByRootFaultPolicy::StallReqresp => {
             ByRootServeDecision::ResourceUnavailable
         }
+    if !held {
+        return ByRootServeDecision::ResourceUnavailable;
+    }
+    // CC-2Jb withhold-column: held but not yet released → refuse.
+    if !crate::fault_mode::active_allows_by_root_serve(column_index) {
+        return ByRootServeDecision::ResourceUnavailable;
+    }
+    // CC-2Jc policy branch.
+    match policy {
+        ByRootFaultPolicy::CustodyRefuse => ByRootServeDecision::ResourceUnavailable,
+        ByRootFaultPolicy::StallReqresp => ByRootServeDecision::Stall,
+        ByRootFaultPolicy::Honest => ByRootServeDecision::Serve,
     }
 }
 
