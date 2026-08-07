@@ -42,6 +42,7 @@ use crate::reqresp::handshake::{
     encode_goodbye_ssz, handle_inbound_goodbye, HandshakeBook, HandshakeDeps, OutboundAction,
 };
 use crate::reqresp::blocks::{plan_block_response, BlockServeCtx};
+use crate::reqresp::columns::{plan_column_response, ColumnServeCtx};
 use crate::reqresp::limits::{rate_limit_kind, ChunkBudgetResult, InboundRateLimiter, RateLimitKind};
 use crate::reqresp::metadata::{encode_metadata_response, LocalMetaData};
 use crate::reqresp::ping::{decode_ping_ssz, encode_ping_response, Ping};
@@ -706,7 +707,30 @@ fn handle_inbound_request(
         return;
     }
 
-    // Fail-closed stub until CC-23d (columns): ResourceUnavailable (code 3).
+    // CC-23d: DataColumnSidecars ByRange / ByRoot from the same backfill cache.
+    if let Some(proto) = protocol.filter(|p| p.is_column_protocol()) {
+        let framed = handle_column_protocol(task, peer, proto, &request.ssz);
+        let (body, label, rate_limited) = framed;
+        if rate_limited {
+            emit_reqresp_penalty(task, peer, PeerPenaltyReason::RateLimit);
+        }
+        let ok = task
+            .swarm
+            .behaviour_mut()
+            .send_reqresp_response(channel, ReqRespResponse::from_framed(body))
+            .is_ok();
+        task.metrics.inc_reqresp_inbound(
+            proto_label,
+            if ok {
+                label
+            } else {
+                "channel_closed"
+            },
+        );
+        return;
+    }
+
+    // Fail-closed for any unknown protocol id: ResourceUnavailable (code 3).
     // Never drop the ResponseChannel (that looks like packet loss → retries).
     let framed = encode_resource_unavailable(protocol.unwrap_or(Protocol::StatusV2));
     let ok = task
@@ -803,11 +827,100 @@ fn handle_block_protocol(
         }
     };
 
-    // Phase 2: rate-limit truncation (needs inbound_limiter only).
+    apply_chunk_budget_phase(task, peer, protocol, RateLimitKind::Blocks, planned)
+}
+
+/// Serve DataColumnSidecars ByRange / ByRoot (CC-23d).
+///
+/// Shares the block-serve cache (`BlockServeState`) — sole column source.
+fn handle_column_protocol(
+    task: &mut SwarmTask,
+    peer: PeerId,
+    protocol: Protocol,
+    ssz: &[u8],
+) -> (Vec<u8>, &'static str, bool) {
+    if task.block_serve.is_none() || task.handshake.is_none() {
+        return (
+            encode_resource_unavailable(protocol),
+            "resource_unavailable",
+            false,
+        );
+    }
+
+    let Some(state) = task.block_serve.as_ref() else {
+        return (
+            encode_resource_unavailable(protocol),
+            "resource_unavailable",
+            false,
+        );
+    };
+    let cache_arc = std::sync::Arc::clone(&state.cache);
+    let slots_per_epoch = state.slots_per_epoch;
+    let fulu_fork_epoch = state.fulu_fork_epoch;
+
+    let planned = {
+        let Ok(cache) = cache_arc.lock() else {
+            return (
+                encode_error_response(
+                    &ResponseChunk::Error {
+                        code: ResponseCode::ServerError.as_u8(),
+                        message: b"cache lock poisoned".to_vec(),
+                    },
+                    protocol,
+                ),
+                "failure",
+                false,
+            );
+        };
+        let Some(hs) = task.handshake.as_mut() else {
+            return (
+                encode_resource_unavailable(protocol),
+                "resource_unavailable",
+                false,
+            );
+        };
+        let current_epoch = hs.fork_ctx.current_epoch();
+        let mut ctx = ColumnServeCtx {
+            cache: &*cache,
+            fork_ctx: &mut hs.fork_ctx,
+            slots_per_epoch,
+            current_epoch,
+            fulu_fork_epoch,
+        };
+        plan_column_response(protocol, ssz, &mut ctx)
+    };
+
+    let planned = match planned {
+        Ok(p) => p,
+        Err(e) => {
+            let label = match e.response_code() {
+                ResponseCode::InvalidRequest => ServeResultLabel::InvalidRequest,
+                ResponseCode::ResourceUnavailable => ServeResultLabel::ResourceUnavailable,
+                _ => ServeResultLabel::Failure,
+            };
+            return (
+                encode_error_response(&e.to_chunk(), protocol),
+                label.as_str(),
+                false,
+            );
+        }
+    };
+
+    apply_chunk_budget_phase(task, peer, protocol, RateLimitKind::Columns, planned)
+}
+
+/// Shared rate-limit truncation + framing for block and column serve paths.
+fn apply_chunk_budget_phase(
+    task: &mut SwarmTask,
+    peer: PeerId,
+    protocol: Protocol,
+    kind: RateLimitKind,
+    planned: crate::reqresp::blocks::PlannedBlocks,
+) -> (Vec<u8>, &'static str, bool) {
     let now = Instant::now();
     match task
         .inbound_limiter
-        .apply_chunk_budget(peer, RateLimitKind::Blocks, planned.chunks, now)
+        .apply_chunk_budget(peer, kind, planned.chunks, now)
     {
         ChunkBudgetResult::Serve { chunks, limited } => {
             let was_limited = limited.is_some();

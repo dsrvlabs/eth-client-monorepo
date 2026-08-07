@@ -351,6 +351,60 @@ impl<P: Preset> BackfillCache<P> {
         Some((slot, block.as_ssz_bytes()))
     }
 
+    /// Look up a sampled column by `(slot, root, column_index)`.
+    ///
+    /// Used by `data_column_sidecars_by_range` serve (CC-23d).
+    #[must_use]
+    pub fn column_at(
+        &self,
+        slot: Slot,
+        root: &Root,
+        column_index: u64,
+    ) -> Option<(Arc<DataColumnSidecar<P>>, usize)> {
+        let pos = self.sampled_pos(column_index)?;
+        self.columns
+            .get(&column_key(slot, root))
+            .and_then(|arr| arr[pos].as_ref())
+            .map(|(c, n)| (Arc::clone(c), *n))
+    }
+
+    /// Look up a sampled column by block root + index (linear root scan).
+    ///
+    /// Used by `data_column_sidecars_by_root` serve (CC-23d).
+    #[must_use]
+    pub fn column_by_root(
+        &self,
+        root: &Root,
+        column_index: u64,
+    ) -> Option<(Slot, Arc<DataColumnSidecar<P>>, usize)> {
+        let (slot, _, _) = self.block_by_root(root)?;
+        let (col, bytes) = self.column_at(slot, root, column_index)?;
+        Some((slot, col, bytes))
+    }
+
+    /// SSZ-encode the column at `(slot, root, index)` if present.
+    #[must_use]
+    pub fn column_ssz_at(
+        &self,
+        slot: Slot,
+        root: &Root,
+        column_index: u64,
+    ) -> Option<Vec<u8>> {
+        let (col, _) = self.column_at(slot, root, column_index)?;
+        Some(col.as_ssz_bytes())
+    }
+
+    /// SSZ-encode the column identified by `root` + `column_index` if present.
+    #[must_use]
+    pub fn column_ssz_by_root(
+        &self,
+        root: &Root,
+        column_index: u64,
+    ) -> Option<(Slot, Vec<u8>)> {
+        let (slot, col, _) = self.column_by_root(root, column_index)?;
+        Some((slot, col.as_ssz_bytes()))
+    }
+
     /// Insert a block; accounted size is the SSZ encoding length of `block`.
     pub fn insert_block(
         &mut self,

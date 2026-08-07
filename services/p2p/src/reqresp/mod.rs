@@ -1,4 +1,4 @@
-//! Req/resp — Architecture §7.1–§7.6 / CC-23a + CC-23b + CC-23c.
+//! Req/resp — Architecture §7.1–§7.6 / CC-23a + CC-23b + CC-23c + CC-23d.
 //!
 //! Stream R:
 //! - the nine protocol IDs and the exact-set test (CC-23/1)
@@ -7,12 +7,14 @@
 //! - client-side [`RequestScheduler`] ([`client`])
 //! - **CC-23b:** [`status`], [`ping`], [`metadata`], [`handshake`] (incl. Goodbye)
 //! - **CC-23c:** [`blocks`] + [`server`] — ByRange / ByRoot / ByHead from the backfill cache
+//! - **CC-23d:** [`columns`] — DataColumnSidecars ByRange / ByRoot from the same cache
 //!
 //! Timeouts: [`TTFB_TIMEOUT`] 5 s / [`RESP_TIMEOUT`] 10 s (CC-23/6).
 
 pub mod blocks;
 pub mod client;
 pub mod codec;
+pub mod columns;
 pub mod handshake;
 pub mod limits;
 pub mod metadata;
@@ -25,6 +27,13 @@ pub use blocks::{
     serve_blocks_by_range, serve_blocks_by_root, validate_block_count, validate_root_list_len,
     BlockServeCtx, BlockServeError, BlocksByHeadRequest, BlocksByRangeRequest, BlocksByRootRequest,
     PlannedBlocks, MAX_REQUEST_BLOCKS_DENEB, MIN_EPOCHS_FOR_BLOCK_REQUESTS,
+};
+pub use columns::{
+    compute_max_request_data_column_sidecars, decide_by_root_column_serve, make_by_root_identifier,
+    min_epochs_for_data_column_sidecars_requests, plan_column_response, serve_columns_by_range,
+    serve_columns_by_root, validate_identifier_list_len, validate_range_sidecar_budget,
+    ByRootServeDecision, ColumnServeCtx, ColumnsByRangeRequest, ColumnsByRootRequest,
+    MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS,
 };
 pub use client::{
     Exhausted, PeerPredicate, Priority, RequestPayload, RequestScheduler, RequestSpec,
@@ -54,7 +63,8 @@ pub use ping::{
     seq_mismatch, Ping, PING_SSZ_LEN,
 };
 pub use server::{
-    is_block_serve_protocol, serve_block_protocol, BlockServeState, FramedServe, ServeResultLabel,
+    is_block_serve_protocol, is_column_serve_protocol, serve_block_protocol,
+    serve_column_protocol, BlockServeState, FramedServe, ServeResultLabel,
 };
 pub use status::{
     build_local_status, decode_status_response_framed, decode_status_ssz, encode_status_request,
@@ -198,10 +208,15 @@ impl Protocol {
             },
             // (beacon_root, count) = 32 + 8.
             Self::BeaconBlocksByHeadV1 => SszLimits { min: 40, max: 40 },
-            // Column range/root: SSZ list bound still large; keep ≤ MAX_PAYLOAD_SIZE
-            // but live codec also take-bounds compressed side (H1).
-            Self::DataColumnSidecarsByRangeV1 | Self::DataColumnSidecarsByRootV1 => SszLimits {
-                min: 4,
+            // (start_slot, count, columns offset) + up to 128×u64 column indices.
+            Self::DataColumnSidecarsByRangeV1 => SszLimits {
+                min: 20,
+                max: 20 + 128 * 8,
+            },
+            // List[DataColumnsByRootIdentifier, 1024] framing max; semantic bound is 128.
+            // Worst-case identifier ≈ 36 + 128×8; keep ≤ MAX_PAYLOAD_SIZE.
+            Self::DataColumnSidecarsByRootV1 => SszLimits {
+                min: 0,
                 max: MAX_PAYLOAD_SIZE,
             },
         }

@@ -11,8 +11,12 @@
 //!    [`max_container_bytes`] bound (+ a small fixed overhead for allocator metadata).
 //!
 //! The counting [`GlobalAlloc`] lives in this integration-test crate only
-//! (`grep -rn global_allocator services/p2p/src/` is empty). Req/resp framing
-//! extends this harness in CC-23d.
+//! (`grep -rn global_allocator services/p2p/src/` is empty).
+//!
+//! **CC-23d / CC-23/8:** req/resp framing is exercised in **both directions**
+//! (request decode + response decode) with the same panic-is-failure and
+//! counting-allocator discipline, including a length prefix that disagrees
+//! with the payload and a snappy stream that expands past the declared size.
 
 // Counting GlobalAlloc requires `unsafe` (workspace `unsafe_code = "deny"`).
 // Confined to this test binary; production `services/p2p/src/` stays deny-clean.
@@ -41,6 +45,11 @@ use cc_p2p::gossip::validate::{
     ColumnValidatorState, NoopSamplingFeed,
 };
 use cc_p2p::gossip::{PendingQueues, SeenSets, ATTESTATION_SUBNET_COUNT};
+use cc_p2p::reqresp::codec::{ResponseChunk, ResponseCode, SszLimits, SszSnappyFraming, MAX_PAYLOAD_SIZE};
+use cc_p2p::reqresp::columns::{ColumnsByRangeRequest, ColumnsByRootRequest, make_by_root_identifier};
+use cc_p2p::reqresp::Protocol;
+use cc_types::primitives::Root;
+use cc_types::Slot;
 
 // ── Counting GlobalAlloc (test harness only) ────────────────────────────────
 
@@ -645,6 +654,288 @@ fn family_mix(family: &str) -> u64 {
         h = h.wrapping_mul(0x100_0000_01b3);
     }
     h
+}
+
+// ── CC-23d / CC-23/8: req/resp framing, both directions ─────────────────────
+
+/// Protocols whose framing is exercised (context-bytes family + a control).
+const REQRESP_PROTOCOLS: &[Protocol] = &[
+    Protocol::DataColumnSidecarsByRangeV1,
+    Protocol::DataColumnSidecarsByRootV1,
+    Protocol::BeaconBlocksByRangeV2,
+    Protocol::StatusV2,
+];
+
+/// Bound for one framing exercise: max payload + framing overhead + allocator metadata.
+const REQRESP_ALLOC_BOUND: usize = MAX_PAYLOAD_SIZE + 256 * 1024;
+
+fn encode_varint_u64(mut n: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let mut b = (n & 0x7f) as u8;
+        n >>= 7;
+        if n != 0 {
+            b |= 0x80;
+        }
+        out.push(b);
+        if n == 0 {
+            break;
+        }
+    }
+    out
+}
+
+/// Build a well-formed framed request for seed mutation.
+fn valid_request_seed(protocol: Protocol) -> Vec<u8> {
+    let ssz: Vec<u8> = match protocol {
+        Protocol::DataColumnSidecarsByRangeV1 => ColumnsByRangeRequest {
+            start_slot: Slot::new(100),
+            count: 2,
+            columns: vec![0, 1],
+        }
+        .to_ssz_bytes(),
+        Protocol::DataColumnSidecarsByRootV1 => ColumnsByRootRequest {
+            identifiers: vec![make_by_root_identifier(Root::from_array([0x11; 32]), &[0, 1])],
+        }
+        .to_ssz_bytes(),
+        Protocol::BeaconBlocksByRangeV2 => {
+            let mut b = [0u8; 16];
+            b[0..8].copy_from_slice(&100u64.to_le_bytes());
+            b[8..16].copy_from_slice(&2u64.to_le_bytes());
+            b.to_vec()
+        }
+        Protocol::StatusV2 => vec![0u8; 92],
+        _ => vec![0u8; 8],
+    };
+    SszSnappyFraming::encode_request(&ssz, protocol).unwrap_or_default()
+}
+
+/// Build a well-formed framed success response for seed mutation.
+fn valid_response_seed(protocol: Protocol) -> Vec<u8> {
+    let ssz = vec![0xABu8; 32];
+    let chunk = if protocol.has_context_bytes() {
+        ResponseChunk::success_with_context([0xDE, 0xAD, 0xBE, 0xEF], ssz)
+    } else {
+        ResponseChunk::success(ssz)
+    };
+    SszSnappyFraming::encode_response(std::slice::from_ref(&chunk), protocol).unwrap_or_default()
+}
+
+/// Exercise request **or** response framing on `payload` — must not panic.
+fn exercise_reqresp_framing(protocol: Protocol, payload: &[u8], direction: &str) {
+    match direction {
+        "request" => {
+            let _ = SszSnappyFraming::decode_request(payload, protocol);
+            // Also run the SSZ body path when framing succeeds.
+            if let Ok(ssz) = SszSnappyFraming::decode_request(payload, protocol) {
+                match protocol {
+                    Protocol::DataColumnSidecarsByRangeV1 => {
+                        let _ = ColumnsByRangeRequest::from_ssz_bytes(&ssz);
+                    }
+                    Protocol::DataColumnSidecarsByRootV1 => {
+                        let _ = ColumnsByRootRequest::from_ssz_bytes(&ssz);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        "response" => {
+            let _ = SszSnappyFraming::decode_response(payload, protocol);
+            let _ = SszSnappyFraming::decode_response_chunk(payload, protocol);
+        }
+        _ => {}
+    }
+}
+
+fn run_reqresp_one(
+    protocol: Protocol,
+    direction: &str,
+    payload: &[u8],
+    case_kind: &str,
+    case_idx: usize,
+) {
+    let track = alloc_start();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        exercise_reqresp_framing(protocol, payload, direction);
+    }));
+    let peak = alloc_stop_peak(track);
+
+    if let Err(panic_payload) = result {
+        let msg = panic_payload
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| panic_payload.downcast_ref::<&str>().copied())
+            .unwrap_or("<non-string panic>");
+        panic!(
+            "CC-23/8 panic-is-failure: protocol={} direction={direction} kind={case_kind} \
+             idx={case_idx} master_seed=0x{MASTER_SEED:016x} input_len={} input_prefix={} panic={msg}",
+            protocol.as_str(),
+            payload.len(),
+            hex_prefix(payload, 64),
+        );
+    }
+
+    if peak > REQRESP_ALLOC_BOUND {
+        panic!(
+            "CC-23/8 alloc-above-bound: protocol={} direction={direction} kind={case_kind} \
+             idx={case_idx} master_seed=0x{MASTER_SEED:016x} peak={peak} bound={REQRESP_ALLOC_BOUND} \
+             input_len={} input_prefix={}",
+            protocol.as_str(),
+            payload.len(),
+            hex_prefix(payload, 64),
+        );
+    }
+}
+
+#[test]
+fn reqresp_framing_hostile_both_directions() {
+    // Fewer inputs than gossip families: framing is cheaper but still covers
+    // random + mutated + the two named §13.2 cases.
+    const N: usize = 2_000;
+
+    for protocol in REQRESP_PROTOCOLS {
+        for direction in ["request", "response"] {
+            let seed = if direction == "request" {
+                valid_request_seed(*protocol)
+            } else {
+                valid_response_seed(*protocol)
+            };
+
+            let mut rng = XorShift64::new(
+                MASTER_SEED ^ family_mix(protocol.as_str()) ^ family_mix(direction) ^ 0x23D0,
+            );
+            for i in 0..N {
+                let len = rng.gen_range(RANDOM_LEN_CAP.saturating_add(1));
+                let mut buf = vec![0u8; len];
+                rng.fill_bytes(&mut buf);
+                run_reqresp_one(*protocol, direction, &buf, "random", i);
+            }
+
+            let mut rng = XorShift64::new(
+                MASTER_SEED ^ family_mix(protocol.as_str()) ^ family_mix(direction) ^ 0x23D1,
+            );
+            for i in 0..N {
+                if seed.is_empty() {
+                    continue;
+                }
+                let payload = mutate(&seed, &mut rng);
+                run_reqresp_one(*protocol, direction, &payload, "mutated", i);
+            }
+        }
+    }
+}
+
+#[test]
+fn reqresp_length_prefix_disagrees_with_payload() {
+    // §13.2 named case: varint claims a length that does not match the snappy body.
+    let protocol = Protocol::DataColumnSidecarsByRangeV1;
+    let real_ssz = ColumnsByRangeRequest {
+        start_slot: Slot::new(1),
+        count: 1,
+        columns: vec![0],
+    }
+    .to_ssz_bytes();
+    let well = SszSnappyFraming::encode_request(&real_ssz, protocol).expect("encode");
+
+    // Claim a much larger uncompressed length than the snappy frames produce.
+    let mut hostile = encode_varint_u64(1_000_000);
+    // Append the snappy portion of the well-formed frame (skip its own varint).
+    let (_, rest_start) = {
+        // Decode just enough to find where snappy starts: re-use framing decode of varint.
+        let mut cursor = std::io::Cursor::new(well.as_slice());
+        let _ = SszSnappyFraming::read_varint(&mut cursor).expect("varint");
+        let pos = cursor.position() as usize;
+        ((), pos)
+    };
+    hostile.extend_from_slice(&well[rest_start..]);
+
+    let track = alloc_start();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let err = SszSnappyFraming::decode_request(&hostile, protocol);
+        assert!(err.is_err(), "mismatched length prefix must error, not succeed");
+    }));
+    let peak = alloc_stop_peak(track);
+    assert!(result.is_ok(), "mismatched length prefix must not panic");
+    // Must not allocate proportional to the claimed 1_000_000 if decompress fails early,
+    // and never above the global framing bound.
+    assert!(
+        peak <= REQRESP_ALLOC_BOUND,
+        "peak {peak} exceeds framing alloc bound"
+    );
+
+    // Same case on the response path.
+    let resp_ssz = vec![0u8; 16];
+    let chunk = ResponseChunk::success_with_context([1, 2, 3, 4], resp_ssz);
+    let well_resp =
+        SszSnappyFraming::encode_response(std::slice::from_ref(&chunk), protocol).expect("enc");
+    // Build: result byte + context + hostile varint + real snappy tail of payload.
+    let mut hostile_resp = vec![ResponseCode::Success.as_u8()];
+    hostile_resp.extend_from_slice(&[1, 2, 3, 4]);
+    // Locate snappy after varint in the well-formed chunk (skip result+context+varint).
+    let payload_start = 1 + 4; // result + context
+    let mut cursor = std::io::Cursor::new(&well_resp[payload_start..]);
+    let _ = SszSnappyFraming::read_varint(&mut cursor).expect("varint");
+    let snappy_off = payload_start + cursor.position() as usize;
+    hostile_resp.extend_from_slice(&encode_varint_u64(5_000_000));
+    hostile_resp.extend_from_slice(&well_resp[snappy_off..]);
+
+    let track = alloc_start();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let err = SszSnappyFraming::decode_response(&hostile_resp, protocol);
+        assert!(err.is_err(), "response length disagree must error");
+    }));
+    let peak = alloc_stop_peak(track);
+    assert!(result.is_ok(), "response length disagree must not panic");
+    assert!(peak <= REQRESP_ALLOC_BOUND, "peak {peak}");
+}
+
+#[test]
+fn reqresp_snappy_expands_past_declared_size() {
+    // §13.2 named case: snappy stream would expand past the declared varint length.
+    // Craft: declare a tiny uncompressed length, attach a snappy frame of larger data.
+    let protocol = Protocol::DataColumnSidecarsByRootV1;
+    let big = vec![0x5Au8; 4096];
+    let limits = SszLimits {
+        min: 0,
+        max: MAX_PAYLOAD_SIZE,
+    };
+    let framed_big = SszSnappyFraming::encode_payload(&big, limits).expect("encode big");
+    // Strip its varint; re-prefix with a too-small claim.
+    let mut cursor = std::io::Cursor::new(framed_big.as_slice());
+    let claimed = SszSnappyFraming::read_varint(&mut cursor).expect("varint");
+    assert_eq!(claimed, 4096);
+    let snappy = &framed_big[cursor.position() as usize..];
+
+    let mut hostile = encode_varint_u64(16); // claim only 16 uncompressed bytes
+    hostile.extend_from_slice(snappy);
+
+    let track = alloc_start();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let err = SszSnappyFraming::decode_request(&hostile, protocol);
+        // Decoder take-bounds to declared length; must error (short/invalid) not panic.
+        assert!(err.is_err(), "expand-past-declared must error");
+    }));
+    let peak = alloc_stop_peak(track);
+    assert!(result.is_ok(), "expand-past-declared must not panic");
+    // Allocation is bounded by the declared length (16), not the snappy source size.
+    assert!(
+        peak <= REQRESP_ALLOC_BOUND,
+        "peak {peak} exceeds framing alloc bound"
+    );
+
+    // Response direction with the same hostile payload after result+context.
+    let mut hostile_resp = vec![ResponseCode::Success.as_u8()];
+    hostile_resp.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+    hostile_resp.extend_from_slice(&hostile);
+
+    let track = alloc_start();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let err = SszSnappyFraming::decode_response(&hostile_resp, protocol);
+        assert!(err.is_err(), "response expand-past-declared must error");
+    }));
+    let peak = alloc_stop_peak(track);
+    assert!(result.is_ok(), "response expand-past-declared must not panic");
+    assert!(peak <= REQRESP_ALLOC_BOUND, "peak {peak}");
 }
 
 fn workspace_root() -> PathBuf {

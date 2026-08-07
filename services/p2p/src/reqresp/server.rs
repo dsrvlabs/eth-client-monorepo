@@ -1,9 +1,10 @@
-//! Block-protocol serve dispatcher — Architecture §7.1 / §7.3 / CC-23c.
+//! Block- and column-protocol serve dispatcher — Architecture §7.1 / §7.3 / CC-23c+d.
 //!
-//! Turns a planned block response into a framed wire body, applying
-//! chunk-level inbound rate limiting (truncate, never error mid-stream).
+//! Turns a planned response into a framed wire body, applying chunk-level
+//! inbound rate limiting (truncate, never error mid-stream).
 //!
-//! Column protocols are **CC-23d** (out of scope).
+//! - **CC-23c:** three block protocols (Blocks rate-limit kind)
+//! - **CC-23d:** two column protocols (Columns rate-limit kind)
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -18,6 +19,7 @@ use crate::reqresp::blocks::{
     plan_block_response, BlockServeCtx, BlockServeError, PlannedBlocks,
 };
 use crate::reqresp::codec::{ResponseChunk, ResponseCode, SszSnappyFraming};
+use crate::reqresp::columns::{plan_column_response, ColumnServeCtx};
 use crate::reqresp::limits::{
     ChunkBudgetResult, InboundRateLimiter, RateLimitKind, RateLimitOutcome, RATE_LIMIT_ERROR_MESSAGE,
 };
@@ -140,10 +142,11 @@ pub fn serve_block_protocol<P: Preset>(
         }
     };
 
-    apply_budget_and_frame(
+    apply_budget_and_frame_kind(
         protocol,
         peer,
         planned,
+        RateLimitKind::Blocks,
         limiter,
         now,
         metrics,
@@ -152,15 +155,16 @@ pub fn serve_block_protocol<P: Preset>(
 
 /// Apply chunk budget then frame. Mid-stream empty bucket → truncate
 /// (valid short success). Empty start → rate-limit error response.
-fn apply_budget_and_frame(
+fn apply_budget_and_frame_kind(
     protocol: Protocol,
     peer: PeerId,
     planned: PlannedBlocks,
+    kind: RateLimitKind,
     limiter: &mut InboundRateLimiter,
     now: Instant,
     metrics: Option<&P2pMetrics>,
 ) -> FramedServe {
-    match limiter.apply_chunk_budget(peer, RateLimitKind::Blocks, planned.chunks, now) {
+    match limiter.apply_chunk_budget(peer, kind, planned.chunks, now) {
         ChunkBudgetResult::Serve { chunks, limited } => {
             if let Some(ref outcome) = limited
                 && let Some(m) = metrics
@@ -224,6 +228,59 @@ fn encode_chunks(chunks: &[ResponseChunk], protocol: Protocol) -> Vec<u8> {
 #[must_use]
 pub fn is_block_serve_protocol(protocol: Protocol) -> bool {
     protocol.is_block_protocol()
+}
+
+/// Whether `protocol` is one of the two column serve paths (CC-23d).
+#[must_use]
+pub fn is_column_serve_protocol(protocol: Protocol) -> bool {
+    protocol.is_column_protocol()
+}
+
+/// Plan + rate-limit + frame a column-protocol response (CC-23d).
+#[allow(clippy::too_many_arguments)]
+pub fn serve_column_protocol<P: Preset>(
+    protocol: Protocol,
+    request_ssz: &[u8],
+    peer: PeerId,
+    cache: &BackfillCache<P>,
+    fork_ctx: &mut ForkContext,
+    slots_per_epoch: u64,
+    fulu_fork_epoch: Epoch,
+    current_epoch: Epoch,
+    limiter: &mut InboundRateLimiter,
+    now: Instant,
+    metrics: Option<&P2pMetrics>,
+) -> FramedServe {
+    debug_assert!(protocol.is_column_protocol());
+
+    let mut ctx = ColumnServeCtx {
+        cache,
+        fork_ctx,
+        slots_per_epoch,
+        current_epoch,
+        fulu_fork_epoch,
+    };
+
+    let planned = match plan_column_response(protocol, request_ssz, &mut ctx) {
+        Ok(p) => p,
+        Err(e) => {
+            let label = match e {
+                BlockServeError::InvalidRequest(_) => ServeResultLabel::InvalidRequest,
+                BlockServeError::ResourceUnavailable(_) => ServeResultLabel::ResourceUnavailable,
+            };
+            return frame_error(e.to_chunk(), protocol, label);
+        }
+    };
+
+    apply_budget_and_frame_kind(
+        protocol,
+        peer,
+        planned,
+        RateLimitKind::Columns,
+        limiter,
+        now,
+        metrics,
+    )
 }
 
 /// Rate-limit error chunk (shared with host admission path).
@@ -511,5 +568,118 @@ mod tests {
             metrics.reqresp_inbound_count("beacon_blocks_by_head", "ok"),
             1
         );
+    }
+
+    fn filled_cols(lo: u64, hi: u64) -> BackfillCache<Mainnet> {
+        use cc_types::sidecar::DataColumnSidecar;
+        let mut cache = BackfillCache::with_bounds(
+            Slot::new(0),
+            0u64..8,
+            0u64..4,
+            1 << 30,
+            2048,
+            2048 * 8,
+        );
+        let mut parent = Root::ZERO;
+        for s in lo..=hi {
+            let block = block_at(s, parent);
+            let root = Root::from(block.canonical_root());
+            cache.insert_block(Slot::new(s), root, Arc::clone(&block));
+            for c in 0..4u64 {
+                let mut sc = DataColumnSidecar::<Mainnet> {
+                    index: c,
+                    ..Default::default()
+                };
+                sc.signed_block_header.message.slot = Slot::new(s);
+                cache.insert_column(Slot::new(s), root, c, Arc::new(sc));
+            }
+            parent = root;
+        }
+        cache.set_head_slot(Slot::new(hi));
+        cache
+    }
+
+    #[test]
+    fn serve_column_by_range_ok_increments_path() {
+        let cache = filled_cols(200, 210);
+        let mut fork = fork_ctx();
+        let mut lim = InboundRateLimiter::new();
+        let mut registry = Registry::default();
+        let metrics = P2pMetrics::register(&mut registry);
+
+        let req = crate::reqresp::columns::ColumnsByRangeRequest {
+            start_slot: Slot::new(200),
+            count: 2,
+            columns: vec![0, 1],
+        };
+        let (cur, fulu) = test_epochs();
+        let framed = serve_column_protocol(
+            Protocol::DataColumnSidecarsByRangeV1,
+            &req.to_ssz_bytes(),
+            PeerId::random(),
+            &cache,
+            &mut fork,
+            Mainnet::SLOTS_PER_EPOCH,
+            fulu,
+            cur,
+            &mut lim,
+            Instant::now(),
+            Some(&metrics),
+        );
+        assert_eq!(framed.label, ServeResultLabel::Ok);
+        metrics.inc_reqresp_inbound(
+            Protocol::DataColumnSidecarsByRangeV1.as_str(),
+            framed.label.as_str(),
+        );
+        assert_eq!(
+            metrics.reqresp_inbound_count("data_column_sidecars_by_range", "ok"),
+            1
+        );
+        // Outbound mirror (client path metric surface).
+        metrics.inc_reqresp_outbound("data_column_sidecars_by_range", "ok");
+        metrics.inc_reqresp_outbound("data_column_sidecars_by_root", "ok");
+        assert_eq!(
+            metrics.reqresp_outbound_count("data_column_sidecars_by_range", "ok"),
+            1
+        );
+        assert_eq!(
+            metrics.reqresp_outbound_count("data_column_sidecars_by_root", "ok"),
+            1
+        );
+    }
+
+    #[test]
+    fn serve_column_by_root_ok() {
+        let cache = filled_cols(300, 305);
+        let mut fork = fork_ctx();
+        let mut lim = InboundRateLimiter::new();
+        let (root, _, _) = cache.block_at_slot(Slot::new(301)).unwrap();
+        let req = crate::reqresp::columns::ColumnsByRootRequest {
+            identifiers: vec![crate::reqresp::columns::make_by_root_identifier(
+                root,
+                &[0, 1],
+            )],
+        };
+        let (cur, fulu) = test_epochs();
+        let framed = serve_column_protocol(
+            Protocol::DataColumnSidecarsByRootV1,
+            &req.to_ssz_bytes(),
+            PeerId::random(),
+            &cache,
+            &mut fork,
+            Mainnet::SLOTS_PER_EPOCH,
+            fulu,
+            cur,
+            &mut lim,
+            Instant::now(),
+            None,
+        );
+        assert_eq!(framed.label, ServeResultLabel::Ok);
+        let chunks = SszSnappyFraming::decode_response(
+            &framed.framed,
+            Protocol::DataColumnSidecarsByRootV1,
+        )
+        .unwrap();
+        assert_eq!(chunks.len(), 2);
     }
 }
