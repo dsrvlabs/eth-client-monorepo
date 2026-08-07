@@ -767,8 +767,10 @@ impl PeerManager {
             MetricDirection::Outbound,
             self.table.connected_outbound() as i64,
         );
-        // custody_compatible computation is CC-24a; export field aggregate later.
-        // Keep gauge as count of peers with custody_usefulness > 0 for now.
+        // Pure intersection math lives in `das::custody` (`count_custody_compatible_peers`
+        // / `is_peer_custody_compatible`). Until peer rows carry a discv5 `NodeId`
+        // for the ENR path, keep the gauge as count of peers with usefulness > 0
+        // (discovery stashes priority there; real coverage uses `CustodyManager::peer_coverage`).
         let compatible = self
             .table
             .iter()

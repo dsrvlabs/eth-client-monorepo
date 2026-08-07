@@ -12,6 +12,7 @@
 //! - **CC-22c**: GossipSub `ScoringConfig`, two score spaces, IDONTWANT, penalty table
 //! - **CC-22d**: block/column validators, seen/pending, one Verdict, single report site
 //! - **CC-22e**: hostile-input harness (tests/hostile_input.rs) — panic-is-failure + counting alloc
+//! - **CC-24a**: custody + sampling sets (`das::custody`), eight column subscriptions, custody-compatible metric
 //! - **CC-27b**: chain-stream client, outstanding map, stall-then-shed, ChainView store
 //! - **CC-29a**: Phase 2 metric family declarations (binary registers them)
 
@@ -20,6 +21,7 @@
 pub mod chain_stream;
 pub mod channels;
 pub mod clock;
+pub mod das;
 pub mod discovery;
 pub mod fault_mode;
 pub mod fork_digest;
