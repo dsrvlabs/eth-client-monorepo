@@ -122,6 +122,13 @@ Assert on `cc_p2p_peers{direction=…}` after connect.
     refuse them on by-root until the release flag file appears
     (`--fault-flag-path` / `CC_P2P_FAULT_FLAG`, default `/fault/cc-release-columns.flag`)
   - `misbehave` → parses, returns **not implemented** (CC-2Jc)
+  - `withhold-column` → parses, returns **not implemented** (CC-2Jb)
+  - `misbehave:<kind>` → **CC-2Jc** kinds (clause 6):
+    - `invalid-column` — mutate KZG proof on gossip publish
+    - `malformed` — truncated / corrupt sidecar bytes
+    - `spam` — multi-publish variants (+ req/resp over-limit for rate_limit)
+    - `custody-refuse` — advertise full cgc, refuse by-root (seam in `reqresp/columns.rs`)
+    - `stall-reqresp` — delay first by-root byte past TTFB+1s
 
 ```bash
 # Emit keys/bootnodes only:

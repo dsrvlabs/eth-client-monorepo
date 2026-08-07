@@ -356,6 +356,21 @@ pub fn check_column_slot_window(
 
 // ── By-root serve decision seam (Track D) ───────────────────────────────────
 
+/// Fault policy for the by-root serve decision (CC-2Jc / Track D).
+///
+/// Produced by [`crate::fault_mode::FaultMode::by_root_fault_policy`]. Keep the
+/// enum here so Stream R owns the decision shape; Stream D only maps CLI kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ByRootFaultPolicy {
+    /// Honest publisher / ordinary node — serve when held.
+    #[default]
+    Honest,
+    /// `misbehave:custody-refuse` — never serve by root (even when held).
+    CustodyRefuse,
+    /// `misbehave:stall-reqresp` — serve past [`crate::reqresp::TTFB_TIMEOUT`].
+    StallReqresp,
+}
+
 /// Outcome of the single by-root serve decision.
 ///
 /// Track D's sanctioned seam — cross-ref [`crate::fault_mode`]:
@@ -368,6 +383,14 @@ pub enum ByRootServeDecision {
     Serve,
     /// Refuse with `3: ResourceUnavailable` (missing / refused / out of window).
     ResourceUnavailable,
+    /// Delay first response byte past TTFB, then serve (CC-2Jc stall-reqresp).
+    Stall,
+}
+
+/// Delay applied when [`ByRootServeDecision::Stall`] fires: TTFB + 1 s.
+#[must_use]
+pub fn stall_first_byte_delay() -> std::time::Duration {
+    crate::reqresp::TTFB_TIMEOUT + std::time::Duration::from_secs(1)
 }
 
 /// **Track D sanctioned seam** (`fault_mode.rs`): decide whether to serve one
@@ -385,6 +408,25 @@ pub fn decide_by_root_column_serve(held: bool, column_index: u64) -> ByRootServe
         ByRootServeDecision::Serve
     } else {
         ByRootServeDecision::ResourceUnavailable
+/// `policy` is the CC-2Jc branch selector — [`ByRootFaultPolicy::Honest`] is the
+/// production default; fault modes map onto the other two variants.
+#[inline]
+#[must_use]
+pub fn decide_by_root_column_serve(
+    held: bool,
+    policy: ByRootFaultPolicy,
+) -> ByRootServeDecision {
+    // ── Track D seam (fault_mode.rs) ──────────────────────────────────────
+    // Single named branch for CC-2Jc: custody-refuse / stall-reqresp attach here.
+    match policy {
+        ByRootFaultPolicy::CustodyRefuse => ByRootServeDecision::ResourceUnavailable,
+        ByRootFaultPolicy::StallReqresp if held => ByRootServeDecision::Stall,
+        ByRootFaultPolicy::StallReqresp | ByRootFaultPolicy::Honest if held => {
+            ByRootServeDecision::Serve
+        }
+        ByRootFaultPolicy::StallReqresp | ByRootFaultPolicy::Honest => {
+            ByRootServeDecision::ResourceUnavailable
+        }
     }
 }
 
@@ -403,6 +445,8 @@ pub struct ColumnServeCtx<'a, P: Preset = Mainnet> {
     pub current_epoch: Epoch,
     /// `FULU_FORK_EPOCH` from network config.
     pub fulu_fork_epoch: Epoch,
+    /// CC-2Jc by-root fault policy (default [`ByRootFaultPolicy::Honest`]).
+    pub by_root_fault: ByRootFaultPolicy,
 }
 
 impl<'a, P: Preset> ColumnServeCtx<'a, P> {
@@ -500,7 +544,7 @@ pub fn serve_columns_by_range<P: Preset>(
             "no column sidecars in requested range",
         ));
     }
-    Ok(PlannedBlocks { chunks })
+    Ok(PlannedBlocks::new(chunks))
 }
 
 /// Serve `data_column_sidecars_by_root/1/`.
@@ -519,6 +563,7 @@ pub fn serve_columns_by_root<P: Preset>(
     let total = total_requested_sidecars_by_root(req) as usize;
     let mut chunks = Vec::with_capacity(total);
     let mut any_root_known = false;
+    let mut stall = false;
 
     for id in &req.identifiers {
         let Some((slot, _, _)) = ctx.cache.block_by_root(&id.block_root) else {
@@ -542,6 +587,13 @@ pub fn serve_columns_by_root<P: Preset>(
             // Track D sanctioned seam — greppable single branch for CC-2Jb/2Jc.
             match decide_by_root_column_serve(held, *col_idx) {
                 ByRootServeDecision::Serve => {
+            // Track D sanctioned seam — greppable single branch for CC-2Jc.
+            let decision = decide_by_root_column_serve(held, ctx.by_root_fault);
+            match decision {
+                ByRootServeDecision::Serve | ByRootServeDecision::Stall => {
+                    if decision == ByRootServeDecision::Stall {
+                        stall = true;
+                    }
                     let ssz = ctx
                         .cache
                         .column_ssz_by_root(&id.block_root, *col_idx)
@@ -570,7 +622,14 @@ pub fn serve_columns_by_root<P: Preset>(
             "no requested column roots available",
         ));
     }
-    Ok(PlannedBlocks { chunks })
+    Ok(PlannedBlocks {
+        chunks,
+        first_byte_delay: if stall {
+            stall_first_byte_delay()
+        } else {
+            std::time::Duration::ZERO
+        },
+    })
 }
 
 /// Decode a raw SSZ request for a column protocol and plan the response.
@@ -701,6 +760,7 @@ mod tests {
             slots_per_epoch: Mainnet::SLOTS_PER_EPOCH,
             current_epoch: Epoch::new(0),
             fulu_fork_epoch: Epoch::new(0),
+            by_root_fault: ByRootFaultPolicy::Honest,
         }
     }
 
@@ -916,6 +976,7 @@ mod tests {
             slots_per_epoch: spe,
             current_epoch: Epoch::new(fulu_epoch),
             fulu_fork_epoch: Epoch::new(fulu_epoch),
+            by_root_fault: ByRootFaultPolicy::Honest,
         };
         let req = ColumnsByRangeRequest {
             start_slot: Slot::new(low_slot),
@@ -997,8 +1058,56 @@ mod tests {
         );
         assert_eq!(
             decide_by_root_column_serve(false, 0),
+        // Seam unit: held → Serve, missing → ResourceUnavailable (honest).
+        assert_eq!(
+            decide_by_root_column_serve(true, ByRootFaultPolicy::Honest),
+            ByRootServeDecision::Serve
+        );
+        assert_eq!(
+            decide_by_root_column_serve(false, ByRootFaultPolicy::Honest),
             ByRootServeDecision::ResourceUnavailable
         );
+        // CC-2Jc: custody-refuse never serves, even when held.
+        assert_eq!(
+            decide_by_root_column_serve(true, ByRootFaultPolicy::CustodyRefuse),
+            ByRootServeDecision::ResourceUnavailable
+        );
+        // CC-2Jc: stall-reqresp delays first byte when held.
+        assert_eq!(
+            decide_by_root_column_serve(true, ByRootFaultPolicy::StallReqresp),
+            ByRootServeDecision::Stall
+        );
+        assert!(stall_first_byte_delay() > crate::reqresp::TTFB_TIMEOUT);
+    }
+
+    #[test]
+    fn by_root_custody_refuse_refuses_held_column() {
+        let cache = filled_cache(100, 105, &[0, 1, 2, 3]);
+        let (root, _, _) = cache.block_at_slot(Slot::new(103)).unwrap();
+        let mut fork_ctx = fork_ctx_at(60_000);
+        let mut ctx = serve_ctx(&cache, &mut fork_ctx);
+        ctx.by_root_fault = ByRootFaultPolicy::CustodyRefuse;
+        let req = ColumnsByRootRequest {
+            identifiers: vec![make_by_root_identifier(root, &[0])],
+        };
+        let err = serve_columns_by_root(&mut ctx, &req).unwrap_err();
+        assert!(matches!(err, BlockServeError::ResourceUnavailable(_)));
+    }
+
+    #[test]
+    fn by_root_stall_sets_first_byte_delay_past_ttfb() {
+        let cache = filled_cache(100, 105, &[0, 1, 2, 3]);
+        let (root, _, _) = cache.block_at_slot(Slot::new(103)).unwrap();
+        let mut fork_ctx = fork_ctx_at(60_000);
+        let mut ctx = serve_ctx(&cache, &mut fork_ctx);
+        ctx.by_root_fault = ByRootFaultPolicy::StallReqresp;
+        let req = ColumnsByRootRequest {
+            identifiers: vec![make_by_root_identifier(root, &[0])],
+        };
+        let planned = serve_columns_by_root(&mut ctx, &req).unwrap();
+        assert_eq!(planned.chunks.len(), 1);
+        assert_eq!(planned.first_byte_delay, stall_first_byte_delay());
+        assert!(planned.first_byte_delay > crate::reqresp::TTFB_TIMEOUT);
     }
 
     #[test]
@@ -1056,6 +1165,7 @@ mod tests {
             slots_per_epoch: Mainnet::SLOTS_PER_EPOCH,
             current_epoch: Epoch::new(60_000),
             fulu_fork_epoch: Epoch::new(50_688), // Hoodi fulu
+            by_root_fault: ByRootFaultPolicy::Honest,
         };
         // Slot 100 is far below fulu start → BelowMinimumEpoch.
         let req = ColumnsByRootRequest {

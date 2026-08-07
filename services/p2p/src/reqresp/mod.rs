@@ -31,9 +31,9 @@ pub use blocks::{
 pub use columns::{
     compute_max_request_data_column_sidecars, decide_by_root_column_serve, make_by_root_identifier,
     min_epochs_for_data_column_sidecars_requests, plan_column_response, serve_columns_by_range,
-    serve_columns_by_root, validate_identifier_list_len, validate_range_sidecar_budget,
-    ByRootServeDecision, ColumnServeCtx, ColumnsByRangeRequest, ColumnsByRootRequest,
-    MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS,
+    serve_columns_by_root, stall_first_byte_delay, validate_identifier_list_len,
+    validate_range_sidecar_budget, ByRootFaultPolicy, ByRootServeDecision, ColumnServeCtx,
+    ColumnsByRangeRequest, ColumnsByRootRequest, MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS,
 };
 pub use client::{
     Exhausted, PeerPredicate, Priority, RequestPayload, RequestScheduler, RequestSpec,

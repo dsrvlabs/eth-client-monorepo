@@ -1,4 +1,5 @@
 //! Self-devnet publisher and fault modes (CC-2Jd / CC-2Jb).
+//! Self-devnet publisher and fault modes (CC-2Jd / CC-2Jc).
 //!
 //! - **`--publish-fixture`**: plain publisher — loads CC-2Ja's chain fixture,
 //!   forces conceptual `cgc = 128`, subscribes to all 128 column subnets, and
@@ -10,6 +11,12 @@
 //! - **`misbehave`**: parses; body lands in CC-2Jc.
 //! - Process-global active fault ([`install_active_fault`]) is what the two
 //!   seam call sites consult so production paths stay greppable one-liners.
+//! - **`withhold-column`**: parsed; body lands in CC-2Jb (still "not implemented").
+//! - **`misbehave:<kind>`** (CC-2Jc): four kinds map to attributable penalty
+//!   reasons — `invalid-column` / `malformed` → `gossip_invalid`, `spam` →
+//!   `rate_limit`, `custody-refuse` → `custody_unserved`, `stall-reqresp` →
+//!   `reqresp_fault`. Publish mutations attach here; by-root refuse/stall
+//!   reuses the Track D seam in [`crate::reqresp::columns`].
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // tests only below
 
@@ -25,19 +32,32 @@ use anyhow::{Context, Result, bail};
 use cc_libp2p::reexport::futures::StreamExt;
 use cc_libp2p::reexport::gossipsub::{IdentTopic, MessageAcceptance, TopicHash};
 use cc_libp2p::reexport::identity::{self, Keypair};
+use cc_libp2p::reexport::request_response::{
+    Event as RequestResponseEvent, Message as RequestResponseMessage,
+};
 use cc_libp2p::reexport::{Multiaddr, PeerId, SwarmEvent};
 use cc_libp2p::{CcBehaviour, CcBehaviourEvent, SwarmConfig, build_swarm};
 use cc_types::{compute_columns_for_custody_group, ChainConfig, Epoch, Root};
+use cc_libp2p::{
+    build_swarm, CcBehaviour, CcBehaviourEvent, ReqRespRequest, ReqRespResponse, SwarmConfig,
+};
+use cc_types::{ChainConfig, Epoch, Root};
 use discv5::Enr;
 use discv5::enr::{CombinedKey, NodeId};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 use crate::das::CustodyManager;
+use ssz::{Decode, Encode};
+
 use crate::fork_digest::compute_fork_digest;
 use crate::gossip::validate::column::{decide_column_publish, ColumnPublishDecision};
 use crate::gossip::{SubnetCounts, TopicName, format_topic_string};
-use crate::metrics::{Direction, DirectionLabels, GossipMessageLabels, P2pMetrics};
+use crate::metrics::{
+    Direction, DirectionLabels, GossipMessageLabels, P2pMetrics, PeerPenaltyReason,
+};
+use crate::reqresp::columns::ByRootFaultPolicy;
+use crate::reqresp::limits::INBOUND_COLUMNS_CAPACITY;
 
 /// Committed seed string used by `up.sh` / [`derive_node_secret`] (CC-2Jd).
 pub const DEVNET_KEY_SEED: &str = "cc-devnet-v1";
@@ -143,6 +163,88 @@ pub fn active_allows_by_root_serve(column_index: u64) -> bool {
 ///
 /// [`FaultMode::None`] is the plain publisher. [`FaultMode::WithholdColumn`] is
 /// CC-2Jb. [`FaultMode::Misbehave`] parses and stays unimplemented until CC-2Jc.
+/// Extra gossip publishes per column under `misbehave:spam` (beyond the honest one).
+pub const SPAM_GOSSIP_EXTRA_PUBLISHES: u32 = 8;
+
+/// How many column chunks a spam client must request to trip the per-peer inbound
+/// column bucket ([`INBOUND_COLUMNS_CAPACITY`] + 1).
+#[must_use]
+pub const fn spam_columns_to_trip_rate_limit() -> u64 {
+    INBOUND_COLUMNS_CAPACITY.saturating_add(1)
+}
+
+// ── fault kinds ─────────────────────────────────────────────────────────────
+
+/// CC-2Jc misbehaviour kind — each maps to one attributable penalty reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MisbehaveKind {
+    /// Mutate a KZG proof → gossip REJECT → `gossip_invalid` (−10) + P4.
+    InvalidColumn,
+    /// Truncate / corrupt bytes so decode fails → `gossip_invalid` (−10).
+    Malformed,
+    /// Over-rate publish + over-limit req/resp → `rate_limit` (−5).
+    Spam,
+    /// Advertise full custody, never serve by root → `custody_unserved` (−15).
+    CustodyRefuse,
+    /// Serve by root past TTFB → `reqresp_fault` (−5).
+    StallReqresp,
+}
+
+impl MisbehaveKind {
+    /// Parse a kind token (CLI suffix after `misbehave:` / `misbehave=`).
+    pub fn parse(s: &str) -> Result<Self> {
+        let s = s.trim();
+        if s.is_empty() || s.eq_ignore_ascii_case("unspecified") {
+            bail!(
+                "misbehave kind required; expected invalid-column|malformed|spam|custody-refuse|stall-reqresp"
+            );
+        }
+        Ok(match s {
+            "invalid-column" | "invalid_column" | "invalid" => Self::InvalidColumn,
+            "malformed" => Self::Malformed,
+            "spam" => Self::Spam,
+            "custody-refuse" | "custody_refuse" => Self::CustodyRefuse,
+            "stall-reqresp" | "stall_reqresp" | "stall" => Self::StallReqresp,
+            other => bail!(
+                "unknown misbehave kind {other:?}; expected invalid-column|malformed|spam|custody-refuse|stall-reqresp"
+            ),
+        })
+    }
+
+    /// Stable CLI / log name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidColumn => "invalid-column",
+            Self::Malformed => "malformed",
+            Self::Spam => "spam",
+            Self::CustodyRefuse => "custody-refuse",
+            Self::StallReqresp => "stall-reqresp",
+        }
+    }
+
+    /// Attributable `cc_p2p_peer_penalty_total{reason}` label for this kind.
+    #[must_use]
+    pub const fn penalty_reason(self) -> PeerPenaltyReason {
+        match self {
+            Self::InvalidColumn | Self::Malformed => PeerPenaltyReason::GossipInvalid,
+            Self::Spam => PeerPenaltyReason::RateLimit,
+            Self::CustodyRefuse => PeerPenaltyReason::CustodyUnserved,
+            Self::StallReqresp => PeerPenaltyReason::ReqrespFault,
+        }
+    }
+
+    /// All four (five tokens) kinds for control-run iteration.
+    pub const ALL: [Self; 5] = [
+        Self::InvalidColumn,
+        Self::Malformed,
+        Self::Spam,
+        Self::CustodyRefuse,
+        Self::StallReqresp,
+    ];
+}
+
+/// Adversarial / publisher fault kind.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum FaultMode {
     /// Plain publisher / no-op relay (default).
@@ -155,8 +257,8 @@ pub enum FaultMode {
     },
     /// CC-2Jc — misbehave (invalid-column / malformed / spam / …).
     Misbehave {
-        /// Kind name as passed on the CLI (kept opaque here).
-        kind: String,
+        /// Typed misbehaviour kind.
+        kind: MisbehaveKind,
     },
 }
 
@@ -168,6 +270,8 @@ impl FaultMode {
     /// - `withhold-column` / `withhold-column:1,2` / `withhold-column=1,2`
     ///   → [`FaultMode::WithholdColumn`]
     /// - `misbehave` / `misbehave:spam` → [`FaultMode::Misbehave`]
+    /// - `withhold-column` / `withhold-column:1,2` → [`FaultMode::WithholdColumn`]
+    /// - `misbehave:spam` / `misbehave=invalid-column` → [`FaultMode::Misbehave`]
     pub fn parse(s: &str) -> Result<Self> {
         let s = s.trim();
         if s.is_empty()
@@ -182,15 +286,11 @@ impl FaultMode {
             return Ok(Self::WithholdColumn { columns });
         }
         if let Some(rest) = s.strip_prefix("misbehave") {
-            let kind = rest.trim_start_matches([':', '=']).trim();
-            let kind = if kind.is_empty() {
-                "unspecified".to_owned()
-            } else {
-                kind.to_owned()
-            };
+            let kind_s = rest.trim_start_matches([':', '=']).trim();
+            let kind = MisbehaveKind::parse(kind_s)?;
             return Ok(Self::Misbehave { kind });
         }
-        bail!("unknown fault mode {s:?}; expected none|withhold-column|misbehave")
+        bail!("unknown fault mode {s:?}; expected none|withhold-column|misbehave:<kind>")
     }
 
     /// Returns `Ok(())` for plain + withhold-column. Misbehave stays CC-2Jc.
@@ -199,6 +299,13 @@ impl FaultMode {
             Self::None | Self::WithholdColumn { .. } => Ok(()),
             Self::Misbehave { kind } => {
                 bail!("fault mode misbehave ({kind}) is not implemented (CC-2Jc)")
+    /// Returns `Ok(())` for plain publisher and all CC-2Jc misbehave kinds.
+    /// `withhold-column` still errors (CC-2Jb).
+    pub fn ensure_implemented(&self) -> Result<()> {
+        match self {
+            Self::None | Self::Misbehave { .. } => Ok(()),
+            Self::WithholdColumn { .. } => {
+                bail!("fault mode withhold-column is not implemented (CC-2Jb)")
             }
         }
     }
@@ -281,6 +388,138 @@ impl FaultMode {
         }
         Ok(sampled)
     }
+    /// Map onto the by-root Track D policy (CC-2Jc seam in `reqresp/columns.rs`).
+    #[must_use]
+    pub fn by_root_fault_policy(&self) -> ByRootFaultPolicy {
+        match self {
+            Self::Misbehave {
+                kind: MisbehaveKind::CustodyRefuse,
+            } => ByRootFaultPolicy::CustodyRefuse,
+            Self::Misbehave {
+                kind: MisbehaveKind::StallReqresp,
+            } => ByRootFaultPolicy::StallReqresp,
+            _ => ByRootFaultPolicy::Honest,
+        }
+    }
+
+    /// Gossip column payload transform (block path uses identity for misbehave).
+    ///
+    /// Returns `None` when the column must not be published (withhold — 2Jb).
+    /// For spam, prefer [`Self::column_publish_payloads`] which may yield many.
+    #[must_use]
+    pub fn relay(&self, payload: &[u8]) -> Option<Vec<u8>> {
+        match self {
+            Self::None => Some(payload.to_vec()),
+            Self::WithholdColumn { .. } => None,
+            Self::Misbehave { kind } => Some(transform_column_payload(payload, *kind, 0)),
+        }
+    }
+
+    /// One or more gossip payloads for a single fixture column under this mode.
+    ///
+    /// Spam emits the honest payload plus [`SPAM_GOSSIP_EXTRA_PUBLISHES`]
+    /// distinct variants so message-ids do not collapse.
+    #[must_use]
+    pub fn column_publish_payloads(&self, payload: &[u8]) -> Vec<Vec<u8>> {
+        match self {
+            Self::None => vec![payload.to_vec()],
+            Self::WithholdColumn { .. } => Vec::new(),
+            Self::Misbehave {
+                kind: MisbehaveKind::Spam,
+            } => {
+                let mut out = Vec::with_capacity(SPAM_GOSSIP_EXTRA_PUBLISHES as usize + 1);
+                out.push(payload.to_vec());
+                for i in 1..=SPAM_GOSSIP_EXTRA_PUBLISHES {
+                    out.push(transform_column_payload(payload, MisbehaveKind::Spam, i));
+                }
+                out
+            }
+            Self::Misbehave { kind } => vec![transform_column_payload(payload, *kind, 0)],
+        }
+    }
+
+    /// Whether this mode floods outbound column req/resp (spam).
+    #[must_use]
+    pub fn spam_reqresp(&self) -> bool {
+        matches!(
+            self,
+            Self::Misbehave {
+                kind: MisbehaveKind::Spam
+            }
+        )
+    }
+}
+
+/// Mutate a fixture column sidecar payload for a misbehave kind.
+///
+/// `variant` differentiates spam message-ids (XOR salt). Non-spam kinds ignore it.
+#[must_use]
+pub fn transform_column_payload(payload: &[u8], kind: MisbehaveKind, variant: u32) -> Vec<u8> {
+    match kind {
+        MisbehaveKind::InvalidColumn => mutate_kzg_proof(payload),
+        MisbehaveKind::Malformed => make_malformed(payload),
+        MisbehaveKind::Spam => spam_variant(payload, variant),
+        // Custody / stall do not mutate gossip — honest publish, fault on by-root.
+        MisbehaveKind::CustodyRefuse | MisbehaveKind::StallReqresp => payload.to_vec(),
+    }
+}
+
+/// Decode as `DataColumnSidecar`, flip one byte in the first KZG proof, re-encode.
+/// Falls back to a trailing XOR if decode fails (still yields a non-honest payload).
+fn mutate_kzg_proof(payload: &[u8]) -> Vec<u8> {
+    use cc_types::sidecar::DataColumnSidecar;
+    use cc_types::Mainnet;
+
+    if let Ok(mut sc) = DataColumnSidecar::<Mainnet>::from_ssz_bytes(payload) {
+        if let Some(proof) = sc.kzg_proofs.first_mut() {
+            proof.0[0] ^= 0xFF;
+        } else {
+            // Empty proofs list — raw mutate fallback.
+            return trailing_xor(payload, 0xA5);
+        }
+        return sc.as_ssz_bytes();
+    }
+    trailing_xor(payload, 0xA5)
+}
+
+/// Truncate so SSZ decode fails (tampered length / truncated container).
+fn make_malformed(payload: &[u8]) -> Vec<u8> {
+    if payload.is_empty() {
+        return vec![0xDE, 0xAD];
+    }
+    // Keep a non-empty prefix so gossip still carries bytes, but drop the tail.
+    let keep = (payload.len() / 2).max(1).min(payload.len().saturating_sub(1));
+    let mut out = payload[..keep].to_vec();
+    // Force an obviously broken length-ish prefix when long enough.
+    if out.len() >= 4 {
+        out[0] = 0xFF;
+        out[1] = 0xFF;
+        out[2] = 0xFF;
+        out[3] = 0xFF;
+    }
+    out
+}
+
+/// Spam variant: honest body with a trailing salt byte (distinct message-id).
+fn spam_variant(payload: &[u8], variant: u32) -> Vec<u8> {
+    if variant == 0 {
+        return payload.to_vec();
+    }
+    let mut out = payload.to_vec();
+    out.push((variant & 0xFF) as u8);
+    out.push(((variant >> 8) & 0xFF) as u8);
+    out
+}
+
+fn trailing_xor(payload: &[u8], salt: u8) -> Vec<u8> {
+    if payload.is_empty() {
+        return vec![salt];
+    }
+    let mut out = payload.to_vec();
+    if let Some(last) = out.last_mut() {
+        *last ^= salt;
+    }
+    out
 }
 
 fn parse_column_list(s: &str) -> Result<Vec<u64>> {
@@ -847,6 +1086,15 @@ pub async fn run_devnet(
                     SwarmEvent::Behaviour(CcBehaviourEvent::Gossipsub(ev)) => {
                         handle_gossip_event(ev, &mut swarm, &metrics, &topics);
                     }
+                    SwarmEvent::Behaviour(CcBehaviourEvent::Reqresp(ev)) => {
+                        handle_publisher_reqresp(
+                            ev,
+                            &mut swarm,
+                            &cfg.fault_mode,
+                            store.as_ref(),
+                            &metrics,
+                        );
+                    }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                         warn!(?peer_id, error = %error, "outgoing connection error");
                     }
@@ -918,19 +1166,21 @@ pub async fn run_devnet(
 
                 // All columns present in fixture (cgc=128 force).
                 // Track D publish seam: skip withheld indices (CC-2Jb).
+                // CC-2Jc: invalid-column / malformed / spam mutate on the way out;
+                // custody-refuse / stall-reqresp publish honestly (fault is by-root).
                 for (idx, bytes) in &fx.columns {
                     if decide_column_publish(*idx) != ColumnPublishDecision::Publish {
                         continue;
                     }
                     let label = format!("data_column_sidecar_{idx}");
                     let Some(topic) = topics.get(&label) else { continue };
-                    if let Some(payload) = cfg.fault_mode.relay(bytes) {
+                    for payload in cfg.fault_mode.column_publish_payloads(bytes) {
                         match swarm.behaviour_mut().gossipsub.publish(topic.clone(), payload) {
                             Ok(_) => {
                                 metrics
                                     .gossip_messages
                                     .get_or_create(&GossipMessageLabels {
-                                        topic: label,
+                                        topic: label.clone(),
                                         verdict: "published".to_owned(),
                                     })
                                     .inc();
@@ -980,6 +1230,147 @@ fn dial_static_peers(swarm: &mut cc_libp2p::Swarm<CcBehaviour>, peers: &[Multiad
             }
         }
     }
+}
+
+/// Publisher-side by-root/by-range answers from the fixture store (CC-2Jc).
+///
+/// Applies [`FaultMode::by_root_fault_policy`] so custody-refuse returns
+/// ResourceUnavailable and stall-reqresp delays past TTFB.
+fn handle_publisher_reqresp(
+    ev: RequestResponseEvent<ReqRespRequest, ReqRespResponse>,
+    swarm: &mut cc_libp2p::Swarm<CcBehaviour>,
+    fault: &FaultMode,
+    store: Option<&FixtureStore>,
+    metrics: &P2pMetrics,
+) {
+    use crate::reqresp::codec::{
+        ResponseChunk, ResponseCode, SszSnappyFraming, CONTEXT_BYTES_LEN,
+    };
+    use crate::reqresp::columns::{
+        decide_by_root_column_serve, ByRootServeDecision, ColumnsByRootRequest,
+    };
+    use crate::reqresp::Protocol;
+
+    let RequestResponseEvent::Message { peer, message, .. } = ev else {
+        return;
+    };
+    let RequestResponseMessage::Request {
+        request, channel, ..
+    } = message
+    else {
+        return;
+    };
+
+    let protocol_id = request.protocol.to_string();
+    let Some(protocol) = Protocol::from_protocol_id(&protocol_id) else {
+        let framed = encode_simple_error(ResponseCode::InvalidRequest, b"unknown protocol");
+        let _ = swarm
+            .behaviour_mut()
+            .send_reqresp_response(channel, ReqRespResponse::from_framed(framed));
+        return;
+    };
+
+    metrics.inc_reqresp_inbound(protocol.as_str(), "ok");
+
+    // Only publisher answers column by-root with the fault seam; other protocols
+    // get a resource-unavailable so the peer can distinguish "asked" from hang.
+    if protocol != Protocol::DataColumnSidecarsByRootV1 {
+        let framed = encode_simple_error(ResponseCode::ResourceUnavailable, b"not served by publisher");
+        let _ = swarm
+            .behaviour_mut()
+            .send_reqresp_response(channel, ReqRespResponse::from_framed(framed));
+        return;
+    }
+
+    let Some(store) = store else {
+        let framed = encode_simple_error(ResponseCode::ResourceUnavailable, b"no fixture store");
+        let _ = swarm
+            .behaviour_mut()
+            .send_reqresp_response(channel, ReqRespResponse::from_framed(framed));
+        return;
+    };
+
+    let policy = fault.by_root_fault_policy();
+    let req = match ColumnsByRootRequest::from_ssz_bytes(&request.ssz) {
+        Ok(r) => r,
+        Err(_) => {
+            let framed =
+                encode_simple_error(ResponseCode::InvalidRequest, b"malformed column by_root");
+            let _ = swarm
+                .behaviour_mut()
+                .send_reqresp_response(channel, ReqRespResponse::from_framed(framed));
+            return;
+        }
+    };
+
+    let mut chunks: Vec<ResponseChunk> = Vec::new();
+    let mut stall = false;
+    for id in &req.identifiers {
+        let root = id.block_root.into_array();
+        for col_idx in id.columns.iter() {
+            let held = store.sidecar_by_root(&root, *col_idx).is_some();
+            // Track D seam (same named decision as reqresp/columns.rs).
+            let decision = decide_by_root_column_serve(held, policy);
+            match decision {
+                ByRootServeDecision::Serve | ByRootServeDecision::Stall => {
+                    if decision == ByRootServeDecision::Stall {
+                        stall = true;
+                    }
+                    let Some(ssz) = store.sidecar_by_root(&root, *col_idx) else {
+                        continue;
+                    };
+                    // Publisher uses a zero context; peers re-check via digest later.
+                    chunks.push(ResponseChunk::Success {
+                        context: Some([0u8; CONTEXT_BYTES_LEN]),
+                        ssz: ssz.to_vec(),
+                    });
+                }
+                ByRootServeDecision::ResourceUnavailable => {
+                    let framed = encode_simple_error(
+                        ResponseCode::ResourceUnavailable,
+                        b"custody-refuse or missing",
+                    );
+                    let _ = swarm
+                        .behaviour_mut()
+                        .send_reqresp_response(channel, ReqRespResponse::from_framed(framed));
+                    info!(%peer, "by-root refused under fault policy");
+                    return;
+                }
+            }
+        }
+    }
+
+    if chunks.is_empty() {
+        let framed =
+            encode_simple_error(ResponseCode::ResourceUnavailable, b"no columns available");
+        let _ = swarm
+            .behaviour_mut()
+            .send_reqresp_response(channel, ReqRespResponse::from_framed(framed));
+        return;
+    }
+
+    if stall {
+        let delay = crate::reqresp::columns::stall_first_byte_delay();
+        info!(%peer, ?delay, "stall-reqresp: delaying first byte past TTFB");
+        std::thread::sleep(delay);
+    }
+
+    let framed = SszSnappyFraming::encode_response(&chunks, protocol)
+        .unwrap_or_else(|_| encode_simple_error(ResponseCode::ServerError, b"encode failed"));
+    let _ = swarm
+        .behaviour_mut()
+        .send_reqresp_response(channel, ReqRespResponse::from_framed(framed));
+}
+
+fn encode_simple_error(code: crate::reqresp::codec::ResponseCode, msg: &[u8]) -> Vec<u8> {
+    use crate::reqresp::codec::{ResponseChunk, SszSnappyFraming};
+    use crate::reqresp::Protocol;
+    let chunk = ResponseChunk::Error {
+        code: code.as_u8(),
+        message: msg.to_vec(),
+    };
+    SszSnappyFraming::encode_response(&[chunk], Protocol::DataColumnSidecarsByRootV1)
+        .unwrap_or_default()
 }
 
 fn handle_gossip_event(
@@ -1229,12 +1620,64 @@ mod tests {
     }
 
     #[test]
-    fn fault_mode_misbehave_not_implemented() {
-        let m = FaultMode::parse("misbehave:spam").unwrap();
-        assert!(matches!(m, FaultMode::Misbehave { ref kind } if kind == "spam"));
-        let err = m.ensure_implemented().unwrap_err().to_string();
-        assert!(err.contains("not implemented"), "{err}");
-        assert!(err.contains("CC-2Jc"), "{err}");
+    fn fault_mode_misbehave_kinds_implemented() {
+        for kind in MisbehaveKind::ALL {
+            let m = FaultMode::parse(&format!("misbehave:{}", kind.as_str())).unwrap();
+            assert!(matches!(m, FaultMode::Misbehave { kind: k } if k == kind));
+            m.ensure_implemented().unwrap();
+        }
+        // Bare `misbehave` without kind is rejected.
+        assert!(FaultMode::parse("misbehave").is_err());
+        assert!(FaultMode::parse("misbehave:nope").is_err());
+    }
+
+    #[test]
+    fn misbehave_penalty_reasons_map_correctly() {
+        assert_eq!(
+            MisbehaveKind::InvalidColumn.penalty_reason(),
+            PeerPenaltyReason::GossipInvalid
+        );
+        assert_eq!(
+            MisbehaveKind::Malformed.penalty_reason(),
+            PeerPenaltyReason::GossipInvalid
+        );
+        assert_eq!(
+            MisbehaveKind::Spam.penalty_reason(),
+            PeerPenaltyReason::RateLimit
+        );
+        assert_eq!(
+            MisbehaveKind::CustodyRefuse.penalty_reason(),
+            PeerPenaltyReason::CustodyUnserved
+        );
+        assert_eq!(
+            MisbehaveKind::StallReqresp.penalty_reason(),
+            PeerPenaltyReason::ReqrespFault
+        );
+        // Behavioural (P7) is not induced by any kind — still a complete label set.
+        assert_eq!(PeerPenaltyReason::Behavioural.as_str(), "behavioural");
+    }
+
+    #[test]
+    fn by_root_fault_policy_from_misbehave() {
+        assert_eq!(
+            FaultMode::parse("misbehave:custody-refuse")
+                .unwrap()
+                .by_root_fault_policy(),
+            ByRootFaultPolicy::CustodyRefuse
+        );
+        assert_eq!(
+            FaultMode::parse("misbehave:stall-reqresp")
+                .unwrap()
+                .by_root_fault_policy(),
+            ByRootFaultPolicy::StallReqresp
+        );
+        assert_eq!(
+            FaultMode::parse("misbehave:spam")
+                .unwrap()
+                .by_root_fault_policy(),
+            ByRootFaultPolicy::Honest
+        );
+        assert_eq!(FaultMode::None.by_root_fault_policy(), ByRootFaultPolicy::Honest);
     }
 
     #[test]
@@ -1340,6 +1783,48 @@ mod tests {
         )
         .unwrap();
         assert_nonzero_commitments(&manifest, &store).unwrap();
+    }
+
+    #[test]
+    fn invalid_column_mutates_payload() {
+        let m = FaultMode::parse("misbehave:invalid-column").unwrap();
+        let honest = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        let bad = m.relay(&honest).unwrap();
+        assert_ne!(bad, honest, "invalid-column must change bytes");
+        assert!(!bad.is_empty());
+    }
+
+    #[test]
+    fn malformed_is_shorter_or_corrupt() {
+        let m = FaultMode::parse("misbehave:malformed").unwrap();
+        let honest = vec![0u8; 64];
+        let bad = m.relay(&honest).unwrap();
+        assert!(bad.len() < honest.len() || bad[..4] == [0xFF; 4]);
+    }
+
+    #[test]
+    fn spam_emits_multiple_distinct_payloads() {
+        let m = FaultMode::parse("misbehave:spam").unwrap();
+        let honest = b"sidecar-ssz".to_vec();
+        let payloads = m.column_publish_payloads(&honest);
+        assert_eq!(payloads.len(), SPAM_GOSSIP_EXTRA_PUBLISHES as usize + 1);
+        assert_eq!(payloads[0], honest);
+        // Variants must differ so gossip message-ids do not collapse.
+        let set: std::collections::HashSet<_> = payloads.iter().cloned().collect();
+        assert_eq!(set.len(), payloads.len());
+        assert_eq!(
+            spam_columns_to_trip_rate_limit(),
+            INBOUND_COLUMNS_CAPACITY + 1
+        );
+    }
+
+    #[test]
+    fn custody_and_stall_publish_honest_columns() {
+        let honest = b"column-bytes".to_vec();
+        for kind in ["custody-refuse", "stall-reqresp"] {
+            let m = FaultMode::parse(&format!("misbehave:{kind}")).unwrap();
+            assert_eq!(m.relay(&honest).as_deref(), Some(honest.as_slice()));
+        }
     }
 
     #[test]

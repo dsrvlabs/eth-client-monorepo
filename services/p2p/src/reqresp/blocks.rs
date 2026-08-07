@@ -339,6 +339,20 @@ impl From<WindowDeny> for BlockServeError {
 pub struct PlannedBlocks {
     /// Success chunks tagged with per-slot `ForkDigest`.
     pub chunks: Vec<ResponseChunk>,
+    /// When non-zero, server delays this long before the first response byte
+    /// (CC-2Jc `stall-reqresp` — past [`crate::reqresp::TTFB_TIMEOUT`]).
+    pub first_byte_delay: std::time::Duration,
+}
+
+impl PlannedBlocks {
+    /// Honest plan: chunks only, no first-byte delay.
+    #[must_use]
+    pub fn new(chunks: Vec<ResponseChunk>) -> Self {
+        Self {
+            chunks,
+            first_byte_delay: std::time::Duration::ZERO,
+        }
+    }
 }
 
 // ── Serve paths ─────────────────────────────────────────────────────────────
@@ -417,7 +431,7 @@ pub fn serve_blocks_by_range<P: Preset>(
             "no blocks in requested range",
         ));
     }
-    Ok(PlannedBlocks { chunks })
+    Ok(PlannedBlocks::new(chunks))
 }
 
 /// Serve `beacon_blocks_by_root/2/`.
@@ -459,7 +473,7 @@ pub fn serve_blocks_by_root<P: Preset>(
             "no requested roots available",
         ));
     }
-    Ok(PlannedBlocks { chunks })
+    Ok(PlannedBlocks::new(chunks))
 }
 
 /// Serve `beacon_blocks_by_head/1/` — ancestors in **descending** slot order.
@@ -531,7 +545,7 @@ pub fn serve_blocks_by_head<P: Preset>(
             "no ancestors available",
         ));
     }
-    Ok(PlannedBlocks { chunks })
+    Ok(PlannedBlocks::new(chunks))
 }
 
 /// Decode a raw SSZ request for a block protocol and plan the response.

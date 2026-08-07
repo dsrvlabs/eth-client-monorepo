@@ -57,6 +57,8 @@ struct Cli {
     devnet_peer: bool,
 
     /// Fault kind: `none` (default), `withhold-column[=idx,…]`, `misbehave` (CC-2Jc inert).
+    /// Fault kind: `none` (default), `withhold-column` (CC-2Jb), or
+    /// `misbehave:<kind>` with kind ∈ invalid-column|malformed|spam|custody-refuse|stall-reqresp (CC-2Jc).
     #[arg(long, default_value = "none")]
     fault_mode: String,
 

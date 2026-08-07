@@ -886,6 +886,9 @@ fn handle_column_protocol(
             slots_per_epoch,
             current_epoch,
             fulu_fork_epoch,
+            // Production host is honest; CC-2Jc fault policy is applied on the
+            // adversarial publisher path (`fault_mode::run_devnet`).
+            by_root_fault: crate::reqresp::columns::ByRootFaultPolicy::Honest,
         };
         plan_column_response(protocol, ssz, &mut ctx)
     };
@@ -905,6 +908,11 @@ fn handle_column_protocol(
             );
         }
     };
+
+    // CC-2Jc stall-reqresp: delay past TTFB before first response byte.
+    if !planned.first_byte_delay.is_zero() {
+        std::thread::sleep(planned.first_byte_delay);
+    }
 
     apply_chunk_budget_phase(task, peer, protocol, RateLimitKind::Columns, planned)
 }

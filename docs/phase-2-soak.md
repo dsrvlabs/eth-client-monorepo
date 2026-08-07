@@ -97,6 +97,46 @@ cargo test -p cc-p2p --lib by_root_withhold_seam
 CC_SKIP_DOCKER=1 ./devnet/scenarios/withheld-column.sh
 ./devnet/scenarios/withheld-column.sh
 ```
+**Owner:** CC-2Jd / CC-2Jb / CC-2Jc / CC-26b / CC-2A (one subsection each, by clause)  
+**Status:** partial — code paths landed; live adversarial runs still operator discharge
+
+### Clause 6 — scoring penalises misbehaving peers (CC-2Jc)
+
+**Owner:** CC-2Jc  
+**Venue:** adversarial harness (self-devnet + `--fault-mode misbehave:<kind>`)  
+**Status:** **code READY** / live run `_NOT_RUN_`
+
+Kinds map to attributable `cc_p2p_peer_penalty_total{reason}` labels:
+
+| Kind | Mechanism | Penalty reason | Δ |
+|---|---|---|---|
+| `invalid-column` | mutated KZG proof on gossip | `gossip_invalid` | −10 |
+| `malformed` | truncated/corrupt sidecar bytes | `gossip_invalid` | −10 |
+| `spam` | multi-publish + over-limit req/resp | `rate_limit` | −5 |
+| `custody-refuse` | by-root refuse while cgc covers | `custody_unserved` | −15 |
+| `stall-reqresp` | first byte after TTFB+1s | `reqresp_fault` | −5 |
+
+**Control runs (R-7):** same scenario with `--fault-mode none` must pass **first** for every kind.
+
+| Kind | Control (fault off) | Fault run | Emissions to cross −4000 | Elapsed slots | App disconnect before GossipSub? | Pass/Fail |
+|---|---|---|---|---|---|---|
+| `invalid-column` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` |
+| `malformed` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` |
+| `spam` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` |
+| `custody-refuse` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` |
+| `stall-reqresp` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` | `_NOT_RUN_` |
+
+**Assertions when run:**
+- Each kind attributes **only** its own `reason` label (no cross-contamination).
+- Misbehaving publisher's `cc_p2p_peer_score` **crosses the −4000 bucket** (or timeout recorded as R-3 finding).
+- `malformed`: `cc_p2p_worker_panics_total` stays 0.
+- `spam`: `cc_p2p_reqresp_ratelimit_total` increments; publisher sees error response (not silent drop).
+- `custody-refuse`: publisher advertises covering `cgc`; non-custody peers are **not** penalised for the same non-response.
+- Publisher independent reference: its `cc_p2p_reqresp_inbound_total` shows node-a requests arriving.
+- R-3 cross-check: `cc_p2p_peers_below_threshold{threshold}` for **honest** node-b recorded (non-zero with no induced fault is self-isolation).
+- `behavioural` (P7) label still has a producer (GossipSub-observed); no kind injects it (D-5).
+
+**Unit coverage (landed):** `cargo test -p cc-p2p --lib fault_mode` + `reqresp::columns` seam tests for custody-refuse / stall-reqresp decisions.
 
 ## M2.1 Hoodi hold
 

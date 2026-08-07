@@ -259,6 +259,7 @@ pub fn serve_column_protocol<P: Preset>(
         slots_per_epoch,
         current_epoch,
         fulu_fork_epoch,
+        by_root_fault: crate::reqresp::columns::ByRootFaultPolicy::Honest,
     };
 
     let planned = match plan_column_response(protocol, request_ssz, &mut ctx) {
