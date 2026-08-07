@@ -9,6 +9,7 @@
 pub mod capabilities;
 pub mod eth_syncing;
 pub mod fcu;
+pub mod get_blobs;
 pub mod new_payload;
 
 /// JSON-RPC method name strings used on the wire (version-suffixed per common.md).

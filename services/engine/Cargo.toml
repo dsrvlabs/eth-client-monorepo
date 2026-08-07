@@ -35,6 +35,8 @@ prometheus-client = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# CC-37a: kzg_commitment_to_versioned_hash without taking cc-crypto (CC-37b's edge).
+sha2 = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }

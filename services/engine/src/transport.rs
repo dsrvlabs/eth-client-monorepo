@@ -6,8 +6,11 @@
 //! - **fastpath** (`getBlobs`): concurrency **2** via `Semaphore`
 //! - **upcheck** (`eth_syncing` / `exchangeCapabilities`): concurrency **1**
 //!
-//! Response bodies are capped at **1 MiB before any parse**. Status → error
-//! mapping follows Architecture §3.1 (plain-text 401/403 are normal).
+//! Response bodies are capped **before any parse**. Default ceiling is **1 MiB**
+//! (Architecture §3.1 — HTML auth/error pages). `engine_getBlobsV2` success
+//! bodies use a larger method-specific ceiling so a Hoodi-scale Complete
+//! response (many `BlobAndProofV2`s as hex JSON) is readable (CC-37a review F1).
+//! Status → error mapping follows Architecture §3.1 (plain-text 401/403 are normal).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,8 +24,32 @@ use crate::errors::EngineError;
 use crate::jwt::JwtSecret;
 use crate::metrics::{EngineMethod, EngineMetrics, ErrorCodeLabels, MethodLabels};
 
-/// Hard response-body ceiling (Architecture §3.1). Applied before any parse.
+/// Default response-body ceiling (Architecture §3.1). Applied to ordered/upcheck
+/// success paths and **all** non-2xx bodies (auth/error pages stay small).
 pub const MAX_BODY_BYTES: usize = 1024 * 1024; // 1 MiB
+
+/// `engine_getBlobsV2` **success** body ceiling (CC-37a F1).
+///
+/// Rough hex JSON size ≈ 0.28 MiB per `BlobAndProofV2` (131072-byte blob + 128×48
+/// proofs, hex-doubled, plus JSON punctuation). Hoodi `max_blobs_per_block` is
+/// 15/21 (CC-1G); 21 × ~0.3 MiB ≈ 6.3 MiB + envelope. **16 MiB** gives headroom
+/// above that without opening the ordered/auth paths to multi-MiB HTML.
+pub const MAX_BODY_BYTES_GET_BLOBS: usize = 16 * 1024 * 1024;
+
+/// Body ceiling for a **successful** (2xx) response of `method`.
+///
+/// Non-2xx always use [`MAX_BODY_BYTES`] regardless of method so a hostile or
+/// verbose auth-error page cannot force a multi-MiB allocation on the fastpath.
+#[must_use]
+pub const fn max_body_bytes_for_success(method: EngineMethod) -> usize {
+    match method {
+        EngineMethod::GetBlobsV2 => MAX_BODY_BYTES_GET_BLOBS,
+        EngineMethod::NewPayloadV4
+        | EngineMethod::ForkchoiceUpdatedV3
+        | EngineMethod::ExchangeCapabilities
+        | EngineMethod::EthSyncing => MAX_BODY_BYTES,
+    }
+}
 
 /// Which EL call lane a request rides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,7 +404,14 @@ impl EngineTransport {
         };
 
         let status = response.status().as_u16();
-        let bytes = read_body_capped(response, MAX_BODY_BYTES).await?;
+        // Non-2xx: always the 1 MiB default (auth/error pages). 2xx getBlobsV2:
+        // raised ceiling so multi-blob Complete JSON fits (CC-37a F1).
+        let max_bytes = if (200..300).contains(&status) {
+            max_body_bytes_for_success(method)
+        } else {
+            MAX_BODY_BYTES
+        };
+        let bytes = read_body_capped(response, max_bytes).await?;
 
         if !(200..300).contains(&status) {
             let text = String::from_utf8_lossy(&bytes).into_owned();
@@ -706,6 +740,93 @@ mod tests {
         // Exact-fit stream is OK.
         let ok = accumulate_body_capped([vec![1u8; 512], vec![2u8; 512]], 1024).expect("exact fit");
         assert_eq!(ok.len(), 1024);
+    }
+
+    /// CC-37a F1: getBlobsV2 2xx uses the raised ceiling; ordered stays at 1 MiB.
+    #[test]
+    fn get_blobs_success_body_cap_exceeds_default() {
+        const {
+            assert!(MAX_BODY_BYTES == 1024 * 1024);
+            assert!(MAX_BODY_BYTES_GET_BLOBS > MAX_BODY_BYTES);
+            // 21 blobs × ~0.28 MiB ≈ 6 MiB; 16 MiB ceiling covers Hoodi Complete.
+            assert!(MAX_BODY_BYTES_GET_BLOBS >= 16 * 1024 * 1024);
+        }
+        assert_eq!(
+            max_body_bytes_for_success(EngineMethod::GetBlobsV2),
+            MAX_BODY_BYTES_GET_BLOBS
+        );
+        assert_eq!(
+            max_body_bytes_for_success(EngineMethod::NewPayloadV4),
+            MAX_BODY_BYTES
+        );
+    }
+
+    /// A multi-MiB 2xx getBlobs body is accepted (would fail under 1 MiB).
+    #[tokio::test]
+    async fn get_blobs_accepts_multi_mib_complete_body() {
+        let server = MockServer::start().await;
+        // ~2.5 MiB JSON null-ish payload: large enough to trip 1 MiB, under 16 MiB.
+        // Real Complete arrays are larger per blob; this proves the method ceiling.
+        let big_hex = "00".repeat(1_250_000); // 2.5e6 hex chars ≈ 2.5 MiB in the string
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"result":[{{"blob":"0x{big_hex}","proofs":[]}}]}}"#
+        );
+        assert!(body.len() > MAX_BODY_BYTES);
+        assert!(body.len() < MAX_BODY_BYTES_GET_BLOBS);
+        Mock::given(http_method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let t = transport(&server.uri(), None);
+        // Decode of proofs will fail (wrong length) — we only care that the
+        // transport **reads** past 1 MiB rather than Decode-cap-tripping first.
+        let result = t
+            .call(
+                Lane::Fastpath,
+                EngineMethod::GetBlobsV2,
+                names::GET_BLOBS_V2,
+                json!([[]]),
+            )
+            .await;
+        // Transport succeeded past the body cap; result is Ok(Value) or a later
+        // parse shape. Cap failure would be Decode with "exceeds max".
+        match result {
+            Ok(_) => {}
+            Err(EngineError::Decode { reason }) => {
+                assert!(
+                    !reason.contains("exceeds max") && !reason.contains("Content-Length"),
+                    "must not fail the 1 MiB body cap on getBlobs 2xx: {reason}"
+                );
+            }
+            Err(e) => panic!("unexpected transport error: {e:?}"),
+        }
+    }
+
+    /// Non-2xx on the getBlobs method still uses the 1 MiB default (auth pages).
+    #[tokio::test]
+    async fn get_blobs_error_body_stays_at_one_mib() {
+        let server = MockServer::start().await;
+        let big = vec![b'x'; 4 * 1024 * 1024];
+        Mock::given(http_method("POST"))
+            .respond_with(ResponseTemplate::new(401).set_body_bytes(big))
+            .mount(&server)
+            .await;
+
+        let t = transport(&server.uri(), None);
+        let err = t
+            .call(
+                Lane::Fastpath,
+                EngineMethod::GetBlobsV2,
+                names::GET_BLOBS_V2,
+                json!([[]]),
+            )
+            .await
+            .expect_err("4 MiB 401 must trip the default cap");
+        assert!(
+            matches!(err, EngineError::Decode { .. }),
+            "expected Decode body cap, got {err:?}"
+        );
     }
 
     /// Hostile 4xx/5xx bodies never panic — pure classification (≥ 1000 cases).
