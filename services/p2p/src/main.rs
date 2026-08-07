@@ -2,12 +2,18 @@
 //!
 //! Phase 0 surface: health + reflection + `GetInfo`. Real RPCs land in Phase 2+.
 //! Health peer: `chain` (§6.3).
+//!
+//! CC-29a: §12 metric families registered into `bs.registry` between `init` and
+//! `serve` (same seam as `services/chain`).
+
+mod metrics;
 
 use cc_bootstrap::{PeerSpec, ServiceSpec, TelemetrySettings};
 use cc_config::ServiceConfig;
 use cc_proto::common::BuildInfo;
 use cc_proto::p2p::p2p_service_server::{P2pService, P2pServiceServer};
 use cc_proto::p2p::{GetInfoRequest, GetInfoResponse};
+use metrics::P2pMetrics;
 use serde::Deserialize;
 use tonic::service::Routes;
 use tonic::{Request, Response, Status};
@@ -76,7 +82,11 @@ impl P2pService for P2pStub {
 async fn main() -> anyhow::Result<()> {
     // Fail before any bind (CC-09/2): load config, then telemetry, then serve.
     let cfg = cc_config::load::<P2pConfig>(SERVICE)?;
-    let bs = cc_bootstrap::init(SERVICE, TelemetrySettings::from(&cfg.service))?;
+    let mut bs = cc_bootstrap::init(SERVICE, TelemetrySettings::from(&cfg.service))?;
+
+    // CC-29a: register §12 families + libp2p-metrics sub-registry between init and serve.
+    let _p2p_metrics = P2pMetrics::register(&mut bs.registry);
+
     let routes = Routes::default().add_service(P2pServiceServer::new(P2pStub));
     cc_bootstrap::serve(bs, cfg.service_spec(), routes).await?;
     Ok(())
