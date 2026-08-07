@@ -541,13 +541,8 @@ where
             Ok(())
         }
         p2p_to_chain::Msg::Object(obj) => {
-            let verdict = handle_gossip_object(deps, obj).await;
-            let seq = next_seq();
-            let out = ChainToP2p {
-                seq,
-                msg: Some(chain_to_p2p::Msg::Verdict(verdict)),
-            };
-            out_tx.send(Ok(out)).await.map_err(|_| ())
+            // CC-27c: may emit the gossip Verdict before the state transition.
+            handle_gossip_object(deps, obj, out_tx, next_seq).await
         }
         p2p_to_chain::Msg::DataAvailable(_da) => {
             // DA seam lands in CC-24d; acknowledge without import work.
@@ -572,29 +567,54 @@ where
     }
 }
 
-async fn handle_gossip_object(deps: &P2pStreamDeps, obj: GossipObject) -> Verdict {
+/// Handle one gossip object on the stream (CC-27c fast path).
+///
+/// When cheap gossip conditions pass, emits **exactly one** equality-term
+/// `Verdict` (ACCEPT, `import=NONE`) **before** the state transition. A later
+/// Reject-class import failure may send a **second** stream message that is
+/// not an equality term — p2p applies `import_invalid` without re-reporting
+/// gossip. `Internal` produces neither a second REJECT nor a penalty.
+async fn handle_gossip_object<F>(
+    deps: &P2pStreamDeps,
+    obj: GossipObject,
+    out_tx: &mpsc::Sender<Result<ChainToP2p, Status>>,
+    next_seq: &mut F,
+) -> Result<(), ()>
+where
+    F: FnMut() -> u64,
+{
     let correlation_id = obj.root.clone();
     let kind = ObjectKind::try_from(obj.kind).unwrap_or(ObjectKind::Unspecified);
 
     // Only BLOCK is chain-authoritative in Phase 2 (ADR P2-04). Other kinds
     // should not arrive here; IGNORE if they do.
     if kind != ObjectKind::Block {
-        return Verdict {
-            correlation_id,
-            acceptance: Acceptance::Ignore as i32,
-            reason: Reason::AlreadyKnown as i32,
-            import: ImportResult::None as i32,
-        };
+        return send_verdict(
+            out_tx,
+            next_seq,
+            Verdict {
+                correlation_id,
+                acceptance: Acceptance::Ignore as i32,
+                reason: Reason::AlreadyKnown as i32,
+                import: ImportResult::None as i32,
+            },
+        )
+        .await;
     }
 
     // Re-read core on every object so install_core is visible to live sessions (F2).
     let Some(core) = deps.core_handle() else {
-        return Verdict {
-            correlation_id,
-            acceptance: Acceptance::Ignore as i32,
-            reason: Reason::Internal as i32,
-            import: ImportResult::None as i32,
-        };
+        return send_verdict(
+            out_tx,
+            next_seq,
+            Verdict {
+                correlation_id,
+                acceptance: Acceptance::Ignore as i32,
+                reason: Reason::Internal as i32,
+                import: ImportResult::None as i32,
+            },
+        )
+        .await;
     };
 
     let request = ImportBlockRequest {
@@ -604,8 +624,79 @@ async fn handle_gossip_object(deps: &P2pStreamDeps, obj: GossipObject) -> Verdic
         source: obj.source,
     };
 
-    match core.import_block(request).await {
-        Ok(resp) => map_import_verdict(correlation_id, resp.verdict),
+    let (early_tx, early_rx) = tokio::sync::oneshot::channel();
+    let import_fut = core.import_block_for_gossip(request, Some(early_tx));
+    tokio::pin!(import_fut);
+
+    // Prefer early ACCEPT when both are ready (F4: deterministic, not random select).
+    let mut early_emitted = false;
+    tokio::select! {
+        biased;
+        early = early_rx => {
+            if early.is_ok() {
+                early_emitted = true;
+                // Equality-term verdict: ACCEPT with import still open.
+                send_verdict(
+                    out_tx,
+                    next_seq,
+                    Verdict {
+                        correlation_id: correlation_id.clone(),
+                        acceptance: Acceptance::Accept as i32,
+                        reason: Reason::Valid as i32,
+                        import: ImportResult::None as i32,
+                    },
+                )
+                .await?;
+            }
+        }
+        outcome = &mut import_fut => {
+            return emit_terminal_verdict(out_tx, next_seq, correlation_id, outcome).await;
+        }
+    }
+
+    // Early ACCEPT was emitted; wait for import completion (no second equality verdict).
+    let outcome = import_fut.await;
+    match outcome {
+        Ok(o) if early_emitted && o.late_import_reject => {
+            // Late correction: stream message for app-score only (CC-27c / §5.3).
+            // Not a gossip re-report; p2p equality ignores unknown correlation.
+            send_verdict(
+                out_tx,
+                next_seq,
+                Verdict {
+                    correlation_id,
+                    acceptance: Acceptance::Reject as i32,
+                    reason: Reason::Invalid as i32,
+                    import: ImportResult::Invalid as i32,
+                },
+            )
+            .await
+        }
+        Ok(o) if early_emitted => {
+            // Imported / deferred / internal — single equality verdict already sent.
+            // Internal: explicitly no second REJECT and no penalty (Phase 1 §5.3).
+            if o.late_import_internal {
+                tracing::debug!(
+                    "import failed Internal after early ACCEPT; no penalty, no REJECT"
+                );
+            }
+            Ok(())
+        }
+        other => emit_terminal_verdict(out_tx, next_seq, correlation_id, other).await,
+    }
+}
+
+async fn emit_terminal_verdict<F>(
+    out_tx: &mpsc::Sender<Result<ChainToP2p, Status>>,
+    next_seq: &mut F,
+    correlation_id: Vec<u8>,
+    outcome: Result<crate::import::ImportOutcome, Status>,
+) -> Result<(), ()>
+where
+    F: FnMut() -> u64,
+{
+    let verdict = match outcome {
+        Ok(o) => map_import_verdict(correlation_id, o.response.verdict, &o.response.reason),
         Err(status) => {
             // Map gRPC failures onto Ignore/Internal so we never descore peers
             // for our own transport bugs (Phase 1 §5.3 Internal rule).
@@ -626,10 +717,62 @@ async fn handle_gossip_object(deps: &P2pStreamDeps, obj: GossipObject) -> Verdic
                 import: ImportResult::Invalid as i32,
             }
         }
-    }
+    };
+    send_verdict(out_tx, next_seq, verdict).await
 }
 
-fn map_import_verdict(correlation_id: Vec<u8>, verdict: i32) -> Verdict {
+async fn send_verdict<F>(
+    out_tx: &mpsc::Sender<Result<ChainToP2p, Status>>,
+    next_seq: &mut F,
+    verdict: Verdict,
+) -> Result<(), ()>
+where
+    F: FnMut() -> u64,
+{
+    let seq = next_seq();
+    let out = ChainToP2p {
+        seq,
+        msg: Some(chain_to_p2p::Msg::Verdict(verdict)),
+    };
+    out_tx.send(Ok(out)).await.map_err(|_| ())
+}
+
+fn map_import_verdict(correlation_id: Vec<u8>, verdict: i32, detail: &str) -> Verdict {
+    // H3: machine-readable reasons that are Ignore-class on the wire even when
+    // the ImportBlockVerdict enum only has Invalid (proto gap for FUTURE_SLOT).
+    if detail == "future_slot" {
+        return Verdict {
+            correlation_id,
+            acceptance: Acceptance::Ignore as i32,
+            reason: Reason::FutureSlot as i32,
+            import: ImportResult::Invalid as i32,
+        };
+    }
+    if detail == "too_old" {
+        return Verdict {
+            correlation_id,
+            acceptance: Acceptance::Ignore as i32,
+            reason: Reason::AlreadyKnown as i32,
+            import: ImportResult::Invalid as i32,
+        };
+    }
+    if detail == "not_descended_from_finalized" {
+        return Verdict {
+            correlation_id,
+            acceptance: Acceptance::Reject as i32,
+            reason: Reason::NotDescendedFromFinalized as i32,
+            import: ImportResult::Invalid as i32,
+        };
+    }
+    if detail.starts_with("internal_proposer_sig") {
+        return Verdict {
+            correlation_id,
+            acceptance: Acceptance::Ignore as i32,
+            reason: Reason::Internal as i32,
+            import: ImportResult::Invalid as i32,
+        };
+    }
+
     // ImportBlockVerdict → Acceptance / Reason / ImportResult.
     match ImportBlockVerdict::try_from(verdict).unwrap_or(ImportBlockVerdict::Unspecified) {
         ImportBlockVerdict::Imported => Verdict {

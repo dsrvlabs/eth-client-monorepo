@@ -12,6 +12,7 @@ template completion, CC-29c numbers). **No invented numbers.**
 | `## KZG benchmark` | CC-24b (cross-ref `docs/kzg-benchmark.md`) |
 | `## Non-Hoodi clauses` | CC-2Jd / CC-2Jb / CC-2Jc / CC-26b / CC-2A |
 | `## M2.1 Hoodi hold` | CC-21c |
+| `## CC-27/5 verdict latency` | CC-27c |
 | `## Run record` | CC-29b skeleton; CC-29c numbers |
 | `## Clause table` | CC-29b skeleton; CC-29c numbers |
 
@@ -78,6 +79,23 @@ and D-8 promotion verdict remain operator runs.
 **V-4 bootnode list:** see `config/p2p.toml` `[discovery].boot_nodes` (retrieval
 date in-file). Self-devnet reads `devnet/out/bootnodes.txt` via
 `boot_nodes_file`.
+
+## CC-27/5 verdict latency
+
+**Owner:** CC-27c  
+**Date:** 2026-08-07  
+**Metric:** `cc_p2p_verdict_latency_seconds` — p95 at exact `le=0.1` bucket
+boundary (CC-29a).
+
+| Check | Result |
+|---|---|
+| Gossip-verify fast path in `services/chain/src/import.rs` | **LANDED** — cheap checks emit ACCEPT before `on_block` / ST |
+| In-process: Verdict arrives while transition stalled 2 s | **PASS** (`cargo test -p cc-chain --test gossip_verify_fast_path`) |
+| Self-devnet p95 ≤ 100 ms over ≥ 100 blocks | **`_NOT_RUN_`** — record `histogram_quantile` / `le="0.1"` count here after M2.2 self-devnet |
+
+**Method (when run):** scrape `cc_p2p_verdict_latency_seconds_bucket{le="0.1"}` and
+total count over a self-devnet window of ≥ 100 imported blocks; p95 ≤ 100 ms is
+a counting question at the exact boundary, not an interpolation.
 
 ## Booking (c) — DA-blind head follow (M2.2 exit criterion 9)
 

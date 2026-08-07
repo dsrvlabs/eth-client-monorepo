@@ -8,6 +8,7 @@
 //! - **CC-1G**: `/eth/v1/config/spec` as a `BLOB_SCHEDULE` source
 //! - **CC-27a**: `P2pStream` server, `ChainView` producer, `ArcSwap<EpochContext>`,
 //!   `GetValidatorRecords`
+//! - **CC-27c**: gossip-verify fast path — block acceptance before state transition
 //!
 //! The binary (`main.rs`) binds first, then checkpoint-bootstraps when
 //! `checkpoint_providers` is configured (CC-19b): self health SERVING while
@@ -59,7 +60,8 @@ pub use p2p_stream::{
     VIEW_KIND_SLOT_TICK, ViewTick, build_chain_view, validate_publish_topic,
 };
 pub use import::{
-    ImportCounters, ImportOutcome, decode_signed_block, encode_signed_block, parse_root,
+    ImportCounters, ImportOutcome, decode_signed_block, encode_signed_block,
+    import_block_with_early, late_import_flags, on_block_error_gossip_class, parse_root,
 };
 pub use metrics::{
     AUX_DURATION_BUCKETS, BLOCK_BUDGET_SECS, BUFFER_RING, BUFFER_SUBSCRIBER, BootstrapResult,

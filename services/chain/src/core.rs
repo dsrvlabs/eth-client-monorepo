@@ -38,7 +38,7 @@ use tonic::Status;
 use crate::apply_attestations::apply_attestations;
 use crate::epoch_context::{EpochContext, EpochContextStore};
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
-use crate::import::{ImportCounters, import_block};
+use crate::import::{ImportCounters, ImportOutcome, import_block, import_block_with_early};
 use crate::metrics::ChainMetrics;
 use crate::residency::{DEFAULT_BODY_RING_CAPACITY, DEFAULT_MAX_RESIDENT_STATES, Residency};
 
@@ -65,6 +65,13 @@ pub enum CoreCommand {
     ImportBlock {
         request: ImportBlockRequest,
         reply: oneshot::Sender<Result<ImportBlockResponse, Status>>,
+    },
+    /// Gossip-path import: early ACCEPT notify before state transition (CC-27c).
+    ImportBlockGossip {
+        request: ImportBlockRequest,
+        /// Fired once after cheap gossip checks pass, before `on_block`.
+        early_accept: Option<oneshot::Sender<()>>,
+        reply: oneshot::Sender<Result<ImportOutcome, Status>>,
     },
     /// Batched free-floating `on_attestation` (CC-1E). No per-item head recompute.
     ApplyAttestations {
@@ -203,6 +210,42 @@ impl CoreHandle {
         );
         rx.await
             .map_err(|_| Status::unavailable("core thread dropped import reply"))?
+    }
+
+    /// Gossip-path import (CC-27c): optional early-ACCEPT oneshot before transition.
+    ///
+    /// When cheap gossip conditions pass, `early_accept` is completed **before**
+    /// `on_block` runs so the stream can emit a `Verdict` under the 100 ms budget.
+    /// The returned [`ImportOutcome`] carries late-reject / late-internal flags
+    /// for the post-transition application-score path (no second gossip report).
+    pub async fn import_block_for_gossip(
+        &self,
+        request: ImportBlockRequest,
+        early_accept: Option<oneshot::Sender<()>>,
+    ) -> Result<ImportOutcome, Status> {
+        let (reply, rx) = oneshot::channel();
+        let cmd = CoreCommand::ImportBlockGossip {
+            request,
+            early_accept,
+            reply,
+        };
+        match self.cmd_tx.send_timeout(cmd, IMPORT_SEND_TIMEOUT).await {
+            Ok(()) => {}
+            Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
+                self.metrics.inc_import_rejected_backpressure();
+                return Err(Status::resource_exhausted(
+                    "import command channel full after 2s send_timeout",
+                ));
+            }
+            Err(mpsc::error::SendTimeoutError::Closed(_)) => {
+                return Err(Status::unavailable("chain core thread is shut down"));
+            }
+        }
+        self.metrics.set_import_queue_depth(
+            (COMMAND_CHANNEL_CAPACITY.saturating_sub(self.cmd_tx.capacity())) as u64,
+        );
+        rx.await
+            .map_err(|_| Status::unavailable("core thread dropped gossip import reply"))?
     }
 
     /// Apply a batch of free-floating attestations (CC-1E).
@@ -729,6 +772,38 @@ fn core_loop<P: Preset>(
                     );
                 }
                 let _ = reply.send(outcome.map(|o| o.response));
+            }
+            CoreCommand::ImportBlockGossip {
+                request,
+                early_accept,
+                reply,
+            } => {
+                let epoch_snapshot = epoch.load();
+                let outcome = import_block_with_early(
+                    &mut store,
+                    &mut residency,
+                    &config,
+                    &head,
+                    &event_tx,
+                    &metrics,
+                    &counters,
+                    &mut snapshot_sequence,
+                    request,
+                    verify,
+                    Some(epoch_snapshot.as_ref()),
+                    early_accept,
+                    None, // production: no inject
+                );
+                if outcome.is_ok() {
+                    maybe_publish_epoch_context(
+                        &store,
+                        &config,
+                        &epoch,
+                        &mut epoch_sequence,
+                        &mut last_published_epoch,
+                    );
+                }
+                let _ = reply.send(outcome);
             }
             CoreCommand::ApplyAttestations { request, reply } => {
                 let outcome = apply_attestations(

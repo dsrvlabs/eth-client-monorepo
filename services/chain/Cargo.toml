@@ -44,6 +44,7 @@ tracing = { workspace = true }
 tree_hash = { workspace = true }
 
 [dev-dependencies]
+cc-crypto = { workspace = true, features = ["signing"] }
 http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }

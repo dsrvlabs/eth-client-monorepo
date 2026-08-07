@@ -766,11 +766,18 @@ async fn apply_verdict(
         });
         sync_outstanding_metrics(outstanding, metrics);
     } else {
-        // Already timed out or unknown: count late only. Do **not** re-enter
-        // `chain_verdicts_received` — that would break
-        // `sent == verdicts + timeouts` after a local IGNORE (F1 / M3).
+        // Already timed out, or a **late import correction** after early ACCEPT
+        // (CC-27c): count late only — do **not** re-enter
+        // `chain_verdicts_received` (CC-27/4 equality). Still forward to
+        // `chain_in` so `import_invalid` app-score can fire without re-report.
         metrics.inc_verdict_late();
-        debug!("verdict for unknown/expired correlation_id (late after timeout; not an equality term)");
+        let _ = chain_in_tx.try_send(ChainInbound {
+            verdict,
+            latency: std::time::Duration::ZERO,
+        });
+        debug!(
+            "verdict for unknown/expired correlation_id (late after timeout or late import reject; not an equality term)"
+        );
     }
 }
 

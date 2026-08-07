@@ -1,23 +1,39 @@
-//! Import path on the core thread (Architecture §7.2, ADR-P1-10).
+//! Import path on the core thread (Architecture §7.2, ADR-P1-10, CC-27c).
 //!
 //! ```text
-//! decode-free dedup probe → decode → root check → parent → DA → ST → FC
-//!   → get_head → pin residency to FC head → prune → snapshot → events → verdict
+//! decode-free dedup probe → decode → root check → parent → proposer →
+//! finalized descent → **block proposer BLS** (always on gossip path; H1)
+//!   → **early gossip ACCEPT**  (CC-27c fast path)
+//!   → DA → ST → FC → get_head → pin residency → prune → snapshot → events
+//!   → import result (not a second gossip verdict)
 //! ```
 //!
 //! The pre-computed `ImportBlockRequest.root` is a **probe only**: a hit that is
 //! **fully imported** (`store.blocks` **and** proto-array) returns `DUPLICATE`
 //! without decoding or re-running transition. A partial (header without
 //! proto-array) falls through so `on_block` can resume (SEC-4).
+//!
+//! # Gossip-verify fast path (CC-27c)
+//!
+//! Cheap gossip conditions answer the block **acceptance** before
+//! `state_transition` so verdict latency p95 ≤ 100 ms is reachable. A late
+//! `Reject` from the transition does **not** re-report gossip; it is an
+//! application-score penalty (`import_invalid`). `Internal` never penalises.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use bytes::Bytes;
-use cc_fork_choice::{BlockImport, DeferralReason, OnBlockError, Store, get_head, on_block};
+use cc_fork_choice::{
+    BlockImport, DeferralReason, OnBlockError, Store, get_checkpoint_block, get_head, on_block,
+};
 use cc_proto::chain::{EventKind, ImportBlockRequest, ImportBlockResponse, ImportBlockVerdict};
-use cc_state_transition::BlockSignatureStrategy;
+use cc_state_transition::helpers::misc::compute_start_slot_at_epoch;
+use cc_state_transition::{
+    BlockError, BlockSignatureSet, BlockSignatureStrategy, GossipClass, compute_epoch_at_slot,
+    push_block_proposer_signature,
+};
 use cc_types::config::ChainConfig;
 use cc_types::preset::Preset;
 use cc_types::primitives::Root;
@@ -26,6 +42,7 @@ use ssz::Encode;
 use tonic::Status;
 use tree_hash::TreeHash;
 
+use crate::epoch_context::EpochContext;
 use crate::events::EventInput;
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
 use crate::metrics::{ChainMetrics, ImportResult, ImportStage};
@@ -37,6 +54,25 @@ pub struct ImportOutcome {
     pub response: ImportBlockResponse,
     /// True when state_transition / on_block was invoked (for DUPLICATE tests).
     pub transition_invoked: bool,
+    /// Cheap gossip conditions passed and early ACCEPT was (or would be) emitted.
+    pub early_accept: bool,
+    /// After early ACCEPT, import failed with [`GossipClass::Reject`] — late
+    /// application-score penalty (`import_invalid`), **no** second gossip report.
+    pub late_import_reject: bool,
+    /// After early ACCEPT, import failed with [`GossipClass::Internal`] — no
+    /// penalty and no REJECT.
+    pub late_import_internal: bool,
+}
+
+/// Map `(early_accept, class)` → late-import flags (CC-27c / §5.3).
+///
+/// Pure helper so tests can force Reject vs Internal without a full ST.
+#[must_use]
+pub fn late_import_flags(early_accept: bool, class: GossipClass) -> (bool, bool) {
+    (
+        early_accept && class == GossipClass::Reject,
+        early_accept && class == GossipClass::Internal,
+    )
 }
 
 /// Shared counters observed by tests (DUPLICATE short-circuit).
@@ -59,6 +95,10 @@ fn is_fully_imported<P: Preset>(store: &Store<P>, root: &Root) -> bool {
 }
 
 /// Run the full import path against a live store (core thread only).
+///
+/// Unary `ImportBlock` callers use this without an early-accept hook; the
+/// P2pStream path passes [`Some`] so the gossip verdict can leave the process
+/// **before** the state transition runs (CC-27c).
 #[allow(clippy::too_many_arguments)]
 pub fn import_block<P: Preset>(
     store: &mut Store<P>,
@@ -72,9 +112,52 @@ pub fn import_block<P: Preset>(
     request: ImportBlockRequest,
     verify: BlockSignatureStrategy,
 ) -> Result<ImportOutcome, Status> {
+    import_block_with_early(
+        store,
+        residency,
+        config,
+        head_store,
+        event_tx,
+        metrics,
+        counters,
+        snapshot_sequence,
+        request,
+        verify,
+        None,
+        None,
+        None,
+    )
+}
+
+/// Like [`import_block`], with optional epoch context and early-accept oneshot.
+///
+/// When cheap gossip conditions pass, `early_accept` is completed **before**
+/// `on_block` / state transition (non-blocking channel send only).
+///
+/// **Gossip BLS (H1):** when `early_accept_tx` is `Some`, the cheap path **always**
+/// verifies the block proposer signature with [`BlockSignatureStrategy::VerifyIndividual`]
+/// and **fails closed** (no early ACCEPT) on failure — never skip BLS for re-gossip.
+///
+/// `inject_after_early` (tests only): if set, after early ACCEPT skip `on_block` and
+/// treat the injected error as the import failure (non-vacuous late-flag tests).
+#[allow(clippy::too_many_arguments)]
+pub fn import_block_with_early<P: Preset>(
+    store: &mut Store<P>,
+    residency: &mut Residency<P>,
+    config: &ChainConfig,
+    head_store: &HeadSnapshotStore,
+    event_tx: &tokio::sync::mpsc::Sender<EventInput>,
+    metrics: &ChainMetrics,
+    counters: &ImportCounters,
+    snapshot_sequence: &mut u64,
+    request: ImportBlockRequest,
+    verify: BlockSignatureStrategy,
+    epoch_ctx: Option<&EpochContext>,
+    early_accept_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    inject_after_early: Option<OnBlockError>,
+) -> Result<ImportOutcome, Status> {
+    let gossip_path = early_accept_tx.is_some() || inject_after_early.is_some();
     // --- 1. decode-free dedup probe (ADR-P1-10 / SEC-4) ----------------------
-    // Only fully-imported roots short-circuit. Header-only partials fall through
-    // so on_block can resume integration without a false DUPLICATE.
     let probe = parse_root(&request.root)?;
     if is_fully_imported(store, &probe) {
         metrics.inc_import_result(ImportResult::Duplicate);
@@ -84,6 +167,9 @@ pub fn import_block<P: Preset>(
                 reason: String::new(),
             },
             transition_invoked: false,
+            early_accept: false,
+            late_import_reject: false,
+            late_import_internal: false,
         });
     }
 
@@ -101,19 +187,48 @@ pub fn import_block<P: Preset>(
         )));
     }
 
-    // --- 4. ensure parent state available (residency / body-ring replay) ----
-    let parent_root = signed.message.parent_root;
-    if store.blocks().contains_key(&parent_root)
-        && let Err(e) = residency.ensure_in_store(store, parent_root, config)
-    {
-        // Deep reorg gap: record, do not panic, surface as INVALID.
+    // --- 4. cheap gossip conditions (CC-27c) --------------------------------
+    // Parent presence / residency, proposer index, finalized descent, signature.
+    // Terminal failures here become the **only** verdict (no early ACCEPT).
+    if let Some(terminal) = cheap_gossip_terminal(
+        store,
+        residency,
+        config,
+        epoch_ctx,
+        &signed,
+        verify,
+        gossip_path,
+        metrics,
+    )? {
+        return Ok(ImportOutcome {
+            response: terminal,
+            transition_invoked: false,
+            early_accept: false,
+            late_import_reject: false,
+            late_import_internal: false,
+        });
+    }
+
+    // --- 4b. early gossip ACCEPT (before state transition) ------------------
+    let early_accept = true;
+    if let Some(tx) = early_accept_tx {
+        let _ = tx.send(());
+    }
+
+    // Test inject: force a classified import failure without a full ST (F1).
+    if let Some(err) = inject_after_early {
+        let class = on_block_error_gossip_class(&err);
+        let (late_import_reject, late_import_internal) = late_import_flags(early_accept, class);
         metrics.inc_import_result(ImportResult::Invalid);
         return Ok(ImportOutcome {
             response: ImportBlockResponse {
                 verdict: ImportBlockVerdict::Invalid as i32,
-                reason: format!("reorg gap: {e}"),
+                reason: err.to_string(),
             },
             transition_invoked: false,
+            early_accept,
+            late_import_reject,
+            late_import_internal,
         });
     }
 
@@ -121,71 +236,281 @@ pub fn import_block<P: Preset>(
     counters
         .transition_invocations
         .fetch_add(1, Ordering::Relaxed);
-    // Wall time of the whole on_block call (ST + FC integrate). Separate
-    // Transition/ForkChoice stage split needs FC-internal seams (review M6).
     let on_block_start = Instant::now();
     let outcome = on_block(store, &signed, config, verify);
     let on_block_secs = on_block_start.elapsed().as_secs_f64();
     metrics.observe_import_stage(ImportStage::Transition, on_block_secs);
 
-    let (reason, imported_root) = match outcome {
-        Ok(BlockImport::Imported(b)) => (String::new(), Some(b.root)),
+    match outcome {
+        Ok(BlockImport::Imported(b)) => {
+            finish_imported(
+                store,
+                residency,
+                head_store,
+                event_tx,
+                metrics,
+                snapshot_sequence,
+                &signed,
+                b.root,
+                on_block_secs,
+                early_accept,
+            )
+        }
         Ok(BlockImport::Deferred(DeferralReason::DataUnavailable)) => {
             metrics.inc_import_result(ImportResult::Deferred);
-            return Ok(ImportOutcome {
+            Ok(ImportOutcome {
                 response: ImportBlockResponse {
                     verdict: ImportBlockVerdict::DeferredDa as i32,
                     reason: "data_unavailable".into(),
                 },
                 transition_invoked: true,
-            });
+                early_accept,
+                late_import_reject: false,
+                late_import_internal: false,
+            })
         }
         Ok(BlockImport::Deferred(DeferralReason::UnknownParent)) => {
+            // Parent was present at the cheap check; race/reorg edge.
             metrics.inc_import_result(ImportResult::UnknownParent);
-            return Ok(ImportOutcome {
+            Ok(ImportOutcome {
                 response: ImportBlockResponse {
                     verdict: ImportBlockVerdict::UnknownParent as i32,
                     reason: "unknown_parent".into(),
                 },
                 transition_invoked: true,
-            });
+                early_accept,
+                late_import_reject: false,
+                late_import_internal: false,
+            })
         }
         Ok(BlockImport::Deferred(DeferralReason::FutureSlot)) => {
-            // Proto has no FUTURE_SLOT verdict (CC-18a). Do **not** map to
-            // DEFERRED_DA (driver would treat as DA requeue). Use INVALID with a
-            // stable machine-readable reason until a proto extension lands.
             metrics.inc_import_result(ImportResult::Invalid);
-            return Ok(ImportOutcome {
+            Ok(ImportOutcome {
                 response: ImportBlockResponse {
                     verdict: ImportBlockVerdict::Invalid as i32,
                     reason: "future_slot".into(),
                 },
                 transition_invoked: true,
-            });
-        }
-        Err(OnBlockError::NotDescendedFromFinalized) => {
-            metrics.inc_import_result(ImportResult::Invalid);
-            return Ok(ImportOutcome {
-                response: ImportBlockResponse {
-                    verdict: ImportBlockVerdict::Invalid as i32,
-                    reason: "not_descended_from_finalized".into(),
-                },
-                transition_invoked: true,
-            });
+                early_accept,
+                // Future slot is Ignore-class for gossip; not a late Reject penalty.
+                late_import_reject: false,
+                late_import_internal: false,
+            })
         }
         Err(e) => {
+            let class = on_block_error_gossip_class(&e);
             metrics.inc_import_result(ImportResult::Invalid);
-            return Ok(ImportOutcome {
+            let (late_import_reject, late_import_internal) = late_import_flags(early_accept, class);
+            Ok(ImportOutcome {
                 response: ImportBlockResponse {
                     verdict: ImportBlockVerdict::Invalid as i32,
                     reason: e.to_string(),
                 },
                 transition_invoked: true,
-            });
+                early_accept,
+                late_import_reject,
+                late_import_internal,
+            })
         }
-    };
+    }
+}
 
-    let block_root = imported_root.unwrap_or(true_root);
+/// Exhaustive [`OnBlockError`] → [`GossipClass`] (no catch-all).
+///
+/// Delegates transition errors to [`BlockError::gossip_class`]. Keeping the
+/// match total is Phase 1 §5.3 / R-13: a new variant fails to compile.
+pub fn on_block_error_gossip_class(err: &OnBlockError) -> GossipClass {
+    match err {
+        OnBlockError::NotDescendedFromFinalized => GossipClass::Reject,
+        OnBlockError::Transition(e) => e.gossip_class(),
+        OnBlockError::ProtoArray(_) | OnBlockError::PulledUpTip(_) => GossipClass::Internal,
+    }
+}
+
+/// Cheap gossip conditions. `Ok(Some(response))` is a terminal import result
+/// without running the state transition. `Ok(None)` means ACCEPT-and-continue.
+///
+/// # H3 mapping notes
+/// - `future_slot` → stream IGNORE (`Reason::FutureSlot`) via reason string
+/// - `too_old` (slot ≤ finalized) → stream IGNORE (`Reason::AlreadyKnown`)
+/// - checkpoint non-descent → still Reject-class (`not_descended_from_finalized`)
+#[allow(clippy::too_many_arguments)]
+fn cheap_gossip_terminal<P: Preset>(
+    store: &mut Store<P>,
+    residency: &mut Residency<P>,
+    config: &ChainConfig,
+    epoch_ctx: Option<&EpochContext>,
+    signed: &SignedBeaconBlock<P>,
+    verify: BlockSignatureStrategy,
+    gossip_path: bool,
+    metrics: &ChainMetrics,
+) -> Result<Option<ImportBlockResponse>, Status> {
+    let block = &signed.message;
+    let parent_root = block.parent_root;
+
+    // Parent presence (header).
+    if !store.blocks().contains_key(&parent_root) {
+        metrics.inc_import_result(ImportResult::UnknownParent);
+        return Ok(Some(ImportBlockResponse {
+            verdict: ImportBlockVerdict::UnknownParent as i32,
+            reason: "unknown_parent".into(),
+        }));
+    }
+
+    // Ensure parent state is resident (same as pre-fast-path import).
+    if let Err(e) = residency.ensure_in_store(store, parent_root, config) {
+        metrics.inc_import_result(ImportResult::Invalid);
+        return Ok(Some(ImportBlockResponse {
+            verdict: ImportBlockVerdict::Invalid as i32,
+            reason: format!("reorg gap: {e}"),
+        }));
+    }
+
+    // Future slot relative to store time → IGNORE-class (H3).
+    if store.get_current_slot().as_u64() < block.slot.as_u64() {
+        metrics.inc_import_result(ImportResult::Invalid);
+        return Ok(Some(ImportBlockResponse {
+            // Proto has no FUTURE_SLOT verdict; reason drives stream IGNORE.
+            verdict: ImportBlockVerdict::Invalid as i32,
+            reason: "future_slot".into(),
+        }));
+    }
+
+    // Too old (slot at/before finalized epoch start) → IGNORE-class (H3 / eth2 gossip).
+    let finalized_slot = compute_start_slot_at_epoch::<P>(store.finalized_checkpoint().epoch);
+    if block.slot.as_u64() <= finalized_slot.as_u64() {
+        metrics.inc_import_result(ImportResult::Invalid);
+        return Ok(Some(ImportBlockResponse {
+            verdict: ImportBlockVerdict::Invalid as i32,
+            reason: "too_old".into(),
+        }));
+    }
+
+    // Not a descendant of the finalized checkpoint → Reject-class (malicious / invalid chain).
+    let finalized_checkpoint_block =
+        get_checkpoint_block(store, parent_root, store.finalized_checkpoint().epoch);
+    if store.finalized_checkpoint().root != finalized_checkpoint_block {
+        metrics.inc_import_result(ImportResult::Invalid);
+        return Ok(Some(ImportBlockResponse {
+            verdict: ImportBlockVerdict::Invalid as i32,
+            reason: "not_descended_from_finalized".into(),
+        }));
+    }
+
+    // Proposer index against lookahead (EpochContext or parent-state window).
+    if let Some(expected) = expected_proposer_index::<P>(store, epoch_ctx, block.slot.as_u64())
+        && expected != block.proposer_index.as_u64()
+    {
+        metrics.inc_import_result(ImportResult::Invalid);
+        return Ok(Some(ImportBlockResponse {
+            verdict: ImportBlockVerdict::Invalid as i32,
+            reason: format!(
+                "proposer mismatch: block={} expected={expected}",
+                block.proposer_index.as_u64()
+            ),
+        }));
+    }
+
+    // Block proposer signature.
+    // H1: gossip path **always** verifies with VerifyIndividual and fails closed.
+    // Unary ImportBlock keeps the configured strategy (may be NoVerification).
+    let sig_strategy = if gossip_path {
+        BlockSignatureStrategy::VerifyIndividual
+    } else {
+        verify
+    };
+    if !matches!(sig_strategy, BlockSignatureStrategy::NoVerification) {
+        let Some(parent_state) = store.block_state(&parent_root) else {
+            // Fail closed on gossip: never early-ACCEPT without a parent state to verify against.
+            metrics.inc_import_result(ImportResult::Invalid);
+            return Ok(Some(ImportBlockResponse {
+                verdict: ImportBlockVerdict::Invalid as i32,
+                reason: "proposer_sig_parent_state_missing".into(),
+            }));
+        };
+        match verify_block_proposer_sig(parent_state, signed, sig_strategy) {
+            Ok(()) => {}
+            Err(e) => {
+                // Fail closed: any classified failure blocks early ACCEPT.
+                // Internal (state BLS) → no peer Reject; still no early ACCEPT.
+                metrics.inc_import_result(ImportResult::Invalid);
+                let reason = match e.gossip_class() {
+                    GossipClass::Internal => format!("internal_proposer_sig: {e}"),
+                    GossipClass::Reject | GossipClass::Ignore => e.to_string(),
+                };
+                return Ok(Some(ImportBlockResponse {
+                    verdict: ImportBlockVerdict::Invalid as i32,
+                    reason,
+                }));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Look up expected proposer for `slot` from epoch context or parent-state lookahead.
+fn expected_proposer_index<P: Preset>(
+    store: &Store<P>,
+    epoch_ctx: Option<&EpochContext>,
+    slot: u64,
+) -> Option<u64> {
+    if let Some(ctx) = epoch_ctx
+        && !ctx.proposer_lookahead.is_empty()
+    {
+        let ctx_spe = ctx.slots_per_epoch.max(1);
+        let start_slot = ctx.epoch.as_u64().saturating_mul(ctx_spe);
+        if slot >= start_slot {
+            let offset = (slot - start_slot) as usize;
+            if let Some(p) = ctx.proposer_lookahead.get(offset) {
+                return Some(*p);
+            }
+        }
+    }
+
+    // Fallback: head state's Fulu proposer_lookahead window.
+    let head_root = store.last_head_root()?;
+    let state = store.block_state(&head_root)?;
+    if state.proposer_lookahead_len() == 0 {
+        return None;
+    }
+    let epoch = compute_epoch_at_slot::<P>(state.slot());
+    let start_slot = compute_start_slot_at_epoch::<P>(epoch).as_u64();
+    if slot < start_slot {
+        return None;
+    }
+    let offset = (slot - start_slot) as usize;
+    if offset >= state.proposer_lookahead_len() {
+        // Same-epoch slot-relative index used by get_beacon_proposer_index.
+        let idx = (slot % P::SLOTS_PER_EPOCH.max(1)) as usize;
+        return state.proposer_lookahead_get(idx).map(|v| v.as_u64());
+    }
+    state.proposer_lookahead_get(offset).map(|v| v.as_u64())
+}
+
+fn verify_block_proposer_sig<P: Preset>(
+    state: &cc_types::BeaconState<P>,
+    signed: &SignedBeaconBlock<P>,
+    strategy: BlockSignatureStrategy,
+) -> Result<(), BlockError> {
+    let mut set = BlockSignatureSet::default();
+    push_block_proposer_signature(&mut set, state, signed)?;
+    set.verify(strategy)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_imported<P: Preset>(
+    store: &mut Store<P>,
+    residency: &mut Residency<P>,
+    head_store: &HeadSnapshotStore,
+    event_tx: &tokio::sync::mpsc::Sender<EventInput>,
+    metrics: &ChainMetrics,
+    snapshot_sequence: &mut u64,
+    signed: &SignedBeaconBlock<P>,
+    block_root: Root,
+    on_block_secs: f64,
+    early_accept: bool,
+) -> Result<ImportOutcome, Status> {
     let slot = signed.message.slot.as_u64();
     let slots_per_epoch = P::SLOTS_PER_EPOCH.max(1);
     let is_epoch_boundary = slot.is_multiple_of(slots_per_epoch);
@@ -196,7 +521,6 @@ pub fn import_block<P: Preset>(
         .unwrap_or(0);
     metrics.observe_process_block(on_block_secs, slot, slot / slots_per_epoch, validator_count);
 
-    // Body ring + scratch pin only — no Head pin / prune yet (H2).
     if let Some(post) = store.block_state(&block_root).cloned() {
         residency.record_imported_body(block_root, Arc::new(signed.clone()), post);
     }
@@ -259,9 +583,12 @@ pub fn import_block<P: Preset>(
     Ok(ImportOutcome {
         response: ImportBlockResponse {
             verdict: ImportBlockVerdict::Imported as i32,
-            reason,
+            reason: String::new(),
         },
         transition_invoked: true,
+        early_accept,
+        late_import_reject: false,
+        late_import_internal: false,
     })
 }
 
@@ -427,4 +754,78 @@ mod tests {
         assert_eq!(ev.kind, EventKind::Head);
         assert_eq!(head.load().sequence, 3);
     }
+
+    /// Exhaustive `OnBlockError` → class (no catch-all) — R-13 / §5.3.
+    #[test]
+    fn on_block_error_gossip_class_is_total() {
+        use cc_fork_choice::ProtoArrayError;
+        use cc_state_transition::{BlockError, SignatureKind};
+        use cc_types::primitives::{Slot, ValidatorIndex};
+
+        let samples: &[(OnBlockError, GossipClass)] = &[
+            (
+                OnBlockError::NotDescendedFromFinalized,
+                GossipClass::Reject,
+            ),
+            (
+                OnBlockError::Transition(BlockError::InvalidSignature {
+                    which: SignatureKind::BlockProposer,
+                }),
+                GossipClass::Reject,
+            ),
+            (
+                OnBlockError::Transition(BlockError::StateRootMismatch {
+                    expected: Root::ZERO,
+                    actual: Root::from_array([1u8; 32]),
+                }),
+                GossipClass::Reject,
+            ),
+            (
+                OnBlockError::Transition(BlockError::Engine(
+                    cc_state_transition::EngineError::Transport("x".into()),
+                )),
+                GossipClass::Internal,
+            ),
+            (
+                OnBlockError::Transition(BlockError::CachePoisoned),
+                GossipClass::Internal,
+            ),
+            (
+                OnBlockError::ProtoArray(ProtoArrayError::UnknownParent(Root::ZERO)),
+                GossipClass::Internal,
+            ),
+            (
+                OnBlockError::PulledUpTip("x".into()),
+                GossipClass::Internal,
+            ),
+            (
+                OnBlockError::Transition(BlockError::UnknownParent),
+                GossipClass::Ignore,
+            ),
+            (
+                OnBlockError::Transition(BlockError::FutureSlot {
+                    block_slot: Slot::new(2),
+                    current_slot: Slot::new(1),
+                }),
+                GossipClass::Ignore,
+            ),
+            (
+                OnBlockError::Transition(BlockError::ProposerMismatch {
+                    block: ValidatorIndex::new(0),
+                    expected: ValidatorIndex::new(1),
+                }),
+                GossipClass::Reject,
+            ),
+        ];
+        for (err, expected) in samples {
+            assert_eq!(
+                on_block_error_gossip_class(err),
+                *expected,
+                "mismatch for {err:?}"
+            );
+            // Cross-check against OnBlockError's own method when present.
+            assert_eq!(err.gossip_class(), *expected, "OnBlockError method {err:?}");
+        }
+    }
+
 }

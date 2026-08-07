@@ -151,8 +151,13 @@ pub struct ReportedEntry {
 pub struct ValidationPoolState {
     /// Column + block seen/pending/inclusion (one owner).
     pub column: ColumnValidatorState,
-    /// Bounded map of ACCEPTed correlation ids → entry (late Reject path).
+    /// Bounded map of ACCEPTed correlation ids → entry (historical / late path).
     pub reported: LruCache<Vec<u8>, ReportedEntry>,
+    /// ACCEPT entries **pinned** until late import resolves (CC-27c H2).
+    ///
+    /// Not subject to LRU eviction: a late Reject after early ACCEPT must not
+    /// lose the peer id to a full `reported` cache under load.
+    pub late_open: std::collections::HashMap<Vec<u8>, ReportedEntry>,
 }
 
 impl ValidationPoolState {
@@ -163,6 +168,25 @@ impl ValidationPoolState {
         Self {
             column: ColumnValidatorState::new(),
             reported: LruCache::new(cap),
+            late_open: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Record an ACCEPT for late-import tracking (pinned + LRU).
+    pub fn note_reported_accept(&mut self, corr: Vec<u8>, entry: ReportedEntry) {
+        self.late_open.insert(corr.clone(), entry.clone());
+        self.reported.put(corr, entry);
+        // Bound late_open growth: if over 2× reported bound, drop oldest by not
+        // tracking further (should not happen at 1 msg/slot; defensive).
+        if self.late_open.len() > REPORTED_ACCEPT_BOUND.saturating_mul(2) {
+            // Drop an arbitrary entry that is also still in late_open only —
+            // prefer entries already present in reported LRU tail is complex;
+            // clear half by draining some keys.
+            let excess = self.late_open.len() - REPORTED_ACCEPT_BOUND;
+            let drop_keys: Vec<_> = self.late_open.keys().take(excess).cloned().collect();
+            for k in drop_keys {
+                self.late_open.remove(&k);
+            }
         }
     }
 
@@ -590,7 +614,7 @@ async fn report(pool: &ValidationPool, work: &GossipWork, verdict: Verdict) {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        g.reported.put(
+        g.note_reported_accept(
             verdict.correlation_id.clone(),
             ReportedEntry {
                 verdict: verdict.clone(),
@@ -629,7 +653,13 @@ pub fn apply_late_chain_verdict(
     metrics: &P2pMetrics,
     penalty_tx: &mpsc::Sender<PeerPenaltyCmd>,
 ) {
-    let Some(entry) = state.reported.get(&late.correlation_id).cloned() else {
+    // Prefer pinned late_open (H2) so LRU eviction of `reported` cannot drop
+    // the peer id before import completes.
+    let entry = state
+        .late_open
+        .remove(&late.correlation_id)
+        .or_else(|| state.reported.get(&late.correlation_id).cloned());
+    let Some(entry) = entry else {
         return;
     };
     if is_late_import_reject(&entry.verdict, late) {
@@ -720,7 +750,7 @@ mod tests {
             let kp = cc_libp2p::reexport::Keypair::generate_ed25519();
             PeerId::from_public_key(&kp.public())
         };
-        state.reported.put(
+        state.note_reported_accept(
             corr.clone(),
             ReportedEntry {
                 verdict: Verdict::accept(corr.clone()),
@@ -736,6 +766,57 @@ mod tests {
         );
         let cmd = rx.try_recv().expect("penalty cmd");
         assert_eq!(cmd.peer_id, peer);
+        assert_eq!(cmd.reason, PeerPenaltyReason::ImportInvalid);
+        assert!(state.late_open.is_empty(), "pin released after late");
+    }
+
+    #[test]
+    fn late_reject_survives_reported_lru_eviction() {
+        // H2: pin in late_open so a full reported LRU cannot drop import_invalid.
+        let mut reg = Registry::default();
+        let metrics = P2pMetrics::register(&mut reg);
+        let mut state = ValidationPoolState::new();
+        let peer = {
+            let kp = cc_libp2p::reexport::Keypair::generate_ed25519();
+            PeerId::from_public_key(&kp.public())
+        };
+        let pinned = vec![0xAAu8; 32];
+        state.note_reported_accept(
+            pinned.clone(),
+            ReportedEntry {
+                verdict: Verdict::accept(pinned.clone()),
+                peer_id: peer,
+            },
+        );
+        // Flood reported LRU past its bound — pinned corr is evicted from LRU.
+        for i in 0..(REPORTED_ACCEPT_BOUND + 10) {
+            let mut corr = vec![0u8; 32];
+            corr[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            state.reported.put(
+                corr.clone(),
+                ReportedEntry {
+                    verdict: Verdict::accept(corr),
+                    peer_id: peer,
+                },
+            );
+        }
+        assert!(
+            state.reported.get(&pinned).is_none(),
+            "pinned corr must be LRU-evicted from reported for this test"
+        );
+        assert!(
+            state.late_open.contains_key(&pinned),
+            "late_open must still hold the pin"
+        );
+        let (tx, mut rx) = mpsc::channel(4);
+        let late = Verdict::reject(Reason::Invalid, pinned);
+        apply_late_chain_verdict(&mut state, &late, &metrics, &tx);
+        assert_eq!(
+            metrics.peer_penalty_count(PeerPenaltyReason::ImportInvalid),
+            1,
+            "import_invalid must fire from late_open after LRU eviction"
+        );
+        let cmd = rx.try_recv().expect("penalty");
         assert_eq!(cmd.reason, PeerPenaltyReason::ImportInvalid);
     }
 
