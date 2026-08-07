@@ -342,6 +342,11 @@ jobs:
       - name: check crate DAG
         run: bash scripts/check-crate-dag.sh
 
+      # CC-21b — Blob-Schedule guard one layer up: no MAX_BLOBS_PER_BLOCK /
+      # ELECTRA_FORK_EPOCH hard-codes in services/p2p or crates/libp2p.
+      - name: check no MAX_BLOBS_PER_BLOCK / ELECTRA_FORK_EPOCH in p2p surface
+        run: bash scripts/check-no-max-blobs-p2p.sh
+
       # CC-20/1 / CC-2K: defense-in-depth grep for libp2p* declarations outside the
       # allowed surfaces. Primary enforcement is scripts/check-crate-dag.sh (metadata
       # declaration rule + pin-source integrity + docs/constant rev match). This step
