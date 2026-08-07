@@ -1,4 +1,4 @@
-//! Fork choice (Architecture §6, CC-15–CC-17, CC-34a, CC-34b, CC-35a).
+//! Fork choice (Architecture §6, CC-15–CC-17, CC-34a, CC-34b, CC-35a, CC-35b).
 //!
 //! - CC-15a: proto-array, [`Store`] skeleton, [`on_tick`]
 //! - CC-15b: [`on_block`], [`compute_pulled_up_tip`], [`CheckpointContext`] LRU
@@ -9,6 +9,8 @@
 //! - CC-34a: [`ExecutionStatus`] on [`ProtoNode`], score-branch, viability, outbox read
 //! - CC-34b: [`propagate_execution_payload_validation`] upward pass, §4.8 hard error
 //! - CC-35a: three `latestValidHash` cases + descendant invalidation in [`invalidation`]
+//! - CC-35b: backwards walk, three stop conditions, descendant conjunction in
+//!   [`invalidation_walk`]
 
 #![allow(missing_docs)]
 
@@ -17,6 +19,7 @@ pub mod da_seam;
 pub mod execution_status;
 pub mod head_cache;
 pub mod invalidation;
+pub mod invalidation_walk;
 pub mod on_attestation;
 pub mod on_block;
 pub mod on_tick;
@@ -38,8 +41,13 @@ pub use head_cache::{
 };
 pub use invalidation::{
     InvalidationError, InvalidationOperation, LatestValidHash, apply_invalidation,
-    chain_invalidated_nodes_total, invalidate_from_latest_valid_hash, invalidation_operation,
-    select_invalid_block,
+    bump_invalidated_nodes, chain_invalidated_nodes_total, invalidate_from_latest_valid_hash,
+    invalidation_operation, select_invalid_block,
+};
+pub use invalidation_walk::{
+    InvalidationWalkError, InvalidationWalkOutcome, WalkStopReason,
+    compute_latest_valid_ancestor_is_descendant, justified_checkpoint_is_invalid,
+    propagate_execution_payload_invalidation,
 };
 pub use on_attestation::{
     OnAttestationError, apply_attestation_deltas, compute_deltas, compute_deltas_call_count,

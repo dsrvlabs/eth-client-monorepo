@@ -1003,6 +1003,28 @@ impl ChainMetrics {
             })
             .get()
     }
+
+    /// Increment `cc_chain_justified_invalidated_total` (CC-35 /8 exit path).
+    pub fn inc_justified_invalidated(&self) {
+        self.justified_invalidated.inc();
+    }
+
+    /// Read `cc_chain_justified_invalidated_total` (tests).
+    pub fn justified_invalidated_count(&self) -> u64 {
+        self.justified_invalidated.get()
+    }
+
+    /// Increment `cc_chain_invalidated_nodes_total` by `n` (CC-35 walk).
+    pub fn inc_invalidated_nodes(&self, n: u64) {
+        for _ in 0..n {
+            self.invalidated_nodes.inc();
+        }
+    }
+
+    /// Read `cc_chain_invalidated_nodes_total` (tests).
+    pub fn invalidated_nodes_count(&self) -> u64 {
+        self.invalidated_nodes.get()
+    }
 }
 
 #[cfg(test)]

@@ -514,7 +514,10 @@ impl ProtoArray {
     }
 
     /// Whether `root` equals `ancestor` or has `ancestor` on its parent chain.
-    fn is_descendant_or_equal(&self, ancestor: Root, root: Root) -> bool {
+    ///
+    /// Used by head viability and by the invalidation walk's
+    /// `latest_valid_ancestor_is_descendant` conjunction (CC-35b / §4.7).
+    pub fn is_descendant_or_equal(&self, ancestor: Root, root: Root) -> bool {
         if ancestor == root {
             return true;
         }
@@ -535,6 +538,13 @@ impl ProtoArray {
             }
         }
         false
+    }
+
+    /// Whether `root` is the finalized checkpoint root or descends from it.
+    ///
+    /// Half of `latest_valid_ancestor_is_descendant` (CC-35 /5).
+    pub fn is_finalized_checkpoint_or_descendant(&self, root: Root) -> bool {
+        self.is_descendant_or_equal(self.finalized_checkpoint.root, root)
     }
 
     /// Borrow the previous proposer-boost application (for diagnostics / tests).

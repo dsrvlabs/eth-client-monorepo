@@ -29,6 +29,7 @@ pub mod epoch_context;
 pub mod events;
 pub mod head;
 pub mod import;
+pub mod invalidation;
 pub mod metrics;
 pub mod p2p_stream;
 pub mod residency;
@@ -66,6 +67,9 @@ pub use head::{HeadSnapshot, HeadSnapshotStore};
 pub use import::{
     ImportCounters, ImportOutcome, decode_signed_block, encode_signed_block,
     import_block_with_early, late_import_flags, on_block_error_gossip_class, parse_root,
+};
+pub use invalidation::{
+    ExitFn, handle_justified_checkpoint_invalidated, process_exit,
 };
 pub use metrics::{
     AUX_DURATION_BUCKETS, BLOCK_BUDGET_SECS, BUFFER_RING, BUFFER_SUBSCRIBER, BootstrapResult,

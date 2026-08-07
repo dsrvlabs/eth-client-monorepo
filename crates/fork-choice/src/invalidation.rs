@@ -5,7 +5,7 @@
 //! Sibling branches of `invalidBlock` are never touched.
 //!
 //! The backwards walk, stop conditions, and justified-checkpoint exit are **CC-35b**
-//! (`invalidation_walk.rs`). Weight arithmetic lives in
+//! ([`crate::invalidation_walk`]). Weight arithmetic lives in
 //! [`crate::execution_status::remove_invalidated_subtree_weight`] (CC-34a / ADR P3-11).
 //!
 //! # Lookup index
@@ -35,6 +35,14 @@ static INVALIDATED_NODES_TOTAL: AtomicU64 = AtomicU64::new(0);
 #[inline]
 pub fn chain_invalidated_nodes_total() -> u64 {
     INVALIDATED_NODES_TOTAL.load(Ordering::SeqCst)
+}
+
+/// Bump `cc_chain_invalidated_nodes_total` by `n` (CC-35b walk path).
+#[inline]
+pub fn bump_invalidated_nodes(n: usize) {
+    if n > 0 {
+        INVALIDATED_NODES_TOTAL.fetch_add(n as u64, Ordering::SeqCst);
+    }
 }
 
 /// Three-way `latestValidHash` (Architecture §4.7).
@@ -205,9 +213,12 @@ pub fn invalidation_operation(
 /// (`try_mark` / upward validation) and **CC-35b** (walk + justified exit). Call
 /// sites must not treat a successful return as §4.8 compliance.
 ///
-/// **Case-2 mass-invalidate:** `Zero` can select the array-root / first post-merge
-/// payload; without CC-35b's finalization floor and justified-checkpoint exit a
-/// production wrapper must not apply that selection unchecked.
+/// **Case-2 mass-invalidate / dual path (CC-35b review F2):** `Zero` can select
+/// the array-root / first post-merge payload. This path has **no** stop-3 floor
+/// and **no** justified exit. Production import/fcU must use
+/// [`crate::propagate_execution_payload_invalidation`] (walk floors) then
+/// chain's `handle_justified_checkpoint_invalidated` when justified is
+/// `Invalid` — not this helper alone.
 pub fn apply_invalidation(
     proto_array: &mut ProtoArray,
     op: &InvalidationOperation,
