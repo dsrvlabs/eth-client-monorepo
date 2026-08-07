@@ -1,4 +1,4 @@
-//! Fork choice (Architecture §6, CC-15–CC-17, CC-34a, CC-34b, CC-35a, CC-35b).
+//! Fork choice (Architecture §6, CC-15–CC-17, CC-34a–c, CC-35a, CC-35b).
 //!
 //! - CC-15a: proto-array, [`Store`] skeleton, [`on_tick`]
 //! - CC-15b: [`on_block`], [`compute_pulled_up_tip`], [`CheckpointContext`] LRU
@@ -8,6 +8,8 @@
 //!   ([`PeerDasAvailability`] substitutes the deleted Phase-1 optimistic stub)
 //! - CC-34a: [`ExecutionStatus`] on [`ProtoNode`], score-branch, viability, outbox read
 //! - CC-34b: [`propagate_execution_payload_validation`] upward pass, §4.8 hard error
+//! - CC-34c: node-level [`is_optimistic_node`] (both branches),
+//!   [`is_optimistic_candidate_block`], [`SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY`]
 //! - CC-35a: three `latestValidHash` cases + descendant invalidation in [`invalidation`]
 //! - CC-35b: backwards walk, three stop conditions, descendant conjunction in
 //!   [`invalidation_walk`]
@@ -34,7 +36,9 @@ pub use da_seam::{
     AVAILABLE_ROOTS_BOUND, BlockImport, DataAvailability, DeferralReason, HarnessAvailability,
     ImportedBlock, PeerDasAvailability,
 };
-pub use execution_status::{ExecutionStatus, is_optimistic, remove_invalidated_subtree_weight};
+pub use execution_status::{
+    ExecutionStatus, is_optimistic, is_optimistic_node, remove_invalidated_subtree_weight,
+};
 pub use head_cache::{
     ChainReorg, GetHeadError, PROPOSER_SCORE_BOOST, compute_proposer_boost_score, get_head,
     get_proposer_head,
@@ -60,6 +64,7 @@ pub use on_block::{
 pub use on_tick::on_tick;
 pub use proto_array::{
     PreviousProposerBoost, ProtoArray, ProtoArrayError, ProtoNode, ProtoNodeBlock,
+    SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY, is_optimistic_candidate_block,
 };
 pub use store::{
     CachedHead, DEFAULT_CHECKPOINT_CONTEXT_CAPACITY, LatestMessage, Store, StoreError, VoteTracker,

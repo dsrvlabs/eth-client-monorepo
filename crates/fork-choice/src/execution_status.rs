@@ -81,6 +81,39 @@ pub fn is_optimistic<P: Preset>(store: &Store<P>, root: Root) -> Option<bool> {
         .map(|n| n.execution_status == ExecutionStatus::Optimistic)
 }
 
+/// Node-level optimistic predicate — **both** branches (§4.11, CC-34c).
+///
+/// ```text
+/// is_optimistic_node()  ≜  is_optimistic(head_root)   // branch 1
+///                       ||  !any_viable_branch()       // branch 2
+/// ```
+///
+/// Branch 2 makes "optimistic" a property of the **fork choice**, not only of
+/// the head block's status. It is the branch implementations forget: a tree
+/// with no viable branch reports optimistic **even though `find_head` cannot
+/// name a head**.
+///
+/// # Head freshness (callers)
+///
+/// Branch 1 reads [`Store::cached_head_root`] (last successful `get_head`).
+/// That root **survives** [`Store::bump_mutation_counter`] (only the head
+/// *cache* is cleared). Callers that publish optimistic state after a mutation
+/// **must** recompute head first (or pass a just-computed root when CC-3B
+/// hardens this). Wiring snapshot / metrics / RPC to this predicate is
+/// **CC-3B** — this card is the library hook only.
+pub fn is_optimistic_node<P: Preset>(store: &Store<P>) -> bool {
+    // Branch 1 — the head itself is optimistic (when a head is known).
+    if let Some(head) = store.cached_head_root()
+        && let Some(true) = is_optimistic(store, head)
+    {
+        return true;
+    }
+    // Branch 2 — every FFG-viable branch has been INVALIDATED.
+    !store
+        .proto_array()
+        .any_viable_branch(store.get_current_store_epoch(), P::SLOTS_PER_EPOCH)
+}
+
 /// §4.4 part 1 — remove the invalidated subtree's accumulated weight once.
 ///
 /// ```text
@@ -513,5 +546,291 @@ mod tests {
             ExecutionStatus::from_payload_status(&PayloadStatus::InvalidBlockHash),
             ExecutionStatus::Invalid
         );
+    }
+
+    /// CC-34 /5 branch 1 — node is optimistic when the head's status is
+    /// `Optimistic`, and not when it is `Valid`.
+    #[test]
+    fn node_optimistic_when_head_optimistic() {
+        use crate::da_seam::HarnessAvailability;
+        use crate::on_block::get_forkchoice_store;
+        use crate::store::Store;
+        use cc_state_transition::StubOptimisticEngine;
+        use cc_types::preset::Minimal;
+        use cc_types::{BeaconBlock, BeaconState};
+        use std::sync::Arc;
+
+        let mut state = BeaconState::<Minimal>::default();
+        state.set_genesis_time(0);
+        state.set_slot(Slot::new(0));
+        let anchor_block = BeaconBlock {
+            slot: Slot::new(0),
+            proposer_index: Default::default(),
+            parent_root: Root::ZERO,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        let mut store: Store<Minimal> = get_forkchoice_store(
+            state,
+            &anchor_block,
+            Arc::new(StubOptimisticEngine),
+            Arc::new(HarnessAvailability),
+            6,
+        )
+        .unwrap();
+        let anchor = store.justified_checkpoint().root;
+
+        // Seed head = anchor (Valid) → node-level predicate false.
+        store.set_last_head_root(anchor);
+        assert!(
+            !is_optimistic_node(&store),
+            "Valid head must not make the node optimistic (branch 1 false; viable branches exist)"
+        );
+
+        // Insert Optimistic child and make it head → branch 1 true.
+        let child = root(0x42);
+        let justified = store.justified_checkpoint();
+        store
+            .proto_array_mut()
+            .on_block(ProtoNodeBlock {
+                slot: Slot::new(1),
+                root: child,
+                parent_root: Some(anchor),
+                state_root: Root::ZERO,
+                target_root: child,
+                justified_checkpoint: justified,
+                finalized_checkpoint: justified,
+                unrealized_justified_checkpoint: justified,
+                unrealized_finalized_checkpoint: justified,
+                execution_status: ExecutionStatus::Optimistic,
+                execution_block_hash: hash(0x42),
+            })
+            .unwrap();
+        store.set_last_head_root(child);
+        assert!(
+            is_optimistic_node(&store),
+            "Optimistic head must make the node optimistic (branch 1)"
+        );
+
+        // Flip head status to Valid → false again.
+        store
+            .proto_array_mut()
+            .nodes_mut()
+            .iter_mut()
+            .find(|n| n.root == child)
+            .unwrap()
+            .execution_status = ExecutionStatus::Valid;
+        assert!(
+            !is_optimistic_node(&store),
+            "Valid head + viable branches → not optimistic"
+        );
+    }
+
+    /// CC-34 /5 branch 2 — **the branch implementations forget**.
+    ///
+    /// When every FFG-viable branch is `INVALIDATED`, `find_head` cannot name a
+    /// head, yet the node-level predicate is still **true**. Asserting via a
+    /// head lookup would miss this; the predicate is checked directly.
+    #[test]
+    fn node_optimistic_when_no_viable_branch() {
+        use crate::da_seam::HarnessAvailability;
+        use crate::on_block::get_forkchoice_store;
+        use crate::store::Store;
+        use cc_state_transition::StubOptimisticEngine;
+        use cc_types::preset::{Minimal, Preset};
+        use cc_types::{BeaconBlock, BeaconState};
+        use std::sync::Arc;
+
+        let mut state = BeaconState::<Minimal>::default();
+        state.set_genesis_time(0);
+        state.set_slot(Slot::new(0));
+        let anchor_block = BeaconBlock {
+            slot: Slot::new(0),
+            proposer_index: Default::default(),
+            parent_root: Root::ZERO,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        let mut store: Store<Minimal> = get_forkchoice_store(
+            state,
+            &anchor_block,
+            Arc::new(StubOptimisticEngine),
+            Arc::new(HarnessAvailability),
+            6,
+        )
+        .unwrap();
+        let anchor = store.justified_checkpoint().root;
+        let justified = store.justified_checkpoint();
+
+        // Two sibling branches under the justified anchor.
+        for (r, slot) in [(0xA1u8, 1u64), (0xA2, 1)] {
+            store
+                .proto_array_mut()
+                .on_block(ProtoNodeBlock {
+                    slot: Slot::new(slot),
+                    root: root(r),
+                    parent_root: Some(anchor),
+                    state_root: root(r),
+                    target_root: root(r),
+                    justified_checkpoint: justified,
+                    finalized_checkpoint: justified,
+                    unrealized_justified_checkpoint: justified,
+                    unrealized_finalized_checkpoint: justified,
+                    execution_status: ExecutionStatus::Optimistic,
+                    execution_block_hash: hash(r),
+                })
+                .unwrap();
+        }
+
+        // Invalidate *every* FFG-viable node — including the justified root.
+        // This is the state where find_head has nothing to name.
+        for node in store.proto_array_mut().nodes_mut() {
+            node.execution_status = ExecutionStatus::Invalid;
+            // H-3: Invalid must not carry ZERO; seed non-zero if needed.
+            if node.execution_block_hash == Hash256::ZERO {
+                node.execution_block_hash = hash(0xEE);
+            }
+        }
+
+        let spe = Minimal::SLOTS_PER_EPOCH;
+        let epoch = store.get_current_store_epoch();
+        assert!(
+            !store.proto_array().any_viable_branch(epoch, spe),
+            "fixture: no FFG-viable branch remains"
+        );
+        assert!(
+            matches!(
+                store.proto_array().find_head(anchor, epoch, spe),
+                Err(ProtoArrayError::NonViableHead(_))
+            ),
+            "find_head must not name a head when every viable branch is INVALIDATED"
+        );
+        // Clear any cached head so branch 1 cannot short-circuit.
+        store.bump_mutation_counter();
+        // last_head_root may still be set from nowhere; force None by not having set it.
+        // Branch 1 with a head that is Invalid is not "optimistic" (is_optimistic is only
+        // Optimistic status), so either way branch 2 is load-bearing.
+        assert!(
+            is_optimistic_node(&store),
+            "branch 2: node is optimistic when no viable branch remains — \
+             the branch implementations forget"
+        );
+    }
+
+    /// CC-34 /9 — discharged by derivation (ADR P3-10): there is **nothing to
+    /// leak**. After many optimistic imports and finalization, optimistic state
+    /// lives only in the finalization-pruned proto-array; no parallel root-set
+    /// container exists.
+    #[test]
+    fn no_unbounded_optimistic_structure() {
+        // R (1) ─┬─ F (2)                 ← finalization root (Valid)
+        //        └─ O1 … O10000           ← optimistic side branch (pruned)
+        let anchor = cp(0, root(1));
+        let mut pa = ProtoArray::new(anchor, anchor);
+        insert(&mut pa, 0, 1, None, ExecutionStatus::Valid, hash(1));
+        insert(&mut pa, 1, 2, Some(1), ExecutionStatus::Valid, hash(2));
+
+        // 10_000 optimistic imports on a side branch under R (not under F).
+        const N: u32 = 10_000;
+        for i in 0..N {
+            let r = {
+                let mut a = [0u8; 32];
+                let bytes = (i + 10).to_le_bytes();
+                a[0..4].copy_from_slice(&bytes);
+                Root::from_array(a)
+            };
+            let exec = {
+                let mut a = [0u8; 32];
+                a[0..4].copy_from_slice(&(i + 10).to_le_bytes());
+                a[31] = 1;
+                Hash256::from(a)
+            };
+            pa.on_block(ProtoNodeBlock {
+                slot: Slot::new(u64::from(i) + 2),
+                root: r,
+                parent_root: Some(root(1)),
+                state_root: r,
+                target_root: r,
+                justified_checkpoint: anchor,
+                finalized_checkpoint: anchor,
+                unrealized_justified_checkpoint: anchor,
+                unrealized_finalized_checkpoint: anchor,
+                execution_status: ExecutionStatus::Optimistic,
+                execution_block_hash: exec,
+            })
+            .unwrap();
+        }
+        assert_eq!(pa.optimistic_node_count(), N as usize);
+        assert_eq!(pa.len(), N as usize + 2);
+
+        // Finalize at F: prune drops the entire optimistic side branch.
+        // Criterion satisfied by there being **nothing to leak** — no parallel
+        // set to bound; proto-array prune is the only occupancy.
+        pa.prune(root(2)).unwrap();
+        assert_eq!(
+            pa.len(),
+            1,
+            "finalization-pruned proto-array holds only the finalized root"
+        );
+        assert_eq!(
+            pa.optimistic_node_count(),
+            0,
+            "cc_chain_optimistic_nodes returns to a bounded value (0)"
+        );
+        // No parallel root-set container exists to consult (compile-time by
+        // design; runtime: only the derived count remains).
+        assert_eq!(
+            pa.get(&root(2)).unwrap().execution_status,
+            ExecutionStatus::Valid
+        );
+    }
+
+    /// CC-34 /10 — re-orgs that do not affect the justified checkpoint need no
+    /// special case. The justified-checkpoint exit is CC-35b /8 and is the
+    /// **only** special path.
+    #[test]
+    fn reorg_without_justified_change_needs_no_special_case() {
+        use crate::invalidation_walk::justified_checkpoint_is_invalid;
+
+        let anchor = cp(0, root(1));
+        let mut pa = ProtoArray::new(anchor, anchor);
+        // A ─┬─ B (will be invalidated)
+        //    └─ C (surviving sibling)
+        insert(&mut pa, 0, 1, None, ExecutionStatus::Valid, hash(1));
+        insert(&mut pa, 1, 2, Some(1), ExecutionStatus::Optimistic, hash(2));
+        insert(&mut pa, 1, 3, Some(1), ExecutionStatus::Valid, hash(3));
+
+        let justified_before = pa.justified_checkpoint();
+        // Branch counter: only the justified-checkpoint special case increments.
+        let mut special_case_branch_count = 0u64;
+
+        // Invalidate sibling B; head must leave B for C without touching justified.
+        remove_invalidated_subtree_weight(&mut pa, root(2)).unwrap();
+        pa.apply_score_changes(
+            vec![0; pa.len()],
+            anchor,
+            anchor,
+            Root::ZERO,
+            0,
+            Epoch::new(0),
+            8,
+        )
+        .unwrap();
+        let head = pa.find_head(root(1), Epoch::new(0), 8).unwrap();
+        assert_eq!(head, root(3), "sibling re-org across invalidation selects C");
+        assert_eq!(
+            pa.justified_checkpoint(),
+            justified_before,
+            "justified checkpoint must be untouched"
+        );
+        if justified_checkpoint_is_invalid(&pa) {
+            // This is CC-35b /8's exit path — must NOT fire for a sibling re-org.
+            special_case_branch_count += 1;
+        }
+        assert_eq!(
+            special_case_branch_count, 0,
+            "no distinct code path: justified-checkpoint special case is the only one (CC-35b /8)"
+        );
+        assert!(!justified_checkpoint_is_invalid(&pa));
     }
 }

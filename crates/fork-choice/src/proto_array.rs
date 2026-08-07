@@ -38,6 +38,16 @@ use thiserror::Error;
 
 use crate::execution_status::{ExecutionStatus, h3_execution_hash_ok};
 
+/// Spec `SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY` (`sync/optimistic.md`).
+///
+/// Default **128**. Spec-mandated and user-configurable for disaster recovery
+/// via `config/chain.toml` `safe_slots_to_import_optimistically` /
+/// `CC_CHAIN_SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY` (the
+/// `--safe-slots-to-import-optimistically` flag). Kept for disaster recovery
+/// rather than because a production path exercises the merge-transition gate
+/// on this latest-fork-only, checkpoint-sync-only client.
+pub const SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY: u64 = 128;
+
 /// Errors from proto-array mutations and queries.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ProtoArrayError {
@@ -304,6 +314,14 @@ impl ProtoArray {
     /// `usize` indices. After prune, `best_child` / `best_descendant` may be
     /// cleared for remapped nodes whose former best was dropped — head
     /// computation must rebuild them.
+    ///
+    /// # Production wiring
+    ///
+    /// CC-34 /9 asserts prune *capability* (derived occupancy, nothing to leak
+    /// as a second set). Calling this on finalization advance — and reclaiming
+    /// matching `Store.blocks` / `block_timeliness` keys — is **finalization
+    /// settle** work, not CC-34c. Until that lands, inter-finalization growth
+    /// of the single proto-array is unbounded by design of this card's scope.
     pub fn prune(&mut self, finalized_root: Root) -> Result<(), ProtoArrayError> {
         let finalized_idx = *self
             .indices
@@ -692,6 +710,54 @@ impl ProtoArray {
         Ok(best_node.root)
     }
 
+    /// Whether any FFG-viable branch remains in the proto-array (§4.11 branch 2).
+    ///
+    /// A branch is viable when some node under the justified checkpoint passes
+    /// [`Self::node_is_viable`] (including execution-status: `Invalid` is never
+    /// viable). When every FFG-viable branch has been `INVALIDATED`, this
+    /// returns `false` and the node-level optimistic predicate is true **even
+    /// though [`Self::find_head`] cannot name a head** — the branch
+    /// implementations forget.
+    pub fn any_viable_branch(&self, current_epoch: Epoch, slots_per_epoch: u64) -> bool {
+        let justified_root = self.justified_checkpoint.root;
+        if self.indices.contains_key(&justified_root) {
+            self.nodes.iter().any(|node| {
+                self.is_descendant_or_equal(justified_root, node.root)
+                    && self.node_is_viable(node, current_epoch, slots_per_epoch)
+            })
+        } else {
+            // Justified root not in the array — fall back to any viable node.
+            self.nodes
+                .iter()
+                .any(|node| self.node_is_viable(node, current_epoch, slots_per_epoch))
+        }
+    }
+
+    /// Count of nodes whose `execution_status` is `Optimistic` (ADR P3-10).
+    ///
+    /// Occupancy source for `cc_chain_optimistic_nodes`. Derived scan of the
+    /// proto-array — there is no parallel root-set container (ADR P3-10).
+    /// Chain metric observers sample this after import / settle (**CC-3B** /
+    /// metric population follow-on); this method alone does not update
+    /// Prometheus.
+    #[inline]
+    pub fn optimistic_node_count(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter(|n| n.execution_status == ExecutionStatus::Optimistic)
+            .count()
+    }
+
+    /// Spec `is_execution_block` against a parent already in the array.
+    ///
+    /// `Irrelevant` is the pre-merge / empty-payload case; any other status
+    /// means the parent has (or had) execution enabled.
+    #[inline]
+    pub fn parent_is_execution_block(&self, parent_root: Root) -> bool {
+        self.get(&parent_root)
+            .is_some_and(|n| n.execution_status != ExecutionStatus::Irrelevant)
+    }
+
     fn maybe_update_best_child_and_descendant(
         &mut self,
         parent_index: usize,
@@ -824,6 +890,46 @@ fn correct_finalized(
         Ok(ancestor) => ancestor == store_finalized.root,
         Err(_) => false,
     }
+}
+
+/// Spec `is_optimistic_candidate_block` **as written** (`sync/optimistic.md`).
+///
+/// ```text
+/// if is_execution_block(parent): return True
+/// if block.slot + SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY <= current_slot: return True
+/// return False
+/// ```
+///
+/// `safe_slots` defaults to [`SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY`]; pass the
+/// operator override from config when one is set.
+///
+/// # Honesty
+///
+/// For a **latest-fork-only, checkpoint-sync-only** client both branches are
+/// **trivially satisfiable** — every parent we ever see has execution enabled
+/// and there is no transition block in scope. The `fork_choice` vectors do not
+/// exercise it either. Kept for **spec fidelity** and the flag for disaster
+/// recovery, not because a path reaches it.
+#[inline]
+pub fn is_optimistic_candidate_block(
+    parent_is_execution_block: bool,
+    block_slot: Slot,
+    current_slot: Slot,
+    safe_slots: u64,
+) -> bool {
+    // Branch 1 — parent already has execution enabled.
+    if parent_is_execution_block {
+        return true;
+    }
+    // Branch 2 — block is at least `safe_slots` behind the wall clock.
+    if block_slot
+        .as_u64()
+        .saturating_add(safe_slots)
+        <= current_slot.as_u64()
+    {
+        return true;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -1115,5 +1221,103 @@ mod tests {
         let genesis_j = cp(0, root(0));
         let genesis_f = cp(0, root(0));
         assert!(orphan.node_is_viable_with(&orphan_node, genesis_j, genesis_f, current, SPE));
+    }
+
+    /// CC-34 /6 — `is_optimistic_candidate_block` implemented **as written**,
+    /// with the honest record that both of its branches are **trivially
+    /// satisfiable** for this client.
+    ///
+    /// Honest situation (not coverage fiction):
+    /// - latest-fork-only, checkpoint-sync-only client
+    /// - every parent we ever see has execution enabled (branch 1 always true
+    ///   on the live path)
+    /// - no transition block in scope
+    /// - `fork_choice` vectors do not exercise it
+    /// - kept for **spec fidelity**; the
+    ///   `--safe-slots-to-import-optimistically` flag is for disaster recovery
+    #[test]
+    fn is_optimistic_candidate_block_as_written() {
+        // Spec structure: two independent OR branches, then false.
+        assert_eq!(SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY, 128);
+
+        // Branch 1: parent is an execution block → true regardless of slots.
+        assert!(is_optimistic_candidate_block(
+            true,
+            Slot::new(1_000),
+            Slot::new(1_000),
+            SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY,
+        ));
+
+        // Branch 2: parent is *not* execution, but block is ≥ safe_slots behind.
+        assert!(is_optimistic_candidate_block(
+            false,
+            Slot::new(0),
+            Slot::new(SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY),
+            SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY,
+        ));
+        assert!(is_optimistic_candidate_block(
+            false,
+            Slot::new(10),
+            Slot::new(10 + SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY),
+            SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY,
+        ));
+
+        // Neither branch → false (the only case this client will never hit on
+        // the live path: non-execution parent *and* near-tip merge block).
+        assert!(!is_optimistic_candidate_block(
+            false,
+            Slot::new(100),
+            Slot::new(100 + SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY - 1),
+            SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY,
+        ));
+
+        // Operator override of the constant (disaster-recovery flag).
+        assert!(is_optimistic_candidate_block(
+            false,
+            Slot::new(0),
+            Slot::new(1),
+            1, // --safe-slots-to-import-optimistically=1
+        ));
+
+        // Proto-array parent lookup matches `is_execution_block` via status.
+        let anchor = cp(0, root(1));
+        let mut pa = ProtoArray::new(anchor, anchor);
+        pa.on_block(ProtoNodeBlock {
+            slot: Slot::new(0),
+            root: root(1),
+            parent_root: None,
+            state_root: root(1),
+            target_root: root(1),
+            justified_checkpoint: anchor,
+            finalized_checkpoint: anchor,
+            unrealized_justified_checkpoint: anchor,
+            unrealized_finalized_checkpoint: anchor,
+            execution_status: ExecutionStatus::Valid,
+            execution_block_hash: Hash256::from([1; 32]),
+        })
+        .unwrap();
+        assert!(pa.parent_is_execution_block(root(1)));
+        assert!(is_optimistic_candidate_block(
+            pa.parent_is_execution_block(root(1)),
+            Slot::new(1),
+            Slot::new(1),
+            SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY,
+        ));
+        // Irrelevant parent → not an execution block.
+        pa.on_block(ProtoNodeBlock {
+            slot: Slot::new(0),
+            root: root(2),
+            parent_root: None,
+            state_root: root(2),
+            target_root: root(2),
+            justified_checkpoint: anchor,
+            finalized_checkpoint: anchor,
+            unrealized_justified_checkpoint: anchor,
+            unrealized_finalized_checkpoint: anchor,
+            execution_status: ExecutionStatus::Irrelevant,
+            execution_block_hash: Hash256::ZERO,
+        })
+        .unwrap();
+        assert!(!pa.parent_is_execution_block(root(2)));
     }
 }

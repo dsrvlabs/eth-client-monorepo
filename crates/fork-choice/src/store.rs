@@ -297,6 +297,17 @@ impl<P: Preset> Store<P> {
         self.last_head_root
     }
 
+    /// Head root for the node-level optimistic predicate (§4.11).
+    ///
+    /// Prefers the last successful `get_head` root, else the head-cache entry.
+    /// Returns `None` when neither is set — branch 1 of
+    /// [`crate::is_optimistic_node`] then falls through to branch 2.
+    #[inline]
+    pub fn cached_head_root(&self) -> Option<Root> {
+        self.last_head_root
+            .or_else(|| self.head_cache.as_ref().map(|c| c.head_root))
+    }
+
     /// Whether `root` was recorded as timely at import (spec `block_timeliness`).
     #[inline]
     pub fn block_timeliness(&self, root: &Root) -> Option<bool> {

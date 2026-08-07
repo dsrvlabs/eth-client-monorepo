@@ -106,6 +106,19 @@ struct ChainConfig {
     /// Required when `checkpoint_providers` is non-empty.
     #[serde(default)]
     network_config: Option<String>,
+    /// Spec-mandated `SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY` override (CC-34c).
+    ///
+    /// Default **128**. Spec requires a user-configurable
+    /// `--safe-slots-to-import-optimistically` flag for disaster recovery of
+    /// fork-choice poisoning; wire is `CC_CHAIN_SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY`
+    /// via `cc-config` only (CC-3K /4 — no ad-hoc process-env reads here).
+    ///
+    /// **Loaded and logged; not yet applied** to
+    /// `is_optimistic_candidate_block` at the import gate (hook-without-caller
+    /// until optimistic-import / disaster-recovery wiring — same family as
+    /// **CC-3B** consume). Changing this value today does not change behaviour.
+    #[serde(default = "default_safe_slots_to_import_optimistically")]
+    safe_slots_to_import_optimistically: u64,
 }
 
 fn default_max_resident_states() -> usize {
@@ -119,6 +132,9 @@ fn default_event_ring_capacity() -> usize {
 }
 fn default_subscriber_queue_capacity() -> usize {
     cc_chain::events::DEFAULT_SUBSCRIBER_QUEUE_CAPACITY
+}
+fn default_safe_slots_to_import_optimistically() -> u64 {
+    cc_fork_choice::SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY
 }
 
 impl ChainConfig {
@@ -175,6 +191,7 @@ async fn main() -> anyhow::Result<()> {
         max_resident_states = cfg.max_resident_states,
         body_ring_capacity = cfg.body_ring_capacity,
         checkpoint_providers = cfg.checkpoint_providers.len(),
+        safe_slots_to_import_optimistically = cfg.safe_slots_to_import_optimistically,
         needs_bootstrap,
         "residency + checkpoint config loaded"
     );

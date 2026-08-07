@@ -37,5 +37,15 @@ checkpoint_providers = []
 #   "https://hoodi-checkpoint-sync.attestant.io",
 # ]
 
+# Spec-mandated SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY (sync/optimistic.md).
+# Default 128. Kept for disaster recovery (fork-choice poisoning during a
+# transition) rather than because a live path exercises the merge-transition
+# gate on this latest-fork-only, checkpoint-sync-only client.
+# Override: CC_CHAIN_SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY or the
+# --safe-slots-to-import-optimistically flag equivalent.
+# Loaded today; threaded into is_optimistic_candidate_block only when the
+# optimistic-import gate lands (CC-3B family / import wiring).
+safe_slots_to_import_optimistically = 128
+
 # No health peers — chain is the root of the acyclic health DAG.
 [peers]
