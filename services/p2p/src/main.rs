@@ -358,6 +358,14 @@ impl P2pConfig {
             }
             None => None,
         };
+        let chain_uri = self
+            .service
+            .peers
+            .get("chain")
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        // http::Uri Display yields the authority form; empty peers → disable.
+        let enable_chain_stream = !chain_uri.is_empty();
         Ok(RuntimeConfig {
             node_key_path: self.node_key_path.clone(),
             listen_multiaddr,
@@ -375,6 +383,9 @@ impl P2pConfig {
             network_config_path: self.network_config.clone(),
             genesis_validators_root,
             enable_discovery: self.enable_discovery,
+            chain_uri,
+            enable_chain_stream,
+            heartbeat_interval: Duration::from_secs(1),
             test_swarm_panic: false,
         })
     }

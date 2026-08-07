@@ -23,6 +23,9 @@ use tonic_health::ServingStatus;
 use tonic_health::server::HealthReporter;
 use tracing::{error, info};
 
+use crate::chain_stream::{
+    ChainStreamConfig, ChainStreamHandle, run_chain_stream_client, run_publish_dispatch,
+};
 use crate::channels::{self, ChannelMap, SwarmCommand, stub_consumer};
 use crate::clock::{ClockConfig, SlotClock};
 use crate::discovery::{
@@ -68,6 +71,13 @@ pub struct RuntimeConfig {
     pub genesis_validators_root: Option<[u8; 32]>,
     /// When false, discovery task is not spawned (tests / offline).
     pub enable_discovery: bool,
+    /// gRPC URI for the chain service (`peers.chain` / `CC_P2P_PEERS__CHAIN`).
+    /// Empty disables the chain-stream client (tests / offline).
+    pub chain_uri: String,
+    /// When false, do not spawn the chain-stream client (unit tests).
+    pub enable_chain_stream: bool,
+    /// Gossipsub heartbeat interval — stall bound is derived from this (§2.3).
+    pub heartbeat_interval: Duration,
     /// **Test-only:** swarm task panics immediately so the process-fatal path
     /// can be exercised through [`run_process`] without a real host crash.
     /// Production always leaves this `false`.
@@ -85,6 +95,10 @@ impl Default for RuntimeConfig {
             network_config_path: None,
             genesis_validators_root: None,
             enable_discovery: true,
+            chain_uri: String::new(),
+            enable_chain_stream: false,
+            // Match `cc_libp2p::BehaviourConfig::default().heartbeat_interval`.
+            heartbeat_interval: Duration::from_secs(1),
             test_swarm_panic: false,
         }
     }
@@ -248,11 +262,21 @@ pub async fn serve(
     let (dial_tx, dial_rx) = mpsc::channel(DIAL_QUEUE_BOUND);
     let (peer_view_tx, peer_view_rx) = watch::channel(DiscoveryPeerView::default());
 
-    // ── 5. Stub consumers (count + drop) ───────────────────────────────────
-    // Owned edges claimed by later issues; stubs are fire-and-forget scaffolding
-    // until CC-22*/23*/27* install supervised workers (§2.4 note). Peer manager
-    // (CC-20c) consumes `conn_rx` itself — not the stub.
-    spawn_stub_consumers(channels, metrics.clone());
+    // Chain-stream handle (view ArcSwap + publish drop counter) — shared.
+    let chain_stream_handle = ChainStreamHandle::new();
+    let chain_out_tx = channels.chain_out_tx.clone();
+
+    // ── 5. Workers / stub consumers ────────────────────────────────────────
+    // Gossip/reqresp/kzg remain stubs until CC-22*/23*. Chain stream (CC-27b)
+    // replaces the chain_out/chain_in stubs when enabled. Peer manager owns
+    // `conn_rx`.
+    spawn_edge_workers(
+        channels,
+        metrics.clone(),
+        &cfg,
+        chain_stream_handle.clone(),
+        shutdown_rx.clone(),
+    );
 
     // Fork context for ENR eth2/nfd (best-effort when network config is present).
     let fork_ctx = build_fork_context(&cfg, initial_epoch);
@@ -265,6 +289,7 @@ pub async fn serve(
         drop(peer_cmd_tx);
         drop(dial_tx);
         drop(dial_rx);
+        drop(chain_out_tx);
         let swarm_factory = factory_from_future("swarm", || async {
             #[allow(clippy::panic)] // test-only RuntimeConfig.test_swarm_panic
             {
@@ -287,6 +312,8 @@ pub async fn serve(
             gossip_tx,
             reqresp_in_tx,
             conn_tx,
+            chain_out_tx,
+            cfg.heartbeat_interval,
             metrics.clone(),
         );
         let listen_for_swarm = cfg.listen_multiaddr.clone();
@@ -503,7 +530,14 @@ fn map_supervisor_join(
     }
 }
 
-fn spawn_stub_consumers(channels: ChannelMap, metrics: P2pMetrics) {
+/// Spawn edge consumers: stubs for unclaimed edges, chain-stream client when enabled.
+fn spawn_edge_workers(
+    channels: ChannelMap,
+    metrics: P2pMetrics,
+    cfg: &RuntimeConfig,
+    handle: ChainStreamHandle,
+    shutdown: watch::Receiver<bool>,
+) {
     let ChannelMap {
         gossip_rx,
         reqresp_in_rx,
@@ -513,13 +547,13 @@ fn spawn_stub_consumers(channels: ChannelMap, metrics: P2pMetrics) {
         chain_in_rx,
         publish_rx,
         cmd_tx,
-        publish_tx: _,
+        publish_tx,
         gossip_tx: _,
         reqresp_in_tx: _,
         conn_tx: _,
         kzg_tx: _,
         chain_out_tx: _,
-        chain_in_tx: _,
+        chain_in_tx,
         cmd_rx: _,
     } = channels;
 
@@ -543,20 +577,10 @@ fn spawn_stub_consumers(channels: ChannelMap, metrics: P2pMetrics) {
         "stub-kzg",
         stub_consumer("kzg", kzg_rx, m, Some(QueueName::Kzg)),
     );
-    let m = metrics.clone();
-    cc_bootstrap::spawn(
-        "stub-chain-out",
-        stub_consumer("chain_out", chain_out_rx, m, None),
-    );
-    let m = metrics.clone();
-    cc_bootstrap::spawn(
-        "stub-chain-in",
-        stub_consumer("chain_in", chain_in_rx, m, None),
-    );
 
-    // Publish queue → cmd bridge.
+    // Publish queue → cmd bridge (always on).
     let m = metrics.clone();
-    cc_bootstrap::spawn("stub-publish-bridge", async move {
+    cc_bootstrap::spawn("publish-bridge", async move {
         let mut publish_rx = publish_rx;
         while let Some(req) = publish_rx.recv().await {
             let depth = m.queue_depth(QueueName::Publish);
@@ -576,6 +600,63 @@ fn spawn_stub_consumers(channels: ChannelMap, metrics: P2pMetrics) {
             }
         }
     });
+
+    let enable_stream = cfg.enable_chain_stream && !cfg.chain_uri.is_empty();
+    if enable_stream {
+        // Proto PublishRequest fan-in from the stream client → publish_tx.
+        let (proto_pub_tx, proto_pub_rx) = mpsc::channel(channels::PUBLISH_BOUND);
+        let pub_metrics = metrics.clone();
+        let drops = handle.publish_drops.clone();
+        let pub_tx = publish_tx;
+        cc_bootstrap::spawn("chain-publish-dispatch", async move {
+            run_publish_dispatch(proto_pub_rx, pub_tx, pub_metrics, drops).await;
+        });
+
+        // chain_in consumers (verdict dispatch) — stub until gossip validation
+        // holds messages; still drain so the client does not block.
+        let m = metrics.clone();
+        cc_bootstrap::spawn(
+            "stub-chain-in",
+            stub_consumer("chain_in", chain_in_rx, m, None),
+        );
+
+        let stream_cfg = ChainStreamConfig {
+            chain_uri: cfg.chain_uri.clone(),
+            ..ChainStreamConfig::default()
+        };
+        let m = metrics.clone();
+        let h = handle;
+        cc_bootstrap::spawn("chain-stream-client", async move {
+            // Never fatal (§2.4): the client is already a reconnect loop.
+            run_chain_stream_client(
+                stream_cfg,
+                chain_out_rx,
+                chain_in_tx,
+                proto_pub_tx,
+                h,
+                m,
+                shutdown,
+            )
+            .await;
+        });
+        info!(uri = %cfg.chain_uri, "chain-stream client spawned");
+    } else {
+        // Offline / tests: drain chain edges so producers never hang.
+        let m = metrics.clone();
+        cc_bootstrap::spawn(
+            "stub-chain-out",
+            stub_consumer("chain_out", chain_out_rx, m, None),
+        );
+        let m = metrics.clone();
+        cc_bootstrap::spawn(
+            "stub-chain-in",
+            stub_consumer("chain_in", chain_in_rx, m, None),
+        );
+        drop(chain_in_tx);
+        drop(publish_tx);
+        drop(handle);
+        drop(shutdown);
+    }
 }
 
 /// Process entry: identity → runtime + gRPC health/metrics/SIGTERM.

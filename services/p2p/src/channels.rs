@@ -1,15 +1,24 @@
-//! §2.2 channel map — bounds land verbatim; stub payloads until owning issues.
+//! §2.2 channel map — bounds land verbatim.
 //!
 //! Fan-out edges from the swarm task and the publish/cmd path into it. Each
-//! bound is a design value. Depth is reported on `cc_p2p_queue_depth{q=…}` for
-//! the six queue labels that map onto this surface; chain-stream edges use
-//! the same channel skeleton and report via the saturation metric later
-//! (CC-27b).
+//! bound is a design value. Depth is reported on `cc_p2p_queue_depth{q=…}`;
+//! chain-stream edges report depth via `outstanding` and
+//! `cc_p2p_chain_stream_saturation_ratio` (CC-27b).
 
 use cc_libp2p::{Multiaddr, PeerId};
-use tokio::sync::mpsc;
+use cc_proto::p2p::{GossipObject, Verdict};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::metrics::{P2pMetrics, QueueName};
+
+/// Resolution of a chain-bound object (verdict or local timeout IGNORE).
+#[derive(Debug, Clone)]
+pub enum VerdictResolution {
+    /// Chain answered with a `Verdict`.
+    FromChain(Verdict),
+    /// Timed out locally — resolved as IGNORE so gossipsub is released.
+    Timeout,
+}
 
 // ── §2.2 bounds (verbatim) ──────────────────────────────────────────────────
 
@@ -120,18 +129,26 @@ pub struct KzgJob {
     pub bytes: Vec<u8>,
 }
 
-/// Placeholder chain-stream outbound object (claimed by CC-27b).
-#[derive(Debug, Clone)]
+/// Object destined for the chain stream (p2p → chain).
+///
+/// Produced by gossip validation (CC-22*) or synthetic tests. The stream
+/// client assigns `seq`, tracks `outstanding`, and fills [`Self::reply`] when
+/// a verdict (or local timeout IGNORE) resolves.
+#[derive(Debug)]
 pub struct ChainOutbound {
-    /// Opaque payload placeholder.
-    pub bytes: Vec<u8>,
+    /// Consensus object (GossipObject reuses ImportBlockRequest shape).
+    pub object: GossipObject,
+    /// Optional completion for the producer (gossip hold / tests).
+    pub reply: Option<oneshot::Sender<VerdictResolution>>,
 }
 
-/// Placeholder chain-stream inbound message (claimed by CC-27b).
+/// Verdict dispatched from the stream client → gossip validation / scoring.
 #[derive(Debug, Clone)]
 pub struct ChainInbound {
-    /// Opaque payload placeholder.
-    pub bytes: Vec<u8>,
+    /// Chain (or local-timeout) verdict.
+    pub verdict: Verdict,
+    /// Wire latency when known (zero for synthetic local IGNORE).
+    pub latency: std::time::Duration,
 }
 
 /// Local publish request → swarm (claimed by CC-27b / gossip publish path).

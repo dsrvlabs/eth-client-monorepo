@@ -8,10 +8,12 @@
 //! - **CC-21b**: Epoch-aware fork digest (`fork_digest`) — no libp2p/discv5/I/O
 //! - **CC-21c**: discv5 discovery task, ENR field encoders, predicates, dial queue
 //! - **CC-22a**: Topic registry, Fulu topic strings, Steady→Overlap→Drain skeleton
+//! - **CC-27b**: chain-stream client, outstanding map, stall-then-shed, ChainView store
 //! - **CC-29a**: Phase 2 metric family declarations (binary registers them)
 
 #![allow(missing_docs)]
 
+pub mod chain_stream;
 pub mod channels;
 pub mod clock;
 pub mod discovery;

@@ -690,6 +690,106 @@ impl P2pMetrics {
             .get()
     }
 
+    // ── chain-stream producers (CC-27b) ─────────────────────────────────────
+
+    /// Increment `cc_p2p_chain_objects_sent_total`.
+    pub fn inc_chain_objects_sent(&self) {
+        self.chain_objects_sent.inc();
+    }
+
+    /// Read `cc_p2p_chain_objects_sent_total`.
+    #[must_use]
+    pub fn chain_objects_sent(&self) -> u64 {
+        self.chain_objects_sent.get()
+    }
+
+    /// Increment `cc_p2p_chain_verdicts_received_total`.
+    pub fn inc_chain_verdicts_received(&self) {
+        self.chain_verdicts_received.inc();
+    }
+
+    /// Read `cc_p2p_chain_verdicts_received_total`.
+    #[must_use]
+    pub fn chain_verdicts_received(&self) -> u64 {
+        self.chain_verdicts_received.get()
+    }
+
+    /// Increment `cc_p2p_verdict_timeout_total`.
+    pub fn inc_verdict_timeout(&self) {
+        self.verdict_timeout.inc();
+    }
+
+    /// Read `cc_p2p_verdict_timeout_total`.
+    #[must_use]
+    pub fn verdict_timeout(&self) -> u64 {
+        self.verdict_timeout.get()
+    }
+
+    /// Increment `cc_p2p_verdict_late_total`.
+    pub fn inc_verdict_late(&self) {
+        self.verdict_late.inc();
+    }
+
+    /// Read `cc_p2p_verdict_late_total`.
+    #[must_use]
+    pub fn verdict_late(&self) -> u64 {
+        self.verdict_late.get()
+    }
+
+    /// Observe `cc_p2p_verdict_latency_seconds`.
+    pub fn observe_verdict_latency(&self, seconds: f64) {
+        self.verdict_latency.observe(seconds);
+    }
+
+    /// Set `cc_p2p_chain_stream_saturation_ratio` as milli-units (0–1000 ⇒ 0.0–1.0).
+    pub fn set_saturation_ratio_milli(&self, milli: i64) {
+        self.chain_stream_saturation_ratio.set(milli);
+    }
+
+    /// Convenience: set saturation from a 0.0–1.0 ratio.
+    pub fn set_saturation_ratio(&self, ratio: f64) {
+        let milli = (ratio.clamp(0.0, 1.0) * 1000.0).round() as i64;
+        self.set_saturation_ratio_milli(milli);
+    }
+
+    /// Read saturation milli-units.
+    #[must_use]
+    pub fn saturation_ratio_milli(&self) -> i64 {
+        self.chain_stream_saturation_ratio.get()
+    }
+
+    /// Increment `cc_p2p_gossip_shed_total{topic}`.
+    pub fn inc_gossip_shed(&self, topic: &str) {
+        self.gossip_shed
+            .get_or_create(&TopicLabels {
+                topic: topic.to_owned(),
+            })
+            .inc();
+    }
+
+    /// Read `cc_p2p_gossip_shed_total{topic}`.
+    #[must_use]
+    pub fn gossip_shed(&self, topic: &str) -> u64 {
+        self.gossip_shed
+            .get_or_create(&TopicLabels {
+                topic: topic.to_owned(),
+            })
+            .get()
+    }
+
+    /// Set `cc_p2p_swarm_stall_seconds` (last observed stall duration).
+    pub fn set_swarm_stall_seconds(&self, seconds: f64) {
+        // Gauge is i64; store milliseconds so sub-second stalls are visible.
+        let ms = (seconds * 1000.0).round() as i64;
+        self.swarm_stall_seconds.set(ms);
+    }
+
+    /// Read stall duration in milliseconds (see [`Self::set_swarm_stall_seconds`]).
+    #[must_use]
+    pub fn swarm_stall_ms(&self) -> i64 {
+        self.swarm_stall_seconds.get()
+    }
+
     /// Ensure every labelled family has its fixed series so HELP/TYPE appear
     /// and soak queries return 0 rather than absent.
     fn seed_exposition(&self) {

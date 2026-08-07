@@ -1111,6 +1111,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "anyhow",
+ "arc-swap",
  "cc-bootstrap",
  "cc-config",
  "cc-crypto",
@@ -1120,6 +1121,7 @@ dependencies = [
  "clap",
  "discv5",
  "futures",
+ "getrandom 0.3.4",
  "hex",
  "prometheus-client",
  "serde",
@@ -1127,6 +1129,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-health",
  "tracing",
