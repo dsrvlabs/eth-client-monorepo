@@ -1,16 +1,30 @@
 #!/usr/bin/env bash
-# scripts/soak-sampler.sh — CC-1Ac per-slot soak sampler
+# scripts/soak-sampler.sh — CC-1Ac / CC-29b per-slot soak sampler
 #
 # Wakes once per slot and writes one CSV row carrying:
 #   timestamp, slot, local head root/slot (chain GetHead),
 #   reference provider head root/slot, agreement flag,
-#   chain process RSS (KiB), machine 1-minute load average.
+#   chain process RSS (KiB), machine 1-minute load average,
+#   and (CC-29b) the five Phase 2 series numbers:
+#     p2p_peers, p2p_peers_custody, head_lag_slots, rss_kib, load1
+#
+# When --p2p-metrics-url is set (or default reachable), scrapes
+# cc_p2p_peers / cc_p2p_peers_custody_compatible each tick. head_lag_slots is
+# derived from max(0, ref_slot − local_slot) so the series is recoverable
+# offline; the process histogram (cc_p2p_head_lag_slots) is the clause-3
+# counting source in soak-report.sh.
+#
+# Peer-set-stable boundary (CC-29b): once p2p_peers ≥ --peer-stable-min-peers
+# and p2p_peers_custody ≥ --peer-stable-min-custody for --peer-stable-samples
+# consecutive ticks, records peer_set_stable_unix in the .meta sidecar. That
+# timestamp opens the Phase 2 steady-state window and is unrecoverable from
+# histograms afterwards.
 #
 # Independent-provider guard (Clause 2/2): refuses to start if the reference
 # provider base equals the driver's block-feed provider (normalized).
 #
 # Never invoked by cargo build or cargo nextest. Operators run this for the
-# soak window (CC-1Ad) and for short dry runs of the measurement rig.
+# soak window (CC-1Ad / CC-29c) and for short dry runs of the measurement rig.
 #
 # Usage:
 #   bash scripts/soak-sampler.sh \
@@ -20,13 +34,20 @@
 #     [--slots N | --duration SECS] \
 #     [--chain-grpc HOST:PORT] \
 #     [--chain-pid PID | --chain-container NAME] \
-#     [--seconds-per-slot SECS]
+#     [--seconds-per-slot SECS] \
+#     [--p2p-metrics-url URL] \
+#     [--peer-stable-min-peers N] [--peer-stable-min-custody N] \
+#     [--peer-stable-samples N]
 #
 # Environment (flags override):
 #   SOAK_DRIVER_PROVIDER, SOAK_REF_PROVIDER, SOAK_OUT,
 #   SOAK_CHAIN_GRPC (default 127.0.0.1:9001),
 #   SOAK_CHAIN_PID, SOAK_CHAIN_CONTAINER (default chain),
-#   SOAK_SECONDS_PER_SLOT (default 12), SOAK_SLOTS, SOAK_DURATION
+#   SOAK_SECONDS_PER_SLOT (default 12), SOAK_SLOTS, SOAK_DURATION,
+#   SOAK_P2P_METRICS_URL (default http://127.0.0.1:9102/metrics),
+#   SOAK_PEER_STABLE_MIN_PEERS (default 25),
+#   SOAK_PEER_STABLE_MIN_CUSTODY (default 8),
+#   SOAK_PEER_STABLE_SAMPLES (default 5)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,10 +62,14 @@ CHAIN_CONTAINER="${SOAK_CHAIN_CONTAINER:-chain}"
 SECONDS_PER_SLOT="${SOAK_SECONDS_PER_SLOT:-12}"
 SLOTS="${SOAK_SLOTS:-}"
 DURATION="${SOAK_DURATION:-}"
+P2P_METRICS_URL="${SOAK_P2P_METRICS_URL:-http://127.0.0.1:9102/metrics}"
+PEER_STABLE_MIN_PEERS="${SOAK_PEER_STABLE_MIN_PEERS:-25}"
+PEER_STABLE_MIN_CUSTODY="${SOAK_PEER_STABLE_MIN_CUSTODY:-8}"
+PEER_STABLE_SAMPLES="${SOAK_PEER_STABLE_SAMPLES:-5}"
 # 0 = run until SIGINT/SIGTERM
 MAX_SAMPLES=0
 
-UA="cc-soak-sampler/0.1 (eth-client-monorepo CC-1Ac)"
+UA="cc-soak-sampler/0.1 (eth-client-monorepo CC-1Ac/CC-29b)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -57,8 +82,12 @@ while [[ $# -gt 0 ]]; do
     --seconds-per-slot) SECONDS_PER_SLOT="$2"; shift 2 ;;
     --slots)           SLOTS="$2"; shift 2 ;;
     --duration)        DURATION="$2"; shift 2 ;;
+    --p2p-metrics-url) P2P_METRICS_URL="$2"; shift 2 ;;
+    --peer-stable-min-peers) PEER_STABLE_MIN_PEERS="$2"; shift 2 ;;
+    --peer-stable-min-custody) PEER_STABLE_MIN_CUSTODY="$2"; shift 2 ;;
+    --peer-stable-samples) PEER_STABLE_SAMPLES="$2"; shift 2 ;;
     -h|--help)
-      sed -n '2,35p' "$0"
+      sed -n '2,55p' "$0"
       exit 0
       ;;
     *)
@@ -92,6 +121,16 @@ if [[ -n "${SLOTS}" ]]; then
 elif [[ -n "${DURATION}" ]]; then
   [[ "${DURATION}" =~ ^[0-9]+$ && "${DURATION}" -ge 1 ]] || die "duration must be a positive integer (seconds)"
   MAX_SAMPLES=$(( (DURATION + SECONDS_PER_SLOT - 1) / SECONDS_PER_SLOT ))
+fi
+
+if ! [[ "${PEER_STABLE_MIN_PEERS}" =~ ^[0-9]+$ ]]; then
+  die "peer-stable-min-peers must be a non-negative integer"
+fi
+if ! [[ "${PEER_STABLE_MIN_CUSTODY}" =~ ^[0-9]+$ ]]; then
+  die "peer-stable-min-custody must be a non-negative integer"
+fi
+if ! [[ "${PEER_STABLE_SAMPLES}" =~ ^[0-9]+$ ]] || [[ "${PEER_STABLE_SAMPLES}" -lt 1 ]]; then
+  die "peer-stable-samples must be a positive integer"
 fi
 
 # ── Clause 2/2 independent-provider guard ───────────────────────────────────
@@ -137,6 +176,8 @@ fi
 log "driver provider:    ${DRIVER_PROVIDER} (norm=${DRIVER_NORM})"
 log "reference provider: ${REF_PROVIDER} (norm=${REF_NORM})"
 log "chain gRPC:         ${CHAIN_GRPC}"
+log "p2p metrics:        ${P2P_METRICS_URL:-"(disabled)"}"
+log "peer-set-stable:    peers≥${PEER_STABLE_MIN_PEERS} custody≥${PEER_STABLE_MIN_CUSTODY} for ${PEER_STABLE_SAMPLES} samples"
 log "out:                ${OUT}"
 log "seconds_per_slot:   ${SECONDS_PER_SLOT}"
 if [[ "${MAX_SAMPLES}" -gt 0 ]]; then
@@ -314,15 +355,67 @@ print(s[0] if s else "")
   echo ""
 }
 
+# Scrape p2p gauges from OpenMetrics text. Prints "PEERS CUSTODY" or " ".
+# Sums cc_p2p_peers{direction=…}; reads unlabeled cc_p2p_peers_custody_compatible.
+scrape_p2p_gauges() {
+  local url="$1"
+  [[ -n "${url}" ]] || { echo " "; return 0; }
+  local body
+  body="$(
+    curl -sS -L \
+      -A "${UA}" \
+      --connect-timeout 2 \
+      --max-time 5 \
+      "${url}" 2>/dev/null
+  )" || body=""
+  if [[ -z "${body}" ]]; then
+    echo " "
+    return 0
+  fi
+  python3 -c '
+import sys
+text = sys.stdin.read()
+# Whole-token names only: sum cc_p2p_peers{direction}; read custody gauge.
+peers_sum = 0.0
+peers_hit = False
+custody = None
+for line in text.splitlines():
+    if line.startswith("#"):
+        continue
+    parts = line.split()
+    if len(parts) < 2:
+        continue
+    name = parts[0]
+    try:
+        val = float(parts[1])
+    except ValueError:
+        continue
+    base = name.split("{", 1)[0]
+    if base == "cc_p2p_peers":
+        peers_sum += val
+        peers_hit = True
+    elif base == "cc_p2p_peers_custody_compatible":
+        custody = val
+if not peers_hit:
+    peers_s = ""
+else:
+    peers_s = str(int(peers_sum)) if peers_sum == int(peers_sum) else str(peers_sum)
+if custody is None:
+    custody_s = ""
+else:
+    custody_s = str(int(custody)) if custody == int(custody) else str(custody)
+print(f"{peers_s} {custody_s}")
+' <<<"${body}"
+}
+
 # ── CSV header ──────────────────────────────────────────────────────────────
 mkdir -p "$(dirname "${OUT}")"
+CSV_HEADER="ts_unix,slot,local_root,local_slot,ref_root,ref_slot,agree,rss_kib,load1,p2p_peers,p2p_peers_custody,head_lag_slots"
 if [[ ! -f "${OUT}" ]]; then
-  printf '%s\n' \
-    "ts_unix,slot,local_root,local_slot,ref_root,ref_slot,agree,rss_kib,load1" \
-    > "${OUT}"
+  printf '%s\n' "${CSV_HEADER}" > "${OUT}"
 fi
 
-# Metadata sidecar (provider names for the run record).
+# Metadata sidecar (provider names + peer-set-stable for the run record).
 META="${OUT%.csv}.meta"
 {
   echo "driver_provider=${DRIVER_PROVIDER}"
@@ -330,7 +423,12 @@ META="${OUT%.csv}.meta"
   echo "ref_provider=${REF_PROVIDER}"
   echo "ref_provider_norm=${REF_NORM}"
   echo "chain_grpc=${CHAIN_GRPC}"
+  echo "p2p_metrics_url=${P2P_METRICS_URL}"
+  echo "peer_stable_min_peers=${PEER_STABLE_MIN_PEERS}"
+  echo "peer_stable_min_custody=${PEER_STABLE_MIN_CUSTODY}"
+  echo "peer_stable_samples=${PEER_STABLE_SAMPLES}"
   echo "started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "started_unix=$(date +%s)"
 } > "${META}"
 
 STOP=0
@@ -338,6 +436,8 @@ trap 'STOP=1; log "stop signalled"' INT TERM
 
 n=0
 failures=0
+stable_run=0
+peer_set_stable_unix=""
 while [[ "${STOP}" -eq 0 ]]; do
   if [[ "${MAX_SAMPLES}" -gt 0 && "${n}" -ge "${MAX_SAMPLES}" ]]; then
     break
@@ -387,7 +487,43 @@ while [[ "${STOP}" -eq 0 ]]; do
   rss="$(chain_rss_kib)"
   load="$(load1)"
 
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+  # Phase 2 five-number series (peers, custody, head lag, rss, load).
+  p2p_peers=""
+  p2p_custody=""
+  if [[ -n "${P2P_METRICS_URL}" ]]; then
+    p2p_line="$(scrape_p2p_gauges "${P2P_METRICS_URL}" || echo " ")"
+    p2p_peers="$(awk '{print $1}' <<<"${p2p_line}")"
+    p2p_custody="$(awk '{print $2}' <<<"${p2p_line}")"
+  fi
+  head_lag=""
+  if [[ -n "${local_slot}" && -n "${ref_slot}" ]]; then
+    # Diagnostic series only; clause 3 reads the process histogram buckets.
+    head_lag="$(python3 -c 'import sys; a=int(sys.argv[1]); b=int(sys.argv[2]); print(max(0, b-a))' \
+      "${local_slot}" "${ref_slot}" 2>/dev/null || echo "")"
+  fi
+
+  # Peer-set-stable: first sustained hold of both thresholds (opens steady-state).
+  if [[ -z "${peer_set_stable_unix}" ]]; then
+    if [[ -n "${p2p_peers}" && -n "${p2p_custody}" ]] \
+      && python3 -c 'import sys; raise SystemExit(0 if float(sys.argv[1]) >= float(sys.argv[2]) and float(sys.argv[3]) >= float(sys.argv[4]) else 1)' \
+        "${p2p_peers}" "${PEER_STABLE_MIN_PEERS}" "${p2p_custody}" "${PEER_STABLE_MIN_CUSTODY}" 2>/dev/null
+    then
+      stable_run=$((stable_run + 1))
+      if [[ "${stable_run}" -ge "${PEER_STABLE_SAMPLES}" ]]; then
+        # Boundary = first sample of the sustained run.
+        peer_set_stable_unix=$((ts - (PEER_STABLE_SAMPLES - 1) * SECONDS_PER_SLOT))
+        {
+          echo "peer_set_stable_unix=${peer_set_stable_unix}"
+          echo "peer_set_stable_utc=$(python3 -c 'import datetime,sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))' "${peer_set_stable_unix}")"
+        } >> "${META}"
+        log "peer-set-stable at unix=${peer_set_stable_unix} (peers≥${PEER_STABLE_MIN_PEERS}, custody≥${PEER_STABLE_MIN_CUSTODY} for ${PEER_STABLE_SAMPLES} samples)"
+      fi
+    else
+      stable_run=0
+    fi
+  fi
+
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "${ts}" \
     "${slot}" \
     "${local_root}" \
@@ -397,6 +533,9 @@ while [[ "${STOP}" -eq 0 ]]; do
     "${agree}" \
     "${rss}" \
     "${load}" \
+    "${p2p_peers}" \
+    "${p2p_custody}" \
+    "${head_lag}" \
     >> "${OUT}"
 
   n=$((n + 1))
@@ -414,6 +553,11 @@ while [[ "${STOP}" -eq 0 ]]; do
     wait $! 2>/dev/null || true
   fi
 done
+
+if [[ -z "${peer_set_stable_unix}" ]]; then
+  echo "peer_set_stable_unix=" >> "${META}"
+  log "warn: peer-set-stable never reached (report will refuse Phase 2 clause 3)"
+fi
 
 log "done: ${n} samples written to ${OUT} (transient failures=${failures})"
 log "meta: ${META}"

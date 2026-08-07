@@ -97,8 +97,6 @@ cargo test -p cc-p2p --lib by_root_withhold_seam
 CC_SKIP_DOCKER=1 ./devnet/scenarios/withheld-column.sh
 ./devnet/scenarios/withheld-column.sh
 ```
-**Owner:** CC-2Jd / CC-2Jb / CC-2Jc / CC-26b / CC-2A (one subsection each, by clause)  
-**Status:** partial — code paths landed; live adversarial runs still operator discharge
 
 ### Clause 6 — scoring penalises misbehaving peers (CC-2Jc)
 
@@ -137,7 +135,6 @@ Kinds map to attributable `cc_p2p_peer_penalty_total{reason}` labels:
 - `behavioural` (P7) label still has a producer (GossipSub-observed); no kind injects it (D-5).
 
 **Unit coverage (landed):** `cargo test -p cc-p2p --lib fault_mode` + `reqresp::columns` seam tests for custody-refuse / stall-reqresp decisions.
-**Status:** partial — clause-4 booking skeleton landed (CC-26b); live runs still `_NOT_RUN_`
 
 ### Clause 4 · 10-minute gap recovery (CC-26b)
 
@@ -241,16 +238,55 @@ treat any `_NOT_RUN_` cell as a pass.
 ## Clause table
 
 **Owner:** CC-29b (skeleton) / CC-29c (numbers)  
-**Status:** **`NOT_RUN`**
+**Status:** **`NOT_RUN`** — fill from `scripts/soak-report.sh --phase2` against a real
+window. A clause read by eye off a Grafana panel does **not** discharge it.
+Empty placeholders only; **no invented numbers**.
 
 | Clause | Venue | Measured | Threshold | Pass/Fail |
 |---|---|---|---|---|
-| 1 · healthy peer count 24 h | Hoodi | `_NOT_RUN_` | min peers ≥ 25 **and** custody-compatible ≥ 8 | `_NOT_RUN_` |
+| 1 · healthy peer count 24 h | Hoodi | `_NOT_RUN_` | `min_over_time` peers ≥ 25 **and** custody ≥ 8 | `_NOT_RUN_` |
 | 2 · DA-gated import | Hoodi | `_NOT_RUN_` | imported non-trivial; no deferred head ancestry | `_NOT_RUN_` |
-| 3 · head lag ≤ 1 typical | Hoodi | `_NOT_RUN_` | bucket `le=1` ≥ 0.95 (catch-up excluded) | `_NOT_RUN_` |
+| 3 · head lag ≤ 1 typical | Hoodi | `_NOT_RUN_` | bucket `le=1` ≥ 0.95 (catch-up excluded via peer-set-stable) | `_NOT_RUN_` |
 | 4 · 10-minute gap recovery | self-devnet | `_NOT_RUN_` | back to head within 32 slots; parent walk clean; DA-gated (`cc_p2p_da_outcome_total`) | `_NOT_RUN_` |
 | 4 · Hoodi confirmation (R-5) | Hoodi | `_NOT_RUN_` | ~50 real blocks+columns by-range; **non-discharging** | `_NOT_RUN_` |
-| 5 · withheld column | adversarial harness | `_NOT_RUN_` | deferred then recovered | `_NOT_RUN_` |
-| 6 · scoring penalises | adversarial harness | `_NOT_RUN_` | penalty reason + score crosses −4000 | `_NOT_RUN_` |
-| CC-2A · BPO | self-devnet | `_NOT_RUN_` | topic-set change count == 2; peers retained | `_NOT_RUN_` |
-| R-5 cross-check | Hoodi | `_NOT_RUN_` | `{recovered}` vs `{deferred}` over 24 h | `_NOT_RUN_` |
+| 5 · withheld column | adversarial harness | `_NOT_RUN_` | deferred then recovered + head advance | `_NOT_RUN_` |
+| 6 · scoring penalises | adversarial harness | `_NOT_RUN_` | penalty reason + score crosses −4000 bucket | `_NOT_RUN_` |
+| CC-2A · BPO | self-devnet | `_NOT_RUN_` | topic-set change count == 2; peers retained; no zero-rate `beacon_block` | `_NOT_RUN_` |
+| R-5 cross-check | Hoodi | `_NOT_RUN_` | `{recovered}` vs `{deferred}` over 24 h; zero-recovered + non-zero deferred = harness-only recovery | `_NOT_RUN_` |
+
+### Method (CC-29b)
+
+- Clause 1: **`min_over_time`**, not an average — one dip below threshold fails.
+- Clauses 3 and 6: **bucket fractions at exact boundaries** (`le=1`, `le=-4000`), not quantile interpolation.
+- Clause 3 catch-up exclusion keyed on **`peer_set_stable_unix`** from the sampler meta; pre-stable lag reported separately. Missing that timestamp refuses the report.
+- Venue is a column on every row so a non-Hoodi clause cannot be read off a Hoodi run.
+
+### Sampler / report commands (fill-in)
+
+```bash
+# Per-slot series (peers, custody, head lag, RSS, load) + peer-set-stable meta.
+bash scripts/soak-sampler.sh \
+  --driver-provider "$DRIVER_PROVIDER" \
+  --ref-provider    "$REF_PROVIDER" \
+  --out             soak-samples.csv \
+  --p2p-metrics-url http://127.0.0.1:9102/metrics
+
+# Capture p2p histogram/counter scrape pair after peer-set-stable, then at window end:
+curl -sS http://127.0.0.1:9102/metrics > p2p-metrics-start.txt
+# … ≥ 24 h steady-state …
+curl -sS http://127.0.0.1:9102/metrics > p2p-metrics-end.txt
+
+# Optional harness discharge results (clauses 4/5/6/CC-2A) as JSON.
+# bash scripts/soak-report.sh --phase2 …
+bash scripts/soak-report.sh --phase2 \
+  --samples            soak-samples.csv \
+  --run-meta           soak-samples.meta \
+  --p2p-metrics-start  p2p-metrics-start.txt \
+  --p2p-metrics-end    p2p-metrics-end.txt \
+  --harness-json       harness-results.json \
+  --out                clause-table.md
+# optional: --write  → replace this file's ## Clause table section
+
+# Fixture self-test (no live stack; CI / pre-soak):
+bash scripts/soak-report.sh --self-test
+```
