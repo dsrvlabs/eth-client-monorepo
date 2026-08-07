@@ -28,6 +28,7 @@ use crate::clock::{ClockConfig, SlotClock};
 use crate::host::{SwarmTask, build_host_swarm, run_swarm_task};
 use crate::identity::{self, IdentityError};
 use crate::metrics::{P2pMetrics, QueueName};
+use crate::peer_manager::{PeerManager, PeerManagerConfig, run_peer_manager};
 use crate::supervisor::{
     SupervisedTask, SupervisorOutcome, TaskPolicy, factory_from_future, run_supervisor,
 };
@@ -50,6 +51,8 @@ pub struct RuntimeConfig {
     pub listen_multiaddr: Multiaddr,
     /// Slot clock inputs (from config until first `ChainView`).
     pub clock: ClockConfig,
+    /// Peer manager knobs (target/max/static peers). Defaults match §3.6.
+    pub peer_manager: PeerManagerConfig,
     /// **Test-only:** swarm task panics immediately so the process-fatal path
     /// can be exercised through [`run_process`] without a real host crash.
     /// Production always leaves this `false`.
@@ -62,6 +65,7 @@ impl Default for RuntimeConfig {
             node_key_path: PathBuf::from(identity::DEFAULT_NODE_KEY_PATH),
             listen_multiaddr: default_listen_multiaddr(),
             clock: ClockConfig::default(),
+            peer_manager: PeerManagerConfig::default(),
             test_swarm_panic: false,
         }
     }
@@ -164,36 +168,47 @@ pub async fn serve(
     let gossip_tx = channels.gossip_tx.clone();
     let reqresp_in_tx = channels.reqresp_in_tx.clone();
     let conn_tx = channels.conn_tx.clone();
+    // Peer manager owns conn_rx + a clone of cmd_tx.
+    let conn_rx = std::mem::replace(&mut channels.conn_rx, mpsc::channel(1).1);
+    let peer_cmd_tx = channels.cmd_tx.clone();
+    let peer_cfg = cfg.peer_manager.clone();
 
     // ── 5. Stub consumers (count + drop) ───────────────────────────────────
     // Owned edges claimed by later issues; stubs are fire-and-forget scaffolding
-    // until CC-20c/22*/23*/27* install supervised workers (§2.4 note).
+    // until CC-22*/23*/27* install supervised workers (§2.4 note). Peer manager
+    // (CC-20c) consumes `conn_rx` itself — not the stub.
     spawn_stub_consumers(channels, metrics.clone());
 
     // ── 6. Supervisor ──────────────────────────────────────────────────────
-    let swarm_factory = if cfg.test_swarm_panic {
+    let (swarm_factory, peer_factory) = if cfg.test_swarm_panic {
         // Induced panic for process-fatal production-path tests.
         drop(cmd_rx);
-        factory_from_future("swarm", || async {
+        drop(conn_rx);
+        drop(peer_cmd_tx);
+        let swarm_factory = factory_from_future("swarm", || async {
             #[allow(clippy::panic)] // test-only RuntimeConfig.test_swarm_panic
             {
                 panic!("induced swarm panic");
             }
-        })
+        });
+        let peer_factory = factory_from_future("peer_manager", || async {
+            std::future::pending::<()>().await;
+        });
+        (swarm_factory, peer_factory)
     } else {
         let swarm = build_host_swarm(identity.keypair().clone())?;
         assert_eq!(snapshot.peer_id, *swarm.local_peer_id());
-        let swarm_task = SwarmTask {
+        let swarm_task = SwarmTask::new(
             swarm,
             cmd_rx,
             gossip_tx,
             reqresp_in_tx,
             conn_tx,
-            metrics: metrics.clone(),
-        };
+            metrics.clone(),
+        );
         let listen_for_swarm = cfg.listen_multiaddr.clone();
         let swarm_cell = Mutex::new(Some(swarm_task));
-        factory_from_future("swarm", move || {
+        let swarm_factory = factory_from_future("swarm", move || {
             let task = swarm_cell
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -207,7 +222,30 @@ pub async fn serve(
                     std::future::pending::<()>().await;
                 }
             }
-        })
+        });
+
+        // Peer manager: respawnable; table is rebuilt from connection events.
+        let peer_metrics = metrics.clone();
+        let peer_shutdown = shutdown_rx.clone();
+        let peer_cell = Mutex::new(Some((conn_rx, peer_cmd_tx, peer_cfg, peer_metrics)));
+        let peer_factory = factory_from_future("peer_manager", move || {
+            let taken = peer_cell
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            let mut shutdown = peer_shutdown.clone();
+            async move {
+                if let Some((conn_rx, cmd_tx, config, metrics)) = taken {
+                    let manager = PeerManager::new(config, cmd_tx, metrics);
+                    run_peer_manager(manager, conn_rx, shutdown).await;
+                } else {
+                    // After first exit, park (respawn rebuilds from empty table
+                    // only if we re-install; for now stay idle post-channel-close).
+                    let _ = shutdown.changed().await;
+                }
+            }
+        });
+        (swarm_factory, peer_factory)
     };
 
     // Idle respawnable worker so the respawn policy is live before CC-22*.
@@ -220,6 +258,11 @@ pub async fn serve(
             name: "swarm",
             policy: TaskPolicy::ProcessFatal,
             factory: swarm_factory,
+        },
+        SupervisedTask {
+            name: "peer_manager",
+            policy: TaskPolicy::Respawn,
+            factory: peer_factory,
         },
         SupervisedTask {
             name: "idle_worker",
@@ -288,7 +331,7 @@ fn spawn_stub_consumers(channels: ChannelMap, metrics: P2pMetrics) {
     let ChannelMap {
         gossip_rx,
         reqresp_in_rx,
-        conn_rx,
+        conn_rx: _, // owned by peer manager (CC-20c)
         kzg_rx,
         chain_out_rx,
         chain_in_rx,
@@ -318,11 +361,6 @@ fn spawn_stub_consumers(channels: ChannelMap, metrics: P2pMetrics) {
             m,
             Some(QueueName::ReqrespIn),
         ),
-    );
-    let m = metrics.clone();
-    cc_bootstrap::spawn(
-        "stub-conn",
-        stub_consumer("conn", conn_rx, m, Some(QueueName::Conn)),
     );
     let m = metrics.clone();
     cc_bootstrap::spawn(

@@ -22,3 +22,14 @@ slot_clock_offset_seconds = 0
 
 [peers]
 chain = "http://127.0.0.1:9001"
+
+# CC-20c peer-manager knobs (defaults; static peers empty until operators set them).
+# Discovery-driven dials are CC-21c — this process must not dial bootnodes from
+# an empty static list.
+[peer_manager]
+target_peers = 50
+max_peers = 100
+max_inbound = 60
+max_outbound = 60
+max_concurrent_dials = 8
+# static_peers = []  # list of { peer_id = "...", multiaddr = "/ip4/…/tcp/…" }

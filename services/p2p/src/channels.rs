@@ -6,6 +6,7 @@
 //! the same channel skeleton and report via the saturation metric later
 //! (CC-27b).
 
+use cc_libp2p::{Multiaddr, PeerId};
 use tokio::sync::mpsc;
 
 use crate::metrics::{P2pMetrics, QueueName};
@@ -43,11 +44,73 @@ pub struct ReqRespInbound {
     pub bytes: Vec<u8>,
 }
 
-/// Placeholder connection event for the peer manager (claimed by CC-20c).
+/// Connection direction relative to the local node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConnectionDirection {
+    /// Remote dialed us.
+    Inbound,
+    /// We dialed the remote.
+    Outbound,
+}
+
+/// Ethereum `Goodbye` reason codes (p2p-interface).
+///
+/// Wire framing is CC-23b; the peer manager emits the command with a reason
+/// before every intentional disconnect (CC-20c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u64)]
+pub enum GoodbyeReason {
+    /// Client shut down.
+    ClientShutdown = 1,
+    /// Irrelevant network.
+    IrrelevantNetwork = 2,
+    /// Fault / error.
+    FaultOrError = 3,
+    /// Unable to verify network.
+    UnableToVerifyNetwork = 4,
+    /// Too many peers.
+    TooManyPeers = 5,
+    /// Duplicate peer.
+    DuplicatePeer = 6,
+}
+
+impl GoodbyeReason {
+    /// Numeric reason code on the wire.
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
+        self as u64
+    }
+}
+
+/// Connection events swarm → peer manager (CC-20c).
 #[derive(Debug, Clone)]
-pub struct ConnEvent {
-    /// Opaque event tag.
-    pub tag: &'static str,
+pub enum ConnEvent {
+    /// A new listen address was reported.
+    NewListenAddr {
+        /// Listen multiaddr.
+        address: Multiaddr,
+    },
+    /// Connection fully established.
+    ConnectionEstablished {
+        /// Remote peer.
+        peer_id: PeerId,
+        /// Inbound vs outbound.
+        direction: ConnectionDirection,
+        /// Remote endpoint multiaddr.
+        endpoint: Multiaddr,
+    },
+    /// Connection closed.
+    ConnectionClosed {
+        /// Remote peer.
+        peer_id: PeerId,
+    },
+    /// Outbound dial failed (before or after partial progress).
+    DialFailure {
+        /// Target peer if known.
+        peer_id: Option<PeerId>,
+        /// Error display string (no libp2p type leak into consumers).
+        error: String,
+    },
 }
 
 /// Placeholder KZG verify job (claimed by CC-22d / DA path).
@@ -82,8 +145,9 @@ pub struct PublishRequest {
 
 /// Commands the swarm task accepts — **only** path that mutates `Swarm`.
 ///
-/// Dial / discovery content lands in CC-20c / CC-21c; this issue owns the type
-/// and the cmd channel bound.
+/// Dial / disconnect / ban policy is decided by the peer manager (CC-20c);
+/// discovery content lands in CC-21c. Goodbye wire body is CC-23b — until then
+/// the swarm drops `Goodbye` with a counter after asserting the command path.
 #[derive(Debug, Clone)]
 pub enum SwarmCommand {
     /// No-op (used by tests / keep-alive).
@@ -95,10 +159,48 @@ pub enum SwarmCommand {
         /// Full topic string.
         topic: String,
     },
-    /// Disconnect a peer by stringified peer id (typed PeerId in CC-20c).
+    /// Dial a peer at `addr` (peer manager / static peers).
+    Dial {
+        /// Target peer.
+        peer_id: PeerId,
+        /// Multiaddr to dial.
+        addr: Multiaddr,
+    },
+    /// Send Ethereum `Goodbye` (standalone; prefer [`ClosePeer`] for intentional closes).
+    ///
+    /// Wire handler is CC-23b; swarm currently records and continues.
+    Goodbye {
+        /// Peer to notify.
+        peer_id: PeerId,
+        /// Reason code.
+        reason: GoodbyeReason,
+    },
+    /// Disconnect a peer (standalone; prefer [`ClosePeer`] for intentional closes).
     Disconnect {
-        /// Peer id string.
-        peer_id: String,
+        /// Peer to disconnect.
+        peer_id: PeerId,
+    },
+    /// **Atomic policy close** (H2): Goodbye → disconnect → optional ban, one cmd slot.
+    ///
+    /// Peer manager uses this for every intentional close so a full queue cannot
+    /// accept Goodbye and drop Disconnect/BlockPeer independently.
+    ClosePeer {
+        /// Peer to close.
+        peer_id: PeerId,
+        /// Goodbye reason code.
+        reason: GoodbyeReason,
+        /// When true, also `allow_block_list.block_peer` (ban enforcement).
+        ban: bool,
+    },
+    /// Add peer to `allow_block_list` (ban enforcement) without disconnecting.
+    BlockPeer {
+        /// Peer to block.
+        peer_id: PeerId,
+    },
+    /// Remove peer from `allow_block_list`.
+    UnblockPeer {
+        /// Peer to unblock.
+        peer_id: PeerId,
     },
 }
 

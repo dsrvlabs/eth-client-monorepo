@@ -127,14 +127,17 @@ pub(crate) struct WorkerLabels {
 
 /// `direction` label values for peers / IDONTWANT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum Direction {
+pub enum Direction {
+    /// Remote dialed us.
     Inbound,
+    /// We dialed the remote.
     Outbound,
 }
 
 impl Direction {
     /// Prometheus label value.
-    pub(crate) const fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Inbound => "inbound",
             Self::Outbound => "outbound",
@@ -142,7 +145,7 @@ impl Direction {
     }
 
     /// All variants (seed + tests).
-    pub(crate) const ALL: [Self; 2] = [Self::Inbound, Self::Outbound];
+    pub const ALL: [Self; 2] = [Self::Inbound, Self::Outbound];
 }
 
 /// `reason` label values for `cc_p2p_peer_penalty_total` (CC-29/3 / §3.7).
@@ -617,6 +620,36 @@ impl P2pMetrics {
         };
         metrics.seed_exposition();
         metrics
+    }
+
+    /// Set `cc_p2p_peers{direction}` (established count by direction).
+    pub fn set_peers(&self, direction: Direction, count: i64) {
+        self.peers
+            .get_or_create(&DirectionLabels {
+                direction: direction.as_str().to_owned(),
+            })
+            .set(count);
+    }
+
+    /// Read `cc_p2p_peers{direction}`.
+    #[must_use]
+    pub fn peers(&self, direction: Direction) -> i64 {
+        self.peers
+            .get_or_create(&DirectionLabels {
+                direction: direction.as_str().to_owned(),
+            })
+            .get()
+    }
+
+    /// Set `cc_p2p_peers_custody_compatible` (computation filled by CC-24a).
+    pub fn set_peers_custody_compatible(&self, count: i64) {
+        self.peers_custody_compatible.set(count);
+    }
+
+    /// Read `cc_p2p_peers_custody_compatible`.
+    #[must_use]
+    pub fn peers_custody_compatible(&self) -> i64 {
+        self.peers_custody_compatible.get()
     }
 
     /// Set `cc_p2p_queue_depth{q}` (bounded channel occupancy).

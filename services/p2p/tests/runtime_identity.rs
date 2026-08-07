@@ -64,6 +64,7 @@ fn runtime_cfg(key: PathBuf, panic: bool) -> RuntimeConfig {
             maximum_gossip_clock_disparity: Duration::from_millis(250),
             slot_clock_offset_seconds: 0,
         },
+        peer_manager: cc_p2p::peer_manager::PeerManagerConfig::default(),
         test_swarm_panic: panic,
     }
 }

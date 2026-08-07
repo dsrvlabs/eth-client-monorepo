@@ -6,6 +6,7 @@
 pub use libp2p::futures;
 pub use libp2p::identity::{self, Keypair, PeerId};
 pub use libp2p::multiaddr::{self, Multiaddr, Protocol};
+pub use libp2p::swarm::dial_opts::DialOpts;
 pub use libp2p::swarm::{self, DialError, NetworkBehaviour, StreamProtocol, Swarm, SwarmEvent};
 pub use libp2p::{
     allow_block_list, connection_limits, gossipsub, identify, noise, ping, quic, request_response,

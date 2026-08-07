@@ -129,6 +129,62 @@ struct P2pConfig {
     /// Slot clock (config-sourced until first `ChainView`).
     #[serde(default)]
     clock: ClockFileConfig,
+    /// Peer manager knobs (CC-20c).
+    #[serde(default)]
+    peer_manager: PeerManagerFileConfig,
+}
+
+/// `[peer_manager]` section — maps onto [`cc_p2p::peer_manager::PeerManagerConfig`].
+#[derive(Debug, Deserialize)]
+struct PeerManagerFileConfig {
+    #[serde(default = "default_target_peers")]
+    target_peers: usize,
+    #[serde(default = "default_max_peers")]
+    max_peers: usize,
+    #[serde(default = "default_max_inbound")]
+    max_inbound: usize,
+    #[serde(default = "default_max_outbound")]
+    max_outbound: usize,
+    #[serde(default = "default_max_concurrent_dials")]
+    max_concurrent_dials: usize,
+    /// Static dial targets: `{ peer_id = "...", multiaddr = "/ip4/…/tcp/…" }`.
+    #[serde(default)]
+    static_peers: Vec<StaticPeerFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StaticPeerFile {
+    peer_id: String,
+    multiaddr: String,
+}
+
+impl Default for PeerManagerFileConfig {
+    fn default() -> Self {
+        Self {
+            target_peers: default_target_peers(),
+            max_peers: default_max_peers(),
+            max_inbound: default_max_inbound(),
+            max_outbound: default_max_outbound(),
+            max_concurrent_dials: default_max_concurrent_dials(),
+            static_peers: Vec::new(),
+        }
+    }
+}
+
+fn default_target_peers() -> usize {
+    cc_p2p::peer_manager::DEFAULT_TARGET_PEERS
+}
+fn default_max_peers() -> usize {
+    cc_p2p::peer_manager::DEFAULT_MAX_PEERS
+}
+fn default_max_inbound() -> usize {
+    cc_p2p::peer_manager::DEFAULT_MAX_INBOUND
+}
+fn default_max_outbound() -> usize {
+    cc_p2p::peer_manager::DEFAULT_MAX_OUTBOUND
+}
+fn default_max_concurrent_dials() -> usize {
+    cc_p2p::peer_manager::DEFAULT_MAX_CONCURRENT_DIALS
 }
 
 #[derive(Debug, Deserialize)]
@@ -179,12 +235,44 @@ fn default_disparity_ms() -> u64 {
     500
 }
 
+impl PeerManagerFileConfig {
+    fn to_runtime(&self) -> Result<cc_p2p::peer_manager::PeerManagerConfig, RuntimeError> {
+        use cc_libp2p::PeerId;
+        use cc_p2p::peer_manager::{PeerManagerConfig, StaticPeer};
+        use std::str::FromStr;
+
+        let mut static_peers = Vec::with_capacity(self.static_peers.len());
+        for sp in &self.static_peers {
+            let peer_id = PeerId::from_str(&sp.peer_id).map_err(|e| {
+                RuntimeError::ListenAddr(format!("peer_manager.static_peers peer_id: {e}"))
+            })?;
+            let addr = sp.multiaddr.parse().map_err(|e| {
+                RuntimeError::ListenAddr(format!(
+                    "peer_manager.static_peers multiaddr {}: {e}",
+                    sp.multiaddr
+                ))
+            })?;
+            static_peers.push(StaticPeer { peer_id, addr });
+        }
+        Ok(PeerManagerConfig {
+            target_peers: self.target_peers,
+            max_peers: self.max_peers,
+            max_inbound: self.max_inbound,
+            max_outbound: self.max_outbound,
+            max_concurrent_dials: self.max_concurrent_dials,
+            static_peers,
+            tick_interval: cc_p2p::peer_manager::DEFAULT_TICK_INTERVAL,
+        })
+    }
+}
+
 impl P2pConfig {
     fn runtime_config(&self) -> Result<RuntimeConfig, RuntimeError> {
         let listen_multiaddr = self
             .listen_multiaddr
             .parse()
             .map_err(|e| RuntimeError::ListenAddr(format!("{}: {e}", self.listen_multiaddr)))?;
+        let peer_manager = self.peer_manager.to_runtime()?;
         Ok(RuntimeConfig {
             node_key_path: self.node_key_path.clone(),
             listen_multiaddr,
@@ -197,6 +285,7 @@ impl P2pConfig {
                 ),
                 slot_clock_offset_seconds: self.clock.slot_clock_offset_seconds,
             },
+            peer_manager,
             test_swarm_panic: false,
         })
     }
