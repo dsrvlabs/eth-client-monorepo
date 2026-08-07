@@ -11,6 +11,7 @@
 //! - **CC-22b**: Message-id preimage + fixture, per-container SSZ max table, pre-decode check
 //! - **CC-22c**: GossipSub `ScoringConfig`, two score spaces, IDONTWANT, penalty table
 //! - **CC-22d**: block/column validators, seen/pending, one Verdict, single report site
+//! - **CC-22e**: hostile-input harness (tests/hostile_input.rs) — panic-is-failure + counting alloc
 //! - **CC-27b**: chain-stream client, outstanding map, stall-then-shed, ChainView store
 //! - **CC-29a**: Phase 2 metric family declarations (binary registers them)
 

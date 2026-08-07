@@ -1,0 +1,21 @@
+{
+  "issue": "CC-22e",
+  "source": "self-devnet-shaped Default SSZ containers (M2.2 stand-in for CC-2Ja / booking-c capture)",
+  "network": "synthetic-mainnet-preset",
+  "date": "2026-08-07",
+  "master_seed_hex": "0x00cc22e0c0b55500",
+  "master_seed_u64": 57459243950101760,
+  "topic_families": [
+    "beacon_block",
+    "beacon_aggregate_and_proof",
+    "beacon_attestation",
+    "data_column_sidecar",
+    "sync_committee_contribution_and_proof",
+    "sync_committee",
+    "voluntary_exit",
+    "proposer_slashing",
+    "attester_slashing",
+    "bls_to_execution_change"
+  ],
+  "refresh": "scripts/corpus-from-capture.sh <capture_dir> services/p2p/tests/fixtures/corpus/seeds"
+}
