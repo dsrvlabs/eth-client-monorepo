@@ -74,11 +74,18 @@ services:
       - ${CC_DEVNET_SECONDS_PER_SLOT:-3}
       - --max-slots
       - ${CC_DEVNET_MAX_SLOTS:-64}
+      - --fault-mode
+      - ${CC_PUBLISHER_FAULT_MODE:-none}
+      - --fault-flag-path
+      - ${CC_P2P_FAULT_FLAG:-/fault/cc-release-columns.flag}
     environment:
       <<: *cc-env
+      CC_P2P_FAULT_FLAG: ${CC_P2P_FAULT_FLAG:-/fault/cc-release-columns.flag}
     volumes:
       - ./out:/fixture:ro
       - ./out/node_keys:/keys:ro
+      # Shared flag dir for CC-2Jb release (host + publisher container).
+      - ./out/fault:/fault:rw
     ports:
       # Metrics only on loopback (SEC-H1). Libp2p not published to host.
       - "127.0.0.1:19102:9102"

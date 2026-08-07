@@ -118,13 +118,25 @@ Assert on `cc_p2p_peers{direction=…}` after connect.
   in `fault_mode` today.
 - Fault kinds:
   - default / `none` → **plain publisher** (no-op relay)
-  - `withhold-column` → parses, returns **not implemented** (CC-2Jb)
+  - `withhold-column[=idx,…]` → **CC-2Jb**: skip listed columns on gossip;
+    refuse them on by-root until the release flag file appears
+    (`--fault-flag-path` / `CC_P2P_FAULT_FLAG`, default `/fault/cc-release-columns.flag`)
   - `misbehave` → parses, returns **not implemented** (CC-2Jc)
 
 ```bash
 # Emit keys/bootnodes only:
 cargo run -p cc-p2p -- --emit-bootnodes devnet/out
+
+# Clause 5 (control run first, then withhold) — adversarial harness:
+CC_SKIP_DOCKER=1 ./devnet/scenarios/withheld-column.sh   # unit + preconditions
+./devnet/scenarios/withheld-column.sh                    # full compose path
+CC_WITHHOLD_MULTI=1 ./devnet/scenarios/withheld-column.sh  # two of eight
 ```
+
+Seams (Track D, greppable):
+- `gossip/validate/column.rs` → `decide_column_publish`
+- `reqresp/columns.rs` → `decide_by_root_column_serve`
+
 
 ## Fault primitives (`faults.sh`)
 

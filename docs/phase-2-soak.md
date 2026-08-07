@@ -64,8 +64,39 @@ A-P2-4.
 
 ## Non-Hoodi clauses
 
-**Owner:** CC-2Jd / CC-2Jb / CC-2Jc / CC-26b / CC-2A (one subsection each, by clause)  
-**Status:** `_NOT_RUN_`
+**Owner:** CC-2Jd / CC-2Jb / CC-2Jc / CC-26b / CC-2A (one subsection each, by clause)
+
+### Clause 5 — withheld column (CC-2Jb)
+
+**Owner:** CC-2Jb  
+**Venue:** adversarial harness (self-devnet + publisher `--fault-mode withhold-column`)  
+**Date:** 2026-08-07  
+**Status:** code path landed; full compose discharge via `devnet/scenarios/withheld-column.sh`
+
+| Check | Result |
+|---|---|
+| Control run (fault off) first | **LANDED** — scenario runs control before fault (R-7) |
+| R-4 non-zero commitment count | **PASS** (unit + runtime refuse) |
+| Withheld ⊆ node-a sampled set | **PASS** (refuse-to-start + unit) |
+| Publish seam skips withheld indices | **PASS** (`decide_column_publish` / `fault_mode` unit) |
+| By-root refuse until flag flips | **PASS** (`decide_by_root_column_serve` + flag unit) |
+| R-7 publisher metric surface (zero withheld subnet, non-zero others) | scenario asserts when compose path run |
+| Both halves one run: deferred then recovered + head advance | scenario records; full DA path needs production peer (see R-5) |
+| Second run withholding 2 of 8 | `CC_WITHHOLD_MULTI=1` |
+| Venue column present (not Hoodi) | **yes** — adversarial harness |
+
+**R-5 limitations (run notes):** node-a had **one peer** (publisher-only static list);
+the withholding peer was **our own publisher**; withholding was deterministic
+because of both. Do not read this row off a Hoodi soak.
+
+**Commands:**
+
+```text
+cargo test -p cc-p2p --lib fault_mode
+cargo test -p cc-p2p --lib by_root_withhold_seam
+CC_SKIP_DOCKER=1 ./devnet/scenarios/withheld-column.sh
+./devnet/scenarios/withheld-column.sh
+```
 
 ## M2.1 Hoodi hold
 

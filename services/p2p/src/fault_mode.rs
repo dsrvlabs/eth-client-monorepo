@@ -1,26 +1,24 @@
-//! Self-devnet publisher and inert fault modes (CC-2Jd).
+//! Self-devnet publisher and fault modes (CC-2Jd / CC-2Jb).
 //!
 //! - **`--publish-fixture`**: plain publisher — loads CC-2Ja's chain fixture,
 //!   forces conceptual `cgc = 128`, subscribes to all 128 column subnets, and
 //!   publishes each slot's block + sidecars at slot wall-clock cadence.
-//! - **Fault kinds** `withhold-column` / `misbehave`: parse and return
-//!   "not implemented" (bodies land in CC-2Jb / CC-2Jc). **No-op relay** is
-//!   the plain publisher path.
-//! - This module does **not** touch the three M2.3 seam files
-//!   (`das/custody.rs`, `gossip/validate/column.rs`, `reqresp/columns.rs`).
-//!
-//! Wire req/resp codec bodies are CC-23a; the fixture store below is what the
-//! publisher *will* serve once the codec lands. Unit tests assert by-root /
-//! by-range answers from the store today.
+//! - **`withhold-column`** (CC-2Jb): skip listed columns on gossip publish and
+//!   refuse them on `DataColumnSidecarsByRoot` until a **flag file** appears.
+//!   Seams live in `gossip/validate/column.rs` (publish) and
+//!   `reqresp/columns.rs` (by-root serve).
+//! - **`misbehave`**: parses; body lands in CC-2Jc.
+//! - Process-global active fault ([`install_active_fault`]) is what the two
+//!   seam call sites consult so production paths stay greppable one-liners.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // tests only below
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -29,13 +27,15 @@ use cc_libp2p::reexport::gossipsub::{IdentTopic, MessageAcceptance, TopicHash};
 use cc_libp2p::reexport::identity::{self, Keypair};
 use cc_libp2p::reexport::{Multiaddr, PeerId, SwarmEvent};
 use cc_libp2p::{CcBehaviour, CcBehaviourEvent, SwarmConfig, build_swarm};
-use cc_types::{ChainConfig, Epoch, Root};
+use cc_types::{compute_columns_for_custody_group, ChainConfig, Epoch, Root};
 use discv5::Enr;
-use discv5::enr::CombinedKey;
+use discv5::enr::{CombinedKey, NodeId};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
+use crate::das::CustodyManager;
 use crate::fork_digest::compute_fork_digest;
+use crate::gossip::validate::column::{decide_column_publish, ColumnPublishDecision};
 use crate::gossip::{SubnetCounts, TopicName, format_topic_string};
 use crate::metrics::{Direction, DirectionLabels, GossipMessageLabels, P2pMetrics};
 
@@ -48,21 +48,109 @@ pub const COLUMN_SUBNET_COUNT: u64 = 128;
 /// Publisher forces full custody coverage.
 pub const PUBLISHER_CGC: u64 = 128;
 
-// ── fault kinds (inert) ─────────────────────────────────────────────────────
+/// Default role whose sampled set must contain every withheld index (CC-2Jb).
+pub const DEFAULT_WITHHOLD_TARGET_ROLE: &str = "node-a";
+
+/// Default flag-file path when `--fault-flag-path` / `CC_P2P_FAULT_FLAG` unset.
+///
+/// Compose mounts `devnet/out/fault` → `/fault` so the scenario can flip the
+/// file from the host.
+pub const DEFAULT_RELEASE_FLAG_PATH: &str = "/fault/cc-release-columns.flag";
+
+// ── process-global active fault (seam consult) ──────────────────────────────
+
+/// Installed fault state consulted by the Track D seams.
+#[derive(Debug, Clone)]
+struct ActiveFault {
+    mode: FaultMode,
+    /// Existence of this path releases withheld columns for by-root serve.
+    flag_path: Option<PathBuf>,
+}
+
+static ACTIVE_FAULT: RwLock<Option<ActiveFault>> = RwLock::new(None);
+
+/// Install the process-global fault state the two Track D seams consult.
+///
+/// Call once at publisher/peer start (before gossip publish or req/resp serve).
+pub fn install_active_fault(mode: FaultMode, flag_path: Option<PathBuf>) {
+    let mut guard = ACTIVE_FAULT
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = Some(ActiveFault { mode, flag_path });
+}
+
+/// Clear process-global fault state (tests; production leaves it installed).
+pub fn clear_active_fault() {
+    let mut guard = ACTIVE_FAULT
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = None;
+}
+
+/// Whether the flag file is present (withheld columns may be served by-root).
+#[must_use]
+pub fn is_withheld_released() -> bool {
+    let guard = ACTIVE_FAULT
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match guard.as_ref() {
+        Some(a) => a
+            .flag_path
+            .as_ref()
+            .is_some_and(|p| p.exists()),
+        None => false,
+    }
+}
+
+/// Seam helper: may this column index be published on gossip?
+///
+/// Defaults to **allow** when no fault is installed (inert production path).
+#[must_use]
+pub fn active_allows_column_publish(column_index: u64) -> bool {
+    let guard = ACTIVE_FAULT
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match guard.as_ref() {
+        Some(a) => a.mode.allows_publish_column(column_index),
+        None => true,
+    }
+}
+
+/// Seam helper: may a **held** column be served on `DataColumnSidecarsByRoot`?
+///
+/// Withheld indices return `false` until the release flag file exists.
+/// Defaults to **allow** when no fault is installed.
+#[must_use]
+pub fn active_allows_by_root_serve(column_index: u64) -> bool {
+    let guard = ACTIVE_FAULT
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match guard.as_ref() {
+        Some(a) => {
+            let released = a
+                .flag_path
+                .as_ref()
+                .is_some_and(|p| p.exists());
+            a.mode.allows_by_root_serve(column_index, released)
+        }
+        None => true,
+    }
+}
+
+// ── fault kinds ─────────────────────────────────────────────────────────────
 
 /// Adversarial / publisher fault kind.
 ///
-/// Only [`FaultMode::None`] (plain publisher / no-op relay) is implemented in
-/// CC-2Jd. The other variants parse and error with a stable message so
-/// CC-2Jb/CC-2Jc can fill them without renaming.
+/// [`FaultMode::None`] is the plain publisher. [`FaultMode::WithholdColumn`] is
+/// CC-2Jb. [`FaultMode::Misbehave`] parses and stays unimplemented until CC-2Jc.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum FaultMode {
     /// Plain publisher / no-op relay (default).
     #[default]
     None,
-    /// CC-2Jb — withhold one or more columns.
+    /// CC-2Jb — withhold one or more columns from gossip + by-root until flag.
     WithholdColumn {
-        /// Column indices to withhold (empty until scenario sets them).
+        /// Column indices to withhold.
         columns: Vec<u64>,
     },
     /// CC-2Jc — misbehave (invalid-column / malformed / spam / …).
@@ -77,7 +165,8 @@ impl FaultMode {
     ///
     /// Accepted forms:
     /// - empty / `none` / `plain` / `relay` → [`FaultMode::None`]
-    /// - `withhold-column` / `withhold-column:1,2` → [`FaultMode::WithholdColumn`]
+    /// - `withhold-column` / `withhold-column:1,2` / `withhold-column=1,2`
+    ///   → [`FaultMode::WithholdColumn`]
     /// - `misbehave` / `misbehave:spam` → [`FaultMode::Misbehave`]
     pub fn parse(s: &str) -> Result<Self> {
         let s = s.trim();
@@ -104,28 +193,93 @@ impl FaultMode {
         bail!("unknown fault mode {s:?}; expected none|withhold-column|misbehave")
     }
 
-    /// Returns `Ok(())` only for the plain publisher. Fault kinds error with
-    /// a stable "not implemented" message (CC-2Jd acceptance).
+    /// Returns `Ok(())` for plain + withhold-column. Misbehave stays CC-2Jc.
     pub fn ensure_implemented(&self) -> Result<()> {
         match self {
-            Self::None => Ok(()),
-            Self::WithholdColumn { .. } => {
-                bail!("fault mode withhold-column is not implemented (CC-2Jb)")
-            }
+            Self::None | Self::WithholdColumn { .. } => Ok(()),
             Self::Misbehave { kind } => {
                 bail!("fault mode misbehave ({kind}) is not implemented (CC-2Jc)")
             }
         }
     }
 
-    /// No-op relay: identity transform of a payload (plain publisher path).
+    /// No-op relay: identity transform of a payload.
+    ///
+    /// Blocks always pass through for [`Self::None`] and [`Self::WithholdColumn`].
+    /// Column gossip skip is **not** done here — it goes through
+    /// [`decide_column_publish`] so the Track D seam stays greppable.
     #[must_use]
     pub fn relay(&self, payload: &[u8]) -> Option<Vec<u8>> {
         match self {
-            Self::None => Some(payload.to_vec()),
-            // Inert until 2Jb/2Jc: refuse to mutate.
-            Self::WithholdColumn { .. } | Self::Misbehave { .. } => None,
+            Self::None | Self::WithholdColumn { .. } => Some(payload.to_vec()),
+            // Inert until 2Jc: refuse to mutate.
+            Self::Misbehave { .. } => None,
         }
+    }
+
+    /// Whether gossip may publish this column index.
+    #[must_use]
+    pub fn allows_publish_column(&self, column_index: u64) -> bool {
+        match self {
+            Self::None | Self::Misbehave { .. } => true,
+            Self::WithholdColumn { columns } => !columns.contains(&column_index),
+        }
+    }
+
+    /// Whether a held column may be served by-root.
+    ///
+    /// Withheld indices require `released == true` (flag file present).
+    #[must_use]
+    pub fn allows_by_root_serve(&self, column_index: u64, released: bool) -> bool {
+        match self {
+            Self::None | Self::Misbehave { .. } => true,
+            Self::WithholdColumn { columns } => {
+                if columns.contains(&column_index) {
+                    released
+                } else {
+                    true
+                }
+            }
+        }
+    }
+
+    /// Withheld column indices, if any.
+    #[must_use]
+    pub fn withheld_columns(&self) -> &[u64] {
+        match self {
+            Self::WithholdColumn { columns } => columns.as_slice(),
+            _ => &[],
+        }
+    }
+
+    /// Refuse to start when any withheld index falls outside the target's
+    /// sampled set (same public `get_custody_groups` path node-a uses).
+    ///
+    /// Returns the target's sampled column indices on success.
+    pub fn ensure_withheld_in_sampled(
+        &self,
+        target_role: &str,
+        target_cgc: u64,
+    ) -> Result<BTreeSet<u64>> {
+        let sampled = sampled_columns_for_role(target_role, target_cgc)?;
+        let Self::WithholdColumn { columns } = self else {
+            return Ok(sampled);
+        };
+        if columns.is_empty() {
+            bail!("withhold-column requires at least one column index (e.g. withhold-column=3)");
+        }
+        for &idx in columns {
+            if idx >= COLUMN_SUBNET_COUNT {
+                bail!("column index {idx} out of range [0, {COLUMN_SUBNET_COUNT})");
+            }
+            if !sampled.contains(&idx) {
+                bail!(
+                    "withheld column {idx} is not in {target_role}'s sampled set {:?}; refuse to start",
+                    sampled.iter().copied().collect::<Vec<_>>()
+                );
+            }
+        }
+        Ok(sampled)
     }
 }
 
@@ -134,13 +288,68 @@ fn parse_column_list(s: &str) -> Result<Vec<u64>> {
     if s.is_empty() {
         return Ok(Vec::new());
     }
-    s.split(',')
-        .map(|p| {
-            p.trim()
-                .parse::<u64>()
-                .with_context(|| format!("bad column index {p:?}"))
-        })
-        .collect()
+    let mut out = Vec::new();
+    for p in s.split(',') {
+        let idx = p
+            .trim()
+            .parse::<u64>()
+            .with_context(|| format!("bad column index {p:?}"))?;
+        if !out.contains(&idx) {
+            out.push(idx);
+        }
+    }
+    Ok(out)
+}
+
+/// discv5 [`NodeId`] for a deterministic devnet role (publisher / node-a / …).
+pub fn node_id_for_role(role: &str) -> Result<NodeId> {
+    let secret = derive_node_secret(role);
+    let mut bytes = secret;
+    let key = CombinedKey::secp256k1_from_bytes(&mut bytes)
+        .map_err(|e| anyhow::anyhow!("CombinedKey for role {role}: {e}"))?;
+    let enr = Enr::empty(&key).map_err(|e| anyhow::anyhow!("Enr::empty for role {role}: {e}"))?;
+    Ok(enr.node_id())
+}
+
+/// Sampled **column** indices for `role` at `cgc` (default node-a: 4 → 8 samples).
+pub fn sampled_columns_for_role(role: &str, cgc: u64) -> Result<BTreeSet<u64>> {
+    let node_id = node_id_for_role(role)?;
+    let mgr = CustodyManager::new(node_id, cgc);
+    let mut cols = BTreeSet::new();
+    for group in mgr.sampled().iter() {
+        for col in compute_columns_for_custody_group(*group) {
+            cols.insert(col);
+        }
+    }
+    Ok(cols)
+}
+
+/// R-4: fixture under test must have columns (non-zero commitment count).
+///
+/// Prefers `manifest.json`'s `blobs_per_block` / `blobs_per_block_cycle`, then
+/// asserts the loaded store actually holds at least one column sidecar.
+pub fn assert_nonzero_commitments(manifest_path: &Path, store: &FixtureStore) -> Result<()> {
+    if manifest_path.is_file() {
+        let text =
+            fs::read_to_string(manifest_path).with_context(|| format!("read {}", manifest_path.display()))?;
+        let v: serde_json::Value = serde_json::from_str(&text).context("manifest json")?;
+        if let Some(arr) = v.get("blobs_per_block").and_then(|x| x.as_array()) {
+            let any = arr.iter().any(|x| x.as_u64().unwrap_or(0) > 0);
+            if !any {
+                bail!("manifest blobs_per_block has no non-zero entry (R-4)");
+            }
+        } else if let Some(cycle) = v.get("blobs_per_block_cycle").and_then(|x| x.as_array()) {
+            let any = cycle.iter().any(|x| x.as_u64().unwrap_or(0) > 0);
+            if !any {
+                bail!("manifest blobs_per_block_cycle has no non-zero entry (R-4)");
+            }
+        }
+    }
+    let has_cols = store.slots.iter().any(|s| !s.columns.is_empty());
+    if !has_cols {
+        bail!("fixture has no column sidecars to withhold (R-4)");
+    }
+    Ok(())
 }
 
 // ── deterministic identity ──────────────────────────────────────────────────
@@ -419,8 +628,14 @@ pub struct DevnetRuntimeConfig {
     pub static_peers: Vec<Multiaddr>,
     /// When true, do not dial (single-peer receive-only mode for CC-2Jb).
     pub disable_dial: bool,
-    /// Fault mode (must be [`FaultMode::None`] for CC-2Jd).
+    /// Fault mode ([`FaultMode::None`] plain; [`FaultMode::WithholdColumn`] CC-2Jb).
     pub fault_mode: FaultMode,
+    /// Flag file whose presence releases withheld columns for by-root serve.
+    pub fault_flag_path: Option<PathBuf>,
+    /// Role whose sampled set must contain withheld indices (default `node-a`).
+    pub withhold_target_role: String,
+    /// Target custody group count used to compute the sampled set (default 4).
+    pub withhold_target_cgc: u64,
     /// Metrics bind address.
     pub metrics_addr: SocketAddr,
     /// gRPC bind (health / GetInfo still served).
@@ -480,6 +695,33 @@ pub async fn run_devnet(
     registry: Arc<prometheus_client::registry::Registry>,
 ) -> Result<()> {
     cfg.fault_mode.ensure_implemented()?;
+
+    // R-4 + sampled-set precondition before any bind (withhold only).
+    if matches!(cfg.fault_mode, FaultMode::WithholdColumn { .. }) {
+        let store_preview = FixtureStore::load(&cfg.fixture_chain)?;
+        assert_nonzero_commitments(&cfg.manifest_json, &store_preview)?;
+        let sampled = cfg.fault_mode.ensure_withheld_in_sampled(
+            &cfg.withhold_target_role,
+            cfg.withhold_target_cgc,
+        )?;
+        info!(
+            withheld = ?cfg.fault_mode.withheld_columns(),
+            target = %cfg.withhold_target_role,
+            sampled = ?sampled.iter().copied().collect::<Vec<_>>(),
+            flag = ?cfg.fault_flag_path,
+            "withhold-column preconditions ok"
+        );
+    }
+
+    // Install process-global state the Track D seams consult.
+    install_active_fault(cfg.fault_mode.clone(), cfg.fault_flag_path.clone());
+    if let Some(ref p) = cfg.fault_flag_path {
+        // Ensure a stale flag from a prior run does not pre-release.
+        if p.exists() {
+            let _ = fs::remove_file(p);
+            info!(path = %p.display(), "cleared stale release flag");
+        }
+    }
 
     let secret = if cfg.node_key_path.exists() {
         load_node_key(&cfg.node_key_path)?
@@ -675,7 +917,11 @@ pub async fn run_devnet(
                 }
 
                 // All columns present in fixture (cgc=128 force).
+                // Track D publish seam: skip withheld indices (CC-2Jb).
                 for (idx, bytes) in &fx.columns {
+                    if decide_column_publish(*idx) != ColumnPublishDecision::Publish {
+                        continue;
+                    }
                     let label = format!("data_column_sidecar_{idx}");
                     let Some(topic) = topics.get(&label) else { continue };
                     if let Some(payload) = cfg.fault_mode.relay(bytes) {
@@ -950,6 +1196,8 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    use cc_types::CUSTODY_REQUIREMENT;
+
     #[test]
     fn fault_mode_none_parses() {
         assert_eq!(FaultMode::parse("").unwrap(), FaultMode::None);
@@ -959,15 +1207,25 @@ mod tests {
     }
 
     #[test]
-    fn fault_mode_withhold_not_implemented() {
+    fn fault_mode_withhold_implemented() {
         let m = FaultMode::parse("withhold-column:3,7").unwrap();
         assert!(matches!(
             m,
             FaultMode::WithholdColumn { ref columns } if columns == &[3, 7]
         ));
-        let err = m.ensure_implemented().unwrap_err().to_string();
-        assert!(err.contains("not implemented"), "{err}");
-        assert!(err.contains("CC-2Jb"), "{err}");
+        m.ensure_implemented().unwrap();
+        assert!(m.allows_publish_column(0));
+        assert!(!m.allows_publish_column(3));
+        assert!(!m.allows_publish_column(7));
+        assert!(!m.allows_by_root_serve(3, false));
+        assert!(m.allows_by_root_serve(3, true));
+        assert!(m.allows_by_root_serve(0, false));
+    }
+
+    #[test]
+    fn fault_mode_withhold_equals_form() {
+        let m = FaultMode::parse("withhold-column=5").unwrap();
+        assert_eq!(m.withheld_columns(), &[5]);
     }
 
     #[test]
@@ -983,6 +1241,105 @@ mod tests {
     fn plain_relay_is_identity() {
         let m = FaultMode::None;
         assert_eq!(m.relay(b"abc").as_deref(), Some(b"abc".as_slice()));
+        // Withhold still relays block bytes; column skip is the publish seam.
+        let w = FaultMode::WithholdColumn { columns: vec![1] };
+        assert_eq!(w.relay(b"block").as_deref(), Some(b"block".as_slice()));
+    }
+
+    #[test]
+    fn active_fault_seams_honour_flag_file() {
+        clear_active_fault();
+        let dir = tempfile_dir("flag");
+        let flag = dir.join("release.flag");
+        let mode = FaultMode::WithholdColumn {
+            columns: vec![9, 11],
+        };
+        install_active_fault(mode, Some(flag.clone()));
+        assert!(active_allows_column_publish(0));
+        assert!(!active_allows_column_publish(9));
+        assert!(!active_allows_by_root_serve(9));
+        assert!(active_allows_by_root_serve(0));
+        fs::write(&flag, b"release").unwrap();
+        assert!(active_allows_by_root_serve(9));
+        // Publish still withholds after release (only by-root opens).
+        assert!(!active_allows_column_publish(9));
+        clear_active_fault();
+        assert!(active_allows_column_publish(9));
+        assert!(active_allows_by_root_serve(9));
+    }
+
+    #[test]
+    fn withhold_outside_sampled_refuses() {
+        // Pick an index almost certainly not in the 8-sampled set by scanning.
+        let sampled = sampled_columns_for_role("node-a", CUSTODY_REQUIREMENT).unwrap();
+        assert_eq!(sampled.len(), 8);
+        let outside = (0..COLUMN_SUBNET_COUNT)
+            .find(|i| !sampled.contains(i))
+            .expect("must have non-sampled columns");
+        let m = FaultMode::WithholdColumn {
+            columns: vec![outside],
+        };
+        let err = m
+            .ensure_withheld_in_sampled("node-a", CUSTODY_REQUIREMENT)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("refuse to start"), "{err}");
+        assert!(err.contains(&outside.to_string()), "{err}");
+    }
+
+    #[test]
+    fn withhold_inside_sampled_accepts() {
+        let sampled = sampled_columns_for_role("node-a", CUSTODY_REQUIREMENT).unwrap();
+        let idx = *sampled.iter().next().unwrap();
+        let m = FaultMode::WithholdColumn {
+            columns: vec![idx],
+        };
+        let got = m
+            .ensure_withheld_in_sampled("node-a", CUSTODY_REQUIREMENT)
+            .unwrap();
+        assert_eq!(got, sampled);
+    }
+
+    /// Scenario helper: write node-a sampled columns (one per line) when
+    /// `CC_2JB_PRINT_SAMPLED` is set to an output path.
+    #[test]
+    fn print_node_a_sampled_for_scenario() {
+        let Ok(path) = std::env::var("CC_2JB_PRINT_SAMPLED") else {
+            return; // no-op in ordinary `cargo test` runs
+        };
+        let sampled = sampled_columns_for_role("node-a", CUSTODY_REQUIREMENT).unwrap();
+        let mut cols: Vec<u64> = sampled.into_iter().collect();
+        cols.sort_unstable();
+        let body = cols
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        if let Some(parent) = Path::new(&path).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        fs::write(&path, body).unwrap();
+        eprintln!("wrote node-a sampled columns to {path}: {cols:?}");
+    }
+
+    #[test]
+    fn nonzero_commitments_from_store() {
+        let root = tempfile_dir("r4");
+        let slot_dir = root.join("slot_000001");
+        fs::create_dir_all(&slot_dir).unwrap();
+        fs::write(slot_dir.join("block.ssz"), b"B").unwrap();
+        fs::write(slot_dir.join("column_000.ssz"), b"C0").unwrap();
+        let mut meta = fs::File::create(slot_dir.join("meta.json")).unwrap();
+        write!(meta, r#"{{"slot":1,"block_root":"0x{}"}}"#, hex::encode([1u8; 32])).unwrap();
+        let store = FixtureStore::load(&root).unwrap();
+        let manifest = root.join("manifest.json");
+        fs::write(
+            &manifest,
+            r#"{"blobs_per_block_cycle":[1,2,3],"blobs_per_block":[1,2]}"#,
+        )
+        .unwrap();
+        assert_nonzero_commitments(&manifest, &store).unwrap();
     }
 
     #[test]

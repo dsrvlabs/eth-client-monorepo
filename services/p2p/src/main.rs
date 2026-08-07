@@ -20,9 +20,11 @@ use cc_bootstrap::{PeerSpec, SignalTrigger, TelemetrySettings};
 use cc_config::ServiceConfig;
 use cc_p2p::clock::ClockConfig;
 use cc_p2p::fault_mode::{
-    BootnodeSpec, DevnetRole, DevnetRuntimeConfig, FaultMode, default_bootnode_specs,
-    emit_bootnodes, parse_listen, parse_socket_addr, read_multiaddrs_file, run_devnet,
+    BootnodeSpec, DEFAULT_RELEASE_FLAG_PATH, DEFAULT_WITHHOLD_TARGET_ROLE, DevnetRole,
+    DevnetRuntimeConfig, FaultMode, default_bootnode_specs, emit_bootnodes, parse_listen,
+    parse_socket_addr, read_multiaddrs_file, run_devnet,
 };
+use cc_types::CUSTODY_REQUIREMENT;
 use cc_p2p::identity::{self, DEFAULT_NODE_KEY_PATH};
 use cc_p2p::metrics::P2pMetrics;
 use cc_p2p::service::{
@@ -54,9 +56,22 @@ struct Cli {
     #[arg(long)]
     devnet_peer: bool,
 
-    /// Fault kind: `none` (default), `withhold-column`, `misbehave` (latter two inert).
+    /// Fault kind: `none` (default), `withhold-column[=idx,…]`, `misbehave` (CC-2Jc inert).
     #[arg(long, default_value = "none")]
     fault_mode: String,
+
+    /// Flag file whose presence releases withheld columns for by-root serve (CC-2Jb).
+    /// Default when withhold-column: `/fault/cc-release-columns.flag` (or `CC_P2P_FAULT_FLAG`).
+    #[arg(long, env = "CC_P2P_FAULT_FLAG")]
+    fault_flag_path: Option<PathBuf>,
+
+    /// Role whose sampled set must contain every withheld index (default `node-a`).
+    #[arg(long, default_value = DEFAULT_WITHHOLD_TARGET_ROLE, env = "CC_P2P_WITHHOLD_TARGET")]
+    withhold_target_role: String,
+
+    /// Target custody group count for the sampled-set precondition (default 4).
+    #[arg(long, default_value_t = CUSTODY_REQUIREMENT, env = "CC_P2P_WITHHOLD_TARGET_CGC")]
+    withhold_target_cgc: u64,
 
     /// Write deterministic keys + `bootnodes.txt` under this directory and exit.
     #[arg(long, value_name = "OUT_DIR")]
@@ -531,6 +546,13 @@ async fn run_devnet_mode(cli: Cli, fault: FaultMode) -> Result<()> {
     let disable_dial =
         cli.disable_dial || (role == DevnetRole::Publisher && static_peers.is_empty());
 
+    let fault_flag_path = match (&fault, cli.fault_flag_path) {
+        (FaultMode::WithholdColumn { .. }, None) => {
+            Some(PathBuf::from(DEFAULT_RELEASE_FLAG_PATH))
+        }
+        (_, path) => path,
+    };
+
     let cfg = DevnetRuntimeConfig {
         role,
         fixture_chain,
@@ -541,6 +563,9 @@ async fn run_devnet_mode(cli: Cli, fault: FaultMode) -> Result<()> {
         static_peers,
         disable_dial,
         fault_mode: fault,
+        fault_flag_path,
+        withhold_target_role: cli.withhold_target_role,
+        withhold_target_cgc: cli.withhold_target_cgc,
         metrics_addr: parse_socket_addr(&cli.metrics_addr)?,
         grpc_addr: parse_socket_addr(&cli.grpc_addr)?,
         genesis_time_override: cli.genesis_time,

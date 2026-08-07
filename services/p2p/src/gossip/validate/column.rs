@@ -40,6 +40,40 @@ pub use super::kzg_verify::{
     production_kzg_verify, AlwaysValidKzg, CellKzgVerifier, FailClosedKzg, KzgVerify,
 };
 
+// ── Post-validation publish decision seam (Track D) ─────────────────────────
+
+/// Outcome of the single post-validation column publish decision.
+///
+/// Track D's sanctioned seam — cross-ref [`crate::fault_mode`]:
+/// CC-2Jb attaches `withhold-column` (skip listed indices on gossip publish).
+/// CC-2Jc reuses this guard for `invalid-column` / `malformed` / `spam`
+/// mutations. Keep this a single greppable named branch so that diff is one
+/// line, not a refactor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnPublishDecision {
+    /// Publish the sidecar on its column subnet.
+    Publish,
+    /// Skip publish (withheld / faulted).
+    Withhold,
+}
+
+/// **Track D sanctioned seam** (`fault_mode.rs`): decide whether to publish one
+/// column sidecar after fixture/validation.
+///
+/// Called by the self-devnet publisher for every fixture column. Production
+/// paths with no active fault always return [`ColumnPublishDecision::Publish`].
+#[inline]
+#[must_use]
+pub fn decide_column_publish(column_index: u64) -> ColumnPublishDecision {
+    // ── Track D seam (fault_mode.rs) ──────────────────────────────────────
+    // Single named branch for CC-2Jb withhold-column (and CC-2Jc mutations).
+    if crate::fault_mode::active_allows_column_publish(column_index) {
+        ColumnPublishDecision::Publish
+    } else {
+        ColumnPublishDecision::Withhold
+    }
+}
+
 /// Field index of `blob_kzg_commitments` in Electra/Fulu `BeaconBlockBody`.
 pub const BLOB_KZG_COMMITMENTS_FIELD_INDEX: u64 = 11;
 

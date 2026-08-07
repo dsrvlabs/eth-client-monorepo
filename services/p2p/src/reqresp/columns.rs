@@ -373,14 +373,15 @@ pub enum ByRootServeDecision {
 /// **Track D sanctioned seam** (`fault_mode.rs`): decide whether to serve one
 /// by-root column sidecar.
 ///
-/// CC-2Jc will branch here for `custody-refuse` and `stall-reqresp`. This issue
-/// only leaves the decision as a single named call site.
+/// CC-2Jb: held columns that are still withheld refuse until the release flag
+/// file flips. CC-2Jc attaches `custody-refuse` / `stall-reqresp` on this same
+/// branch.
 #[inline]
 #[must_use]
-pub fn decide_by_root_column_serve(held: bool) -> ByRootServeDecision {
+pub fn decide_by_root_column_serve(held: bool, column_index: u64) -> ByRootServeDecision {
     // ── Track D seam (fault_mode.rs) ──────────────────────────────────────
-    // Single named branch for CC-2Jc: custody-refuse / stall-reqresp attach here.
-    if held {
+    // Single named branch: withhold-column (CC-2Jb) + custody-refuse (CC-2Jc).
+    if held && crate::fault_mode::active_allows_by_root_serve(column_index) {
         ByRootServeDecision::Serve
     } else {
         ByRootServeDecision::ResourceUnavailable
@@ -538,8 +539,8 @@ pub fn serve_columns_by_root<P: Preset>(
 
         for col_idx in id.columns.iter() {
             let held = ctx.cache.contains_column(slot, &id.block_root, *col_idx);
-            // Track D sanctioned seam — greppable single branch for CC-2Jc.
-            match decide_by_root_column_serve(held) {
+            // Track D sanctioned seam — greppable single branch for CC-2Jb/2Jc.
+            match decide_by_root_column_serve(held, *col_idx) {
                 ByRootServeDecision::Serve => {
                     let ssz = ctx
                         .cache
@@ -988,15 +989,56 @@ mod tests {
             "got {err:?}"
         );
 
-        // Seam unit: held → Serve, missing → ResourceUnavailable.
+        // Seam unit: held → Serve, missing → ResourceUnavailable (no active fault).
+        crate::fault_mode::clear_active_fault();
         assert_eq!(
-            decide_by_root_column_serve(true),
+            decide_by_root_column_serve(true, 0),
             ByRootServeDecision::Serve
         );
         assert_eq!(
-            decide_by_root_column_serve(false),
+            decide_by_root_column_serve(false, 0),
             ByRootServeDecision::ResourceUnavailable
         );
+    }
+
+    #[test]
+    fn by_root_withhold_seam_refuses_until_flag() {
+        use crate::fault_mode::{
+            clear_active_fault, install_active_fault, FaultMode,
+        };
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        clear_active_fault();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let flag = std::env::temp_dir().join(format!("cc-2jb-flag-{stamp}"));
+        let _ = fs::remove_file(&flag);
+        install_active_fault(
+            FaultMode::WithholdColumn {
+                columns: vec![7],
+            },
+            Some(flag.clone()),
+        );
+        // Held but withheld → refuse.
+        assert_eq!(
+            decide_by_root_column_serve(true, 7),
+            ByRootServeDecision::ResourceUnavailable
+        );
+        // Other held columns still serve.
+        assert_eq!(
+            decide_by_root_column_serve(true, 0),
+            ByRootServeDecision::Serve
+        );
+        fs::write(&flag, b"1").unwrap();
+        assert_eq!(
+            decide_by_root_column_serve(true, 7),
+            ByRootServeDecision::Serve
+        );
+        let _ = fs::remove_file(&flag);
+        clear_active_fault();
     }
 
     #[test]

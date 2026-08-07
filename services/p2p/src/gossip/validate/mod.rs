@@ -29,10 +29,11 @@ pub use block::{
     BlockValidateInput,
 };
 pub use column::{
-    production_kzg_verify, validate_data_column_sidecar, verify_inclusion_proof, AlwaysValidKzg,
-    CellKzgVerifier, ColumnOutcome, ColumnStep, ColumnValidateInput, ColumnValidatorState,
-    FailClosedKzg, InclusionProofCache, InclusionProofKey, KzgVerify, NoopSamplingFeed,
-    SamplingFeed, StepCounters, BLOB_KZG_COMMITMENTS_FIELD_INDEX, INCLUSION_PROOF_CACHE_BOUND,
+    decide_column_publish, production_kzg_verify, validate_data_column_sidecar,
+    verify_inclusion_proof, AlwaysValidKzg, CellKzgVerifier, ColumnOutcome,
+    ColumnPublishDecision, ColumnStep, ColumnValidateInput, ColumnValidatorState, FailClosedKzg,
+    InclusionProofCache, InclusionProofKey, KzgVerify, NoopSamplingFeed, SamplingFeed,
+    StepCounters, BLOB_KZG_COMMITMENTS_FIELD_INDEX, INCLUSION_PROOF_CACHE_BOUND,
 };
 pub use pipeline::{
     all_topics_have_validators, apply_late_chain_verdict, parse_topic_name, run_chain_in_late_verdicts,
