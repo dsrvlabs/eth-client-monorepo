@@ -186,12 +186,12 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
+    use cc_fork_choice::{ExecutionStatus, HarnessAvailability, get_forkchoice_store};
     use cc_state_transition::StubOptimisticEngine;
     use cc_types::containers::{AttestationData, BeaconBlockHeader, Checkpoint};
     use cc_types::operations::IndexedAttestation;
     use cc_types::preset::Minimal;
-    use cc_types::primitives::{Epoch, Root, Slot, ValidatorIndex};
+    use cc_types::primitives::{Hash256, Epoch, Root, Slot, ValidatorIndex};
     use cc_types::{BeaconBlock, BeaconState};
     use prometheus_client::registry::Registry;
     use ssz::Encode;
@@ -296,6 +296,8 @@ mod tests {
                 finalized_checkpoint: finalized,
                 unrealized_justified_checkpoint: justified,
                 unrealized_finalized_checkpoint: finalized,
+                execution_status: ExecutionStatus::Valid,
+                execution_block_hash: Hash256::ZERO,
             })
             .unwrap();
     }

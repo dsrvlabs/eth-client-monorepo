@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use cc_fork_choice::{
-    HarnessAvailability, DataAvailability, get_forkchoice_store, get_head, get_proposer_head,
+    DataAvailability, HarnessAvailability, get_forkchoice_store, get_head, get_proposer_head,
     on_attestation, on_attester_slashing, on_block, on_tick, store_target_checkpoint_context,
 };
 use cc_state_transition::helpers::accessors::get_indexed_attestation;

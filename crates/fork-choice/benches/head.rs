@@ -9,10 +9,12 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use cc_fork_choice::ExecutionStatus;
 use cc_fork_choice::{HarnessAvailability, ProtoArray, ProtoNodeBlock, Store, get_head};
 use cc_state_transition::StubOptimisticEngine;
 use cc_types::containers::Checkpoint;
 use cc_types::preset::{Minimal, Preset};
+use cc_types::primitives::Hash256;
 use cc_types::primitives::{Epoch, Root, Slot};
 
 const N_NODES: usize = 100_000;
@@ -46,6 +48,8 @@ fn build_linear_proto_array(n: usize) -> ProtoArray {
             finalized_checkpoint: anchor,
             unrealized_justified_checkpoint: anchor,
             unrealized_finalized_checkpoint: anchor,
+            execution_status: ExecutionStatus::Valid,
+            execution_block_hash: Hash256::ZERO,
         })
         .expect("insert");
     }

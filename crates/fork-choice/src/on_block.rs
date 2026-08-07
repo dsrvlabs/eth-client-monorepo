@@ -39,13 +39,14 @@ use cc_state_transition::{
 use cc_types::config::ChainConfig;
 use cc_types::containers::{BeaconBlockHeader, Checkpoint};
 use cc_types::preset::Preset;
-use cc_types::primitives::{Epoch, Root, Slot};
+use cc_types::primitives::{Epoch, Hash256, Root, Slot};
 use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
 use thiserror::Error;
 use tree_hash::TreeHash;
 
 use crate::checkpoint_context::CheckpointContext;
 use crate::da_seam::{BlockImport, DeferralReason, ImportedBlock};
+use crate::execution_status::ExecutionStatus;
 use crate::proto_array::{ProtoArrayError, ProtoNodeBlock};
 use crate::store::Store;
 
@@ -67,6 +68,11 @@ pub enum OnBlockError {
     /// Epoch processing inside `compute_pulled_up_tip` failed.
     #[error("pulled-up tip epoch processing: {0}")]
     PulledUpTip(String),
+    /// H-3: partial import declined because the execution body is not resident
+    /// and a synthetic `Default` body would write `execution_block_hash == ZERO`
+    /// (case-2 sentinel). Caller falls through to the full import path.
+    #[error("partial import declined: execution body not resident (H-3)")]
+    PartialImportNeedsBody,
 }
 
 impl OnBlockError {
@@ -79,7 +85,9 @@ impl OnBlockError {
             Self::NotDescendedFromFinalized => GossipClass::Reject,
             Self::Transition(e) => e.gossip_class(),
             // Internal structure faults — not a peer descore from gossip alone.
-            Self::ProtoArray(_) | Self::PulledUpTip(_) => GossipClass::Internal,
+            Self::ProtoArray(_) | Self::PulledUpTip(_) | Self::PartialImportNeedsBody => {
+                GossipClass::Internal
+            }
         }
     }
 }
@@ -122,6 +130,8 @@ pub fn get_forkchoice_store<P: Preset>(
     );
 
     // Proto-array first, then header/state — same discipline as `on_block`.
+    // Anchor is Valid by the spec's MAY (CC-34 /7). execution_block_hash from
+    // the anchor body (≠13/3); may be ZERO for pre-merge / unit-test genesis.
     store.proto_array_mut().on_block(ProtoNodeBlock {
         slot: anchor_block.slot,
         root: anchor_root,
@@ -132,6 +142,8 @@ pub fn get_forkchoice_store<P: Preset>(
         finalized_checkpoint: finalized,
         unrealized_justified_checkpoint: justified,
         unrealized_finalized_checkpoint: finalized,
+        execution_status: ExecutionStatus::Valid,
+        execution_block_hash: anchor_block.body.execution_payload.block_hash.to_hash256(),
     })?;
 
     let header = block_to_header(anchor_block);
@@ -175,8 +187,16 @@ pub fn on_block<P: Preset>(
 
     // Partial leftover (e.g. header without proto): resume from resident state.
     // Never claim Imported until proto-array membership is established.
+    // H-3: if the execution hash cannot be recovered without a ZERO synthetic
+    // body, decline so the full path re-drives with a real body.
     if store.blocks().contains_key(&block_root) {
-        return complete_partial_import(store, block_root);
+        match complete_partial_import(store, block_root) {
+            Ok(outcome) => return Ok(outcome),
+            Err(OnBlockError::PartialImportNeedsBody) => {
+                // Fall through to the full import path using the signed block.
+            }
+            Err(e) => return Err(e),
+        }
     }
 
     // --- 1. DA gate FIRST (CC-17 sole production call site) -----------------
@@ -218,13 +238,29 @@ pub fn on_block<P: Preset>(
     let ctx = TransitionContext::new(config, engine.as_ref());
     state_transition(&mut state, signed_block, &ctx, verify)?;
 
+    // CC-34a: read the payload-status outbox (written by process_execution_payload).
+    // No second verify_and_notify_new_payload call site (CC-14/1).
+    let execution_status = ctx
+        .take_payload_status()
+        .as_ref()
+        .map(ExecutionStatus::from_payload_status)
+        .unwrap_or(ExecutionStatus::Irrelevant);
+    let execution_block_hash = block.body.execution_payload.block_hash.to_hash256();
+
     // Spec: compute head **before** applying the block (for proposer-boost gate).
     let head_before = crate::head_cache::get_head(store)
         .map(|(r, _)| r)
         .unwrap_or(store.justified_checkpoint().root);
 
     // --- 5–7. Integrate: proto-array first, then store, then checkpoints ----
-    integrate_block(store, block_root, block, state)?;
+    integrate_block(
+        store,
+        block_root,
+        block,
+        state,
+        execution_status,
+        execution_block_hash,
+    )?;
 
     // Spec `record_block_timeliness` + `update_proposer_boost_root`.
     record_block_timeliness(store, block_root);
@@ -240,6 +276,16 @@ fn is_fully_imported<P: Preset>(store: &Store<P>, root: &Root) -> bool {
 }
 
 /// Resume import when a header/state exists without a proto-array node.
+///
+/// # Hazard H-3 (resolution i)
+///
+/// A synthetic `BeaconBlock { body: Default::default() }` has
+/// `execution_payload.block_hash == ZERO`, which collides with CC-35 case-2's
+/// sentinel. Source the hash from the resident post-state's
+/// `latest_execution_payload_header.block_hash` (the post-state of this block
+/// carries exactly this block's payload hash after `process_execution_payload`).
+/// If that hash is ZERO for a non-root block, **decline** so the full path
+/// re-drives with a real body — never write ZERO onto a post-merge `ProtoNode`.
 fn complete_partial_import<P: Preset>(
     store: &mut Store<P>,
     block_root: Root,
@@ -253,7 +299,23 @@ fn complete_partial_import<P: Preset>(
         .ok_or_else(|| OnBlockError::PulledUpTip("partial import: missing state".into()))?
         .clone();
 
+    // H-3 resolution (i): recover execution block hash from resident post-state
+    // (body ring lives in services/chain; post-state is the fork-choice-local
+    // residency source for the payload header written at transition time).
+    let execution_block_hash = state
+        .latest_execution_payload_header()
+        .block_hash
+        .to_hash256();
+    if execution_block_hash == Hash256::ZERO {
+        // Body not recoverable without ZERO synthetic — decline; caller falls
+        // through to the full import path with the signed block body.
+        return Err(OnBlockError::PartialImportNeedsBody);
+    }
+
     // Synthetic block view for integrate (body root already on header).
+    // Status: outbox was not retained across the torn write. ST success only
+    // means NOT_VALIDATED|VALID — fail closed as Optimistic (not Valid) so a
+    // SYNCING residual is not upgraded to fully validated (audit Finding 3).
     let block = BeaconBlock {
         slot: header.slot,
         proposer_index: header.proposer_index,
@@ -265,7 +327,14 @@ fn complete_partial_import<P: Preset>(
     let head_before = crate::head_cache::get_head(store)
         .map(|(r, _)| r)
         .unwrap_or(store.justified_checkpoint().root);
-    integrate_block(store, block_root, &block, state)?;
+    integrate_block(
+        store,
+        block_root,
+        &block,
+        state,
+        ExecutionStatus::Optimistic,
+        execution_block_hash,
+    )?;
     record_block_timeliness(store, block_root);
     update_proposer_boost_root(store, head_before, block_root);
     Ok(BlockImport::Imported(ImportedBlock { root: block_root }))
@@ -281,6 +350,8 @@ fn integrate_block<P: Preset>(
     block_root: Root,
     block: &BeaconBlock<P>,
     state: BeaconState<P>,
+    execution_status: ExecutionStatus,
+    execution_block_hash: Hash256,
 ) -> Result<(), OnBlockError> {
     let justified = state.current_justified_checkpoint();
     let finalized = state.finalized_checkpoint();
@@ -318,6 +389,8 @@ fn integrate_block<P: Preset>(
             finalized_checkpoint: finalized,
             unrealized_justified_checkpoint: unrealized_justified,
             unrealized_finalized_checkpoint: unrealized_finalized,
+            execution_status,
+            execution_block_hash,
         })?;
     } else {
         // Resume / re-pull path: node unrealized can change without a new header.
@@ -523,11 +596,14 @@ mod tests {
     use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
     use cc_types::containers::{BeaconBlockHeader, Checkpoint};
     use cc_types::preset::Minimal;
-    use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Root, Slot, ValidatorIndex};
+    use cc_types::primitives::{
+        Epoch, ExecutionAddress, ForkVersion, Hash256, Root, Slot, ValidatorIndex,
+    };
     use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
 
     use super::*;
-    use crate::da_seam::{HarnessAvailability, DataAvailability, DeferralReason};
+    use crate::da_seam::{DataAvailability, DeferralReason, HarnessAvailability};
+    use crate::execution_status::ExecutionStatus;
     use crate::proto_array::ProtoNodeBlock;
     use crate::store::Store;
 
@@ -760,44 +836,19 @@ mod tests {
 
     /// SEC-15b-1: header-only partial must not short-circuit as Imported;
     /// retry / resume completes proto-array membership.
+    ///
+    /// H-3: seed a non-zero `latest_execution_payload_header.block_hash` on the
+    /// resident post-state so resume can recover the execution hash without a
+    /// synthetic ZERO body.
     #[test]
     fn partial_header_without_proto_is_completed_not_false_imported() {
         let (mut store, anchor, config) = seeded_store(Arc::new(HarnessAvailability));
         store.set_time(12);
 
-        let child = root(0x22);
         let justified = cp(0, anchor);
         let finalized = cp(0, anchor);
-        let mut child_state = store.block_state(&anchor).unwrap().clone();
-        child_state.set_slot(Slot::new(1));
-        child_state.set_current_justified_checkpoint(justified);
-        child_state.set_finalized_checkpoint(finalized);
+        let exec_hash = Root::from_array([0xAB; 32]);
 
-        // Simulate a torn write: header+state present, proto-array missing.
-        store.insert_block(
-            child,
-            BeaconBlockHeader {
-                slot: Slot::new(1),
-                proposer_index: ValidatorIndex::new(0),
-                parent_root: anchor,
-                state_root: Root::ZERO,
-                body_root: Root::ZERO,
-            },
-            child_state,
-        );
-        assert!(store.blocks().contains_key(&child));
-        assert!(!store.proto_array().contains(&child));
-
-        // Any signed block with the same tree-hash root is not required for the
-        // resume path (uses resident header/state). Use a matching-slot shell
-        // that hashes to a *different* root so we exercise resume by root
-        // identity via a second call path: complete_partial through on_block
-        // keyed by the resident root — call integrate via on_block only when
-        // the block root matches. Build a SignedBeaconBlock whose message
-        // root equals `child` is hard without fixing body; instead call
-        // complete via on_block with a block that *is* `child` by inserting
-        // under the actual hash of a synthetic block.
-        //
         // Rebuild partial under the real message root:
         let signed = signed_block(1, anchor, 0);
         let real_root = Root::from_hash256(TreeHash::tree_hash_root(&signed.message));
@@ -805,6 +856,10 @@ mod tests {
         st.set_slot(Slot::new(1));
         st.set_current_justified_checkpoint(justified);
         st.set_finalized_checkpoint(finalized);
+        // Resident post-state carries this block's execution hash (H-3 source).
+        let mut header = st.latest_execution_payload_header().clone();
+        header.block_hash = exec_hash;
+        st.set_latest_execution_payload_header(header);
         store.insert_block(
             real_root,
             BeaconBlockHeader {
@@ -835,6 +890,15 @@ mod tests {
             "resume must insert proto-array node"
         );
         assert!(is_fully_imported(&store, &real_root));
+        let node = store.proto_array().get(&real_root).unwrap();
+        assert_eq!(node.execution_block_hash, exec_hash.to_hash256());
+        assert_ne!(
+            node.execution_block_hash,
+            Hash256::ZERO,
+            "H-3: resume must not write ZERO"
+        );
+        // Fail-closed: status was not retained across the torn write.
+        assert_eq!(node.execution_status, ExecutionStatus::Optimistic);
 
         // Second call is a true idempotent short-circuit (both maps).
         let again = on_block(
@@ -848,6 +912,60 @@ mod tests {
             again,
             BlockImport::Imported(ImportedBlock { root: real_root })
         );
+    }
+
+    /// H-3: partial with ZERO execution hash declines rather than writing a
+    /// post-merge node with the case-2 sentinel.
+    #[test]
+    fn no_zero_execution_block_hash_post_merge() {
+        let (mut store, anchor, config) = seeded_store(Arc::new(HarnessAvailability));
+        store.set_time(12);
+
+        let justified = cp(0, anchor);
+        let finalized = cp(0, anchor);
+        let signed = signed_block(1, anchor, 0);
+        let real_root = Root::from_hash256(TreeHash::tree_hash_root(&signed.message));
+        let mut st = store.block_state(&anchor).unwrap().clone();
+        st.set_slot(Slot::new(1));
+        st.set_current_justified_checkpoint(justified);
+        st.set_finalized_checkpoint(finalized);
+        // ZERO hash on resident state → complete_partial declines (H-3).
+        assert_eq!(st.latest_execution_payload_header().block_hash, Root::ZERO);
+        store.insert_block(
+            real_root,
+            BeaconBlockHeader {
+                slot: Slot::new(1),
+                proposer_index: ValidatorIndex::new(0),
+                parent_root: anchor,
+                state_root: Root::ZERO,
+                body_root: Root::from_hash256(TreeHash::tree_hash_root(&signed.message.body)),
+            },
+            st,
+        );
+
+        // on_block declines partial and falls through to full path. Full path
+        // may fail ST (Default body), but must never leave a ZERO-hash node.
+        let _ = on_block(
+            &mut store,
+            &signed,
+            &config,
+            BlockSignatureStrategy::NoVerification,
+        );
+
+        for node in store.proto_array().nodes() {
+            if node.parent.is_some() {
+                assert!(
+                    node.execution_status == ExecutionStatus::Irrelevant
+                        || node.execution_block_hash != Hash256::ZERO,
+                    "H-3: no post-merge ProtoNode with ZERO execution_block_hash (root={:?})",
+                    node.root
+                );
+            }
+        }
+        // Partial path specifically did not insert under real_root with ZERO.
+        if let Some(n) = store.proto_array().get(&real_root) {
+            assert_ne!(n.execution_block_hash, Hash256::ZERO);
+        }
     }
 
     /// Proto-array failure before `insert_block` must not leave a header.
@@ -881,7 +999,15 @@ mod tests {
             body: Default::default(),
         };
         // integrate_block should fail at proto insert; no child header.
-        let err = integrate_block(&mut store, child_root, &child_block, parent_state).unwrap_err();
+        let err = integrate_block(
+            &mut store,
+            child_root,
+            &child_block,
+            parent_state,
+            ExecutionStatus::Valid,
+            Hash256::from([0xCD; 32]),
+        )
+        .unwrap_err();
         assert!(matches!(
             err,
             OnBlockError::ProtoArray(ProtoArrayError::UnknownParent(_))
@@ -934,6 +1060,8 @@ mod tests {
                 finalized_checkpoint: realized,
                 unrealized_justified_checkpoint: realized,
                 unrealized_finalized_checkpoint: realized,
+                execution_status: ExecutionStatus::Valid,
+                execution_block_hash: Hash256::ZERO,
             })
             .unwrap();
 
@@ -986,5 +1114,55 @@ mod tests {
         let err = OnBlockError::NotDescendedFromFinalized;
         assert_eq!(err.gossip_class(), GossipClass::Reject);
         assert_ne!(err.gossip_class(), GossipClass::Ignore);
+    }
+
+    /// CC-34a: outbox mapping + `integrate_block` records execution status.
+    ///
+    /// SYNCING → Optimistic, VALID → Valid. The production path is
+    /// `take_payload_status` → `from_payload_status` → `integrate_block`.
+    #[test]
+    fn on_block_records_execution_status() {
+        use cc_state_transition::PayloadStatus;
+
+        // Mapping side (what on_block does with the outbox).
+        assert_eq!(
+            ExecutionStatus::from_payload_status(&PayloadStatus::Syncing),
+            ExecutionStatus::Optimistic
+        );
+        assert_eq!(
+            ExecutionStatus::from_payload_status(&PayloadStatus::Valid),
+            ExecutionStatus::Valid
+        );
+
+        let (mut store, anchor, _config) = seeded_store(Arc::new(HarnessAvailability));
+        let justified = cp(0, anchor);
+        let finalized = cp(0, anchor);
+
+        for (tag, status, want) in [
+            (
+                0x51u8,
+                ExecutionStatus::Optimistic,
+                ExecutionStatus::Optimistic,
+            ),
+            (0x52u8, ExecutionStatus::Valid, ExecutionStatus::Valid),
+        ] {
+            let child = root(tag);
+            let exec = Hash256::from([tag; 32]);
+            let mut st = store.block_state(&anchor).unwrap().clone();
+            st.set_slot(Slot::new(1));
+            st.set_current_justified_checkpoint(justified);
+            st.set_finalized_checkpoint(finalized);
+            let block = BeaconBlock {
+                slot: Slot::new(1),
+                proposer_index: ValidatorIndex::new(0),
+                parent_root: anchor,
+                state_root: Root::ZERO,
+                body: Default::default(),
+            };
+            integrate_block(&mut store, child, &block, st, status, exec).unwrap();
+            let node = store.proto_array().get(&child).unwrap();
+            assert_eq!(node.execution_status, want, "tag={tag:#x}");
+            assert_eq!(node.execution_block_hash, exec);
+        }
     }
 }

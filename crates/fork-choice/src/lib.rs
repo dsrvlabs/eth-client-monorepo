@@ -1,4 +1,4 @@
-//! Fork choice (Architecture §6, CC-15–CC-17).
+//! Fork choice (Architecture §6, CC-15–CC-17, CC-34a).
 //!
 //! - CC-15a: proto-array, [`Store`] skeleton, [`on_tick`]
 //! - CC-15b: [`on_block`], [`compute_pulled_up_tip`], [`CheckpointContext`] LRU
@@ -6,11 +6,13 @@
 //! - CC-16: [`on_attestation`], [`on_attester_slashing`], [`compute_deltas`]
 //! - CC-17 / CC-24d: data-availability seam in [`da_seam`]
 //!   ([`PeerDasAvailability`] substitutes the deleted Phase-1 optimistic stub)
+//! - CC-34a: [`ExecutionStatus`] on [`ProtoNode`], score-branch, viability, outbox read
 
 #![allow(missing_docs)]
 
 pub mod checkpoint_context;
 pub mod da_seam;
+pub mod execution_status;
 pub mod head_cache;
 pub mod on_attestation;
 pub mod on_block;
@@ -25,6 +27,7 @@ pub use da_seam::{
     AVAILABLE_ROOTS_BOUND, BlockImport, DataAvailability, DeferralReason, HarnessAvailability,
     ImportedBlock, PeerDasAvailability,
 };
+pub use execution_status::{ExecutionStatus, is_optimistic, remove_invalidated_subtree_weight};
 pub use head_cache::{
     ChainReorg, GetHeadError, PROPOSER_SCORE_BOOST, compute_proposer_boost_score, get_head,
     get_proposer_head,

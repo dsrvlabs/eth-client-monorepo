@@ -568,11 +568,12 @@ mod tests {
     use cc_types::fork::Fork;
     use cc_types::operations::{AttesterSlashing, IndexedAttestation};
     use cc_types::preset::Minimal;
-    use cc_types::primitives::{Epoch, Gwei, Root, Slot, ValidatorIndex};
+    use cc_types::primitives::{Epoch, Gwei, Hash256, Root, Slot, ValidatorIndex};
     use ssz_types::VariableList;
 
     use super::*;
     use crate::da_seam::HarnessAvailability;
+    use crate::execution_status::ExecutionStatus;
     use crate::on_block::get_forkchoice_store;
     use crate::proto_array::ProtoNodeBlock;
     use crate::store::{LatestMessage, Store, VoteTracker};
@@ -687,6 +688,8 @@ mod tests {
                 finalized_checkpoint: finalized,
                 unrealized_justified_checkpoint: justified,
                 unrealized_finalized_checkpoint: finalized,
+                execution_status: ExecutionStatus::Valid,
+                execution_block_hash: Hash256::ZERO,
             })
             .unwrap();
     }

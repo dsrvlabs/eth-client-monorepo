@@ -136,10 +136,7 @@ impl PeerDasAvailability {
     /// Current occupancy of the available set (for gauges / tests).
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inner
-            .lock()
-            .map(|g| g.roots.len())
-            .unwrap_or(0)
+        self.inner.lock().map(|g| g.roots.len()).unwrap_or(0)
     }
 
     /// Whether the available set is empty.

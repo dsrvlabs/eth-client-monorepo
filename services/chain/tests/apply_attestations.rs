@@ -12,7 +12,7 @@ use cc_chain::events::{EventsConfig, EventsHandle};
 use cc_chain::head::HeadSnapshotStore;
 use cc_chain::metrics::ChainMetrics;
 use cc_chain::service::ChainServiceImpl;
-use cc_fork_choice::{HarnessAvailability, ProtoNodeBlock, Store, get_forkchoice_store, on_tick};
+use cc_fork_choice::{HarnessAvailability, ProtoNodeBlock, Store, get_forkchoice_store, on_tick, ExecutionStatus};
 use cc_proto::chain::chain_service_server::ChainService;
 use cc_proto::chain::{ApplyAttestationsRequest, AttestationApplyVerdict, GetHeadRequest};
 use cc_state_transition::StubOptimisticEngine;
@@ -21,7 +21,7 @@ use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::containers::{AttestationData, BeaconBlockHeader, Checkpoint, Validator};
 use cc_types::operations::IndexedAttestation;
 use cc_types::preset::Minimal;
-use cc_types::primitives::{
+use cc_types::primitives::{Hash256, 
     BlsPublicKey, Epoch, ExecutionAddress, ForkVersion, Root, Slot, ValidatorIndex,
 };
 use cc_types::{BeaconBlock, BeaconState};
@@ -155,6 +155,8 @@ fn insert_child(store: &mut Store<Minimal>, parent: Root, child: Root, slot: u64
             finalized_checkpoint: finalized,
             unrealized_justified_checkpoint: justified,
             unrealized_finalized_checkpoint: finalized,
+            execution_status: ExecutionStatus::Valid,
+            execution_block_hash: Hash256::ZERO,
         })
         .unwrap();
 }

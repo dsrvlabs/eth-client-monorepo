@@ -426,12 +426,13 @@ mod tests {
     use cc_state_transition::StubOptimisticEngine;
     use cc_types::containers::{BeaconBlockHeader, Checkpoint};
     use cc_types::preset::Minimal;
-    use cc_types::primitives::{Epoch, Gwei, Root, Slot, ValidatorIndex};
+    use cc_types::primitives::{Epoch, Gwei, Hash256, Root, Slot, ValidatorIndex};
     use cc_types::{BeaconBlock, BeaconState};
     use tree_hash::TreeHash;
 
     use super::*;
     use crate::da_seam::HarnessAvailability;
+    use crate::execution_status::ExecutionStatus;
     use crate::on_attestation::on_attestation;
     use crate::on_block::get_forkchoice_store;
     use crate::on_tick::on_tick;
@@ -515,6 +516,8 @@ mod tests {
                 finalized_checkpoint: finalized,
                 unrealized_justified_checkpoint: justified,
                 unrealized_finalized_checkpoint: finalized,
+                execution_status: ExecutionStatus::Valid,
+                execution_block_hash: Hash256::ZERO,
             })
             .unwrap();
     }

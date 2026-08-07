@@ -33,8 +33,10 @@
 use std::collections::HashMap;
 
 use cc_types::containers::Checkpoint;
-use cc_types::primitives::{Epoch, Root, Slot};
+use cc_types::primitives::{Epoch, Hash256, Root, Slot};
 use thiserror::Error;
+
+use crate::execution_status::{ExecutionStatus, h3_execution_hash_ok};
 
 /// Errors from proto-array mutations and queries.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -66,6 +68,17 @@ pub enum ProtoArrayError {
     /// Selected head is not viable for the current store checkpoints.
     #[error("selected head root {0:?} is not viable")]
     NonViableHead(Root),
+    /// H-3: `Optimistic` / `Invalid` nodes must not carry the all-zeros
+    /// execution hash (CC-35 case-2 `latestValidHash` sentinel).
+    #[error(
+        "H-3: execution_block_hash must not be ZERO for {status:?} node (root {root:?})"
+    )]
+    ZeroExecutionBlockHash {
+        /// Block root that was refused.
+        root: Root,
+        /// Status that forbids ZERO.
+        status: ExecutionStatus,
+    },
 }
 
 /// Arguments for [`ProtoArray::on_block`] (one logical block insertion).
@@ -89,6 +102,10 @@ pub struct ProtoNodeBlock {
     pub unrealized_justified_checkpoint: Checkpoint,
     /// Unrealized finalized checkpoint (pulled-up tip).
     pub unrealized_finalized_checkpoint: Checkpoint,
+    /// Execution-layer validity (CC-34a / §4.1).
+    pub execution_status: ExecutionStatus,
+    /// `body.execution_payload.block_hash` for this block (CC-34a / §4.7).
+    pub execution_block_hash: Hash256,
 }
 
 /// One node in the proto-array.
@@ -121,6 +138,12 @@ pub struct ProtoNode {
     pub best_child: Option<usize>,
     /// Best viable descendant by weight (internal index).
     pub best_descendant: Option<usize>,
+    /// Execution-layer validity. Single source of truth for optimistic state
+    /// (ADR P3-10); `is_optimistic` is derived from this field.
+    pub execution_status: ExecutionStatus,
+    /// `body.execution_payload.block_hash` — required by CC-35 `latestValidHash`
+    /// lookup and CC-33's `ForkchoiceStateV1` triple (≠13/3).
+    pub execution_block_hash: Hash256,
 }
 
 /// Previously applied proposer-boost delta (reversed on the next head pass).
@@ -217,6 +240,20 @@ impl ProtoArray {
             debug_assert!(p < index);
         }
 
+        // H-3: Optimistic/Invalid + ZERO collides with CC-35 case-2 LVH sentinel.
+        // Enforced at runtime (not debug_assert only) so release builds refuse it.
+        // Valid+ZERO remains allowed for array-root / unit-test genesis anchors.
+        if !h3_execution_hash_ok(
+            block.execution_status,
+            block.execution_block_hash,
+            parent.is_none(),
+        ) {
+            return Err(ProtoArrayError::ZeroExecutionBlockHash {
+                root: block.root,
+                status: block.execution_status,
+            });
+        }
+
         self.nodes.push(ProtoNode {
             slot: block.slot,
             root: block.root,
@@ -230,6 +267,8 @@ impl ProtoArray {
             weight: 0,
             best_child: None,
             best_descendant: None,
+            execution_status: block.execution_status,
+            execution_block_hash: block.execution_block_hash,
         });
         self.indices.insert(block.root, index);
         Ok(())
@@ -338,6 +377,9 @@ impl ProtoArray {
     /// Viability with explicit store checkpoints (testable per field).
     ///
     /// See module docs for known gaps vs recursive `filter_block_tree`.
+    ///
+    /// §4.5: an `Invalid` node is never viable — `Optimistic` remains viable
+    /// (optimistic heads are legitimate).
     pub fn node_is_viable_with(
         &self,
         node: &ProtoNode,
@@ -346,6 +388,10 @@ impl ProtoArray {
         current_epoch: Epoch,
         slots_per_epoch: u64,
     ) -> bool {
+        // §4.5 — execution-status viability clause.
+        if node.execution_status.is_invalidated() {
+            return false;
+        }
         correct_justified(node, store_justified, current_epoch, slots_per_epoch)
             && correct_finalized(self, node, store_finalized, slots_per_epoch)
     }
@@ -557,6 +603,15 @@ impl ProtoArray {
             }
 
             let node = &mut self.nodes[node_index];
+            // §4.4 part 2 — Invalid nodes contribute zero upward and hold weight
+            // zero. Accumulated weight was removed once at invalidation time
+            // (`remove_invalidated_subtree_weight`); here we only stop the flow.
+            // Valid / Optimistic / Irrelevant take the identical path below.
+            if node.execution_status.is_invalidated() {
+                node.weight = 0;
+                continue;
+            }
+
             node.weight = node
                 .weight
                 .checked_add(node_delta)
@@ -796,6 +851,8 @@ mod tests {
                 finalized_checkpoint: finalized,
                 unrealized_justified_checkpoint: justified,
                 unrealized_finalized_checkpoint: finalized,
+                execution_status: ExecutionStatus::Valid,
+                execution_block_hash: Hash256::ZERO,
             })
             .unwrap();
         }
@@ -836,6 +893,8 @@ mod tests {
             finalized_checkpoint: finalized,
             unrealized_justified_checkpoint: justified,
             unrealized_finalized_checkpoint: finalized,
+            execution_status: ExecutionStatus::Valid,
+            execution_block_hash: Hash256::ZERO,
         })
         .unwrap();
         let n5 = pa.get(&root(5)).unwrap();
@@ -976,6 +1035,8 @@ mod tests {
             finalized_checkpoint: store_f,
             unrealized_justified_checkpoint: store_j,
             unrealized_finalized_checkpoint: store_f,
+            execution_status: ExecutionStatus::Valid,
+            execution_block_hash: Hash256::ZERO,
         })
         .unwrap();
         // Descendant leaf.
@@ -989,6 +1050,8 @@ mod tests {
             finalized_checkpoint: store_f,
             unrealized_justified_checkpoint: store_j,
             unrealized_finalized_checkpoint: store_f,
+            execution_status: ExecutionStatus::Valid,
+            execution_block_hash: Hash256::ZERO,
         })
         .unwrap();
 
@@ -1028,6 +1091,8 @@ mod tests {
                 finalized_checkpoint: store_f,
                 unrealized_justified_checkpoint: store_j,
                 unrealized_finalized_checkpoint: store_f,
+                execution_status: ExecutionStatus::Valid,
+                execution_block_hash: Hash256::ZERO,
             })
             .unwrap();
         let orphan_node = orphan.get(&root(77)).unwrap().clone();

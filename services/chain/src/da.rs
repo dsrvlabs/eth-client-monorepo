@@ -279,12 +279,13 @@ mod tests {
 
     use super::*;
     use cc_fork_choice::{
-        DataAvailability, PeerDasAvailability, get_forkchoice_store, get_head, on_block, on_tick,
+        DataAvailability, ExecutionStatus, PeerDasAvailability, get_forkchoice_store, get_head,
+        on_block, on_tick,
     };
     use cc_state_transition::{BlockSignatureStrategy, StubOptimisticEngine};
     use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
     use cc_types::preset::Minimal;
-    use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Slot, ValidatorIndex};
+    use cc_types::primitives::{Hash256, Epoch, ExecutionAddress, ForkVersion, Slot, ValidatorIndex};
     use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
     use std::sync::Arc;
     use tree_hash::TreeHash;
@@ -474,6 +475,8 @@ mod tests {
                 finalized_checkpoint: finalized,
                 unrealized_justified_checkpoint: justified,
                 unrealized_finalized_checkpoint: finalized,
+                execution_status: ExecutionStatus::Valid,
+                execution_block_hash: Hash256::ZERO,
             })
             .unwrap();
         store.insert_block(

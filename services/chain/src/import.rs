@@ -346,7 +346,9 @@ pub fn on_block_error_gossip_class(err: &OnBlockError) -> GossipClass {
     match err {
         OnBlockError::NotDescendedFromFinalized => GossipClass::Reject,
         OnBlockError::Transition(e) => e.gossip_class(),
-        OnBlockError::ProtoArray(_) | OnBlockError::PulledUpTip(_) => GossipClass::Internal,
+        OnBlockError::ProtoArray(_)
+        | OnBlockError::PulledUpTip(_)
+        | OnBlockError::PartialImportNeedsBody => GossipClass::Internal,
     }
 }
 
