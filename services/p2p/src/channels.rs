@@ -68,10 +68,14 @@ pub struct GossipWork {
     pub peer_id: PeerId,
 }
 
-/// Placeholder inbound req/resp request (claimed by CC-23*).
+/// Inbound req/resp request after codec decode (CC-23a; handlers CC-23b+).
 #[derive(Debug, Clone)]
 pub struct ReqRespInbound {
-    /// Opaque payload placeholder.
+    /// Remote peer.
+    pub peer_id: PeerId,
+    /// Negotiated protocol ID string.
+    pub protocol: String,
+    /// Uncompressed SSZ request body.
     pub bytes: Vec<u8>,
 }
 
@@ -141,6 +145,14 @@ pub enum ConnEvent {
         peer_id: Option<PeerId>,
         /// Error display string (no libp2p type leak into consumers).
         error: String,
+    },
+    /// Application-score penalty observed on the swarm edge (CC-23a rate limit /
+    /// reqresp timeout). Peer manager applies the delta + metric.
+    PeerPenalty {
+        /// Peer to penalise.
+        peer_id: PeerId,
+        /// Prometheus reason label (must be a [`crate::metrics::PeerPenaltyReason`] value).
+        reason: String,
     },
 }
 

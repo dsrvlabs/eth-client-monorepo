@@ -452,6 +452,23 @@ impl PeerManager {
             ConnEvent::NewListenAddr { .. } => {
                 // Informational only.
             }
+            ConnEvent::PeerPenalty { peer_id, reason } => {
+                let reason = match reason.as_str() {
+                    "rate_limit" => crate::metrics::PeerPenaltyReason::RateLimit,
+                    "reqresp_fault" => crate::metrics::PeerPenaltyReason::ReqrespFault,
+                    _ => crate::metrics::PeerPenaltyReason::ReqrespFault,
+                };
+                if let Some(rec) = self.table.get_mut(&peer_id) {
+                    let _ = score::apply_penalty_with_metrics(
+                        &mut rec.app_score,
+                        reason,
+                        &self.metrics,
+                    );
+                } else {
+                    // Peer already gone — still count the metric.
+                    self.metrics.inc_peer_penalty(reason);
+                }
+            }
         }
         // Scheduler also runs on every connection event.
         self.run_scheduler(now).await;

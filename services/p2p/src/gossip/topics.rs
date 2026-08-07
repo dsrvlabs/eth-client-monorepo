@@ -116,6 +116,10 @@ pub fn gossipsub_message_id(message: &Message) -> MessageId {
 /// `IDONTWANT` on publish is **enabled** (CC-22c / BehaviourConfig default).
 /// Disable via [`BehaviourConfig::with_idontwant_on_publish`]`(false)` for the
 /// self-devnet A/B control run.
+///
+/// Req/resp protocols are **not** installed here — use
+/// [`crate::reqresp::ethereum_behaviour_config`] so Stream R owns the nine
+/// protocol IDs (CC-23a).
 #[must_use]
 pub fn ethereum_behaviour_config() -> BehaviourConfig {
     BehaviourConfig::default()

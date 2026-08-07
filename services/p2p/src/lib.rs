@@ -13,6 +13,7 @@
 //! - **CC-22d**: block/column validators, seen/pending, one Verdict, single report site
 //! - **CC-22e**: hostile-input harness (tests/hostile_input.rs) — panic-is-failure + counting alloc
 //! - **CC-24a**: custody + sampling sets (`das::custody`), eight column subscriptions, custody-compatible metric
+//! - **CC-23a**: req/resp shared half — SszSnappy framing, nine protocols, rate limits, scheduler
 //! - **CC-27b**: chain-stream client, outstanding map, stall-then-shed, ChainView store
 //! - **CC-29a**: Phase 2 metric family declarations (binary registers them)
 
@@ -30,6 +31,7 @@ pub mod host;
 pub mod identity;
 pub mod metrics;
 pub mod peer_manager;
+pub mod reqresp;
 pub mod service;
 pub mod supervisor;
 pub mod verdict;

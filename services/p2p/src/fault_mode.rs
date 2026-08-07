@@ -511,7 +511,7 @@ pub async fn run_devnet(
         }
     };
 
-    let behaviour = CcBehaviour::new(&keypair, crate::gossip::ethereum_behaviour_config())
+    let behaviour = CcBehaviour::new(&keypair, crate::reqresp::ethereum_behaviour_config())
         .map_err(|e| anyhow::anyhow!("CcBehaviour: {e}"))?;
     let mut swarm = build_swarm(keypair, behaviour, &SwarmConfig::default())
         .map_err(|e| anyhow::anyhow!("build_swarm: {e}"))?;

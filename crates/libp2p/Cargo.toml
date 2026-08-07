@@ -18,6 +18,8 @@ snap = { workspace = true }
 futures = { workspace = true }
 # Message-id default (eth2 Altair+ preimage) — SEC C1; no cc-* deps.
 sha2 = { workspace = true }
+# TTFB / RESP timeouts inside the live req/resp codec (CC-23a / §7.2).
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "time", "test-util"] }

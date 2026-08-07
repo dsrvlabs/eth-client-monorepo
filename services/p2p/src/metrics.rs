@@ -830,6 +830,71 @@ impl P2pMetrics {
         self.app_score.observe(score);
     }
 
+    // ── req/resp producers (CC-23a) ─────────────────────────────────────────
+
+    /// Increment `cc_p2p_reqresp_inbound_total{protocol,result}`.
+    pub fn inc_reqresp_inbound(&self, protocol: &str, result: &str) {
+        self.reqresp_inbound
+            .get_or_create(&ReqrespLabels {
+                protocol: protocol.to_owned(),
+                result: result.to_owned(),
+            })
+            .inc();
+    }
+
+    /// Read `cc_p2p_reqresp_inbound_total{protocol,result}`.
+    #[must_use]
+    pub fn reqresp_inbound_count(&self, protocol: &str, result: &str) -> u64 {
+        self.reqresp_inbound
+            .get_or_create(&ReqrespLabels {
+                protocol: protocol.to_owned(),
+                result: result.to_owned(),
+            })
+            .get()
+    }
+
+    /// Increment `cc_p2p_reqresp_outbound_total{protocol,result}`.
+    pub fn inc_reqresp_outbound(&self, protocol: &str, result: &str) {
+        self.reqresp_outbound
+            .get_or_create(&ReqrespLabels {
+                protocol: protocol.to_owned(),
+                result: result.to_owned(),
+            })
+            .inc();
+    }
+
+    /// Read `cc_p2p_reqresp_outbound_total{protocol,result}`.
+    #[must_use]
+    pub fn reqresp_outbound_count(&self, protocol: &str, result: &str) -> u64 {
+        self.reqresp_outbound
+            .get_or_create(&ReqrespLabels {
+                protocol: protocol.to_owned(),
+                result: result.to_owned(),
+            })
+            .get()
+    }
+
+    /// Increment `cc_p2p_reqresp_ratelimit_total{peer_kind,protocol}`.
+    pub fn inc_reqresp_ratelimit(&self, peer_kind: &str, protocol: &str) {
+        self.reqresp_ratelimit
+            .get_or_create(&ReqrespRatelimitLabels {
+                peer_kind: peer_kind.to_owned(),
+                protocol: protocol.to_owned(),
+            })
+            .inc();
+    }
+
+    /// Read `cc_p2p_reqresp_ratelimit_total{peer_kind,protocol}`.
+    #[must_use]
+    pub fn reqresp_ratelimit_count(&self, peer_kind: &str, protocol: &str) -> u64 {
+        self.reqresp_ratelimit
+            .get_or_create(&ReqrespRatelimitLabels {
+                peer_kind: peer_kind.to_owned(),
+                protocol: protocol.to_owned(),
+            })
+            .get()
+    }
+
     // ── gossip / DA producers (CC-22d) ──────────────────────────────────────
 
     /// Increment `cc_p2p_gossip_messages_total{topic,verdict}`.

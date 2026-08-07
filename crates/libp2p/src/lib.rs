@@ -12,6 +12,7 @@ mod behaviour;
 mod limits;
 mod scoring;
 mod snappy;
+mod ssz_snappy_codec;
 mod swarm;
 mod transport;
 
@@ -19,7 +20,9 @@ pub mod reexport;
 
 pub use behaviour::{
     BehaviourBuildError, BehaviourConfig, CcBehaviour, CcBehaviourEvent, MessageIdFn,
-    SszSnappyCodec, default_eth2_message_id,
+    MAX_RESPONSE_STREAM_BYTES, REQRESP_MAX_PAYLOAD_SIZE, RESP_TIMEOUT, ReqRespRequest,
+    ReqRespResponse, SszSnappyCodec, TTFB_TIMEOUT, decode_ssz_snappy_payload,
+    default_eth2_message_id, encode_ssz_snappy_payload, request_limits, response_stream_cap,
 };
 pub use limits::{
     DEFAULT_CONNECTION_TIMEOUT, DEFAULT_IDLE_CONNECTION_TIMEOUT, DEFAULT_MAX_ESTABLISHED_PER_PEER,

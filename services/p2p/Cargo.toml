@@ -50,10 +50,11 @@ lru = { workspace = true }
 ethereum_ssz = { workspace = true }
 ssz_types = { workspace = true }
 tree_hash = { workspace = true }
+# CC-23a: req/resp SSZ+snappy framing
+snap = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tokio-stream = { version = "0.1", features = ["sync", "net"] }
 prometheus-client = { workspace = true }
 futures = { workspace = true }
-snap = { workspace = true }

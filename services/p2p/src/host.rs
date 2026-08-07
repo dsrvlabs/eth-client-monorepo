@@ -22,9 +22,10 @@ use std::time::{Duration, Instant};
 
 use cc_libp2p::reexport::futures::StreamExt;
 use cc_libp2p::reexport::{
-    DialOpts, IdentTopic, MessageAcceptance, MessageId, Multiaddr, PeerId, Swarm, SwarmEvent,
+    DialOpts, IdentTopic, MessageAcceptance, MessageId, Multiaddr, OutboundFailure, PeerId,
+    RequestResponseEvent, RequestResponseMessage, ResponseChannel, Swarm, SwarmEvent,
 };
-use cc_libp2p::{CcBehaviour, CcBehaviourEvent};
+use cc_libp2p::{CcBehaviour, CcBehaviourEvent, ReqRespRequest, ReqRespResponse};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -34,7 +35,10 @@ use crate::channels::{
     SwarmCommand,
 };
 use crate::gossip::validate::{check_payload_len, parse_topic_name};
-use crate::metrics::{P2pMetrics, QueueName};
+use crate::metrics::{P2pMetrics, PeerPenaltyReason, QueueName};
+use crate::reqresp::codec::{ResponseChunk, ResponseCode, SszSnappyFraming};
+use crate::reqresp::limits::{rate_limit_kind, InboundRateLimiter};
+use crate::reqresp::Protocol;
 use crate::verdict::{to_message_acceptance, Verdict};
 use cc_proto::p2p::Reason;
 use cc_types::preset::Mainnet;
@@ -65,6 +69,8 @@ pub struct SwarmTask {
     pending_conn: VecDeque<ConnEvent>,
     /// Cumulative stall time observed (for tests / soak).
     pub stall_fired: bool,
+    /// Inbound req/resp rate limiter (Architecture §7.3 / CC-23a).
+    pub inbound_limiter: InboundRateLimiter,
 }
 
 impl SwarmTask {
@@ -93,6 +99,7 @@ impl SwarmTask {
             goodbye_dropped: 0,
             pending_conn: VecDeque::new(),
             stall_fired: false,
+            inbound_limiter: InboundRateLimiter::new(),
         }
     }
 }
@@ -334,6 +341,7 @@ async fn route_swarm_event(
         }
         SwarmEvent::ConnectionClosed { peer_id, .. } => {
             debug!(%peer_id, "connection closed");
+            task.inbound_limiter.on_peer_disconnected(peer_id);
             deliver_lifecycle(task, ConnEvent::ConnectionClosed { peer_id });
         }
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
@@ -473,14 +481,7 @@ async fn route_behaviour(task: &mut SwarmTask, bev: CcBehaviourEvent, shed: bool
             }
         }
         CcBehaviourEvent::Reqresp(ev) => {
-            // Codec body is CC-23a; still exercise the reqresp_in edge shape.
-            let _ = ev;
-            let _ = task.reqresp_in_tx.try_send(ReqRespInbound { bytes: Vec::new() });
-            bump_depth(
-                &task.metrics,
-                QueueName::ReqrespIn,
-                task.reqresp_in_tx.max_capacity(),
-            );
+            handle_reqresp_event(task, ev);
         }
         CcBehaviourEvent::Identify(_)
         | CcBehaviourEvent::Ping(_)
@@ -488,6 +489,139 @@ async fn route_behaviour(task: &mut SwarmTask, bev: CcBehaviourEvent, shed: bool
         | CcBehaviourEvent::AllowBlock(_) => {
             // Peer-manager scoring / ban policy is CC-20c (events observed here).
         }
+    }
+}
+
+/// Fail-closed req/resp edge (CC-23a): always `send_response`, never drop the
+/// channel. Inbound rate limiter is live; handler bodies arrive in CC-23b+.
+fn handle_reqresp_event(
+    task: &mut SwarmTask,
+    ev: RequestResponseEvent<ReqRespRequest, ReqRespResponse>,
+) {
+    match ev {
+        RequestResponseEvent::Message { peer, message, .. } => match message {
+            RequestResponseMessage::Request {
+                request, channel, ..
+            } => {
+                handle_inbound_request(task, peer, request, channel);
+            }
+            RequestResponseMessage::Response { response, .. } => {
+                // Outbound responses are consumed by the scheduler (CC-25/26);
+                // count for observability.
+                task.metrics
+                    .inc_reqresp_outbound("response", "ok");
+                let _ = response;
+            }
+        },
+        RequestResponseEvent::OutboundFailure {
+            peer, error, ..
+        } => {
+            debug!(%peer, ?error, "req/resp outbound failure");
+            task.metrics
+                .inc_reqresp_outbound("unknown", "failure");
+            // CC-23/6: stalled / timed-out peer is disconnected, not held.
+            if matches!(
+                error,
+                OutboundFailure::Timeout
+                    | OutboundFailure::ConnectionClosed
+                    | OutboundFailure::Io(_)
+            ) {
+                emit_reqresp_penalty(task, peer, PeerPenaltyReason::ReqrespFault);
+                let _ = task.swarm.disconnect_peer_id(peer);
+            }
+        }
+        RequestResponseEvent::InboundFailure { peer, error, .. } => {
+            debug!(%peer, ?error, "req/resp inbound failure");
+            task.metrics.inc_reqresp_inbound("unknown", "failure");
+        }
+        RequestResponseEvent::ResponseSent { .. } => {}
+    }
+}
+
+fn handle_inbound_request(
+    task: &mut SwarmTask,
+    peer: PeerId,
+    request: ReqRespRequest,
+    channel: ResponseChannel<ReqRespResponse>,
+) {
+    let protocol_id = request.protocol.to_string();
+    let protocol = Protocol::from_protocol_id(&protocol_id);
+    let proto_label = protocol.map(Protocol::as_str).unwrap_or("unknown");
+
+    // Enqueue for the req/resp server task (handlers CC-23b+).
+    let _ = task.reqresp_in_tx.try_send(ReqRespInbound {
+        peer_id: peer,
+        protocol: protocol_id.clone(),
+        bytes: request.ssz.clone(),
+    });
+    bump_depth(
+        &task.metrics,
+        QueueName::ReqrespIn,
+        task.reqresp_in_tx.max_capacity(),
+    );
+
+    // Rate-limit admission for block/column families (§7.3).
+    if let Some(kind) = protocol.and_then(rate_limit_kind) {
+        let now = Instant::now();
+        if let Err((outcome, chunk)) = task.inbound_limiter.admit_request(peer, kind, now) {
+            task.metrics
+                .inc_reqresp_ratelimit(outcome.peer_kind(), proto_label);
+            emit_reqresp_penalty(task, peer, PeerPenaltyReason::RateLimit);
+            let framed = encode_error_response(&chunk, protocol.unwrap_or(Protocol::StatusV2));
+            let _ = task
+                .swarm
+                .behaviour_mut()
+                .reqresp
+                .send_response(channel, ReqRespResponse::from_framed(framed));
+            task.metrics
+                .inc_reqresp_inbound(proto_label, "rate_limited");
+            return;
+        }
+    }
+
+    // Fail-closed stub until CC-23b/c/d: ResourceUnavailable (code 3).
+    // Never drop the ResponseChannel (that looks like packet loss → retries).
+    let framed = encode_resource_unavailable(protocol.unwrap_or(Protocol::StatusV2));
+    let ok = task
+        .swarm
+        .behaviour_mut()
+        .reqresp
+        .send_response(channel, ReqRespResponse::from_framed(framed))
+        .is_ok();
+    task.metrics.inc_reqresp_inbound(
+        proto_label,
+        if ok { "resource_unavailable" } else { "channel_closed" },
+    );
+}
+
+fn encode_error_response(chunk: &ResponseChunk, protocol: Protocol) -> Vec<u8> {
+    match SszSnappyFraming::encode_response_chunk(chunk, protocol) {
+        Ok(bytes) => bytes,
+        // Fallback minimal error frame if encode fails (should not).
+        Err(_) => vec![ResponseCode::ServerError.as_u8()],
+    }
+}
+
+fn encode_resource_unavailable(protocol: Protocol) -> Vec<u8> {
+    let chunk = ResponseChunk::Error {
+        code: ResponseCode::ResourceUnavailable.as_u8(),
+        message: b"handler not ready".to_vec(),
+    };
+    encode_error_response(&chunk, protocol)
+}
+
+fn emit_reqresp_penalty(task: &mut SwarmTask, peer: PeerId, reason: PeerPenaltyReason) {
+    // Peer manager applies score + metric; fall back to metric-only if the
+    // conn queue is saturated so soak still sees the series.
+    if task
+        .conn_tx
+        .try_send(ConnEvent::PeerPenalty {
+            peer_id: peer,
+            reason: reason.as_str().to_owned(),
+        })
+        .is_err()
+    {
+        task.metrics.inc_peer_penalty(reason);
     }
 }
 
@@ -611,21 +745,21 @@ fn bump_depth(metrics: &P2pMetrics, q: QueueName, max_capacity: usize) {
 
 /// Construct a swarm from identity material (helper for [`crate::service`]).
 ///
-/// Installs the eth2 Altair+ `message_id_fn` (SEC C1 / CC-22b) via
-/// [`crate::gossip::ethereum_behaviour_config`].
+/// Installs the eth2 Altair+ `message_id_fn` (SEC C1 / CC-22b) and the nine
+/// req/resp protocols (CC-23a) via [`crate::reqresp::ethereum_behaviour_config`].
 pub fn build_host_swarm(
     keypair: cc_libp2p::Keypair,
 ) -> Result<Swarm<CcBehaviour>, HostBuildError> {
-    build_host_swarm_with_config(keypair, crate::gossip::ethereum_behaviour_config())
+    build_host_swarm_with_config(keypair, crate::reqresp::ethereum_behaviour_config())
 }
 
 /// Construct a swarm with an explicit [`cc_libp2p::BehaviourConfig`] (limits tests).
 ///
 /// Callers that build their own config should still install an eth2 message-id
-/// (see [`crate::gossip::ethereum_behaviour_config`]); bare
-/// [`BehaviourConfig::default`](cc_libp2p::BehaviourConfig::default) already
-/// embeds a secure eth2 default inside `cc_libp2p`, but the p2p-owned function
-/// is the fixture source of truth.
+/// and the nine protocols (see [`crate::reqresp::ethereum_behaviour_config`]);
+/// bare [`BehaviourConfig::default`](cc_libp2p::BehaviourConfig::default)
+/// already embeds a secure eth2 message-id default inside `cc_libp2p`, but the
+/// p2p-owned function is the fixture source of truth.
 pub fn build_host_swarm_with_config(
     keypair: cc_libp2p::Keypair,
     behaviour_cfg: cc_libp2p::BehaviourConfig,

@@ -24,5 +24,6 @@ pub use libp2p::gossipsub::{
 // request_response surfaces for the nine Ethereum protocols (codec body: CC-23a).
 pub use libp2p::request_response::{
     Codec as RequestResponseCodec, Event as RequestResponseEvent,
-    Message as RequestResponseMessage, OutboundRequestId, ProtocolSupport, ResponseChannel,
+    InboundFailure, Message as RequestResponseMessage, OutboundFailure, OutboundRequestId,
+    ProtocolSupport, ResponseChannel,
 };

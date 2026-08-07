@@ -19,12 +19,9 @@
 //! failures drop the message before the id function runs — the invalid-snappy
 //! domain is for offline / hostile fixtures, not the live transform path.
 
-use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::AsyncRead as FuturesAsyncRead;
-use futures::AsyncWrite as FuturesAsyncWrite;
 use libp2p::allow_block_list::BlockedPeers;
 use libp2p::connection_limits::{self, ConnectionLimits};
 use libp2p::gossipsub::{
@@ -32,7 +29,7 @@ use libp2p::gossipsub::{
     MessageAuthenticity, MessageId, ValidationMode,
 };
 use libp2p::identity::Keypair;
-use libp2p::request_response::{self, Codec, ProtocolSupport};
+use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::{NetworkBehaviour, StreamProtocol};
 use libp2p::{allow_block_list, identify, ping};
 use sha2::{Digest, Sha256};
@@ -71,70 +68,12 @@ pub fn default_eth2_message_id(message: &Message) -> MessageId {
     MessageId::new(&digest[..20])
 }
 
-/// Placeholder codec type for the single multi-protocol `request_response`
-/// behaviour. Wire body (SSZ+snappy framing, nine protocol names) is **CC-23a**.
-#[derive(Debug, Clone, Default)]
-pub struct SszSnappyCodec;
-
-impl Codec for SszSnappyCodec {
-    type Protocol = StreamProtocol;
-    type Request = Vec<u8>;
-    type Response = Vec<u8>;
-
-    async fn read_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        _io: &mut T,
-    ) -> io::Result<Self::Request>
-    where
-        T: FuturesAsyncRead + Unpin + Send,
-    {
-        Err(io::Error::other(
-            "SszSnappyCodec::read_request body is CC-23a",
-        ))
-    }
-
-    async fn read_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        _io: &mut T,
-    ) -> io::Result<Self::Response>
-    where
-        T: FuturesAsyncRead + Unpin + Send,
-    {
-        Err(io::Error::other(
-            "SszSnappyCodec::read_response body is CC-23a",
-        ))
-    }
-
-    async fn write_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        _io: &mut T,
-        _req: Self::Request,
-    ) -> io::Result<()>
-    where
-        T: FuturesAsyncWrite + Unpin + Send,
-    {
-        Err(io::Error::other(
-            "SszSnappyCodec::write_request body is CC-23a",
-        ))
-    }
-
-    async fn write_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        _io: &mut T,
-        _res: Self::Response,
-    ) -> io::Result<()>
-    where
-        T: FuturesAsyncWrite + Unpin + Send,
-    {
-        Err(io::Error::other(
-            "SszSnappyCodec::write_response body is CC-23a",
-        ))
-    }
-}
+// SszSnappyCodec lives in `ssz_snappy_codec` (streaming, protocol-aware, TTFB/RESP).
+pub use crate::ssz_snappy_codec::{
+    decode_ssz_snappy_payload, encode_ssz_snappy_payload, request_limits, response_stream_cap,
+    MAX_RESPONSE_STREAM_BYTES, REQRESP_MAX_PAYLOAD_SIZE, RESP_TIMEOUT, ReqRespRequest,
+    ReqRespResponse, SszSnappyCodec, TTFB_TIMEOUT,
+};
 
 /// Composite network behaviour for the consensus client (Architecture §3.2).
 ///
@@ -182,8 +121,13 @@ pub struct BehaviourConfig {
     /// Connection limits (swarm-level hard caps).
     pub connection_limits: ConnectionLimits,
     /// Protocols registered on the single `request_response` behaviour.
-    /// Empty until CC-23a registers the nine Ethereum protocols.
+    /// CC-23a registers the nine Ethereum protocols via
+    /// [`BehaviourConfig::with_reqresp_protocols`].
     pub reqresp_protocols: Vec<(StreamProtocol, ProtocolSupport)>,
+    /// Overall request-response stream timeout (TTFB+chunks bounded inside
+    /// the codec / host; this is the libp2p-level ceiling). Default 15 s
+    /// (`TTFB 5 + RESP 10`).
+    pub reqresp_request_timeout: Duration,
     /// Gossipsub message-id function (SEC C1 / CC-22b).
     ///
     /// Defaults to [`default_eth2_message_id`]. `services/p2p` should override
@@ -209,6 +153,7 @@ impl std::fmt::Debug for BehaviourConfig {
             .field("identify_agent", &self.identify_agent)
             .field("connection_limits", &"ConnectionLimits{…}")
             .field("reqresp_protocols", &self.reqresp_protocols)
+            .field("reqresp_request_timeout", &self.reqresp_request_timeout)
             .field("message_id_fn", &"<MessageIdFn>")
             .field("idontwant_on_publish", &self.idontwant_on_publish)
             .finish()
@@ -226,6 +171,8 @@ impl Default for BehaviourConfig {
             identify_agent: IDENTIFY_AGENT.to_string(),
             connection_limits: default_connection_limits(),
             reqresp_protocols: Vec::new(),
+            // TTFB 5 s + RESP 10 s (Architecture §7.2 / CC-23/6).
+            reqresp_request_timeout: Duration::from_secs(15),
             // Secure default: eth2 Altair+ id (never libp2p's seqno/from hash).
             message_id_fn: Arc::new(default_eth2_message_id),
             // CC-22c / §5.7 — IDONTWANT on by default.
@@ -249,6 +196,24 @@ impl BehaviourConfig {
     #[must_use]
     pub fn with_idontwant_on_publish(mut self, enabled: bool) -> Self {
         self.idontwant_on_publish = enabled;
+        self
+    }
+
+    /// Register Ethereum req/resp protocols on the single multi-protocol
+    /// `request_response` behaviour (CC-23a / §14/6).
+    #[must_use]
+    pub fn with_reqresp_protocols(
+        mut self,
+        protocols: Vec<(StreamProtocol, ProtocolSupport)>,
+    ) -> Self {
+        self.reqresp_protocols = protocols;
+        self
+    }
+
+    /// Override the libp2p-level request timeout (default 15 s).
+    #[must_use]
+    pub fn with_reqresp_request_timeout(mut self, timeout: Duration) -> Self {
+        self.reqresp_request_timeout = timeout;
         self
     }
 }
@@ -309,9 +274,10 @@ impl CcBehaviour {
         .map_err(|e| BehaviourBuildError::GossipsubBehaviour(e.to_string()))?;
 
         let reqresp = request_response::Behaviour::with_codec(
-            SszSnappyCodec,
+            SszSnappyCodec::default(),
             cfg.reqresp_protocols,
-            request_response::Config::default(),
+            request_response::Config::default()
+                .with_request_timeout(cfg.reqresp_request_timeout),
         );
 
         let identify = identify::Behaviour::new(
