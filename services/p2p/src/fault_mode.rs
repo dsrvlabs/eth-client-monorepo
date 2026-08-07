@@ -758,7 +758,9 @@ fn handle_gossip_event(
                 })
                 .inc();
             // M6: validate_messages() requires explicit Accept so peers re-gossip.
-            let _ = swarm.behaviour_mut().gossipsub.report_message_validation_result(
+            // Single report helper (CC-22d) — no direct gossipsub report call here.
+            crate::host::report_gossipsub_validation(
+                swarm,
                 &message_id,
                 &propagation_source,
                 MessageAcceptance::Accept,

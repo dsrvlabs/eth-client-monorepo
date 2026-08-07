@@ -28,6 +28,8 @@ use crate::chain_stream::{
 };
 use crate::channels::{self, ChannelMap, SwarmCommand, stub_consumer};
 use crate::clock::{ClockConfig, SlotClock};
+use cc_types::ChainConfig;
+use std::sync::Arc;
 use crate::discovery::{
     DIAL_QUEUE_BOUND, DiscoveryConfig, DiscoveryPeerView, DiscoveryTask, build_enr_manager,
     run_discovery_task,
@@ -266,15 +268,21 @@ pub async fn serve(
     let chain_stream_handle = ChainStreamHandle::new();
     let chain_out_tx = channels.chain_out_tx.clone();
 
+    // Validation → peer-manager app-score penalties (CC-22d).
+    let (penalty_tx, penalty_rx) =
+        mpsc::channel::<crate::channels::PeerPenaltyCmd>(crate::channels::PENALTY_BOUND);
+
     // ── 5. Workers / stub consumers ────────────────────────────────────────
-    // Gossip/reqresp/kzg remain stubs until CC-22*/23*. Chain stream (CC-27b)
-    // replaces the chain_out/chain_in stubs when enabled. Peer manager owns
-    // `conn_rx`.
+    // Gossip validation pool is CC-22d. Reqresp/kzg remain stubs until
+    // CC-23*/24*. Chain stream (CC-27b) replaces chain_out/chain_in stubs
+    // when enabled. Peer manager owns `conn_rx`.
     spawn_edge_workers(
         channels,
         metrics.clone(),
         &cfg,
+        clock.clone(),
         chain_stream_handle.clone(),
+        penalty_tx,
         shutdown_rx.clone(),
     );
 
@@ -345,6 +353,7 @@ pub async fn serve(
             peer_metrics,
             dial_rx,
             peer_view_tx_pm,
+            penalty_rx,
         )));
         let peer_factory = factory_from_future("peer_manager", move || {
             let taken = peer_cell
@@ -353,12 +362,22 @@ pub async fn serve(
                 .take();
             let mut shutdown = peer_shutdown.clone();
             async move {
-                if let Some((conn_rx, cmd_tx, config, metrics, dial_rx, peer_view_tx)) = taken {
+                if let Some((
+                    conn_rx,
+                    cmd_tx,
+                    config,
+                    metrics,
+                    dial_rx,
+                    peer_view_tx,
+                    penalty_rx,
+                )) = taken
+                {
                     let manager = PeerManager::new(config, cmd_tx, metrics);
                     run_peer_manager(
                         manager,
                         conn_rx,
                         Some(dial_rx),
+                        Some(penalty_rx),
                         Some(peer_view_tx),
                         shutdown,
                     )
@@ -530,12 +549,15 @@ fn map_supervisor_join(
     }
 }
 
-/// Spawn edge consumers: stubs for unclaimed edges, chain-stream client when enabled.
+/// Spawn edge consumers: gossip validation pool, stubs for unclaimed edges,
+/// chain-stream client when enabled.
 fn spawn_edge_workers(
     channels: ChannelMap,
     metrics: P2pMetrics,
     cfg: &RuntimeConfig,
+    clock: SlotClock,
     handle: ChainStreamHandle,
+    penalty_tx: mpsc::Sender<crate::channels::PeerPenaltyCmd>,
     shutdown: watch::Receiver<bool>,
 ) {
     let ChannelMap {
@@ -552,15 +574,29 @@ fn spawn_edge_workers(
         reqresp_in_tx: _,
         conn_tx: _,
         kzg_tx: _,
-        chain_out_tx: _,
+        chain_out_tx,
         chain_in_tx,
         cmd_rx: _,
     } = channels;
 
-    let m = metrics.clone();
+    // CC-22d validation pool (replaces gossip stub).
+    let chain_cfg = load_chain_config_for_validation(cfg);
+    let view_store = handle.view.clone();
+    let view_fn: std::sync::Arc<dyn Fn() -> cc_proto::p2p::ChainView + Send + Sync> =
+        std::sync::Arc::new(move || (*view_store.load()).clone());
+    let pool = crate::gossip::validate::ValidationPool::new(
+        std::sync::Arc::new(chain_cfg),
+        clock,
+        view_fn,
+        chain_out_tx.clone(),
+        cmd_tx.clone(),
+        penalty_tx.clone(),
+        metrics.clone(),
+    );
+    let pool_state = Arc::clone(&pool.state);
     cc_bootstrap::spawn(
-        "stub-gossip",
-        stub_consumer("gossip", gossip_rx, m, Some(QueueName::Gossip)),
+        "gossip-validate",
+        crate::gossip::validate::run_validation_pool(pool, gossip_rx),
     );
     let m = metrics.clone();
     cc_bootstrap::spawn(
@@ -612,12 +648,12 @@ fn spawn_edge_workers(
             run_publish_dispatch(proto_pub_rx, pub_tx, pub_metrics, drops).await;
         });
 
-        // chain_in consumers (verdict dispatch) — stub until gossip validation
-        // holds messages; still drain so the client does not block.
+        // Late chain verdicts (import_invalid after ACCEPT) — no re-report.
         let m = metrics.clone();
+        let pen = penalty_tx;
         cc_bootstrap::spawn(
-            "stub-chain-in",
-            stub_consumer("chain_in", chain_in_rx, m, None),
+            "chain-in-late-verdicts",
+            crate::gossip::validate::run_chain_in_late_verdicts(pool_state, chain_in_rx, pen, m),
         );
 
         let stream_cfg = ChainStreamConfig {
@@ -647,10 +683,12 @@ fn spawn_edge_workers(
             "stub-chain-out",
             stub_consumer("chain_out", chain_out_rx, m, None),
         );
+        // Still run late-verdict consumer so chain_in is never blocked if wired.
         let m = metrics.clone();
+        let pen = penalty_tx;
         cc_bootstrap::spawn(
-            "stub-chain-in",
-            stub_consumer("chain_in", chain_in_rx, m, None),
+            "chain-in-late-verdicts",
+            crate::gossip::validate::run_chain_in_late_verdicts(pool_state, chain_in_rx, pen, m),
         );
         drop(chain_in_tx);
         drop(publish_tx);
@@ -868,4 +906,25 @@ pub fn fill_cmd_queue_for_test(
     }
     metrics.set_queue_depth(QueueName::Cmd, n as i64);
     n
+}
+
+/// Chain config for gossip validators (`get_blob_parameters`, fork versions).
+fn load_chain_config_for_validation(cfg: &RuntimeConfig) -> ChainConfig {
+    if let Some(path) = &cfg.network_config_path
+        && let Ok(c) = ChainConfig::from_yaml_file(path)
+    {
+        return c;
+    }
+    const EMBEDDED_HOODI: &str =
+        include_str!("../../../crates/types/tests/fixtures/hoodi-config.yaml");
+    match ChainConfig::from_yaml_str(EMBEDDED_HOODI) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = %e, "embedded hoodi-config.yaml rejected");
+            // Unreachable for a well-formed tree; keep process alive with a
+            // default-empty schedule only as last resort (validators will be
+            // strict on blob bounds).
+            unreachable!("embedded hoodi-config.yaml must parse as ChainConfig");
+        }
+    }
 }

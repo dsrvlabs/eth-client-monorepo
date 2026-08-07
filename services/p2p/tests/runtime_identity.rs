@@ -217,10 +217,18 @@ fn channel_map_bounds_and_queue_depth_gauge() {
     let m = metrics();
     let channels = ChannelMap::new(&m);
 
-    let mut n = 0;
+    let mut n: usize = 0;
     while channels
         .gossip_tx
-        .try_send(cc_p2p::channels::GossipWork { bytes: vec![n as u8] })
+        .try_send(cc_p2p::channels::GossipWork {
+            data: vec![(n % 256) as u8],
+            topic: "beacon_block".into(),
+            message_id: cc_libp2p::reexport::MessageId::new(&(n as u64).to_le_bytes()),
+            peer_id: {
+                let kp = cc_libp2p::reexport::Keypair::generate_ed25519();
+                cc_libp2p::PeerId::from_public_key(&kp.public())
+            },
+        })
         .is_ok()
     {
         n += 1;

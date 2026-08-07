@@ -822,11 +822,13 @@ impl PeerManager {
 /// Run the peer-manager task until `conn_rx` closes or shutdown.
 ///
 /// `discovery_rx` is the discovery → dial path (CC-21c); when `None`, only
-/// static peers are dialed.
+/// static peers are dialed. `penalty_rx` applies app-score penalties from the
+/// gossip validation path (CC-22d).
 pub async fn run_peer_manager(
     mut manager: PeerManager,
     mut conn_rx: mpsc::Receiver<ConnEvent>,
     mut discovery_rx: Option<mpsc::Receiver<crate::discovery::DiscoveredPeer>>,
+    mut penalty_rx: Option<mpsc::Receiver<crate::channels::PeerPenaltyCmd>>,
     peer_view_tx: Option<tokio::sync::watch::Sender<crate::discovery::DiscoveryPeerView>>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
@@ -891,6 +893,24 @@ pub async fn run_peer_manager(
                     None => {
                         // Discovery task exited; keep PM alive on conn/tick only.
                         discovery_rx = None;
+                    }
+                }
+            }
+            penalty = async {
+                match penalty_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match penalty {
+                    Some(cmd) => {
+                        manager
+                            .apply_peer_penalty(cmd.peer_id, cmd.reason, Instant::now())
+                            .await;
+                        publish_peer_view(&manager, &peer_view_tx);
+                    }
+                    None => {
+                        penalty_rx = None;
                     }
                 }
             }

@@ -10,6 +10,7 @@
 //! - **CC-22a**: Topic registry, Fulu topic strings, Steady→Overlap→Drain skeleton
 //! - **CC-22b**: Message-id preimage + fixture, per-container SSZ max table, pre-decode check
 //! - **CC-22c**: GossipSub `ScoringConfig`, two score spaces, IDONTWANT, penalty table
+//! - **CC-22d**: block/column validators, seen/pending, one Verdict, single report site
 //! - **CC-27b**: chain-stream client, outstanding map, stall-then-shed, ChainView store
 //! - **CC-29a**: Phase 2 metric family declarations (binary registers them)
 
@@ -28,3 +29,8 @@ pub mod metrics;
 pub mod peer_manager;
 pub mod service;
 pub mod supervisor;
+pub mod verdict;
+
+pub use verdict::{
+    gossip_class_for_reason, is_late_import_reject, to_message_acceptance, Verdict,
+};

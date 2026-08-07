@@ -1,4 +1,12 @@
-//! Per-container SSZ maximum table and pre-decode size check — §5.2 / CC-22b.
+//! Per-container SSZ maximum table, pre-decode size check, and topic validators.
+//!
+//! | Module | Issue | Role |
+//! |--------|-------|------|
+//! | (this file) | CC-22b | SSZ max table + [`check_payload_len`] |
+//! | `crate::verdict` | CC-22d | one `Verdict` + `to_message_acceptance` |
+//! | [`block`] | CC-22d | chain-authoritative `beacon_block` local stage |
+//! | [`column`] | CC-22d | p2p-authoritative `data_column_sidecar` §5.5 list |
+//! | [`pipeline`] | CC-22d | validation pool, stubs, topic dispatch |
 //!
 //! Four-layer bound stack (Architecture §5.2):
 //!
@@ -9,14 +17,28 @@
 //! | **per-topic pre-decode check** | this module's table | **CC-22b** |
 //! | SSZ decode | `ssz_types` capacities | Phase 1 `CC-10` |
 //!
-//! Every later topic validator (CC-22d / CC-2B / CC-2C / CC-2D) calls
-//! [`check_payload_len`] **before** SSZ decode. The table is the only place
-//! `ssz_max` / `max_container_bytes` is defined — validators consult it rather
-//! than re-implementing bounds.
-//!
-//! Bounds are derived from the active [`Preset`]'s capacity constants (never
-//! inlined topic ceilings). Large containers whose theoretical SSZ maximum
-//! exceeds the global gossip ceiling are capped at [`GOSSIP_MAX_SIZE`].
+//! Every topic validator calls [`check_payload_len`] **before** SSZ decode.
+
+pub mod block;
+pub mod column;
+pub mod kzg_verify;
+pub mod pipeline;
+
+pub use block::{
+    note_accepted_block, validate_beacon_block_local, BlockForward, BlockOutcome,
+    BlockValidateInput,
+};
+pub use column::{
+    production_kzg_verify, validate_data_column_sidecar, verify_inclusion_proof, AlwaysValidKzg,
+    CellKzgVerifier, ColumnOutcome, ColumnStep, ColumnValidateInput, ColumnValidatorState,
+    FailClosedKzg, InclusionProofCache, InclusionProofKey, KzgVerify, NoopSamplingFeed,
+    SamplingFeed, StepCounters, BLOB_KZG_COMMITMENTS_FIELD_INDEX, INCLUSION_PROOF_CACHE_BOUND,
+};
+pub use pipeline::{
+    all_topics_have_validators, apply_late_chain_verdict, parse_topic_name, run_chain_in_late_verdicts,
+    run_validation_pool, validator_kind, ReportedEntry, ValidationPool, ValidationPoolState,
+    ValidatorKind, IN_FLIGHT_VALIDATION_CAP, REPORTED_ACCEPT_BOUND,
+};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

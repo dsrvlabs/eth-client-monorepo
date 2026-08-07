@@ -224,15 +224,19 @@ impl DaOutcome {
 
 /// `source` label values for `cc_p2p_columns_received_total`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum ColumnSource {
+pub enum ColumnSource {
+    /// Gossip pipeline.
     Gossip,
+    /// By-root recovery.
     ByRoot,
+    /// By-range backfill.
     ByRange,
 }
 
 impl ColumnSource {
     /// Prometheus label value.
-    pub(crate) const fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Gossip => "gossip",
             Self::ByRoot => "byroot",
@@ -241,7 +245,7 @@ impl ColumnSource {
     }
 
     /// All three variants (seed + tests).
-    pub(crate) const ALL: [Self; 3] = [Self::Gossip, Self::ByRoot, Self::ByRange];
+    pub const ALL: [Self; 3] = [Self::Gossip, Self::ByRoot, Self::ByRange];
 }
 
 /// `q` label values for `cc_p2p_queue_depth` (§2.2 / CC-22/5).
@@ -669,6 +673,16 @@ impl P2pMetrics {
             .set(depth);
     }
 
+    /// Set `cc_p2p_cache_occupancy_bytes` (reused for seen-set entry count).
+    pub fn set_cache_occupancy_bytes(&self, n: i64) {
+        self.cache_occupancy_bytes.set(n);
+    }
+
+    /// Set `cc_p2p_cache_bound_bytes` (reused for seen-set bound sum).
+    pub fn set_cache_bound_bytes(&self, n: i64) {
+        self.cache_bound_bytes.set(n);
+    }
+
     /// Read `cc_p2p_queue_depth{q}`.
     #[must_use]
     pub fn queue_depth(&self, q: QueueName) -> i64 {
@@ -814,6 +828,59 @@ impl P2pMetrics {
     /// Observe an application score sample (`cc_p2p_app_score`).
     pub fn observe_app_score(&self, score: f64) {
         self.app_score.observe(score);
+    }
+
+    // ── gossip / DA producers (CC-22d) ──────────────────────────────────────
+
+    /// Increment `cc_p2p_gossip_messages_total{topic,verdict}`.
+    pub fn inc_gossip_messages(&self, topic: &str, verdict: &str) {
+        self.gossip_messages
+            .get_or_create(&GossipMessageLabels {
+                topic: topic.to_owned(),
+                verdict: verdict.to_owned(),
+            })
+            .inc();
+    }
+
+    /// Read `cc_p2p_gossip_messages_total{topic,verdict}`.
+    #[must_use]
+    pub fn gossip_messages(&self, topic: &str, verdict: &str) -> u64 {
+        self.gossip_messages
+            .get_or_create(&GossipMessageLabels {
+                topic: topic.to_owned(),
+                verdict: verdict.to_owned(),
+            })
+            .get()
+    }
+
+    /// Increment `cc_p2p_columns_received_total{source}`.
+    pub fn inc_columns_received(&self, source: ColumnSource) {
+        self.columns_received
+            .get_or_create(&ColumnSourceLabels {
+                source: source.as_str().to_owned(),
+            })
+            .inc();
+    }
+
+    /// Read `cc_p2p_columns_received_total{source}`.
+    #[must_use]
+    pub fn columns_received(&self, source: ColumnSource) -> u64 {
+        self.columns_received
+            .get_or_create(&ColumnSourceLabels {
+                source: source.as_str().to_owned(),
+            })
+            .get()
+    }
+
+    /// Increment `cc_p2p_inclusion_proof_verifications_total`.
+    pub fn inc_inclusion_proof_verifications(&self) {
+        self.inclusion_proof_verifications.inc();
+    }
+
+    /// Read `cc_p2p_inclusion_proof_verifications_total`.
+    #[must_use]
+    pub fn inclusion_proof_verifications(&self) -> u64 {
+        self.inclusion_proof_verifications.get()
     }
 
     /// Set `cc_p2p_peers_below_threshold{threshold}` (R-3 early warning).

@@ -79,6 +79,15 @@ and D-8 promotion verdict remain operator runs.
 date in-file). Self-devnet reads `devnet/out/bootnodes.txt` via
 `boot_nodes_file`.
 
+## Booking (c) — DA-blind head follow (M2.2 exit criterion 9)
+
+**Owner:** CC-22d  
+**Status:** `_NOT_RUN_` — code path landed (block + column validators, single
+report site, seen/pending, inclusion-proof cache). Operator discharge: self-devnet
+with CC-2Jd publisher replaying the fixture, `AlwaysAvailable` still in place,
+`bin/driver` still present; assert head follows over gossip alone via
+`CC_DEVNET_SMOKE_HEAD_FOLLOW=1 devnet/smoke.sh`.
+
 ## Run record
 
 **Owner:** CC-29b (skeleton) / CC-29c (numbers)  

@@ -21,7 +21,9 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use cc_libp2p::reexport::futures::StreamExt;
-use cc_libp2p::reexport::{DialOpts, IdentTopic, MessageAcceptance, Multiaddr, Swarm, SwarmEvent};
+use cc_libp2p::reexport::{
+    DialOpts, IdentTopic, MessageAcceptance, MessageId, Multiaddr, PeerId, Swarm, SwarmEvent,
+};
 use cc_libp2p::{CcBehaviour, CcBehaviourEvent};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -31,7 +33,11 @@ use crate::channels::{
     ChainOutbound, ConnEvent, ConnectionDirection, GossipWork, PublishRequest, ReqRespInbound,
     SwarmCommand,
 };
+use crate::gossip::validate::{check_payload_len, parse_topic_name};
 use crate::metrics::{P2pMetrics, QueueName};
+use crate::verdict::{to_message_acceptance, Verdict};
+use cc_proto::p2p::Reason;
+use cc_types::preset::Mainnet;
 
 /// Inputs owned exclusively by the swarm task after spawn.
 #[allow(missing_debug_implementations)] // `Swarm` is not Debug
@@ -350,6 +356,34 @@ async fn route_swarm_event(
     }
 }
 
+/// **Single** gossipsub validation-report call site (CC-22/4, §5.3).
+///
+/// Grep target: this is the only line in `services/p2p/src/` that invokes the
+/// gossipsub report method. Every path — validation pool, shed, queue-full,
+/// publisher fault_mode — goes through this helper.
+pub fn report_gossipsub_validation(
+    swarm: &mut Swarm<CcBehaviour>,
+    message_id: &MessageId,
+    peer_id: &PeerId,
+    acceptance: MessageAcceptance,
+) {
+    let _ = swarm
+        .behaviour_mut()
+        .gossipsub
+        .report_message_validation_result(message_id, peer_id, acceptance);
+}
+
+/// Convert a [`Verdict`] and report (swarm-task convenience).
+fn report_validation_result(
+    task: &mut SwarmTask,
+    message_id: &MessageId,
+    peer_id: &PeerId,
+    verdict: &Verdict,
+) {
+    let acceptance = to_message_acceptance(verdict);
+    report_gossipsub_validation(&mut task.swarm, message_id, peer_id, acceptance);
+}
+
 async fn route_behaviour(task: &mut SwarmTask, bev: CcBehaviourEvent, shed: bool) {
     match bev {
         CcBehaviourEvent::Gossipsub(ev) => {
@@ -365,17 +399,45 @@ async fn route_behaviour(task: &mut SwarmTask, bev: CcBehaviourEvent, shed: bool
                     // nothing wrong — must not be descored. Shed never touches
                     // the chain stream, so CC-27/4 equality is preserved.
                     task.metrics.inc_gossip_shed(&topic);
-                    let _ = task.swarm.behaviour_mut().gossipsub.report_message_validation_result(
+                    report_validation_result(
+                        task,
                         &message_id,
                         &propagation_source,
-                        MessageAcceptance::Ignore,
+                        &Verdict::internal(vec![]),
                     );
                     debug!(%topic, "shed gossip message (IGNORE; not sent down stream)");
                     return;
                 }
-                // Real validation pool is CC-22*; route a stub work item so the edge exists.
+                // H2: per-topic SSZ max **before** enqueue so the gossip mpsc
+                // never holds over-bound payloads (still capped by GOSSIP_MAX_SIZE).
+                match parse_topic_name(&topic) {
+                    None => {
+                        report_validation_result(
+                            task,
+                            &message_id,
+                            &propagation_source,
+                            &Verdict::ignore(Reason::Invalid, vec![]),
+                        );
+                        return;
+                    }
+                    Some(name) => {
+                        if check_payload_len::<Mainnet>(name, message.data.len()).is_err() {
+                            report_validation_result(
+                                task,
+                                &message_id,
+                                &propagation_source,
+                                &Verdict::reject(Reason::Invalid, vec![]),
+                            );
+                            task.metrics.inc_gossip_messages(&topic, "reject");
+                            return;
+                        }
+                    }
+                }
                 let work = GossipWork {
-                    bytes: message.data,
+                    data: message.data,
+                    topic: topic.clone(),
+                    message_id: message_id.clone(),
+                    peer_id: propagation_source,
                 };
                 match task.gossip_tx.try_send(work) {
                     Ok(()) => {
@@ -389,19 +451,21 @@ async fn route_behaviour(task: &mut SwarmTask, bev: CcBehaviourEvent, shed: bool
                         // H2: same shed semantics as stall — release gossipsub
                         // with IGNORE so the message is not held pending forever.
                         task.metrics.inc_gossip_shed(&topic);
-                        let _ = task.swarm.behaviour_mut().gossipsub.report_message_validation_result(
+                        report_validation_result(
+                            task,
                             &message_id,
                             &propagation_source,
-                            MessageAcceptance::Ignore,
+                            &Verdict::internal(vec![]),
                         );
                         warn!(%topic, "gossip validation queue full; shed IGNORE");
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
                         // Channel gone: still release the hold.
-                        let _ = task.swarm.behaviour_mut().gossipsub.report_message_validation_result(
+                        report_validation_result(
+                            task,
                             &message_id,
                             &propagation_source,
-                            MessageAcceptance::Ignore,
+                            &Verdict::internal(vec![]),
                         );
                         warn!("gossip validation queue closed; reported IGNORE");
                     }
@@ -436,6 +500,18 @@ async fn handle_command(task: &mut SwarmTask, cmd: SwarmCommand) {
 
     match cmd {
         SwarmCommand::Noop => {}
+        SwarmCommand::ReportValidation {
+            message_id,
+            peer_id,
+            verdict,
+        } => {
+            report_validation_result(task, &message_id, &peer_id, &verdict);
+            if matches!(verdict.acceptance, cc_proto::p2p::Acceptance::Reject) {
+                // Count gossip REJECT for the penalty reason label (CC-29/3).
+                task.metrics
+                    .inc_peer_penalty(crate::metrics::PeerPenaltyReason::GossipInvalid);
+            }
+        }
         SwarmCommand::Publish(PublishRequest { topic, data }) => {
             let ident = IdentTopic::new(topic.clone());
             match task.swarm.behaviour_mut().gossipsub.publish(ident, data) {

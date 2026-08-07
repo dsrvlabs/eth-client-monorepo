@@ -5,11 +5,13 @@
 //! chain-stream edges report depth via `outstanding` and
 //! `cc_p2p_chain_stream_saturation_ratio` (CC-27b).
 
+use cc_libp2p::reexport::MessageId;
 use cc_libp2p::{Multiaddr, PeerId};
 use cc_proto::p2p::{GossipObject, Verdict};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::metrics::{P2pMetrics, QueueName};
+use crate::metrics::{P2pMetrics, PeerPenaltyReason, QueueName};
+use crate::verdict::Verdict as GossipVerdict;
 
 /// Resolution of a chain-bound object (verdict or local timeout IGNORE).
 #[derive(Debug, Clone)]
@@ -38,12 +40,32 @@ pub const CHAIN_IN_BOUND: usize = 1024;
 pub const PUBLISH_BOUND: usize = 256;
 /// peer manager → swarm (`cmd_tx`).
 pub const CMD_BOUND: usize = 512;
+/// validation / host → peer manager penalties.
+pub const PENALTY_BOUND: usize = 256;
 
-/// Placeholder gossip-validation work item (claimed by CC-22*).
+/// Application-score penalty command (CC-22d → peer manager).
+#[derive(Debug, Clone)]
+pub struct PeerPenaltyCmd {
+    /// Target peer.
+    pub peer_id: PeerId,
+    /// Penalty reason (CC-29/3).
+    pub reason: PeerPenaltyReason,
+}
+
+/// Gossip-validation work item (CC-22d pipeline).
+///
+/// Cap = [`GOSSIP_BOUND`] (1024) — in-flight validations and gossipsub held
+/// messages are bounded by construction.
 #[derive(Debug, Clone)]
 pub struct GossipWork {
-    /// Opaque payload placeholder.
-    pub bytes: Vec<u8>,
+    /// Decompressed (or raw) gossip payload bytes.
+    pub data: Vec<u8>,
+    /// Full topic string.
+    pub topic: String,
+    /// Gossipsub message id (for the single report call site).
+    pub message_id: MessageId,
+    /// Propagation source.
+    pub peer_id: PeerId,
 }
 
 /// Placeholder inbound req/resp request (claimed by CC-23*).
@@ -169,6 +191,16 @@ pub struct PublishRequest {
 pub enum SwarmCommand {
     /// No-op (used by tests / keep-alive).
     Noop,
+    /// Report a gossip validation verdict (CC-22d). Handled by the swarm task's
+    /// single gossip-validation report helper (shed paths use the same helper).
+    ReportValidation {
+        /// Message id held by gossipsub.
+        message_id: MessageId,
+        /// Propagation source.
+        peer_id: PeerId,
+        /// Validator outcome.
+        verdict: GossipVerdict,
+    },
     /// Local publish (routed from the publish queue).
     Publish(PublishRequest),
     /// Subscribe to a gossip topic string (topic registry lands later).

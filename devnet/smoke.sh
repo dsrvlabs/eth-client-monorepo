@@ -10,7 +10,8 @@
 #   4. node-a gossip non-zero on beacon_block and on distinct column subnets.
 #   5. Publisher published counters non-zero for block + columns.
 #
-# Head-following is booking (c) / CC-22d — not asserted here.
+# Head-following (booking (c) / CC-22d): when CC_DEVNET_SMOKE_HEAD_FOLLOW=1,
+# also assert node-a reports non-zero head progress via chain-stream metrics.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -183,4 +184,29 @@ if (( p_col_topics < MIN_COLUMN_TOPICS )); then
 fi
 echo "  publisher distinct column topics=${p_col_topics}"
 
-echo "smoke: PASS (M2.1 wire strength)"
+# CC-22d booking (c): head follows over gossip alone (DA-blind).
+# Enabled when chain stream is wired on node-a and publisher is replaying.
+if [[ "${CC_DEVNET_SMOKE_HEAD_FOLLOW:-0}" == "1" ]]; then
+  echo "==> node-a head-following (CC-22d booking c)"
+  # Prefer chain objects sent + verdicts received equality path; require at
+  # least SLOT_N chain objects and non-zero accept-class gossip on beacon_block.
+  body_a="$(scrape "${NODE_A_METRICS}")"
+  sent="$(metric_sum "${body_a}" '^cc_p2p_chain_objects_sent_total ')"
+  sent_int="$(python3 -c "print(int(float('${sent}' or 0)))")"
+  verdicts="$(metric_sum "${body_a}" '^cc_p2p_chain_verdicts_received_total ')"
+  verdicts_int="$(python3 -c "print(int(float('${verdicts}' or 0)))")"
+  bb_accept="$(metric_sum "${body_a}" 'cc_p2p_gossip_messages_total\{topic="beacon_block".*verdict="accept"')"
+  bb_accept_int="$(python3 -c "print(int(float('${bb_accept}' or 0)))")"
+  if (( sent_int < SLOT_N )); then
+    echo "error: node-a chain_objects_sent=${sent_int} (want >= ${SLOT_N})" >&2
+    exit 1
+  fi
+  if (( verdicts_int < 1 && bb_accept_int < 1 )); then
+    echo "error: node-a no chain verdicts (${verdicts_int}) and no beacon_block accept (${bb_accept_int})" >&2
+    exit 1
+  fi
+  echo "  chain_objects_sent=${sent_int} verdicts=${verdicts_int} beacon_block accept=${bb_accept_int}"
+  echo "smoke: PASS (M2.2 head-follow strength)"
+else
+  echo "smoke: PASS (M2.1 wire strength; set CC_DEVNET_SMOKE_HEAD_FOLLOW=1 for booking c)"
+fi

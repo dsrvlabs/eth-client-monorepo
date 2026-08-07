@@ -23,7 +23,7 @@ anyhow = { workspace = true }
 arc-swap = { workspace = true }
 cc-bootstrap = { workspace = true }
 cc-config = { workspace = true }
-cc-crypto = { workspace = true }
+cc-crypto = { workspace = true, features = ["signing"] }
 cc-libp2p = { workspace = true }
 cc-proto = { workspace = true }
 cc-types = { workspace = true }
@@ -45,6 +45,11 @@ clap = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
+# CC-22d: validators, seen/pending, inclusion-proof LRU
+lru = { workspace = true }
+ethereum_ssz = { workspace = true }
+ssz_types = { workspace = true }
+tree_hash = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
