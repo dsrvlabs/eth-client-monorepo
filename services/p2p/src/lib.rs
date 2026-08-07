@@ -14,6 +14,7 @@
 //! - **CC-22e**: hostile-input harness (tests/hostile_input.rs) — panic-is-failure + counting alloc
 //! - **CC-24a**: custody + sampling sets (`das::custody`), eight column subscriptions, custody-compatible metric
 //! - **CC-23a**: req/resp shared half — SszSnappy framing, nine protocols, rate limits, scheduler
+//! - **CC-24b**: KZG verify pool (`das::verify_pool`) — dedicated OS threads, §8.2 three steps, ADR P2-08 batching
 //! - **CC-27b**: chain-stream client, outstanding map, stall-then-shed, ChainView store
 //! - **CC-29a**: Phase 2 metric family declarations (binary registers them)
 

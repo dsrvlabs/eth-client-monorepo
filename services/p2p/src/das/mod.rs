@@ -3,14 +3,20 @@
 //! | Module | Issue | Role |
 //! |--------|-------|------|
 //! | [`custody`] | CC-24a | sampled + custodied sets, column-subnet subscription, custody-compatible peers |
+//! | [`verify_pool`] | CC-24b | dedicated OS-thread KZG pool, §8.2 three steps, ADR P2-08 batching |
 //!
-//! Verification pool (**CC-24b**), sampling tracker (**CC-24c**), and DA seam
-//! substitution (**CC-24d**) land in sibling modules later. No req/resp code
-//! lives here.
+//! Sampling tracker (**CC-24c**) and DA seam substitution (**CC-24d**) land in
+//! sibling modules later. No req/resp code lives here.
 
 pub mod custody;
+pub mod verify_pool;
 
 pub use custody::{
     count_custody_compatible_peers, is_peer_custody_compatible, column_subnets_for_groups,
     CustodiedGroups, CustodyManager, SampledGroups,
+};
+pub use verify_pool::{
+    pool_worker_count, run_verify_pool_bridge, verify_sidecar_three_steps, BatchMode,
+    VerifyFailReason, VerifyJob, VerifyOutcome, VerifyPool, VerifyStep, VerifyStepCounters,
+    CROSS_SIDECAR_BATCH_MIN, SAMPLING_P95_BUDGET_SECS, VERIFY_QUEUE_BOUND,
 };

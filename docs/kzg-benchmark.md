@@ -122,3 +122,61 @@ After regenerating this document, ensure:
 3. `tests/kzg.rs::default_backend_kind_matches_chosen_default` passes
 
 `scripts/bench-kzg.sh` prints the candidate; applying feature/`Default` changes is a deliberate source edit so the document and the code cannot silently drift without a reviewable diff.
+
+---
+
+## Phase 2 OQ-4 re-run (CC-24b)
+
+**Appended** (do not rewrite the Phase 1 section above). Closes OQ-4's Phase 2 half:
+re-measure at the **real** sampling batch shape under production defaults and
+confirm or switch `KzgBackendKind::default()`.
+
+### Machine spec (CC-24b)
+
+| Field | Value |
+|---|---|
+| Captured (UTC) | 2026-08-07T07:08:31Z |
+| OS | Darwin (arm64) |
+| CPU | Apple M4 Pro |
+| Logical cores | 14 |
+| Memory | 24.0 GiB |
+| rustc | rustc 1.97.1 (8bab26f4f 2026-07-14) |
+| Sample size | 10 (`KZG_BENCH_SAMPLES`) |
+| Measurement time | 1s (`KZG_BENCH_MEASURE_SECS`) |
+| Features | `kzg-c-kzg,kzg-rust-eth-kzg` |
+| Backend pins | `c-kzg` **2.1.8**, `rust_eth_kzg` **0.10.0** |
+| Precompute "on" | c-kzg `precompute=8`; rust_eth_kzg `UsePrecomp::Yes { width: 8 }` |
+| Phase 2 batch | **8 columns × 21 blobs** (Hoodi BPO max) = **168** cells |
+
+### Results: `verify_cell_kzg_proof_batch` (criterion mean)
+
+| Backend | Precompute | Phase 1 (1×1) | Phase 2 (8×21) |
+|---|---|---|---|
+| c-kzg 2.1.8 | off (`precompute=0`) | 444.13 µs | **2.322 ms** |
+| c-kzg 2.1.8 | on (`precompute=8`) | 436.72 µs | 2.280 ms |
+| rust_eth_kzg 0.10.0 | off (`UsePrecomp::No`) | 375.02 µs | 6.895 ms |
+| rust_eth_kzg 0.10.0 | on (`UsePrecomp::Yes { width: 8 }`) | 375.41 µs | 6.902 ms |
+
+### Verdict
+
+**Default confirmed:** `c-kzg` with `DEFAULT_PRECOMPUTE = 0` remains the production
+default. Phase 2 (8×21) verify is ~2.3 ms — still ~3× faster than best
+`rust_eth_kzg` (~6.9 ms) and well inside the CC-24/6 p95 sampling budget of
+200 ms (`cc_p2p_sampling_seconds` `le=0.2`).
+
+Precompute=8 is within ~2 % of precompute=0 on Phase 2 verify but costs
+~96 MiB RSS and regresses compute/recover (Phase 1 table above); leave
+`DEFAULT_PRECOMPUTE = 0`.
+
+| Field | Value |
+|---|---|
+| **Backend** | `c-kzg` |
+| **Config enum** | `KzgBackendKind::CKzg` (`Default`) |
+| **Crate default feature** | `kzg-c-kzg` |
+| **Precompute defaults** | `DEFAULT_PRECOMPUTE = 0`; rust_eth_kzg `DEFAULT_USE_PRECOMP = No` |
+| **Winner cell (Phase 2 verify)** | c-kzg (precompute=0) @ 2.322 ms |
+| **Decision** | **default confirmed** (no code change) |
+
+Pool consumer: `services/p2p/src/das/verify_pool.rs` (CC-24b) loads
+`CKzgBackend::load_default()` on the dedicated OS-thread pool
+(`K = max(2, available_parallelism/2)`, bound 256).

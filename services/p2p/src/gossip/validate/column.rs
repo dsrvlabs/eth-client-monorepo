@@ -9,7 +9,7 @@
 
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use cc_crypto::{
     compute_domain, compute_signing_root, hash32_concat, verify, PublicKey, Signature,
@@ -151,7 +151,13 @@ impl StepCounters {
     }
 }
 
-/// Cache key for inclusion-proof verification (CC-22/7).
+/// Cache key for inclusion-proof verification (CC-22/7 / CC-24b H1).
+///
+/// **Must** include every input that the verified statement depends on.
+/// Omitting `body_root` allowed a cache hit to skip re-checking a different
+/// body root (invalid accept). Keyed statement:
+/// "`commitments` are included in `body_root` via `inclusion_proof`" under
+/// block correlation `block_root`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InclusionProofKey {
     /// `hash_tree_root(kzg_commitments)`.
@@ -160,6 +166,8 @@ pub struct InclusionProofKey {
     pub inclusion_proof_root: [u8; 32],
     /// Block root from the signed header message.
     pub block_root: [u8; 32],
+    /// `signed_block_header.message.body_root` — the Merkle root proven against.
+    pub body_root: [u8; 32],
 }
 
 /// Inclusion-proof LRU (512 entries) + verification counter.
@@ -260,20 +268,27 @@ pub struct ColumnValidatorState {
     pub seen: SeenSets,
     /// Pending queues.
     pub pending: PendingQueues,
-    /// Inclusion-proof cache.
-    pub inclusion_cache: InclusionProofCache,
+    /// Inclusion-proof cache (CC-22d). Shared with the KZG verify pool (CC-24b)
+    /// via [`Arc`] so there is exactly one LRU — never a second cache.
+    pub inclusion_cache: Arc<Mutex<InclusionProofCache>>,
     /// Step counters (tests / diagnostics).
     pub steps: Arc<StepCounters>,
 }
 
 impl ColumnValidatorState {
-    /// Fresh production state.
+    /// Fresh production state with a private inclusion cache.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_inclusion_cache(Arc::new(Mutex::new(InclusionProofCache::new())))
+    }
+
+    /// Construct with a shared inclusion-proof cache (CC-24b pool + gossip).
+    #[must_use]
+    pub fn with_inclusion_cache(inclusion_cache: Arc<Mutex<InclusionProofCache>>) -> Self {
         Self {
             seen: SeenSets::new(),
             pending: PendingQueues::new(),
-            inclusion_cache: InclusionProofCache::new(),
+            inclusion_cache,
             steps: Arc::new(StepCounters::new()),
         }
     }
@@ -447,7 +462,7 @@ pub fn validate_data_column_sidecar<P: Preset>(
         ProposerLookup::Known(_) => {}
     }
 
-    // 11. inclusion proof (cached)
+    // 11. inclusion proof (cached; short critical section — not held across KZG)
     steps.tick(ColumnStep::InclusionProof);
     let commitments_root = {
         let h = sidecar.kzg_commitments.tree_hash_root();
@@ -456,19 +471,26 @@ pub fn validate_data_column_sidecar<P: Preset>(
         a
     };
     let inclusion_proof_root = hash_inclusion_proof(&sidecar.kzg_commitments_inclusion_proof);
+    let body_root = *header.body_root.as_array();
     let key = InclusionProofKey {
         commitments_root,
         inclusion_proof_root,
         block_root,
+        body_root,
     };
-    let body_root = *header.body_root.as_array();
-    let proof_ok = state.inclusion_cache.get_or_verify(key, || {
-        verify_inclusion_proof(
-            &commitments_root,
-            sidecar.kzg_commitments_inclusion_proof.as_ref(),
-            body_root,
-        )
-    });
+    let proof_ok = {
+        let mut cache = match state.inclusion_cache.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        cache.get_or_verify(key, || {
+            verify_inclusion_proof(
+                &commitments_root,
+                sidecar.kzg_commitments_inclusion_proof.as_ref(),
+                body_root,
+            )
+        })
+    };
     if !proof_ok {
         return ColumnOutcome::Done(Verdict::reject(Reason::Invalid, corr));
     }
@@ -491,7 +513,11 @@ pub fn validate_data_column_sidecar<P: Preset>(
     if let Some(m) = metrics {
         m.inc_columns_received(ColumnSource::Gossip);
         // Align metric counter with cache miss total (idempotent absolute sync).
-        while m.inclusion_proof_verifications() < state.inclusion_cache.verifications {
+        let cache_verifs = match state.inclusion_cache.lock() {
+            Ok(g) => g.verifications,
+            Err(p) => p.into_inner().verifications,
+        };
+        while m.inclusion_proof_verifications() < cache_verifs {
             m.inc_inclusion_proof_verifications();
         }
     }
@@ -1116,6 +1142,7 @@ mod tests {
             commitments_root: [2u8; 32],
             inclusion_proof_root: [3u8; 32],
             block_root: [4u8; 32],
+            body_root: [5u8; 32],
         };
         let mut computes = 0u32;
         for _ in 0..8 {

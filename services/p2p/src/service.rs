@@ -593,6 +593,15 @@ fn spawn_edge_workers(
         penalty_tx.clone(),
         metrics.clone(),
     );
+    // CC-24b: share CC-22d's single inclusion-proof LRU with the KZG pool
+    // (do not create a second cache).
+    let shared_inclusion_cache = {
+        let guard = match pool.state.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        std::sync::Arc::clone(&guard.column.inclusion_cache)
+    };
     let pool_state = Arc::clone(&pool.state);
     cc_bootstrap::spawn(
         "gossip-validate",
@@ -608,11 +617,27 @@ fn spawn_edge_workers(
             Some(QueueName::ReqrespIn),
         ),
     );
+    // CC-24b: dedicated OS-thread KZG verify pool (ADR P2-02).
+    let kzg_backend: std::sync::Arc<dyn cc_crypto::CellKzg> =
+        match cc_crypto::CKzgBackend::load_default() {
+            Ok(b) => std::sync::Arc::new(b),
+            Err(e) => {
+                error!(error = %e, "KZG trusted setup unavailable; verify pool fail-closed");
+                std::sync::Arc::new(crate::das::verify_pool::FailClosedCellKzg)
+            }
+        };
+    let verify_pool = std::sync::Arc::new(crate::das::VerifyPool::start_with_cache(
+        kzg_backend,
+        Some(metrics.clone()),
+        shared_inclusion_cache,
+    ));
     let m = metrics.clone();
-    cc_bootstrap::spawn(
-        "stub-kzg",
-        stub_consumer("kzg", kzg_rx, m, Some(QueueName::Kzg)),
-    );
+    let pool_for_bridge = std::sync::Arc::clone(&verify_pool);
+    cc_bootstrap::spawn("kzg-verify-pool", async move {
+        crate::das::run_verify_pool_bridge(kzg_rx, pool_for_bridge, m).await;
+        // Hold the pool Arc until the bridge task ends so workers stay alive.
+        drop(verify_pool);
+    });
 
     // Publish queue → cmd bridge (always on).
     let m = metrics.clone();

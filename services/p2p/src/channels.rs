@@ -156,11 +156,59 @@ pub enum ConnEvent {
     },
 }
 
-/// Placeholder KZG verify job (claimed by CC-22d / DA path).
-#[derive(Debug, Clone)]
+/// KZG verify job — gossip validation → pool (CC-24b / Architecture §2.2).
+///
+/// Converted to [`crate::das::verify_pool::VerifyJob`] at the pool bridge.
+#[derive(Debug)]
 pub struct KzgJob {
-    /// Opaque payload placeholder.
-    pub bytes: Vec<u8>,
+    /// Beacon block root (groups opportunistic cross-sidecar batches).
+    pub block_root: [u8; 32],
+    /// Slot of the signed header.
+    pub slot: u64,
+    /// Column index (`sidecar.index`).
+    pub column_index: u64,
+    /// Peer that sourced this sidecar (penalty attribution). Opaque bytes.
+    pub peer_id: Vec<u8>,
+    /// KZG commitments (one per blob row).
+    pub commitments: Vec<cc_types::primitives::KzgCommitment>,
+    /// Cells for this column.
+    pub cells: Vec<cc_types::primitives::Cell>,
+    /// Cell proofs matching `cells`.
+    pub proofs: Vec<cc_types::primitives::KzgProof>,
+    /// Depth-4 inclusion proof siblings.
+    pub inclusion_proof: [cc_types::primitives::Root; 4],
+    /// `signed_block_header.message.body_root`.
+    pub body_root: [u8; 32],
+    /// Runtime `get_blob_parameters(epoch).max_blobs_per_block`.
+    pub max_blobs_per_block: u64,
+    /// Wall-clock when the job was enqueued / 8th column received.
+    pub received_at: std::time::Instant,
+    /// Current slot when the DA verdict is formed.
+    pub current_slot: u64,
+    /// Optional reply to the submitter.
+    pub reply: Option<tokio::sync::oneshot::Sender<crate::das::verify_pool::VerifyOutcome>>,
+}
+
+impl KzgJob {
+    /// Convert into a pool [`crate::das::verify_pool::VerifyJob`].
+    #[must_use]
+    pub fn into_verify_job(self) -> crate::das::verify_pool::VerifyJob {
+        crate::das::verify_pool::VerifyJob {
+            block_root: self.block_root,
+            slot: self.slot,
+            column_index: self.column_index,
+            peer_id: self.peer_id,
+            commitments: self.commitments,
+            cells: self.cells,
+            proofs: self.proofs,
+            inclusion_proof: self.inclusion_proof,
+            body_root: self.body_root,
+            max_blobs_per_block: self.max_blobs_per_block,
+            received_at: self.received_at,
+            current_slot: self.current_slot,
+            reply: self.reply,
+        }
+    }
 }
 
 /// Object destined for the chain stream (p2p → chain).

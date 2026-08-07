@@ -763,6 +763,19 @@ impl P2pMetrics {
         self.verdict_latency.observe(seconds);
     }
 
+    /// Observe `cc_p2p_sampling_seconds` (boundary at exactly 0.2 — CC-24b / CC-29a).
+    ///
+    /// Producer: time from "8th sampled column received" to verification complete.
+    pub fn observe_sampling(&self, seconds: f64) {
+        self.sampling.observe(seconds);
+    }
+
+    /// Observe `cc_p2p_da_verdict_slot_delta` — **separate** series from sampling
+    /// wall time (CC-24/6): slot delta between the block and the DA verdict.
+    pub fn observe_da_verdict_slot_delta(&self, slots: f64) {
+        self.da_verdict_slot_delta.observe(slots);
+    }
+
     /// Set `cc_p2p_chain_stream_saturation_ratio` as milli-units (0–1000 ⇒ 0.0–1.0).
     pub fn set_saturation_ratio_milli(&self, milli: i64) {
         self.chain_stream_saturation_ratio.set(milli);
