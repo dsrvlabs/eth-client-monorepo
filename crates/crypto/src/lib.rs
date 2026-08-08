@@ -16,9 +16,10 @@ pub mod hash;
 pub mod kzg;
 
 pub use bls::{
-    aggregate_public_keys, aggregate_signatures, aggregate_verify, eth_fast_aggregate_verify,
-    fast_aggregate_verify, verify, AggregatePublicKey, AggregateSignature, BlsError, PublicKey,
-    Signature, SignatureSet, BLS_SIGNATURE_DST, INFINITY_SIGNATURE,
+    aggregate_public_keys, aggregate_signatures, aggregate_verify, bls_verify_count,
+    eth_fast_aggregate_verify, fast_aggregate_verify, take_bls_verify_count, verify,
+    AggregatePublicKey, AggregateSignature, BlsError, PublicKey, Signature, SignatureSet,
+    BLS_SIGNATURE_DST, INFINITY_SIGNATURE,
 };
 
 #[cfg(any(test, feature = "signing"))]

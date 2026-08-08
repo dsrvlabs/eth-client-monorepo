@@ -59,5 +59,11 @@ safe_slots_to_import_optimistically = 128
 # Compose override: CC_CHAIN_ENGINE_URI=http://engine:9004
 engine_uri = "http://127.0.0.1:9004"
 
+# CC-45b / §3.5: seconds to wait in AwaitingRestore before falling back to
+# checkpoint sync (CC-19 demoted). Default 30. Collapsed immediately by
+# RestoreFromStore{ kind: EMPTY } so a first-ever start does not wait 30 s.
+# Override: CC_CHAIN_RESTORE_GRACE_SECONDS=5
+restore_grace_seconds = 30
+
 # No health peers — chain is the root of the acyclic health DAG.
 [peers]

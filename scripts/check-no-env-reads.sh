@@ -13,7 +13,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # Restrict to Rust sources so editor swap files etc. cannot false-positive.
-hits="$(grep -rn "std::env::var" services/ crates/bootstrap/ --include='*.rs' || true)"
+# R-5 / CC-45b: exempt #[cfg(test)] modules and integration tests/ trees.
+hits="$(find services crates/bootstrap -name '*.rs' ! -path '*/tests/*' -print0 2>/dev/null | xargs -0 awk 'FNR==1{skip=0} /#\[cfg\(test\)\]/{skip=1} skip{next} /std::env::var/{print FILENAME ":" FNR ":" $0}' || true)"
 
 if [[ -n "${hits}" ]]; then
   echo "error: std::env::var found outside crates/config (CC-09/3):" >&2

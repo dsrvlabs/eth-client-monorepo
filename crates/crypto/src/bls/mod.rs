@@ -8,6 +8,8 @@ mod batch;
 
 pub use batch::{OsRandom, RandomScalarSource, SignatureSet};
 
+use std::cell::Cell;
+
 use blst::min_pk::{
     AggregatePublicKey as BlstAggPk, AggregateSignature as BlstAggSig, PublicKey as BlstPk,
     Signature as BlstSig,
@@ -239,8 +241,33 @@ pub fn aggregate_signatures(sigs: &[&Signature]) -> Result<Signature, BlsError> 
     Ok(AggregateSignature::aggregate(sigs)?.to_signature())
 }
 
+// Thread-local BLS verification counter (CC-45b /5: restore asserts zero).
+// Incremented by every public verify path. Restore uses NoVerification so this
+// stays flat across a 32-epoch replay. Thread-local like root_measure.
+thread_local! {
+    static BLS_VERIFY_COUNT: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Reset and return this thread's BLS verification count (tests / restore).
+#[must_use]
+pub fn take_bls_verify_count() -> u64 {
+    BLS_VERIFY_COUNT.with(|c| c.replace(0))
+}
+
+/// Current thread's BLS verification count (does not reset).
+#[must_use]
+pub fn bls_verify_count() -> u64 {
+    BLS_VERIFY_COUNT.with(Cell::get)
+}
+
+#[inline]
+fn record_bls_verify() {
+    BLS_VERIFY_COUNT.with(|c| c.set(c.get().saturating_add(1)));
+}
+
 /// Single signature verification over a 32-byte message (signing root).
 pub fn verify(pk: &PublicKey, msg: &[u8; 32], sig: &Signature) -> bool {
+    record_bls_verify();
     success(sig.inner().verify(
         false, // already validated at deserialize
         msg.as_slice(),
@@ -256,6 +283,7 @@ pub fn aggregate_verify(pks: &[PublicKey], msgs: &[[u8; 32]], sig: &Signature) -
     if pks.is_empty() || pks.len() != msgs.len() {
         return false;
     }
+    record_bls_verify();
     let pk_refs: Vec<&BlstPk> = pks.iter().map(|p| p.inner()).collect();
     let msg_refs: Vec<&[u8]> = msgs.iter().map(|m| m.as_slice()).collect();
     success(sig.inner().aggregate_verify(
@@ -272,6 +300,7 @@ pub fn fast_aggregate_verify(pks: &[PublicKey], msg: &[u8; 32], sig: &Signature)
     if pks.is_empty() {
         return false;
     }
+    record_bls_verify();
     let pk_refs: Vec<&BlstPk> = pks.iter().map(|p| p.inner()).collect();
     success(
         sig.inner()
@@ -288,6 +317,7 @@ pub fn eth_fast_aggregate_verify(pks: &[PublicKey], msg: &[u8; 32], sig: &Signat
     if pks.is_empty() {
         return sig.is_infinity();
     }
+    // Counts via `fast_aggregate_verify` → `record_bls_verify`.
     fast_aggregate_verify(pks, msg, sig)
 }
 

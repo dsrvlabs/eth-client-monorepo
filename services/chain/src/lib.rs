@@ -16,12 +16,13 @@
 //! - **CC-38a**: block-branch fast-path trigger in [`da`] (template-sized
 //!   `FetchBlobsRequest` only; no cell payload through chain)
 //!
-//! The binary (`main.rs`) binds first, then checkpoint-bootstraps when
-//! `checkpoint_providers` is configured (CC-19b): self health SERVING while
-//! aggregate `""` stays NOT_SERVING until bootstrap installs the core.
-//! Without providers the core is absent and fork-choice RPCs return
-//! `NOT_BOOTSTRAPPED`. Tests construct a store and spawn the core via
-//! [`core::spawn_core_thread`].
+//! The binary (`main.rs`) binds first, then awaits local restore
+//! ([`restore`] / CC-45b) for `restore_grace_seconds` before falling back to
+//! checkpoint bootstrap when `checkpoint_providers` is configured (CC-19
+//! demoted to fallback): self health SERVING while aggregate `""` stays
+//! NOT_SERVING until the core is installed. Without providers and without a
+//! restore the core is absent and fork-choice RPCs return `NOT_BOOTSTRAPPED`.
+//! Tests construct a store and spawn the core via [`core::spawn_core_thread`].
 
 #![allow(missing_docs)]
 
@@ -40,6 +41,7 @@ pub mod metrics;
 pub mod p2p_stream;
 pub mod pending_engine;
 pub mod residency;
+pub mod restore;
 pub mod service;
 
 pub use apply_attestations::MAX_APPLY_ATTESTATIONS;
@@ -102,6 +104,12 @@ pub use p2p_stream::{
 pub use residency::{
     BodyRingEntry, DEFAULT_BODY_RING_CAPACITY, DEFAULT_MAX_RESIDENT_STATES, Residency,
     ResidencyError, ResidentRole, StateProvider,
+};
+pub use restore::{
+    DEFAULT_RESTORE_GRACE_SECONDS, RestoreApplyInput, RestoreApplyResult, RestoreGate,
+    RestoreGateOutcome, RestoreHandlerDeps, RestoreInstall, apply_restore_set,
+    handle_restore_from_store, reset_restore_da_gate_invocations, restore_da_gate_invocations,
+    spawn_core_from_restore,
 };
 pub use service::{
     ChainServiceImpl, REASON_BELOW_FINALIZED_RETENTION, REASON_NOT_BOOTSTRAPPED,

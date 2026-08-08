@@ -12,6 +12,8 @@ mod metrics;
 mod migrate;
 mod prune;
 mod replay;
+mod restore_client;
+mod resume;
 mod serve;
 mod write_behind;
 mod writer;
@@ -510,9 +512,62 @@ async fn main() -> anyhow::Result<()> {
     let mut _pruner_keep: Option<Arc<Pruner>> = None;
 
     if cfg.enable_write_path {
+        let open_t0 = std::time::Instant::now();
         match open_store(&cfg) {
             Ok(store) => {
                 let engine = Arc::new(store.into_engine());
+                // CC-45b: populate open phase of restart_seconds.
+                resume::observe_phase(
+                    &storage_metrics,
+                    metrics::RestartPhase::Open,
+                    open_t0.elapsed(),
+                );
+                // CC-45b: drive §3.5 restore sequence (push to chain) before
+                // write-behind resubscribes. EMPTY collapses chain's grace;
+                // matched_expected false is fatal.
+                let chain_uri = cfg
+                    .service
+                    .peers
+                    .get("chain")
+                    .map(|u| u.to_string())
+                    .unwrap_or_else(|| "http://127.0.0.1:9001".to_owned());
+                let durable_ctx = durable_set::DurableSetContext {
+                    expected_node_id: durable_set::load_expected_node_id_from_key_path(
+                        cfg.node_key_path.as_deref(),
+                    )
+                    .ok()
+                    .flatten(),
+                    enr_seq_path: None,
+                    snapshot_ring: cfg.snapshot_ring.max(1),
+                    da_status_roots: Vec::new(),
+                };
+                match resume::run_resume_sequence(
+                    &engine,
+                    &storage_metrics,
+                    &chain_uri,
+                    &durable_ctx,
+                    resume::ResumeExit::Os,
+                )
+                .await
+                {
+                    Ok(outcome) => {
+                        if outcome.empty {
+                            tracing::info!(
+                                "resume EMPTY sent; chain will checkpoint-sync (CC-19 fallback)"
+                            );
+                        } else {
+                            tracing::info!(
+                                head_root = %outcome.head_root,
+                                head_slot = outcome.head_slot,
+                                "resume RestoreFromStore matched; continuing write path"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        // Divergence already process-exits; other errors fail closed.
+                        return Err(anyhow::anyhow!("resume sequence failed: {e}"));
+                    }
+                }
                 // Only a non-zero session_id is resume-valid (O1 / write_behind::is_resumable).
                 let initial_cursor = load_write_cursor(&engine)
                     .ok()
@@ -604,6 +659,30 @@ async fn main() -> anyhow::Result<()> {
         }
     } else {
         tracing::warn!("enable_write_path=false — writer/write-behind not started; serve stub only");
+        // Still collapse chain's AwaitingRestore so compose first-boot does not
+        // wait restore_grace_seconds (CC-45b EMPTY path without a store).
+        let chain_uri = cfg
+            .service
+            .peers
+            .get("chain")
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| "http://127.0.0.1:9001".to_owned());
+        match restore_client::push_restore_with_retry(
+            &chain_uri,
+            restore_client::RestoreStreamPlan::empty(),
+            restore_client::DEFAULT_CONNECT_TIMEOUT,
+            restore_client::DEFAULT_PUSH_RETRY_BUDGET,
+            restore_client::DEFAULT_PUSH_BACKOFF_INITIAL,
+            restore_client::DEFAULT_PUSH_BACKOFF_CAP,
+        )
+        .await
+        {
+            Ok(_) => tracing::info!("resume EMPTY sent (no write path); chain grace collapsed"),
+            Err(e) => tracing::warn!(
+                error = %e,
+                "resume EMPTY push failed after retries; continuing stub serve"
+            ),
+        }
     }
 
     let storage_svc = match serve_engine {

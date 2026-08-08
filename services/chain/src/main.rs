@@ -1,17 +1,21 @@
-//! `chain` service — Architecture §4.1 / §7.1 / §7.4, CC-18b / CC-19a / CC-19b.
+//! `chain` service — Architecture §4.1 / §7.1 / §7.4, CC-18b / CC-19 / CC-45b.
 //!
-//! Lifecycle (CC-19b):
+//! Lifecycle (CC-45b primary restore, CC-19 demoted to fallback):
 //! 1. Bind gRPC (`eth.chain.v1.ChainService` → SERVING immediately).
-//! 2. Aggregate `""` stays NOT_SERVING while checkpoint bootstrap runs.
-//! 3. Bootstrap completes → install core → mark local ready → aggregate SERVING
-//!    (also requires peers SERVING when configured).
-//! 4. Shutdown: aggregate NOT_SERVING → core `Shutdown` + join under a single
+//! 2. Enter `AwaitingRestore` for `restore_grace_seconds` (default 30 s).
+//! 3. Storage pushes `RestoreFromStore` (or `EMPTY`, which collapses grace
+//!    immediately). Full restore → install core. EMPTY / timeout → fall back
+//!    to checkpoint sync when `checkpoint_providers` is configured.
+//! 4. Aggregate `""` stays NOT_SERVING until the core is installed (restore or
+//!    checkpoint), then mark local ready → aggregate SERVING.
+//! 5. Shutdown: aggregate NOT_SERVING → core `Shutdown` + join under a single
 //!    2 s envelope → drain (total SIGTERM budget remains 5 s with Phase 0 drain).
 //!
-//! Empty `checkpoint_providers` keeps Phase 0 compose healthy: no local-ready
-//! gate, core absent, RPCs return `NOT_BOOTSTRAPPED`.
+//! Empty `checkpoint_providers` and no restore keeps Phase 0 compose healthy:
+//! no local-ready gate, core absent, RPCs return `NOT_BOOTSTRAPPED`.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use cc_bootstrap::{
     LocalReadyHandle, PeerSpec, ServeOptions, ServiceSpec, SignalTrigger, TelemetrySettings,
@@ -21,6 +25,7 @@ use cc_chain::checkpoint_sync::{
     CheckpointBootstrapConfig, bootstrap_core_from_providers_with_epoch, parse_optional_root,
 };
 use cc_chain::core::{CoreConfig, CoreThread};
+use cc_chain::restore::{DEFAULT_RESTORE_GRACE_SECONDS, RestoreGate, RestoreGateOutcome};
 use cc_chain::service::ChainServiceImpl;
 use cc_chain::{ChainMetrics, EpochContextStore, EventsConfig, EventsHandle, HeadSnapshotStore};
 use cc_config::ServiceConfig;
@@ -82,6 +87,8 @@ const APPLY_ATTESTATIONS_METHOD: &str = "/eth.chain.v1.ChainService/ApplyAttesta
 const IS_OPTIMISTIC_METHOD: &str = "/eth.chain.v1.ChainService/IsOptimistic";
 /// CC-44a additive unary for storage gap fill.
 const GET_CANONICAL_ROOTS_METHOD: &str = "/eth.chain.v1.ChainService/GetCanonicalRoots";
+/// CC-45b client-streaming restore push from storage.
+const RESTORE_FROM_STORE_METHOD: &str = "/eth.chain.v1.ChainService/RestoreFromStore";
 
 /// Per-service config: shared [`ServiceConfig`] plus chain-only fields.
 #[derive(Debug, Deserialize)]
@@ -103,7 +110,11 @@ struct ChainConfig {
     /// Per-subscriber queue capacity (CC-18c). Default 256.
     #[serde(default = "default_subscriber_queue_capacity")]
     subscriber_queue_capacity: usize,
-    /// Ordered checkpoint provider base URLs (CC-19a). Empty → no bootstrap.
+    /// Ordered checkpoint provider base URLs (CC-19 demoted to **fallback**).
+    ///
+    /// Local store restore (CC-45b) is the primary load strategy. Checkpoint
+    /// sync runs only when restore sends EMPTY or the grace timer elapses
+    /// (Grandine `StateLoadStrategy::Auto` pattern). Empty → no fallback either.
     #[serde(default)]
     checkpoint_providers: Vec<String>,
     /// Optional operator-supplied finalized checkpoint root (`0x…`).
@@ -136,6 +147,11 @@ struct ChainConfig {
     /// (64 MiB); must be neither Hoodi's nor mainnet's.
     #[serde(default)]
     genesis_validators_root: Option<String>,
+    /// Seconds to wait in `AwaitingRestore` before falling back to checkpoint
+    /// sync (CC-45b / §3.5). Default **30**. Collapsed immediately by
+    /// `RestoreFromStore{ kind: EMPTY }`.
+    #[serde(default = "default_restore_grace_seconds")]
+    restore_grace_seconds: u64,
 }
 
 fn default_engine_uri() -> String {
@@ -159,6 +175,9 @@ fn default_subscriber_queue_capacity() -> usize {
 }
 fn default_safe_slots_to_import_optimistically() -> u64 {
     cc_fork_choice::SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY
+}
+fn default_restore_grace_seconds() -> u64 {
+    DEFAULT_RESTORE_GRACE_SECONDS
 }
 
 impl ChainConfig {
@@ -197,6 +216,7 @@ impl ChainConfig {
                 APPLY_ATTESTATIONS_METHOD.to_owned(),
                 IS_OPTIMISTIC_METHOD.to_owned(),
                 GET_CANONICAL_ROOTS_METHOD.to_owned(),
+                RESTORE_FROM_STORE_METHOD.to_owned(),
             ],
         }
     }
@@ -235,143 +255,235 @@ async fn main() -> anyhow::Result<()> {
     // Shared with core at spawn so pre-bootstrap P2pStream sessions keep the
     // same EpochContext ArcSwap after install_core (CC-27a F2).
     let epoch = EpochContextStore::new();
-    let needs_bootstrap = !cfg.checkpoint_providers.is_empty();
+    let has_checkpoint_fallback = !cfg.checkpoint_providers.is_empty();
+    let restore_grace = Duration::from_secs(cfg.restore_grace_seconds);
+    // Always enter AwaitingRestore so storage can push EMPTY / snapshot; when
+    // grace is 0 the gate times out immediately (tests / no-restore profiles).
+    let restore_gate = RestoreGate::new(restore_grace);
+    // Local-ready is required when we expect a core (restore or checkpoint).
+    // Phase 0 compose (no providers, no restore push expected soon) still
+    // enters AwaitingRestore briefly so EMPTY collapses it.
+    let needs_core = true;
     tracing::debug!(
         max_resident_states = cfg.max_resident_states,
         body_ring_capacity = cfg.body_ring_capacity,
         checkpoint_providers = cfg.checkpoint_providers.len(),
+        restore_grace_seconds = cfg.restore_grace_seconds,
         safe_slots_to_import_optimistically = cfg.safe_slots_to_import_optimistically,
-        needs_bootstrap,
-        "residency + checkpoint config loaded"
+        has_checkpoint_fallback,
+        "residency + restore + checkpoint-fallback config loaded"
     );
 
     // Optional: select KZG backend from CC-11d's default when crypto is linked.
     let _kzg_kind = cc_crypto::KzgBackendKind::default();
     tracing::info!(kzg_backend = %_kzg_kind, "chain KZG backend selection (CC-11d default)");
 
-    // Core starts absent; bootstrap task installs it after bind (CC-19b).
+    // Network config for restore spawn / checkpoint fallback.
+    // When neither providers nor a network_config path is set, use a
+    // mainnet-like skeleton so restore can still seed a store in devnet.
+    let network_for_restore = if let Some(path) = cfg.network_config.as_deref() {
+        NetworkChainConfig::from_yaml_file(path)
+            .map_err(|e| anyhow::anyhow!("failed to load network_config {path}: {e}"))?
+    } else if has_checkpoint_fallback {
+        return Err(anyhow::anyhow!(
+            "network_config is required when checkpoint_providers is non-empty \
+             (path to hoodi/mainnet consensus YAML for /eth/v1/config/spec cross-check)"
+        ));
+    } else {
+        // Devnet / local: fixture when present, else process continues and
+        // restore EMPTY → no core (NOT_BOOTSTRAPPED).
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/types/tests/fixtures/hoodi-config.yaml");
+        match NetworkChainConfig::from_yaml_file(&fixture) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "no network_config; hoodi fixture load failed — trying bundled YAML"
+                );
+                NetworkChainConfig::from_yaml_str(include_str!(
+                    "../../../crates/types/tests/fixtures/hoodi-config.yaml"
+                ))
+                .map_err(|e2| anyhow::anyhow!("bundled hoodi-config.yaml: {e2}"))?
+            }
+        }
+    };
+
+    let core_cfg = CoreConfig {
+        max_resident_states: cfg.max_resident_states,
+        body_ring_capacity: cfg.body_ring_capacity,
+        engine_uri: cfg.engine_uri.clone(),
+        // Production: wall-clock SlotTick for fcU floor + pending_* expiry.
+        slot_tick_enabled: true,
+        ..CoreConfig::default()
+    };
+
+    // Core starts absent; restore (primary) or checkpoint (fallback) installs it.
     let svc = ChainServiceImpl::with_epoch(
         None,
         head.clone(),
         epoch.clone(),
         events.clone(),
         chain_metrics.clone(),
+    )
+    .with_restore(
+        Arc::clone(&restore_gate),
+        network_for_restore.clone(),
+        core_cfg.clone(),
     );
     let core_owner: Arc<Mutex<CoreJoinOwner>> = Arc::new(Mutex::new(CoreJoinOwner::default()));
 
     // Local-ready channel: serve hands us the handle once health is initialised.
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
-    if needs_bootstrap {
-        let network_path = cfg.network_config.as_deref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "network_config is required when checkpoint_providers is non-empty \
-                 (path to hoodi/mainnet consensus YAML for /eth/v1/config/spec cross-check)"
-            )
-        })?;
-        let network = NetworkChainConfig::from_yaml_file(network_path)
-            .map_err(|e| anyhow::anyhow!("failed to load network_config {network_path}: {e}"))?;
-        let expected = parse_optional_root(cfg.checkpoint_root.as_deref())
-            .map_err(|e| anyhow::anyhow!("checkpoint_root: {e}"))?;
-        let boot_cfg = CheckpointBootstrapConfig {
-            providers: cfg.checkpoint_providers.clone(),
-            expected_checkpoint_root: expected,
-            chain_config: network,
-            connect_timeout: cc_chain::PROVIDER_CONNECT_TIMEOUT,
-            total_timeout: cc_chain::PROVIDER_TOTAL_TIMEOUT,
-            network_retries: cc_chain::NETWORK_RETRIES,
-            triple_attempts: cc_chain::TRIPLE_ATTEMPTS,
-        };
-        let core_cfg = CoreConfig {
-            max_resident_states: cfg.max_resident_states,
-            body_ring_capacity: cfg.body_ring_capacity,
-            engine_uri: cfg.engine_uri.clone(),
-            // Production: wall-clock SlotTick for fcU floor + pending_* expiry.
-            slot_tick_enabled: true,
-            ..CoreConfig::default()
-        };
+    {
         let svc_boot = svc.clone();
         let head_boot = head;
         let epoch_boot = epoch;
         let events_boot = events.event_sender();
         let metrics_boot = chain_metrics;
         let core_owner_boot = Arc::clone(&core_owner);
+        let gate_wait = Arc::clone(&restore_gate);
+        let providers = cfg.checkpoint_providers.clone();
+        let checkpoint_root = cfg.checkpoint_root.clone();
+        let network_boot = network_for_restore;
+        let core_cfg_boot = core_cfg;
+        let has_fallback = has_checkpoint_fallback;
 
-        // Concurrent with serve: wait for LocalReadyHandle (health up), then
-        // fetch+spawn, install core, mark aggregate ready. Fail-fast on error.
+        // Concurrent with serve: wait for LocalReadyHandle, then AwaitingRestore
+        // outcome, then install core (restore) or fall back to checkpoint.
         tokio::spawn(async move {
-            let gate: LocalReadyHandle = match ready_rx.await {
+            let local_ready: LocalReadyHandle = match ready_rx.await {
                 Ok(g) => g,
                 Err(_) => {
-                    tracing::error!("local-ready handle dropped before bootstrap; aborting");
+                    tracing::error!("local-ready handle dropped before restore wait; aborting");
                     std::process::exit(1);
                 }
             };
+            // ── Health DAG choice (CC-45b) ──────────────────────────────────
+            // Aggregate `""` is what `grpc-health-probe -addr=:9001` (compose)
+            // and storage's `depends_on: chain: service_healthy` observe.
+            // Require local-ready so we control the flip, then mark ready
+            // **immediately at AwaitingRestore entry** so storage can start
+            // and push RestoreFromStore. Self `eth.chain.v1.ChainService` is
+            // already SERVING at bind. Fork-choice RPCs still return
+            // NOT_BOOTSTRAPPED until a core is installed.
+            // (Alternative rejected: storage `service_started` — races bind;
+            // dual health — compose only probes aggregate.)
+            local_ready.mark_ready().await;
             tracing::info!(
-                providers = boot_cfg.providers.len(),
-                "starting checkpoint bootstrap after health init (CC-19b; bind races multi-minute fetch)"
+                grace_secs = gate_wait.grace().as_secs(),
+                "AwaitingRestore: aggregate healthy; waiting for storage RestoreFromStore (or EMPTY / timeout)"
             );
-            match bootstrap_core_from_providers_with_epoch::<Mainnet>(
-                &boot_cfg,
-                head_boot,
-                epoch_boot,
-                events_boot,
-                metrics_boot,
-                core_cfg,
-            )
-            .await
-            {
-                Ok((core, summary)) => {
+            let outcome = gate_wait.wait().await;
+            match outcome {
+                RestoreGateOutcome::Restored(install) => {
                     tracing::info!(
-                        provider = %summary.provider,
-                        block_root = %summary.block_root,
-                        slot = summary.slot,
-                        genesis_time = summary.genesis.genesis_time,
-                        genesis_validators_root = %summary.genesis.genesis_validators_root,
-                        "checkpoint bootstrap complete; installing core"
+                        head_root = %install.head_root,
+                        head_slot = install.head_slot,
+                        matched_expected = install.matched_expected,
+                        "restore complete; installing core (primary path, CC-45b)"
                     );
-                    // SEC-19b-2: under core_owner lock — install + store, or
-                    // join locally if pre-drain already sealed installs.
                     let orphan = {
-                        let mut guard = core_owner_boot.lock().unwrap_or_else(|p| p.into_inner());
-                        guard.try_install(&svc_boot, core)
+                        let mut guard =
+                            core_owner_boot.lock().unwrap_or_else(|p| p.into_inner());
+                        guard.try_install(&svc_boot, install.core)
                     };
                     if let Some(core) = orphan {
                         tracing::warn!(
-                            "pre-drain already active; shutting down late-spawned core without mark_ready"
+                            "pre-drain already active; shutting down late-restored core"
                         );
                         core.shutdown_and_join().await;
                         return;
                     }
-                    gate.mark_ready().await;
-                    tracing::info!("aggregate local-ready set; bootstrap lifecycle complete");
+                    // Already marked ready at AwaitingRestore entry (idempotent).
+                    let _ = local_ready;
+                    tracing::info!("restore lifecycle complete (core installed; health already SERVING)");
                 }
-                Err(e) => {
-                    tracing::error!(error = %e, "checkpoint bootstrap failed");
-                    std::process::exit(1);
+                empty_or_timeout @ (RestoreGateOutcome::Empty | RestoreGateOutcome::TimedOut) => {
+                    let reason = match empty_or_timeout {
+                        RestoreGateOutcome::Empty => "EMPTY",
+                        RestoreGateOutcome::TimedOut => "grace timeout",
+                        RestoreGateOutcome::Restored(_) => unreachable!(),
+                    };
+                    if !has_fallback {
+                        tracing::info!(
+                            reason,
+                            "no checkpoint_providers; core remains absent (NOT_BOOTSTRAPPED); health already SERVING"
+                        );
+                        return;
+                    }
+                    tracing::info!(
+                        reason,
+                        providers = providers.len(),
+                        "falling back to checkpoint sync (CC-19 demoted; primary was restore)"
+                    );
+                    let expected = match parse_optional_root(checkpoint_root.as_deref()) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::error!(error = %e, "checkpoint_root");
+                            std::process::exit(1);
+                        }
+                    };
+                    let boot_cfg = CheckpointBootstrapConfig {
+                        providers,
+                        expected_checkpoint_root: expected,
+                        chain_config: network_boot,
+                        connect_timeout: cc_chain::PROVIDER_CONNECT_TIMEOUT,
+                        total_timeout: cc_chain::PROVIDER_TOTAL_TIMEOUT,
+                        network_retries: cc_chain::NETWORK_RETRIES,
+                        triple_attempts: cc_chain::TRIPLE_ATTEMPTS,
+                    };
+                    match bootstrap_core_from_providers_with_epoch::<Mainnet>(
+                        &boot_cfg,
+                        head_boot,
+                        epoch_boot,
+                        events_boot,
+                        metrics_boot,
+                        core_cfg_boot,
+                    )
+                    .await
+                    {
+                        Ok((core, summary)) => {
+                            tracing::info!(
+                                provider = %summary.provider,
+                                block_root = %summary.block_root,
+                                slot = summary.slot,
+                                "checkpoint fallback complete; installing core"
+                            );
+                            let orphan = {
+                                let mut guard =
+                                    core_owner_boot.lock().unwrap_or_else(|p| p.into_inner());
+                                guard.try_install(&svc_boot, core)
+                            };
+                            if let Some(core) = orphan {
+                                tracing::warn!(
+                                    "pre-drain already active; shutting down late-spawned core"
+                                );
+                                core.shutdown_and_join().await;
+                                return;
+                            }
+                            // Health already SERVING since AwaitingRestore entry.
+                            let _ = local_ready;
+                            tracing::info!(
+                                "checkpoint-fallback lifecycle complete (core installed)"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "checkpoint fallback failed");
+                            std::process::exit(1);
+                        }
+                    }
                 }
             }
         });
-    } else {
-        tracing::info!(
-            "checkpoint_providers empty; core absent (NOT_BOOTSTRAPPED); aggregate ready without gate"
-        );
-        // Drop unused receiver so serve does not need to send when gate off.
-        drop(ready_rx);
     }
 
     let core_owner_shutdown = Arc::clone(&core_owner);
     let options = ServeOptions {
-        // When bootstrapping: aggregate stays NOT_SERVING until mark_ready.
-        // Empty providers: Phase 0 compose — aggregate SERVING as soon as bound.
-        require_local_ready: needs_bootstrap,
-        local_ready_tx: if needs_bootstrap {
-            Some(ready_tx)
-        } else {
-            // Avoid hanging if someone still holds the sender.
-            drop(ready_tx);
-            None
-        },
+        // Always wait for restore outcome (or EMPTY→no-core mark_ready).
+        require_local_ready: needs_core,
+        local_ready_tx: Some(ready_tx),
         on_pre_drain: Some(Box::new(move || {
             Box::pin(async move {
                 // Seal installs then take join ownership (SEC-19b-2).
