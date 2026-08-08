@@ -3,10 +3,11 @@
 //! - [`engine`] — twelve-method concrete `Engine` (CC-40b / Architecture §1.1)
 //! - [`keys`] — big-endian fixed-width codecs + shard arithmetic (§2.1 / §2.4)
 //! - [`buckets`] — histogram boundaries shared with metrics and `bin/store-bench` (CC-4Ca)
+//! - [`meta`] — ten SSZ singleton records (§2.5 / CC-40a)
+//! - [`schema`] — schema version, config digest, table registry, open-or-refuse (CC-40a)
 //!
-//! Schema / meta records land in CC-40a on top of this seam. This crate depends
-//! only on `cc-types` among workspace members; consensus containers must not
-//! appear here (opaque bytes under typed keys).
+//! This crate depends only on `cc-types` among workspace members; consensus
+//! containers must not appear here (opaque bytes under typed keys).
 
 #![allow(missing_docs)]
 
@@ -16,10 +17,19 @@ pub mod buckets;
 pub mod engine;
 /// Key codecs and shard arithmetic.
 pub mod keys;
+/// SSZ meta singleton records (Architecture §2.5).
+pub mod meta;
+/// Schema version, config digest, table registry, [`schema::Store::open`].
+pub mod schema;
 
 pub use engine::{
     Batch, Durability, Engine, EngineOptions, MAX_BATCH_OPS, MAX_INTERNED_TABLE_NAMES,
     MAX_RANGE_BYTES, MAX_RANGE_ENTRIES, RangeIter, ReadTxn, StoreError, db_file_path,
+};
+pub use schema::{
+    BLOCK_SHARD_WIDTH_EPOCHS, COLUMN_SHARD_WIDTH_EPOCHS, ConfigDigestInput, FIXED_TABLES,
+    SCHEMA_VERSION, Store, StoreOpenOptions, compute_config_digest, is_registered_table,
+    parse_shard_table,
 };
 
 // Re-export key primitives so `bin/store-bench` (DAG: cc-store only) can build keys.

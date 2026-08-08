@@ -1250,9 +1250,14 @@ name = "cc-store"
 version = "0.1.0"
 dependencies = [
  "cc-types",
+ "ethereum_ssz",
+ "ethereum_ssz_derive",
  "proptest",
  "redb",
+ "sha2 0.10.9",
+ "ssz_types",
  "thiserror 2.0.19",
+ "typenum",
 ]
 
 [[package]]

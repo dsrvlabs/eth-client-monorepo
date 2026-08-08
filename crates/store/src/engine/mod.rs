@@ -84,7 +84,7 @@ impl Durability {
     }
 }
 
-/// Store-level error (engine + codecs; schema errors land in CC-40a).
+/// Store-level error (engine + codecs + schema open-or-refuse).
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("store I/O: {0}")]
@@ -97,6 +97,34 @@ pub enum StoreError {
     Limit(String),
     #[error("table {0:?} does not exist")]
     TableMissing(String),
+    /// SSZ / key codec failure.
+    #[error("store codec: {0}")]
+    Codec(String),
+    /// Schema version on disk does not match this binary (CC-40 /5).
+    ///
+    /// `Display` names **both** values so a 59 GiB store is diagnosable without
+    /// hex-editing the meta row by hand.
+    #[error("schema version mismatch: found {found}, expected {expected}")]
+    SchemaVersionMismatch {
+        /// Version read from `meta`.
+        found: u32,
+        /// [`crate::schema::SCHEMA_VERSION`] compiled into this binary.
+        expected: u32,
+    },
+    /// Config digest on disk does not match the loaded network config (CC-40 /6).
+    #[error("config digest mismatch: found {found}, expected {expected}")]
+    ConfigDigestMismatch {
+        /// Digest read from `meta` (0x-hex).
+        found: String,
+        /// Digest of the process's loaded config (0x-hex).
+        expected: String,
+    },
+    /// Engine has a table name outside the §2.2 / §2.4 registry (I-shards light).
+    #[error("unregistered table {0:?}")]
+    UnregisteredTable(String),
+    /// Required meta singleton missing on a non-empty store.
+    #[error("missing required meta record {0}")]
+    MissingMeta(&'static str),
 }
 
 impl StoreError {

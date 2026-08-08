@@ -16,6 +16,12 @@ cc-types = { workspace = true }
 # Engine body (CC-40b). Named only under crates/store/src/engine/ (CC-40/3).
 redb = { workspace = true }
 thiserror = { workspace = true }
+# Meta SSZ records + config digest payload (CC-40a / §2.5).
+ethereum_ssz = { workspace = true }
+ethereum_ssz_derive = { workspace = true }
+ssz_types = { workspace = true }
+typenum = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
