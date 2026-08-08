@@ -40,7 +40,7 @@ pub mod schema;
 pub mod snapshots;
 /// Hot/cold split, lock order, migration staging (CC-41 / Architecture §3.1–3.2).
 pub mod split;
-/// Computed block serve-window floor and vestigial-field cross-check (CC-4A).
+/// Computed block serve-window floor (CC-4A) + derived ServeWindow (CC-48).
 pub mod window;
 
 pub use blocks::{
@@ -90,8 +90,12 @@ pub use split::{
     plan_migration, put_split, should_migrate_on_finalization, stage_migration,
 };
 pub use window::{
-    BlockServeWindowCfg, WindowConfigError, check_min_epochs_for_block_requests,
-    compute_min_epochs_for_block_requests,
+    BlockServeWindowCfg, HoleAppendResult, MAX_SERVE_WINDOW_HOLES, ServeWindowError, WindowBranch,
+    WindowConfigError, append_hole, check_min_epochs_for_block_requests, column_slot_contiguous,
+    compute_min_epochs_for_block_requests, derive_serve_window, derive_serve_window_from_meta,
+    extend_block_floor, hole_slots_total, load_serve_window, put_serve_window, raise_for_holes,
+    shrink_holes_filled, try_extend_column_floor, write_derived_serve_window,
+    write_serve_window_from_meta,
 };
 // Re-export the SSZ Split record under the split module's natural name.
 pub use meta::Split;

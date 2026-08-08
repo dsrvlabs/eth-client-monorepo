@@ -165,6 +165,14 @@ struct P2pConfig {
     /// CC-23b: reject peers with `cgc < CUSTODY_REQUIREMENT` (default false = accept).
     #[serde(default)]
     reject_low_cgc_peers: bool,
+    /// CC-48 §5.5: seconds to hold the last advertised window after
+    /// `WatchServeWindow` disconnect before collapsing to the cache floor.
+    #[serde(default = "default_window_stale_grace_secs")]
+    window_stale_grace_secs: u64,
+}
+
+fn default_window_stale_grace_secs() -> u64 {
+    60
 }
 
 fn default_enable_discovery() -> bool {
@@ -415,6 +423,7 @@ impl P2pConfig {
             enable_chain_stream,
             storage_uri,
             enable_storage_client,
+            window_stale_grace: Duration::from_secs(self.window_stale_grace_secs),
             heartbeat_interval: Duration::from_secs(1),
             test_swarm_panic: false,
             reject_low_cgc_peers: self.reject_low_cgc_peers,

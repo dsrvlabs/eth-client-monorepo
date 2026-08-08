@@ -266,10 +266,65 @@ impl StorageServer {
     }
 
     /// Publish a new serve window (backfill / prune / cgc). Subscribers see it.
-    #[allow(dead_code)] // called by CC-48 window maintenance
+    ///
+    /// The value must be a whole derived [`cc_store::meta::ServeWindow`] —
+    /// there is no independent setter for `earliest_available_slot` / `cgc`
+    /// (CC-48).
+    #[allow(dead_code)] // exercised by unit tests; production callers land with CC-47/48 wiring
     pub(crate) fn publish_window(&self, window: ServeWindow) {
         // `send_replace` never fails even with no external subscribers.
+        self.metrics
+            .earliest_available_slot
+            .set(window.earliest_available_slot as i64);
+        self.metrics
+            .window_branch
+            .set(i64::from(window.branch as u8));
+        let hole_slots: u64 = window
+            .holes
+            .iter()
+            .map(|h| h.end.saturating_sub(h.start))
+            .sum();
+        self.metrics.window_hole_slots.set(hole_slots as i64);
         self.window_tx.send_replace(window);
+    }
+
+    /// Derive, persist, and publish a serve window from floors + holes (CC-48).
+    #[allow(dead_code)] // wired by backfill / hole paths as they land
+    pub(crate) fn derive_and_publish_window(
+        &self,
+        block_floor: Slot,
+        column_floor: Slot,
+        cgc: u64,
+        holes: &[cc_store::meta::SlotRange],
+    ) -> Result<cc_store::meta::ServeWindow, Status> {
+        let engine = self.engine()?;
+        let stored = cc_store::write_derived_serve_window(
+            engine,
+            block_floor,
+            column_floor,
+            cgc,
+            holes,
+            false,
+        )
+        .map_err(store_status)?;
+        self.metrics.set_serve_window(&stored);
+        self.window_tx.send_replace(ServeWindow {
+            earliest_available_slot: stored.earliest_available_slot.as_u64(),
+            cgc: stored.cgc,
+            head_slot: self.window_tx.borrow().head_slot,
+            block_floor: stored.block_floor.as_u64(),
+            column_floor: stored.column_floor.as_u64(),
+            branch: u32::from(stored.branch),
+            holes: stored
+                .holes
+                .iter()
+                .map(|h| ProtoSlotRange {
+                    start: h.start.as_u64(),
+                    end: h.end.as_u64(),
+                })
+                .collect(),
+        });
+        Ok(stored)
     }
 
     /// Current advertised earliest available slot.

@@ -18,6 +18,10 @@ enable_discovery = true
 # CC-23b: reject peers advertising cgc < CUSTODY_REQUIREMENT (default accept).
 # Root-level key (not under [peers] — peers values are URIs). See docs/p2p-dependencies.md.
 reject_low_cgc_peers = false
+# CC-48 §5.5 — hold last advertised window this long after WatchServeWindow
+# disconnect, then fail-closed collapse to the in-memory cache floor.
+# Root-level key (not under [peers] or [clock] — those tables have typed fields).
+window_stale_grace_secs = 60
 
 [clock]
 # Until the first ChainView (CC-27a), slot clock is config-sourced.

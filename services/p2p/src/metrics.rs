@@ -380,6 +380,8 @@ pub struct P2pMetrics {
     pub(crate) cache_occupancy_bytes: Gauge,
     pub(crate) cache_bound_bytes: Gauge,
     pub(crate) earliest_available_slot: Gauge,
+    /// §5.5 fail-closed collapse after `window_stale_grace` (CC-48).
+    pub(crate) window_collapsed: Counter,
     pub(crate) queue_depth: Family<QueueLabels, Gauge>,
     // Stream
     pub(crate) chain_stream_saturation_ratio: Gauge,
@@ -435,6 +437,7 @@ impl P2pMetrics {
         let cache_occupancy_bytes = Gauge::default();
         let cache_bound_bytes = Gauge::default();
         let earliest_available_slot = Gauge::default();
+        let window_collapsed = Counter::default();
         let queue_depth = Family::<QueueLabels, Gauge>::default();
 
         let chain_stream_saturation_ratio = Gauge::default();
@@ -570,6 +573,11 @@ impl P2pMetrics {
             earliest_available_slot.clone(),
         );
         registry.register(
+            "cc_p2p_window_collapsed",
+            "Serve-window fail-closed collapses after window_stale_grace (CC-48 §5.5)",
+            window_collapsed.clone(),
+        );
+        registry.register(
             "cc_p2p_queue_depth",
             "In-process queue / set depth (q=gossip|reqresp_in|conn|kzg|publish|cmd|outstanding|pending_sidecar|pending_block|seen_column|seen_block)",
             queue_depth.clone(),
@@ -665,6 +673,7 @@ impl P2pMetrics {
             cache_occupancy_bytes,
             cache_bound_bytes,
             earliest_available_slot,
+            window_collapsed,
             queue_depth,
             chain_stream_saturation_ratio,
             verdict_latency,
@@ -734,9 +743,20 @@ impl P2pMetrics {
         self.cache_bound_bytes.set(n);
     }
 
-    /// Set `cc_p2p_earliest_available_slot` (backfill serve window / CC-26a).
+    /// Set `cc_p2p_earliest_available_slot` (WatchServeWindow / CC-48 sole writer).
     pub fn set_earliest_available_slot(&self, slot: i64) {
         self.earliest_available_slot.set(slot);
+    }
+
+    /// Increment `cc_p2p_window_collapsed_total` (§5.5 fail-closed collapse).
+    pub fn inc_window_collapsed(&self) {
+        self.window_collapsed.inc();
+    }
+
+    /// Read `cc_p2p_window_collapsed_total`.
+    #[must_use]
+    pub fn window_collapsed(&self) -> u64 {
+        self.window_collapsed.get()
     }
 
     /// Set `cc_p2p_backfill_progress_slots` (CC-26b — last contiguous imported).
@@ -1202,6 +1222,7 @@ impl P2pMetrics {
         self.cache_occupancy_bytes.set(0);
         self.cache_bound_bytes.set(0);
         self.earliest_available_slot.set(0);
+        let _ = self.window_collapsed.get();
         for q in QueueName::ALL {
             self.queue_depth
                 .get_or_create(&QueueLabels {
@@ -1294,6 +1315,7 @@ mod tests {
         "cc_p2p_cache_occupancy_bytes",
         "cc_p2p_cache_bound_bytes",
         "cc_p2p_earliest_available_slot",
+        "cc_p2p_window_collapsed",
         "cc_p2p_queue_depth",
         // Stream
         "cc_p2p_chain_stream_saturation_ratio",

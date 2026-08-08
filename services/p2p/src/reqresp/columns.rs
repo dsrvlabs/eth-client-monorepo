@@ -753,6 +753,9 @@ mod tests {
             parent = root;
         }
         cache.set_head_slot(Slot::new(hi));
+        // CC-48: inserts no longer write the advertised AtomicU64; seed it for
+        // serve-handler unit tests (production: WatchServeWindow).
+        cache.seed_advertised_from_floor();
         cache
     }
 
@@ -973,6 +976,7 @@ mod tests {
             cache.insert_column(Slot::new(low_slot), root, c, dummy_column(c, low_slot));
         }
         cache.set_head_slot(Slot::new(low_slot));
+        cache.seed_advertised_from_floor();
         assert_eq!(cache.earliest_available_slot(), Slot::new(low_slot));
 
         let mut fork_ctx = fork_ctx_at(fulu_epoch);
@@ -1204,6 +1208,7 @@ mod tests {
             parent = root;
         }
         cache.set_head_slot(Slot::new(slot_b));
+        cache.seed_advertised_from_floor();
         assert_eq!(cache.earliest_available_slot(), Slot::new(slot_a));
 
         let mut fork_ctx = fork_ctx_at(epoch_b);

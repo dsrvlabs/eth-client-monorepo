@@ -886,6 +886,15 @@ impl StorageMetrics {
         let _ = self.key_collision.get();
     }
 
+    /// Set `cc_storage_earliest_available_slot` from a derived [`cc_store::meta::ServeWindow`].
+    pub(crate) fn set_serve_window(&self, window: &cc_store::meta::ServeWindow) {
+        self.earliest_available_slot
+            .set(window.earliest_available_slot.as_u64() as i64);
+        self.window_branch.set(i64::from(window.branch));
+        self.window_hole_slots
+            .set(cc_store::hole_slots_total(window.holes.as_ref()) as i64);
+    }
+
     /// Increment `cc_storage_invariant_violation_total{invariant}` (CC-4H post-pass).
     ///
     /// Label must be one of [`Invariant::ALL`] (closed domain). Callers map

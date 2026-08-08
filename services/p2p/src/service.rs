@@ -57,7 +57,7 @@ use crate::identity::{self, IdentityError};
 use crate::metrics::{P2pMetrics, QueueName};
 use crate::peer_manager::{PeerManager, PeerManagerConfig, run_peer_manager};
 use crate::storage_client::{
-    spawn_watch_serve_window, StorageClient, StorageClientConfig, StorageClientHandle,
+    spawn_watch_serve_window_with_metrics, StorageClient, StorageClientConfig, StorageClientHandle,
 };
 use crate::supervisor::{
     SupervisedTask, SupervisorOutcome, TaskPolicy, factory_from_future, run_supervisor,
@@ -103,6 +103,9 @@ pub struct RuntimeConfig {
     pub storage_uri: String,
     /// When false, do not spawn WatchServeWindow / storage client.
     pub enable_storage_client: bool,
+    /// Fail-closed grace after `WatchServeWindow` disconnect (`p2p.window_stale_grace`).
+    /// Default 60 s (CC-48 §5.5).
+    pub window_stale_grace: Duration,
     /// Gossipsub heartbeat interval — stall bound is derived from this (§2.3).
     pub heartbeat_interval: Duration,
     /// **Test-only:** swarm task panics immediately so the process-fatal path
@@ -129,6 +132,7 @@ impl Default for RuntimeConfig {
             enable_chain_stream: false,
             storage_uri: String::new(),
             enable_storage_client: false,
+            window_stale_grace: crate::storage_client::DEFAULT_WINDOW_STALE_GRACE,
             // Match `cc_libp2p::BehaviourConfig::default().heartbeat_interval`.
             heartbeat_interval: Duration::from_secs(1),
             test_swarm_panic: false,
@@ -361,23 +365,37 @@ pub async fn serve(
         } else {
             CgcPolicy::accept_low_cgc()
         };
-        // CC-4F: storage client shares the handshake ServeWindow AtomicU64.
-        // Residual vs CC-26a cache window: cache still owns its own recompute
-        // until CC-48 deletes the eviction-path write and unifies writers.
-        // WatchServeWindow is the sole *storage-driven* write site.
+        // CC-4F / CC-48: storage client shares the handshake ServeWindow
+        // AtomicU64. WatchServeWindow is the **sole** production write site
+        // (eviction-path write deleted). §5.5 collapse uses window_stale_grace
+        // and a shared cache-floor Arc (bind via BackfillCache::bind_cache_floor
+        // when the serve cache is constructed).
         let storage_handle = if cfg.enable_storage_client && !cfg.storage_uri.is_empty() {
-            let handle = Arc::new(StorageClientHandle::new(Arc::clone(&handshake_deps.window)));
+            let cache_floor = Arc::new(std::sync::atomic::AtomicU64::new(
+                crate::backfill::EMPTY_WINDOW_SLOT,
+            ));
+            let handle = Arc::new(StorageClientHandle::with_cache_floor(
+                Arc::clone(&handshake_deps.window),
+                cache_floor,
+            ));
             let sc_cfg = StorageClientConfig {
                 storage_uri: cfg.storage_uri.clone(),
+                window_stale_grace: cfg.window_stale_grace,
                 ..StorageClientConfig::default()
             };
-            // Keep a client alive for future cache-miss fetch (CC-48/serve path);
+            // Keep a client alive for future cache-miss fetch;
             // availability is driven by the watch task.
             let _client = StorageClient::new(sc_cfg.clone(), Arc::clone(&handle));
-            let _watch = spawn_watch_serve_window(sc_cfg, Arc::clone(&handle), shutdown_rx.clone());
+            let _watch = spawn_watch_serve_window_with_metrics(
+                sc_cfg,
+                Arc::clone(&handle),
+                Some(Arc::new(metrics.clone())),
+                shutdown_rx.clone(),
+            );
             info!(
                 storage_uri = %cfg.storage_uri,
-                "CC-4F storage client + WatchServeWindow spawned"
+                window_stale_grace_secs = cfg.window_stale_grace.as_secs(),
+                "CC-4F storage client + WatchServeWindow spawned (CC-48 one-writer)"
             );
             Some(handle)
         } else {

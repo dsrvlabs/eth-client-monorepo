@@ -1,8 +1,11 @@
-//! Shared bounded backfill cache (§9.5 / CC-26a).
+//! Shared bounded backfill cache (§9.5 / CC-26a / CC-48).
 //!
 //! One cache, two maps, **one byte ceiling that overrides both count bounds**.
-//! Under pressure the cache **evicts oldest data and raises
-//! `earliest_available_slot`** rather than allocating past the ceiling.
+//! Under pressure the cache **evicts oldest data** rather than allocating past
+//! the ceiling. As of CC-48, eviction **does not** write the advertised
+//! `earliest_available_slot` AtomicU64 — that write lives solely in the
+//! `WatchServeWindow` handler. The cache still maintains an internal
+//! [`Self::cache_floor`] for §5.5 fail-closed collapse.
 //!
 //! # Accounted occupancy
 //!
@@ -13,6 +16,7 @@
 //! process RSS); realistic inserts must pass true payload sizes.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use cc_types::primitives::{Root, Slot};
@@ -21,7 +25,7 @@ use cc_types::{Mainnet, Preset, SignedBeaconBlock, SAMPLES_PER_SLOT};
 use smallvec::SmallVec;
 use ssz::Encode;
 
-use super::window::{compute_earliest_available_slot, ServeWindow};
+use super::window::{compute_earliest_available_slot, ServeWindow, EMPTY_WINDOW_SLOT};
 use crate::metrics::P2pMetrics;
 
 /// Hard byte ceiling across blocks **and** columns (**1 GiB**).
@@ -87,11 +91,13 @@ pub enum InsertOutcome {
 /// | empty markers | [`CACHE_EMPTY_SLOT_BOUND`] | soft; pruned oldest-first |
 /// | **bytes, hard** | [`CACHE_BOUND_BYTES`] (**1 GiB**) | **the ceiling wins** |
 ///
-/// # `earliest_available_slot`
+/// # `earliest_available_slot` (CC-48)
 ///
-/// Owned by [`ServeWindow`]; sole `.store` is [`ServeWindow::store_recomputed`],
-/// invoked after every completeness-affecting mutation (insert / head / empty /
-/// eviction). Seeded to empty-window until the first recompute.
+/// The **advertised** AtomicU64 lives on [`ServeWindow`] and is written **only**
+/// by `WatchServeWindow` (not by this cache). This cache maintains
+/// [`Self::cache_floor`] — the in-memory floor used for §5.5 collapse — updated
+/// after completeness-affecting mutations. Eviction must not move the advertised
+/// value (CC-48 /5).
 ///
 /// Column-map key is `(slot, root_bytes)`: `Root` is not `Ord` in `cc_types`.
 #[derive(Debug)]
@@ -116,10 +122,17 @@ pub struct BackfillCache<P: Preset = Mainnet> {
     custodied_columns: BTreeSet<u64>,
     /// Slots explicitly marked empty (no block expected). Capped.
     empty_slots: BTreeSet<Slot>,
-    /// Current head; drives the `[s, head]` range in the window recompute.
+    /// Current head; drives the `[s, head]` range in the floor recompute.
     head_slot: Option<Slot>,
-    /// Serve window atomic + recompute counter.
+    /// Advertised serve window (read-only from this cache; external writer only).
     window: ServeWindow,
+    /// In-memory cache floor for §5.5 collapse (not the advertised AtomicU64).
+    ///
+    /// Shared as [`Arc`] so `StorageClientHandle` can collapse to the same value
+    /// without a second copy (CC-48 §5.5).
+    cache_floor: Arc<AtomicU64>,
+    /// How many times the cache floor was recomputed (tests / diagnostics).
+    floor_recompute_invocations: AtomicU64,
     /// Optional metrics export.
     metrics: Option<Arc<P2pMetrics>>,
 }
@@ -182,15 +195,34 @@ impl<P: Preset> BackfillCache<P> {
             empty_slots: BTreeSet::new(),
             head_slot: None,
             window: ServeWindow::new(anchor_slot),
+            cache_floor: Arc::new(AtomicU64::new(EMPTY_WINDOW_SLOT)),
+            floor_recompute_invocations: AtomicU64::new(0),
             metrics: None,
         }
     }
 
+    /// Install a shared cache-floor atomic (for §5.5 collapse via storage client).
+    ///
+    /// Copies the current floor into `floor` then adopts it so subsequent
+    /// mutations update the shared value.
+    pub fn bind_cache_floor(&mut self, floor: Arc<AtomicU64>) {
+        floor.store(self.cache_floor.load(Ordering::Acquire), Ordering::Release);
+        self.cache_floor = floor;
+    }
+
+    /// Shared handle to the cache floor (cheap clone of the [`Arc`]).
+    #[must_use]
+    pub fn shared_cache_floor(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.cache_floor)
+    }
+
     /// Attach metrics; seeds `cc_p2p_cache_bound_bytes` and occupancy gauges.
+    ///
+    /// Does **not** write `cc_p2p_earliest_available_slot` — that gauge tracks
+    /// the advertised AtomicU64 updated by `WatchServeWindow` (CC-48).
     pub fn set_metrics(&mut self, metrics: Arc<P2pMetrics>) {
         metrics.set_cache_bound_bytes(self.bound_bytes as i64);
         metrics.set_cache_occupancy_bytes(self.bytes as i64);
-        metrics.set_earliest_available_slot(self.window.load().as_u64() as i64);
         self.metrics = Some(metrics);
     }
 
@@ -230,10 +262,35 @@ impl<P: Preset> BackfillCache<P> {
         &self.window
     }
 
-    /// Read `earliest_available_slot` from the sole atomic.
+    /// Read the **advertised** `earliest_available_slot` AtomicU64.
+    ///
+    /// Production writers: only `WatchServeWindow`. Tests may seed via
+    /// [`Self::seed_advertised_from_floor`].
     #[must_use]
     pub fn earliest_available_slot(&self) -> Slot {
         self.window.load()
+    }
+
+    /// In-memory cache floor (§5.5 collapse target). Updated on cache mutations;
+    /// never written to the advertised AtomicU64 by this cache.
+    #[must_use]
+    pub fn cache_floor(&self) -> Slot {
+        Slot::new(self.cache_floor.load(Ordering::Acquire))
+    }
+
+    /// How many times the cache floor was recomputed.
+    #[must_use]
+    pub fn floor_recompute_invocations(&self) -> u64 {
+        self.floor_recompute_invocations.load(Ordering::Relaxed)
+    }
+
+    /// Seed the advertised window from the current cache floor.
+    ///
+    /// **Test-only.** Production with storage must not call this —
+    /// `WatchServeWindow` owns the advertised value (CC-48).
+    #[cfg(test)]
+    pub fn seed_advertised_from_floor(&self) {
+        self.window.store_recomputed(self.cache_floor());
     }
 
     /// Ordered sampled column indices (array positions).
@@ -248,11 +305,11 @@ impl<P: Preset> BackfillCache<P> {
         &self.custodied_columns
     }
 
-    /// Publish a new head slot and recompute the serve window immediately.
+    /// Publish a new head slot and recompute the **cache floor** (not advertised).
     pub fn set_head_slot(&mut self, head: Slot) {
         self.head_slot = Some(head);
         self.prune_empty_slots_outside_window();
-        self.recompute_and_store_earliest();
+        self.recompute_cache_floor();
     }
 
     /// Current head, if set.
@@ -275,7 +332,7 @@ impl<P: Preset> BackfillCache<P> {
                 break;
             }
         }
-        self.recompute_and_store_earliest();
+        self.recompute_cache_floor();
     }
 
     /// Whether the cache holds any block at `slot`.
@@ -449,7 +506,7 @@ impl<P: Preset> BackfillCache<P> {
         self.bytes = self.bytes.saturating_add(bytes);
         self.empty_slots.remove(&slot);
         self.export_occupancy();
-        self.recompute_and_store_earliest();
+        self.recompute_cache_floor();
         InsertOutcome::Inserted {
             evicted_slots: evicted,
         }
@@ -506,7 +563,7 @@ impl<P: Preset> BackfillCache<P> {
         self.column_entries = self.column_entries.saturating_add(1);
         self.bytes = self.bytes.saturating_add(bytes);
         self.export_occupancy();
-        self.recompute_and_store_earliest();
+        self.recompute_cache_floor();
         InsertOutcome::Inserted {
             evicted_slots: evicted,
         }
@@ -516,18 +573,20 @@ impl<P: Preset> BackfillCache<P> {
     ///
     /// Empty markers never free bytes; they are pruned separately and never
     /// compete with data for byte-pressure eviction (CC-26a F5).
+    ///
+    /// **CC-48:** eviction updates [`Self::cache_floor`] only — it does **not**
+    /// write the advertised `earliest_available_slot` AtomicU64.
     pub fn evict_oldest_slot(&mut self) -> Option<Slot> {
         let oldest = self.oldest_data_slot()?;
         self.remove_data_slot(oldest);
-        self.recompute_and_store_earliest();
+        self.recompute_cache_floor();
         self.export_occupancy();
         Some(oldest)
     }
 
-    /// Explicit recompute (same sole store path). Prefer mutation APIs, which
-    /// recompute automatically; Status/runtime may call this after bulk load.
-    pub fn publish_window(&mut self) {
-        self.recompute_and_store_earliest();
+    /// Recompute the cache floor only (not the advertised AtomicU64).
+    pub fn publish_cache_floor(&mut self) {
+        self.recompute_cache_floor();
         self.export_occupancy();
     }
 
@@ -633,8 +692,9 @@ impl<P: Preset> BackfillCache<P> {
         true
     }
 
-    /// Recompute over custodied completeness and write the atomic (sole store path).
-    fn recompute_and_store_earliest(&mut self) {
+    /// Recompute the in-memory cache floor. **Does not** write the advertised
+    /// AtomicU64 (CC-48 — eviction/insert path write deleted).
+    fn recompute_cache_floor(&mut self) {
         let anchor = self.window.anchor_slot();
         let head = self
             .head_slot
@@ -649,13 +709,13 @@ impl<P: Preset> BackfillCache<P> {
                 .max(anchor.as_u64()),
         );
 
-        let earliest =
+        let floor =
             compute_earliest_available_slot(anchor, head, walk_floor, |s| self.slot_is_complete(s));
 
-        self.window.store_recomputed(earliest);
-        if let Some(m) = &self.metrics {
-            m.set_earliest_available_slot(earliest.as_u64() as i64);
-        }
+        self.floor_recompute_invocations
+            .fetch_add(1, Ordering::Relaxed);
+        self.cache_floor
+            .store(floor.as_u64(), Ordering::Release);
     }
 
     fn export_occupancy(&self) {
@@ -815,34 +875,60 @@ mod tests {
         assert!((ratio - 1.0).abs() < f64::EPSILON);
     }
 
+    /// CC-48 /5 — a cache eviction no longer moves the advertised value.
+    ///
+    /// Anti-vacuity: this assertion **fails** against the parent commit where
+    /// eviction called `store_recomputed` (Phase 2 / CC-26a). Recorded in the
+    /// commit description.
     #[test]
-    fn earliest_moves_forward_on_eviction() {
+    fn eviction_no_longer_moves_advertised_value() {
         let mut cache = test_cache(10_000);
         cache.set_head_slot(Slot::new(10));
         for slot in 1u64..=10 {
             insert_complete(&mut cache, slot, 10);
         }
-        // Inserts recompute automatically — no publish_window required.
+        // Seed advertised once (as WatchServeWindow would); then eviction must
+        // not move it.
+        cache.seed_advertised_from_floor();
         assert_eq!(cache.earliest_available_slot(), Slot::new(1));
+        assert_eq!(cache.cache_floor(), Slot::new(1));
 
-        let before = cache.window().recompute_invocations();
+        let advertised_before = cache.earliest_available_slot();
+        let writes_before = cache.window().recompute_invocations();
+        let floor_before = cache.floor_recompute_invocations();
+
         let evicted = cache.evict_oldest_slot();
         assert_eq!(evicted, Some(Slot::new(1)));
-        assert_eq!(cache.earliest_available_slot(), Slot::new(2));
-        assert_eq!(cache.window().recompute_invocations(), before + 1);
+
+        // Advertised AtomicU64 unchanged (no store_recomputed from eviction).
+        assert_eq!(
+            cache.earliest_available_slot(),
+            advertised_before,
+            "CC-48: eviction must not move advertised earliest_available_slot"
+        );
+        assert_eq!(cache.window().recompute_invocations(), writes_before);
+
+        // Cache floor *does* advance (for §5.5 collapse).
+        assert_eq!(cache.cache_floor(), Slot::new(2));
+        assert_eq!(cache.floor_recompute_invocations(), floor_before + 1);
     }
 
     #[test]
-    fn insert_without_eviction_is_honest_not_anchor_seed() {
-        // F2: after fill, atomic must not still advertise empty/anchor free-ride.
+    fn insert_updates_cache_floor_not_advertised() {
+        // F2 residual: after fill the *floor* is honest; advertised stays seed
+        // until WatchServeWindow / seed_advertised_from_floor.
         let mut cache = test_cache(50_000);
         assert!(cache.window().is_empty_window_seed());
         cache.set_head_slot(Slot::new(5));
-        // Head set with empty cache → incomplete head → earliest = 6.
-        assert_eq!(cache.earliest_available_slot(), Slot::new(6));
+        // Head set with empty cache → incomplete head → floor = 6.
+        assert_eq!(cache.cache_floor(), Slot::new(6));
+        assert!(cache.window().is_empty_window_seed());
         for slot in 1u64..=5 {
             insert_complete(&mut cache, slot, 10);
         }
+        assert_eq!(cache.cache_floor(), Slot::new(1));
+        assert!(cache.window().is_empty_window_seed());
+        cache.seed_advertised_from_floor();
         assert_eq!(cache.earliest_available_slot(), Slot::new(1));
         assert!(!cache.window().is_empty_window_seed());
     }
@@ -866,9 +952,9 @@ mod tests {
             }
         }
         assert_eq!(
-            cache.earliest_available_slot(),
+            cache.cache_floor(),
             Slot::new(1),
-            "missing sampled-only columns must not shrink the window"
+            "missing sampled-only columns must not shrink the cache floor"
         );
 
         let mut cache2 = test_cache(50_000);
@@ -882,8 +968,8 @@ mod tests {
         for col in 1u64..4 {
             cache2.insert_column_accounted(s, r, col, dummy_column(col), 10);
         }
-        // head=3 incomplete → earliest = 4
-        assert_eq!(cache2.earliest_available_slot(), Slot::new(4));
+        // head=3 incomplete → floor = 4
+        assert_eq!(cache2.cache_floor(), Slot::new(4));
 
         let mut cache3 = test_cache(50_000);
         cache3.set_head_slot(Slot::new(2));
@@ -895,42 +981,48 @@ mod tests {
                 cache3.insert_column_accounted(s, r, col, dummy_column(col), 10);
             }
         }
-        assert_eq!(cache3.earliest_available_slot(), Slot::new(1));
+        assert_eq!(cache3.cache_floor(), Slot::new(1));
     }
 
     #[test]
-    fn recompute_on_every_eviction_counter() {
+    fn floor_recompute_on_every_eviction_counter() {
         let mut cache = test_cache(1_000_000);
         cache.set_head_slot(Slot::new(600));
         for slot in 1u64..=520 {
             insert_complete(&mut cache, slot, 10);
         }
-        let start = cache.window().recompute_invocations();
+        let start = cache.floor_recompute_invocations();
+        let adv_writes = cache.window().recompute_invocations();
         for i in 0..500 {
             let evicted = cache.evict_oldest_slot().expect("expected eviction");
             assert_eq!(evicted, Slot::new(1 + i));
         }
         assert_eq!(
-            cache.window().recompute_invocations(),
+            cache.floor_recompute_invocations(),
             start + 500,
-            "recompute must run exactly once per eviction"
+            "floor recompute must run exactly once per eviction"
+        );
+        assert_eq!(
+            cache.window().recompute_invocations(),
+            adv_writes,
+            "advertised AtomicU64 must not be written by eviction"
         );
     }
 
     #[test]
-    fn recompute_is_o_cache_depth_not_total_slots() {
+    fn floor_recompute_is_o_cache_depth_not_total_slots() {
         let mut cache = test_cache(100_000);
         let head = 1_000_000u64;
         cache.set_head_slot(Slot::new(head));
         for slot in (head - 63)..=head {
             insert_complete(&mut cache, slot, 10);
         }
-        let before = cache.window().recompute_invocations();
+        let before = cache.floor_recompute_invocations();
         cache.evict_oldest_slot();
-        assert_eq!(cache.window().recompute_invocations(), before + 1);
-        let earliest = cache.earliest_available_slot().as_u64();
-        assert!(earliest >= head - 63);
-        assert!(earliest <= head);
+        assert_eq!(cache.floor_recompute_invocations(), before + 1);
+        let floor = cache.cache_floor().as_u64();
+        assert!(floor >= head - 63);
+        assert!(floor <= head);
     }
 
     #[test]
@@ -951,7 +1043,7 @@ mod tests {
     }
 
     #[test]
-    fn metrics_earliest_matches_atomic() {
+    fn cache_mutations_do_not_write_earliest_metric() {
         let mut reg = Registry::default();
         let metrics = Arc::new(P2pMetrics::register(&mut reg));
         let mut cache = test_cache(50_000);
@@ -960,15 +1052,47 @@ mod tests {
         for slot in 1u64..=5 {
             insert_complete(&mut cache, slot, 10);
         }
-        assert_eq!(
-            metrics.earliest_available_slot() as u64,
-            cache.earliest_available_slot().as_u64()
-        );
+        // Gauge stays at seed (0) — WatchServeWindow owns the metric write.
+        assert_eq!(metrics.earliest_available_slot(), 0);
         cache.evict_oldest_slot();
-        assert_eq!(
-            metrics.earliest_available_slot() as u64,
-            cache.earliest_available_slot().as_u64()
+        assert_eq!(metrics.earliest_available_slot(), 0);
+        // Floor still tracks completeness.
+        assert_eq!(cache.cache_floor(), Slot::new(2));
+    }
+
+    /// Production cache body must not call store_recomputed (CC-48 /4 /5).
+    #[test]
+    fn cache_production_body_has_no_store_recomputed() {
+        let src = include_str!("cache.rs");
+        // Drop cfg(test) seed helper and the tests module.
+        let prod = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production half before any cfg(test)");
+        assert!(
+            !prod.contains("store_recomputed"),
+            "CC-48: cache must not write advertised earliest_available_slot"
         );
+        let metric_setter = format!("set_{}", "earliest_available_slot");
+        assert!(
+            !prod.contains(&metric_setter),
+            "CC-48: cache must not export earliest metric (WatchServeWindow owns it)"
+        );
+    }
+
+    #[test]
+    fn bind_cache_floor_shares_arc() {
+        let mut cache = test_cache(50_000);
+        cache.set_head_slot(Slot::new(3));
+        let shared = Arc::new(AtomicU64::new(EMPTY_WINDOW_SLOT));
+        cache.bind_cache_floor(Arc::clone(&shared));
+        // bind copies current floor into shared.
+        assert_eq!(shared.load(Ordering::Acquire), cache.cache_floor().as_u64());
+        insert_complete(&mut cache, 1, 10);
+        insert_complete(&mut cache, 2, 10);
+        insert_complete(&mut cache, 3, 10);
+        assert_eq!(shared.load(Ordering::Acquire), 1);
+        assert_eq!(cache.cache_floor().as_u64(), 1);
     }
 
     #[test]

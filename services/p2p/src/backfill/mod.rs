@@ -3,7 +3,7 @@
 //! | Module | Role |
 //! |--------|------|
 //! | [`cache`] | Two-map bounded cache, 1 GiB ceiling, oldest-first eviction (CC-26a) |
-//! | [`window`] | `earliest_available_slot` as one `AtomicU64` (ADR P2-14 / CC-26a) |
+//! | [`window`] | `earliest_available_slot` as one `AtomicU64` (ADR P2-14 / CC-48 one-writer) |
 //! | [`planner`] | Gap detection, ≤64-slot batches, oldest-first import, no DA bypass (CC-26b) |
 
 pub mod cache;

@@ -345,6 +345,8 @@ mod tests {
             parent = root;
         }
         cache.set_head_slot(Slot::new(hi));
+        // CC-48: seed advertised window for serve-handler unit tests.
+        cache.seed_advertised_from_floor();
         cache
     }
 
@@ -597,6 +599,8 @@ mod tests {
             parent = root;
         }
         cache.set_head_slot(Slot::new(hi));
+        // CC-48: seed advertised window for serve-handler unit tests.
+        cache.seed_advertised_from_floor();
         cache
     }
 

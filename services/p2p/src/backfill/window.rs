@@ -1,16 +1,18 @@
-//! Serve window: `earliest_available_slot` as one `AtomicU64` (ADR P2-14 / §9.6).
+//! Serve window: `earliest_available_slot` as one `AtomicU64` (ADR P2-14 / §5.3).
 //!
-//! **One source of truth.** The atomic has a **single `.store` site**
-//! ([`ServeWindow::store_recomputed`]), called from the cache after any
-//! completeness-affecting mutation (insert, head, empty marker, eviction).
-//! `Status v2` and by-range/by-root handlers only **read**. There is no second
-//! business-logic copy of the number.
+//! **One source of truth across a process boundary (CC-48).** The atomic has a
+//! **single production `.store` site**: the `WatchServeWindow` stream handler in
+//! [`crate::storage_client`]. Cache eviction / insert **must not** write this
+//! value — Phase 2's eviction-path write is **deleted**. `Status v2` and the
+//! four serve handlers only **read**.
+//!
+//! Pure [`compute_earliest_available_slot`] remains for the in-memory **cache
+//! floor** used by §5.5 fail-closed collapse (not the advertised atomic).
 //!
 //! # Seed (honesty)
 //!
 //! Construction seeds `u64::MAX` — an empty serve window — not `anchor`.
-//! Advertising `anchor` with an empty cache would free-ride (CC-26a F2). The
-//! first recompute (on head set / insert / eviction) writes the honest value.
+//! Advertising `anchor` with an empty cache would free-ride (CC-26a F2).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -70,10 +72,12 @@ pub fn compute_earliest_available_slot(
 /// The single serve-window number advertised by `Status v2` and enforced by
 /// by-range / by-root handlers.
 ///
-/// # Write discipline (ADR P2-14)
+/// # Write discipline (ADR P2-14 / CC-48 §5.3)
 ///
-/// Construction seeds via [`AtomicU64::new`] (`EMPTY_WINDOW_SLOT`). The **only**
-/// subsequent write is [`ServeWindow::store_recomputed`].
+/// Construction seeds via [`AtomicU64::new`] (`EMPTY_WINDOW_SLOT`). Production
+/// writes go **only** through [`ServeWindow::store_recomputed`] from the
+/// `WatchServeWindow` handler (and §5.5 collapse in the same module). Cache
+/// eviction must not call this.
 #[derive(Debug)]
 pub struct ServeWindow {
     /// Earliest slot we can honestly serve. **Sole `AtomicU64` for this value.**
@@ -121,10 +125,12 @@ impl ServeWindow {
         self.recompute_invocations.load(Ordering::Relaxed)
     }
 
-    /// **Sole write site** for `earliest_available_slot` after construction.
+    /// Write site for `earliest_available_slot` after construction.
     ///
-    /// Invoked from the cache after every completeness-affecting mutation
-    /// (insert, head, empty marker, eviction).
+    /// **Sealed `pub(crate)`:** production callers are only the `WatchServeWindow`
+    /// stream handler and §5.5 collapse in `storage_client` (same crate). Cache
+    /// eviction / insert must not call this (CC-48 /5 — eviction-path write deleted).
+    /// Outside the `cc-p2p` crate this method is not visible.
     pub(crate) fn store_recomputed(&self, slot: Slot) {
         self.recompute_invocations.fetch_add(1, Ordering::Relaxed);
         self.earliest_available_slot
