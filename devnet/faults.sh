@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
-# devnet/faults.sh — docker-level fault primitives (CC-2Jd).
+# devnet/faults.sh — docker-level fault primitives (CC-2Jd, CC-4N).
 #
 # No enclave, no cross-network join recipe — our own compose network only.
 #
 #   offline-gap <container> <minutes>   docker network disconnect → sleep → connect
 #   pause <container> <seconds>         docker pause → sleep → unpause
-#   restart <container>                 docker restart
+#   restart <container>                 kill -s SIGKILL then compose up -d (CC-4N)
 #
 # Container names are compose *service* names (publisher | node-a | node-b | anchor)
 # or full container ids/names from `docker ps`.
+#
+# CC-4N: restart must never use `docker compose down` (and never the volumes
+# flag that deletes named volumes). Named volumes (`cc-store-data`,
+# `cc-p2p-identity` on the main stack; identity mounts on the devnet) are one
+# backup unit with the store. A mismatched node_key after restart must surface
+# I-node-id (AnchorInfo.node_id pairing refusal), not a silent re-backfill —
+# wiping volumes would destroy the proof. CC-4D later appends clock-jump and
+# restart --hold.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,6 +33,9 @@ Usage:
 
 Environment:
   CC_DEVNET_NETWORK   docker network name (default: cc-devnet)
+
+restart uses: docker compose kill -s SIGKILL <service> && docker compose up -d
+  — never docker compose down (CC-4N; named volumes must survive the kill-9 clause).
 EOF
 }
 
@@ -106,12 +117,23 @@ cmd_pause() {
 }
 
 cmd_restart() {
+  # CC-4N: SIGKILL + up preserves named volumes. Never compose down (esp. with
+  # the volumes flag). Pairing refusal (I-node-id): after a restart the store
+  # still holds AnchorInfo.node_id; a replaced node_key must refuse open, not
+  # re-backfill.
   local name="$1"
+  # Prefer compose service name so kill/up target the project; fall back to id
+  # resolution only for the log line when the service is already known.
   local cid
-  cid="$(resolve_container "${name}")"
-  echo "==> restart ${name} (${cid})"
-  docker restart "${cid}"
-  echo "  restarted"
+  cid="$(resolve_container "${name}" 2>/dev/null || true)"
+  if [[ -n "${cid}" ]]; then
+    echo "==> restart ${name} (${cid}) via kill -s SIGKILL then up -d"
+  else
+    echo "==> restart ${name} via kill -s SIGKILL then up -d"
+  fi
+  docker compose -f "${COMPOSE_FILE}" kill -s SIGKILL "${name}"
+  docker compose -f "${COMPOSE_FILE}" up -d "${name}"
+  echo "  restarted (named volumes retained)"
 }
 
 wait_peers_recovered() {

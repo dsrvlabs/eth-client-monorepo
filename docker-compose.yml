@@ -46,6 +46,10 @@ services:
       CC_P2P_GRPC_ADDR: 0.0.0.0:9002
       CC_P2P_METRICS_ADDR: 0.0.0.0:9102
       CC_P2P_PEERS__CHAIN: http://chain:9001
+      # CC-4N / §1.7: persist node_key (CC-20b) + enr_seq (CC-4E) on the named volume.
+      CC_P2P_NODE_KEY_PATH: /app/data/node_key
+    volumes:
+      - cc-p2p-identity:/app/data
     ports: ["9002:9002", "9102:9102"]
     depends_on:
       chain:
@@ -117,6 +121,10 @@ services:
       CC_STORAGE_GRPC_ADDR: 0.0.0.0:9006
       CC_STORAGE_METRICS_ADDR: 0.0.0.0:9106
       CC_STORAGE_PEERS__CHAIN: http://chain:9001
+      # CC-4N / §1.7: redb datadir on the named volume (~59 GiB steady, 128 GiB provisioned).
+      CC_STORAGE_DATA_DIR: /app/data
+    volumes:
+      - cc-store-data:/app/data
     ports: ["9006:9006", "9106:9106"]
     depends_on:
       chain:
@@ -202,3 +210,8 @@ networks:
 
 volumes:
   elstore: {}
+  # CC-4N / §1.7 — consensus durable surface. The two volumes are one backup unit
+  # (docs/running.md): restore them together; a store beside a different node_key
+  # is wrong-index columns and must refuse (I-node-id / ADR P4-13).
+  cc-store-data:      # storage: the redb file, ~59 GiB steady, 128 GiB provisioned (§9)
+  cc-p2p-identity:    # p2p: node_key (CC-20b) + enr_seq (CC-4E). Two small files, mode 0600.

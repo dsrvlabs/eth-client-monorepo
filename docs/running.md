@@ -489,3 +489,75 @@ bash scripts/soak-report.sh --phase 3 \
   --out clause-table.md
 ```
 
+## Phase 4 durable surface (CC-4N)
+
+Phase 4 mounts consensus state on two **named volumes**. Phase 3's `elstore`
+for the EL is independent; the two consensus volumes below are what make the
+`kill -9` restart clauses of Phase 4 possible.
+
+### Named volumes
+
+| Volume | Service | Mount | Contents |
+|---|---|---|---|
+| `cc-store-data` | `storage` | `/app/data` | redb store (~59 GiB steady; 128 GiB provisioned — §9 / V-6) |
+| `cc-p2p-identity` | `p2p` | `/app/data` | `node_key` (CC-20b) + `<node_key>.seq` (CC-4E); mode 0600 |
+
+Compose env (via `cc-config`'s `CC_<SERVICE>_<FIELD>` layer — no direct
+`std::env` in services):
+
+- `CC_STORAGE_DATA_DIR=/app/data`
+- `CC_P2P_NODE_KEY_PATH=/app/data/node_key`
+
+```bash
+docker compose config --volumes
+# expect: cc-store-data, cc-p2p-identity (and elstore when Phase 3's el is present)
+```
+
+### The two volumes are one backup unit
+
+**The two volumes are one backup unit.** Back up and restore `cc-store-data`
+and `cc-p2p-identity` together. A store restored beside a *different* node key
+is a store of wrong-index columns: custody groups are
+`get_custody_groups(node_id, cgc)`, and a new secp256k1 key is a new discv5
+`NodeId`. The store records the `NodeId` its columns were custodied for
+(`AnchorInfo.node_id`, §2.5). An open with a mismatched key **refuses to start**
+with a named error (`I-node-id` / ADR P4-13) rather than silently re-backfilling.
+
+Negative exercise (after the store is open with an anchor):
+
+```bash
+# Replace the persisted key, then restart without destroying volumes.
+docker compose exec p2p sh -c 'rm -f /app/data/node_key'   # or overwrite with a fresh key
+docker compose kill -s SIGKILL storage p2p
+docker compose up -d
+# storage must refuse: error names both stored AnchorInfo.node_id and the derived one
+```
+
+### kill -9 clause — never `down -v`
+
+**The `kill -9` clause runs `docker compose kill -s SIGKILL` then `up`, never `down`.**
+
+```bash
+docker compose kill -s SIGKILL storage    # or the full stack service list
+docker compose up -d
+# volumes survive; process state is recreated from the durable surface
+```
+
+`docker compose down` removes containers but **keeps** named volumes.
+**`docker compose down -v` destroys the proof and is unrecoverable** — it
+deletes `cc-store-data` and `cc-p2p-identity` (and `elstore` if present). Do
+not use `-v` in restart trials, soak recoveries, or the kill-9 acceptance
+clauses.
+
+The same path is encoded in `devnet/faults.sh restart <service>` so the clause
+cannot be run wrongly by hand:
+
+```bash
+bash devnet/faults.sh restart storage
+# → docker compose kill -s SIGKILL storage && docker compose up -d storage
+```
+
+`CC-4D` later appends `clock-jump` and `restart --hold` on top of this
+SIGKILL+up base. Removing the Phase 2 *"not restartable until Phase 4"* soak
+caveat is **CC-45c**, once the durable set is proven end to end.
+
