@@ -125,6 +125,16 @@ pub enum StoreError {
     /// Required meta singleton missing on a non-empty store.
     #[error("missing required meta record {0}")]
     MissingMeta(&'static str),
+    /// A §2.7 store invariant failed (fatal at open; post-pass uses the sink path).
+    ///
+    /// `Display` names the invariant label (`split_fin`, `node_id`, …) and the detail.
+    #[error("store invariant {invariant} violated: {detail}")]
+    InvariantViolation {
+        /// Prometheus / §10.1 label value for the eight store invariants.
+        invariant: &'static str,
+        /// Human-readable detail (often names found vs expected).
+        detail: String,
+    },
 }
 
 impl StoreError {

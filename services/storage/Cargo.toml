@@ -24,3 +24,5 @@ prometheus-client = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+# CC-4H post-pass invariant logging via MetricsInvariantSink.
+tracing = { workspace = true }

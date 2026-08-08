@@ -827,6 +827,58 @@ impl StorageMetrics {
         }
         let _ = self.key_collision.get();
     }
+
+    /// Increment `cc_storage_invariant_violation_total{invariant}` (CC-4H post-pass).
+    ///
+    /// Label must be one of [`Invariant::ALL`] (closed domain). Callers map
+    /// `cc_store::StoreInvariant` via [`Invariant::from_store`] (or `key_collision`
+    /// for the CC-44b path).
+    ///
+    /// Wired from migration/prune once those paths land; unit tests exercise now.
+    #[allow(dead_code)]
+    pub(crate) fn observe_invariant_violation(&self, inv: Invariant) {
+        self.invariant_violation
+            .get_or_create(&InvariantLabels {
+                invariant: inv.as_str().to_owned(),
+            })
+            .inc();
+    }
+}
+
+impl Invariant {
+    /// Map a §2.7 store invariant to the metrics label enum (excludes `key_collision`).
+    #[must_use]
+    #[allow(dead_code)] // used by MetricsInvariantSink once post-pass is scheduled
+    pub(crate) fn from_store(inv: cc_store::StoreInvariant) -> Self {
+        match inv {
+            cc_store::StoreInvariant::Contig => Self::Contig,
+            cc_store::StoreInvariant::ColBlock => Self::ColBlock,
+            cc_store::StoreInvariant::SplitFin => Self::SplitFin,
+            cc_store::StoreInvariant::Ring => Self::Ring,
+            cc_store::StoreInvariant::Window => Self::Window,
+            cc_store::StoreInvariant::NodeId => Self::NodeId,
+            cc_store::StoreInvariant::Shards => Self::Shards,
+            cc_store::StoreInvariant::Cursor => Self::Cursor,
+        }
+    }
+}
+
+/// Metrics + tracing sink for post-pass invariant checks (CC-4H /3).
+#[allow(dead_code)] // constructed by migration/prune pass sites when those land
+pub(crate) struct MetricsInvariantSink<'a> {
+    pub(crate) metrics: &'a StorageMetrics,
+}
+
+impl cc_store::InvariantSink for MetricsInvariantSink<'_> {
+    fn on_violation(&self, violation: &cc_store::InvariantViolation) {
+        tracing::error!(
+            invariant = violation.invariant.as_str(),
+            detail = %violation.detail,
+            "store invariant violation"
+        );
+        self.metrics
+            .observe_invariant_violation(Invariant::from_store(violation.invariant));
+    }
 }
 
 #[cfg(test)]
@@ -1253,5 +1305,51 @@ mod tests {
         let production = src.split("#[cfg(test)]").next().unwrap();
         assert!(!production.contains("\"cc_chain_event_buffer_bytes\""));
         assert!(!production.contains("\"cc_chain_event_buffer_bytes_bound\""));
+    }
+
+    #[test]
+    fn post_pass_split_fin_increments_metric_exactly_once() {
+        // CC-4H /3 after a pass: MetricsInvariantSink increments
+        // cc_storage_invariant_violation_total{invariant="split_fin"} by 1.
+        // (Structural corrupt-store construction lives in `cc-store` unit tests.)
+        use cc_store::{InvariantSink, InvariantViolation, StoreInvariant};
+
+        let mut registry = Registry::default();
+        let metrics = StorageMetrics::register(&mut registry);
+        let sink = MetricsInvariantSink { metrics: &metrics };
+        sink.on_violation(&InvariantViolation {
+            invariant: StoreInvariant::SplitFin,
+            detail: "blocks_hot row at slot 5 ≤ Split.slot 8".into(),
+        });
+
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        assert!(
+            buf.contains("cc_storage_invariant_violation_total{invariant=\"split_fin\"} 1"),
+            "expected split_fin count 1 in:\n{buf}"
+        );
+        for inv in StoreInvariant::ALL {
+            if inv == StoreInvariant::SplitFin {
+                continue;
+            }
+            let needle = format!(
+                "cc_storage_invariant_violation_total{{invariant=\"{}\"}} 0",
+                inv.as_str()
+            );
+            assert!(
+                buf.contains(&needle),
+                "expected zero for {} in:\n{buf}",
+                inv.as_str()
+            );
+        }
+        // Ninth domain value `key_collision` remains seeded at zero.
+        assert!(
+            buf.contains("cc_storage_key_collision_total 0")
+                || buf.contains("cc_storage_key_collision 0")
+                || buf.contains(
+                    "cc_storage_invariant_violation_total{invariant=\"key_collision\"} 0"
+                ),
+            "key_collision series must remain present:\n{buf}"
+        );
     }
 }

@@ -287,12 +287,21 @@ pub struct StoreOpenOptions {
     pub engine: EngineOptions,
     /// Expected config digest (from [`compute_config_digest`] at process start).
     pub config_digest: Root,
+    /// Run §2.7 invariants at open (`storage.check_invariants`).
+    pub check_invariants: bool,
+    /// Node id derived from the node key (`I-node-id`). `None` skips that check.
+    pub expected_node_id: Option<Root>,
+    /// Snapshot ring depth for `I-ring` (`storage.snapshot_ring`, default 4).
+    pub snapshot_ring: u64,
+    /// Optional invocation counter for tests (CC-4H /2). Production leaves `None`.
+    pub invocation_counter: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl StoreOpenOptions {
     /// Build options from a digest input (computes the expected digest).
     ///
     /// Propagates [`compute_config_digest`] errors (e.g. oversized `BLOB_SCHEDULE`).
+    /// Invariant checks default **off** here; set [`Self::check_invariants`] from config.
     pub fn from_config(
         engine: EngineOptions,
         input: &ConfigDigestInput,
@@ -300,6 +309,10 @@ impl StoreOpenOptions {
         Ok(Self {
             engine,
             config_digest: compute_config_digest(input)?,
+            check_invariants: false,
+            expected_node_id: None,
+            snapshot_ring: crate::invariants::DEFAULT_SNAPSHOT_RING,
+            invocation_counter: None,
         })
     }
 
@@ -308,6 +321,46 @@ impl StoreOpenOptions {
         Self {
             engine,
             config_digest,
+            check_invariants: false,
+            expected_node_id: None,
+            snapshot_ring: crate::invariants::DEFAULT_SNAPSHOT_RING,
+            invocation_counter: None,
+        }
+    }
+
+    /// Enable or disable §2.7 checks at open / post-pass call sites.
+    pub fn with_check_invariants(mut self, enabled: bool) -> Self {
+        self.check_invariants = enabled;
+        self
+    }
+
+    /// Set the expected node id for `I-node-id`.
+    pub fn with_expected_node_id(mut self, node_id: Option<Root>) -> Self {
+        self.expected_node_id = node_id;
+        self
+    }
+
+    /// Set snapshot ring depth for `I-ring`.
+    pub fn with_snapshot_ring(mut self, ring: u64) -> Self {
+        self.snapshot_ring = ring;
+        self
+    }
+
+    /// Attach a shared invocation counter for tests (CC-4H /2).
+    pub fn with_invocation_counter(
+        mut self,
+        counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Self {
+        self.invocation_counter = Some(counter);
+        self
+    }
+
+    /// Invariant context derived from these options.
+    pub fn invariant_context(&self) -> crate::invariants::InvariantContext {
+        crate::invariants::InvariantContext {
+            expected_node_id: self.expected_node_id,
+            snapshot_ring: self.snapshot_ring,
+            invocation_counter: self.invocation_counter.clone(),
         }
     }
 }
@@ -316,6 +369,10 @@ impl StoreOpenOptions {
 #[derive(Debug)]
 pub struct Store {
     engine: Engine,
+    /// Whether §2.7 checks run at open and after migration/prune passes.
+    check_invariants: bool,
+    /// Snapshot ring depth + expected node id for post-pass checks.
+    invariant_ctx: crate::invariants::InvariantContext,
 }
 
 impl Store {
@@ -327,13 +384,15 @@ impl Store {
     ///    - missing on a **fresh** (no tables) store → write expected values;
     ///    - missing on a non-empty store → refuse;
     ///    - present → compare; mismatch names **found** and **expected**.
+    /// 4. When `opts.check_invariants`, run §2.7 checks (**fatal** on violation).
     pub fn open(path: &Path, opts: StoreOpenOptions) -> Result<Self, StoreError> {
-        let engine = Engine::open(path, opts.engine)?;
-        Self::bind(engine, opts.config_digest)
+        let engine = Engine::open(path, opts.engine.clone())?;
+        Self::bind(engine, &opts)
     }
 
     /// Bind an already-opened engine (tests).
-    pub fn bind(engine: Engine, expected_digest: Root) -> Result<Self, StoreError> {
+    pub fn bind(engine: Engine, opts: &StoreOpenOptions) -> Result<Self, StoreError> {
+        let expected_digest = opts.config_digest;
         // Registry reconciliation (I-shards light — CC-4H owns prune-mark depth).
         let names = engine.table_names()?;
         if let Some(bad) = find_unregistered_table(&names) {
@@ -375,7 +434,53 @@ impl Store {
             (Some(_), None) => return Err(StoreError::MissingMeta(KEY_CONFIG_DIGEST)),
         }
 
-        Ok(Self { engine })
+        let invariant_ctx = opts.invariant_context();
+        crate::invariants::run_invariant_checks_if_enabled(
+            &engine,
+            opts.check_invariants,
+            crate::invariants::InvariantCheckMode::Open,
+            &invariant_ctx,
+            None,
+        )?;
+
+        Ok(Self {
+            engine,
+            check_invariants: opts.check_invariants,
+            invariant_ctx,
+        })
+    }
+
+    /// Whether `storage.check_invariants` is enabled for this open.
+    pub fn check_invariants_enabled(&self) -> bool {
+        self.check_invariants
+    }
+
+    /// Run §2.7 checks after a migration pass (logged+counted when enabled).
+    pub fn after_migration_pass(
+        &self,
+        sink: Option<&dyn crate::invariants::InvariantSink>,
+    ) -> Result<u64, StoreError> {
+        crate::invariants::run_invariant_checks_if_enabled(
+            &self.engine,
+            self.check_invariants,
+            crate::invariants::InvariantCheckMode::PostPass,
+            &self.invariant_ctx,
+            sink,
+        )
+    }
+
+    /// Run §2.7 checks after a prune pass (logged+counted when enabled).
+    pub fn after_prune_pass(
+        &self,
+        sink: Option<&dyn crate::invariants::InvariantSink>,
+    ) -> Result<u64, StoreError> {
+        crate::invariants::run_invariant_checks_if_enabled(
+            &self.engine,
+            self.check_invariants,
+            crate::invariants::InvariantCheckMode::PostPass,
+            &self.invariant_ctx,
+            sink,
+        )
     }
 
     fn write_bootstrap(engine: &Engine, digest: Root) -> Result<(), StoreError> {
@@ -466,7 +571,10 @@ mod tests {
     }
 
     fn open_opts(input: &ConfigDigestInput) -> StoreOpenOptions {
-        StoreOpenOptions::from_config(EngineOptions::default(), input).unwrap()
+        StoreOpenOptions::from_config(EngineOptions::default(), input)
+            .unwrap()
+            // Schema tests focus on version/digest gates; invariants are CC-4H.
+            .with_check_invariants(false)
     }
 
     #[test]

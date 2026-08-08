@@ -134,6 +134,91 @@ pub fn cold_block_epoch_range(epoch: u64) -> ([u8; 8], [u8; 8]) {
     (start.to_be_bytes(), end.to_be_bytes())
 }
 
+/// Decode slot prefix from a hot block key (`slot ‖ root`, 40 B).
+pub fn decode_hot_block_key(key: &[u8]) -> Option<(Slot, Root)> {
+    if key.len() != 40 {
+        return None;
+    }
+    let mut slot_be = [0u8; 8];
+    slot_be.copy_from_slice(&key[..8]);
+    let mut root_arr = [0u8; 32];
+    root_arr.copy_from_slice(&key[8..40]);
+    Some((
+        Slot::new(u64::from_be_bytes(slot_be)),
+        Root::from_array(root_arr),
+    ))
+}
+
+/// Decode cold block key (`slot`, 8 B).
+pub fn decode_cold_block_key(key: &[u8]) -> Option<Slot> {
+    if key.len() != 8 {
+        return None;
+    }
+    let mut slot_be = [0u8; 8];
+    slot_be.copy_from_slice(key);
+    Some(Slot::new(u64::from_be_bytes(slot_be)))
+}
+
+/// Decode hot column key (`slot ‖ root ‖ idx`, 42 B).
+pub fn decode_hot_column_key(key: &[u8]) -> Option<(Slot, Root, u16)> {
+    if key.len() != 42 {
+        return None;
+    }
+    let mut slot_be = [0u8; 8];
+    slot_be.copy_from_slice(&key[..8]);
+    let mut root_arr = [0u8; 32];
+    root_arr.copy_from_slice(&key[8..40]);
+    let mut idx_be = [0u8; 2];
+    idx_be.copy_from_slice(&key[40..42]);
+    Some((
+        Slot::new(u64::from_be_bytes(slot_be)),
+        Root::from_array(root_arr),
+        u16::from_be_bytes(idx_be),
+    ))
+}
+
+/// Decode cold column key (`slot ‖ idx`, 10 B).
+pub fn decode_cold_column_key(key: &[u8]) -> Option<(Slot, u16)> {
+    if key.len() != 10 {
+        return None;
+    }
+    let mut slot_be = [0u8; 8];
+    slot_be.copy_from_slice(&key[..8]);
+    let mut idx_be = [0u8; 2];
+    idx_be.copy_from_slice(&key[8..10]);
+    Some((
+        Slot::new(u64::from_be_bytes(slot_be)),
+        u16::from_be_bytes(idx_be),
+    ))
+}
+
+/// Decode canonical key (`slot`, 8 B) and value (`root`, 32 B).
+pub fn decode_canonical_entry(key: &[u8], value: &[u8]) -> Option<(Slot, Root)> {
+    let slot = decode_cold_block_key(key)?;
+    if value.len() != 32 {
+        return None;
+    }
+    let mut root_arr = [0u8; 32];
+    root_arr.copy_from_slice(value);
+    Some((slot, Root::from_array(root_arr)))
+}
+
+/// Decode snapshot key (`slot`, 8 B).
+pub fn decode_snapshot_key(key: &[u8]) -> Option<Slot> {
+    decode_cold_block_key(key)
+}
+
+/// Exclusive upper bound key for hot block rows with `slot ≤ max_slot` (slot-prefix order).
+pub fn hot_block_slot_upper_bound(max_slot_inclusive: Slot) -> [u8; 40] {
+    let next = Slot::new(max_slot_inclusive.as_u64().saturating_add(1));
+    encode_hot_block_key(next, &Root::ZERO)
+}
+
+/// Exclusive upper bound for cold block rows with `slot ≤ max_slot`.
+pub fn cold_block_slot_upper_bound(max_slot_inclusive: Slot) -> [u8; 8] {
+    encode_cold_block_key(Slot::new(max_slot_inclusive.as_u64().saturating_add(1)))
+}
+
 /// Ordering key used by the §2.1 property test: `(slot, root, index)` as cold/hot composite.
 ///
 /// Encodes the hot column key so the property covers all three components.

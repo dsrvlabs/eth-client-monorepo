@@ -1,15 +1,27 @@
 # Local-dev defaults for `storage` (Architecture §6.3).
 # Compose overrides via CC_STORAGE_* environment variables.
+#
+# Profile note (CC-4H / Architecture §2.7): multi-file profiles are not yet
+# split. This file is the **devnet / local-dev** default surface:
+#   check_invariants = true
+# For the **Hoodi soak**, set `CC_STORAGE_CHECK_INVARIANTS=false` (or a future
+# hoodi profile) so O(canonical-index) I-contig walks do not perturb disk
+# measurements. Defaults are per-profile, not hard-coded in `cc-store`.
 
 grpc_addr = "127.0.0.1:9006"
 metrics_addr = "127.0.0.1:9106"
 log_format = "json"
 log_filter = "info"
 
-[peers]
-chain = "http://127.0.0.1:9001"
-
 # CC-40b durability knob (Architecture §8.4 / ADR P4-05).
 # immediate = 1PC+C (default); paranoid = Immediate + two-phase commit.
 # Override: CC_STORAGE_DURABILITY=paranoid (figment env layer in cc-config).
 durability = "immediate"
+
+# CC-4H / §2.7: run store invariants at open (fatal) and after migration/prune
+# (log + count). Devnet default **true**; Hoodi soak **false** (see profile note).
+# Override: CC_STORAGE_CHECK_INVARIANTS=false
+check_invariants = true
+
+[peers]
+chain = "http://127.0.0.1:9001"
