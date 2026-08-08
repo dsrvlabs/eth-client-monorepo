@@ -22,6 +22,10 @@ ethereum_ssz_derive = { workspace = true }
 ssz_types = { workspace = true }
 typenum = { workspace = true }
 sha2 = { workspace = true }
+# Serve-window YAML field extract (CC-4A): MIN_VALIDATOR_WITHDRAWABILITY_DELAY,
+# CHURN_LIMIT_QUOTIENT, optional vestigial MIN_EPOCHS_FOR_BLOCK_REQUESTS.
+serde = { workspace = true }
+serde_yaml = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

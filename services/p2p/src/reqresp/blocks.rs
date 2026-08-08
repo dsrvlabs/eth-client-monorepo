@@ -33,11 +33,14 @@ use crate::reqresp::Protocol;
 /// Spec `MAX_REQUEST_BLOCKS_DENEB` — hard cap on blocks per request.
 pub const MAX_REQUEST_BLOCKS_DENEB: u64 = 128;
 
-/// Hoodi / mainnet `MIN_EPOCHS_FOR_BLOCK_REQUESTS` (≈ 4.8 months).
+/// Hoodi / mainnet block serve floor (≈ 4.8 months / 146.77 days).
 ///
-/// Read as a config constant here (not recomputed). Phase 2's serve window is
-/// far above this floor, so the `earliest_available_slot` branch fires first.
-pub const MIN_EPOCHS_FOR_BLOCK_REQUESTS: u64 = 33_024;
+/// Formula: `MIN_VALIDATOR_WITHDRAWABILITY_DELAY + CHURN_LIMIT_QUOTIENT / 2`
+/// (`256 + 65536 / 2`). Phase 4 `CC-4A` makes `cc_store::window` the authority;
+/// this Phase 2 constant keeps the arithmetic form so the literal is never a
+/// production source constant (CC-4A /4 grep). `CC-49` will wire the store
+/// value through; until then the mainnet/hoodi scalars are inlined.
+pub const MIN_EPOCHS_FOR_BLOCK_REQUESTS: u64 = 256 + 65_536 / 2;
 
 /// SSZ length of `BeaconBlocksByRange` request: two `uint64`.
 pub const BY_RANGE_SSZ_LEN: usize = 16;

@@ -1254,6 +1254,8 @@ dependencies = [
  "ethereum_ssz_derive",
  "proptest",
  "redb",
+ "serde",
+ "serde_yaml",
  "sha2 0.10.9",
  "ssz_types",
  "thiserror 2.0.19",
