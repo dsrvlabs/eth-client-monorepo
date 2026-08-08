@@ -1,13 +1,19 @@
-//! `storage` service stub — Architecture §4.1, CC-01b.
+//! `storage` service stub — Architecture §4.1, CC-01b / CC-4Ca.
 //!
 //! Phase 0 surface: health + reflection + `GetInfo`. Real RPCs land in Phase 4+.
 //! Health peer: `chain` (§6.3).
+//!
+//! CC-4Ca: §10.1 metric families are registered between `init` and `serve`.
+//! This file is append-only thereafter (one task-spawn append per issue).
+
+mod metrics;
 
 use cc_bootstrap::{PeerSpec, ServiceSpec, TelemetrySettings};
 use cc_config::ServiceConfig;
 use cc_proto::common::BuildInfo;
 use cc_proto::storage::storage_service_server::{StorageService, StorageServiceServer};
 use cc_proto::storage::{GetInfoRequest, GetInfoResponse};
+use metrics::StorageMetrics;
 use serde::Deserialize;
 use tonic::service::Routes;
 use tonic::{Request, Response, Status};
@@ -76,7 +82,9 @@ impl StorageService for StorageStub {
 async fn main() -> anyhow::Result<()> {
     // Fail before any bind (CC-09/2): load config, then telemetry, then serve.
     let cfg = cc_config::load::<StorageConfig>(SERVICE)?;
-    let bs = cc_bootstrap::init(SERVICE, TelemetrySettings::from(&cfg.service))?;
+    let mut bs = cc_bootstrap::init(SERVICE, TelemetrySettings::from(&cfg.service))?;
+    // CC-4Ca: §10.1 families into bs.registry between init and serve (Phase 0 seam).
+    let _storage_metrics = StorageMetrics::register(&mut bs.registry);
     let routes = Routes::default().add_service(StorageServiceServer::new(StorageStub));
     cc_bootstrap::serve(bs, cfg.service_spec(), routes).await?;
     Ok(())

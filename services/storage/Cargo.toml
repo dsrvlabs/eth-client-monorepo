@@ -19,6 +19,8 @@ anyhow = { workspace = true }
 cc-bootstrap = { workspace = true }
 cc-config = { workspace = true }
 cc-proto = { workspace = true }
+cc-store = { workspace = true }
+prometheus-client = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }

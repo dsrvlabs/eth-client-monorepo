@@ -1223,6 +1223,8 @@ dependencies = [
  "cc-bootstrap",
  "cc-config",
  "cc-proto",
+ "cc-store",
+ "prometheus-client",
  "serde",
  "tokio",
  "tonic",
