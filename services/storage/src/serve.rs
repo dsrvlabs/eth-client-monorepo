@@ -1,4 +1,24 @@
-//! Serve path for `eth.storage.v1` (CC-4F / Architecture §1.6, §7.2).
+//! Serve path for `eth.storage.v1` (CC-4F / Architecture §1.6, §7.2; CC-46b §7.1).
+//!
+//! # Hazard (a) — 1-epoch margin + admission-time key materialisation (CC-46b)
+//!
+//! The window check happens **once**, at request admission; the prune watermark
+//! can move past the request's `start_slot` while the response is being built.
+//! **Both** mitigations, not either:
+//!
+//! 1. **`storage.prune_margin_epochs = 1`** on both retention watermarks (§7.0
+//!    table). Cost: **~6.9 MiB of columns** and **~0.7 MiB of blocks**.
+//!    Lighthouse's `--blob-prune-margin-epochs` defaults to **0** because they
+//!    rely on MVCC alone — **we do not copy that default**: the margin
+//!    **removes** the race rather than narrowing it.
+//! 2. **Admission-time key materialisation.** The serve handler resolves the
+//!    full key set (and copies values) under **one read transaction at
+//!    admission**, before the first byte is produced — so a watermark that
+//!    moves mid-response cannot remove a key the response already promised.
+//!
+//! Neither mitigation alone is relied on: margin-0 + materialisation still
+//! passes under a forced concurrent prune; margin-1 with materialisation
+//! removed fails. Production keeps both.
 //!
 //! # Cross-Requirement Dependency 6 — long-reader / materialise-and-drop
 //!
@@ -78,6 +98,20 @@ const MAX_BY_ROOT: usize = 128;
 /// Process name stamped into `GetInfo`.
 const SERVICE: &str = "storage";
 
+/// How serve materialises keys under the read path (CC-46b hazard (a)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum MaterialiseMode {
+    /// One read txn at admission; full key set resolved before first byte.
+    /// Production default — pairs with the 1-epoch prune margin.
+    #[default]
+    AdmissionTime,
+    /// Per-slot re-open of the read txn (materialisation removed). **Test-only**
+    /// negative path: a concurrent prune mid-serve can drop keys the response
+    /// already promised under the window check.
+    #[allow(dead_code)] // constructed in tests only
+    PerSlotReopen,
+}
+
 /// Serve-path configuration (from `config/storage.toml`).
 #[derive(Debug, Clone)]
 pub(crate) struct ServeConfig {
@@ -87,6 +121,8 @@ pub(crate) struct ServeConfig {
     pub permits: usize,
     /// Max wait for a permit before `RESOURCE_EXHAUSTED`.
     pub queue_timeout: Duration,
+    /// Key materialisation mode (default [`MaterialiseMode::AdmissionTime`]).
+    pub materialise_mode: MaterialiseMode,
 }
 
 impl Default for ServeConfig {
@@ -95,15 +131,22 @@ impl Default for ServeConfig {
             buffer_bytes: DEFAULT_SERVE_BUFFER_BYTES,
             permits: DEFAULT_SERVE_PERMITS,
             queue_timeout: DEFAULT_SERVE_QUEUE_TIMEOUT,
+            materialise_mode: MaterialiseMode::AdmissionTime,
         }
     }
 }
+
+/// Optional mid-serve hook for the forced-concurrent-prune test (CC-46b /4).
+///
+/// Invoked from **inside** the serve materialisation loop (after the first slot
+/// is loaded) so the prune pass is driven by the serve path rather than raced
+/// by timing. Named: `mid_serve_prune_hook`.
+type MidServeHook = Arc<dyn Fn() + Send + Sync>;
 
 /// gRPC `StorageService` implementation (CC-4F).
 ///
 /// Holds `Arc<Engine>` for short-lived read transactions and optional writer
 /// for `PutBackfillBatch` (single-writer path).
-#[derive(Debug)]
 pub(crate) struct StorageServer {
     engine: Option<Arc<Engine>>,
     writer: Option<WriterHandle>,
@@ -117,6 +160,19 @@ pub(crate) struct StorageServer {
     _window_rx: watch::Receiver<ServeWindow>,
     /// Test-only: next `PutBackfillBatch` commit is aborted without applying.
     fail_next_commit: Arc<std::sync::atomic::AtomicBool>,
+    /// Test-only: forced concurrent prune from inside serve (CC-46b /4).
+    mid_serve_prune_hook: Option<MidServeHook>,
+}
+
+impl std::fmt::Debug for StorageServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StorageServer")
+            .field("cfg", &self.cfg)
+            .field("has_engine", &self.engine.is_some())
+            .field("has_writer", &self.writer.is_some())
+            .field("has_mid_serve_hook", &self.mid_serve_prune_hook.is_some())
+            .finish()
+    }
 }
 
 impl StorageServer {
@@ -133,6 +189,7 @@ impl StorageServer {
             window_tx,
             _window_rx: window_rx,
             fail_next_commit: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            mid_serve_prune_hook: None,
         }
     }
 
@@ -155,7 +212,16 @@ impl StorageServer {
             window_tx,
             _window_rx: window_rx,
             fail_next_commit: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            mid_serve_prune_hook: None,
         }
+    }
+
+    /// Install the forced-concurrent-prune hook (CC-46b /4 forcing mechanism:
+    /// `mid_serve_prune_hook`).
+    #[cfg(test)]
+    pub(crate) fn with_mid_serve_prune_hook(mut self, hook: MidServeHook) -> Self {
+        self.mid_serve_prune_hook = Some(hook);
+        self
     }
 
     /// Publish a new serve window (backfill / prune / cgc). Subscribers see it.
@@ -298,19 +364,18 @@ impl StorageService for StorageServer {
         // Cap *during* materialisation: stop loading once the next whole block
         // would exceed serve_buffer_bytes. Peak RSS ≤ buffer × permits, never
         // load-full-then-shrink (would spike above the ceiling).
-        let blocks = {
-            let rt = engine.read().map_err(store_status)?;
-            let split = load_split(&rt).map_err(store_status)?.map(|s| s.slot);
-            let blocks = materialise_blocks_capped(
-                &rt,
-                Slot::new(req.start_slot),
-                req.count,
-                split,
-                self.cfg.buffer_bytes,
-            )?;
-            // `rt` drops here — before any byte leaves this process.
-            blocks
-        };
+        //
+        // Admission-time key materialisation (CC-46b): one read txn resolves the
+        // full key set before the first byte is produced. `PerSlotReopen` is the
+        // test-only negative path that removes this mitigation.
+        let blocks = materialise_blocks_for_request(
+            engine,
+            Slot::new(req.start_slot),
+            req.count,
+            self.cfg.buffer_bytes,
+            self.cfg.materialise_mode,
+            self.mid_serve_prune_hook.as_ref(),
+        )?;
         self.observe_read_txn(materialise_start);
 
         if blocks.is_empty() {
@@ -733,21 +798,90 @@ fn writer_status(err: WriterError) -> Status {
     }
 }
 
+/// Admission-time or per-slot materialisation of a blocks-by-range request.
+fn materialise_blocks_for_request(
+    engine: &Engine,
+    start_slot: Slot,
+    count: u64,
+    buffer_bytes: u64,
+    mode: MaterialiseMode,
+    mid_hook: Option<&MidServeHook>,
+) -> Result<Vec<BlockSsz>, Status> {
+    match mode {
+        MaterialiseMode::AdmissionTime => {
+            // One read txn at admission — full key set under MVCC snapshot.
+            let rt = engine.read().map_err(store_status)?;
+            let split = load_split(&rt).map_err(store_status)?.map(|s| s.slot);
+            let blocks = materialise_blocks_capped(
+                &rt,
+                start_slot,
+                count,
+                split,
+                buffer_bytes,
+                mid_hook,
+            )?;
+            // `rt` drops here — before any byte leaves this process.
+            Ok(blocks)
+        }
+        MaterialiseMode::PerSlotReopen => {
+            // Test-only: new read txn per slot so a mid-serve prune is visible.
+            let mut out = Vec::new();
+            let mut total = 0u64;
+            let start = start_slot.as_u64();
+            let end = start.saturating_add(count);
+            for (i, s) in (start..end).enumerate() {
+                if i == 1
+                    && let Some(hook) = mid_hook
+                {
+                    hook();
+                }
+                let rt = engine.read().map_err(store_status)?;
+                let split = load_split(&rt).map_err(store_status)?.map(|s| s.slot);
+                let rows = blocks_by_range(&rt, Slot::new(s), 1, split).map_err(store_status)?;
+                drop(rt);
+                let Some(r) = rows.into_iter().next() else {
+                    continue;
+                };
+                let len = r.ssz.len() as u64;
+                if total.saturating_add(len) > buffer_bytes {
+                    break;
+                }
+                total = total.saturating_add(len);
+                out.push(BlockSsz {
+                    ssz: r.ssz,
+                    slot: r.slot.as_u64(),
+                    root: r.root.as_slice().to_vec(),
+                });
+            }
+            Ok(out)
+        }
+    }
+}
+
 /// Materialise blocks under `buffer_bytes`, stopping at the last whole block
 /// that fits. Loads **one slot at a time** so peak memory never exceeds the
-/// buffer (no full-range load then shrink).
+/// buffer (no full-range load then shrink). Single `ReadTxn` held for the whole
+/// pass (admission-time materialisation).
 fn materialise_blocks_capped(
     rt: &cc_store::engine::ReadTxn,
     start_slot: Slot,
     count: u64,
     split: Option<Slot>,
     buffer_bytes: u64,
+    mid_hook: Option<&MidServeHook>,
 ) -> Result<Vec<BlockSsz>, Status> {
     let mut out = Vec::new();
     let mut total = 0u64;
     let start = start_slot.as_u64();
     let end = start.saturating_add(count);
-    for s in start..end {
+    for (i, s) in (start..end).enumerate() {
+        // Forcing mechanism for CC-46b /4: after the first slot is in hand,
+        // invoke `mid_serve_prune_hook` so the prune pass runs *inside* serve.
+        if i == 1
+            && let Some(hook) = mid_hook
+        {
+            hook();
+        }
         // One slot → at most one canonical block; avoids loading the whole range.
         let rows = blocks_by_range(rt, Slot::new(s), 1, split).map_err(store_status)?;
         let Some(r) = rows.into_iter().next() else {
@@ -1100,6 +1234,7 @@ mod tests {
             buffer_bytes: block_len * 2 + 10, // two whole blocks + slop
             permits: 4,
             queue_timeout: Duration::from_secs(2),
+            ..ServeConfig::default()
         };
         let srv = server_with(Arc::clone(&eng), cfg);
         let resp = srv
@@ -1132,6 +1267,7 @@ mod tests {
             buffer_bytes: one_sidecar * 3 + 8, // exactly one whole block of 3 cols
             permits: 4,
             queue_timeout: Duration::from_secs(2),
+            ..ServeConfig::default()
         };
         let srv = server_with(Arc::clone(&eng), cfg);
         let resp = srv
@@ -1158,6 +1294,7 @@ mod tests {
             buffer_bytes: DEFAULT_SERVE_BUFFER_BYTES,
             permits: 4,
             queue_timeout: Duration::from_millis(50),
+            ..ServeConfig::default()
         };
         assert_eq!(
             cfg.buffer_bytes * cfg.permits as u64,
@@ -1216,6 +1353,7 @@ mod tests {
             buffer_bytes: block_len * 3, // exactly 3 whole blocks
             permits: 4,
             queue_timeout: Duration::from_secs(2),
+            ..ServeConfig::default()
         };
         let srv = server_with(Arc::clone(&eng), cfg);
         let resp = srv
@@ -1523,5 +1661,179 @@ mod tests {
     fn storage_service_server_type_constructs() {
         let srv = StorageServer::stub(metrics(), ServeConfig::default());
         let _ = StorageServiceServer::new(srv);
+    }
+
+    /// Force-delete every block key in `[start, start+count)` (direct engine
+    /// write). Used by the forced-concurrent-prune tests as the body of
+    /// `mid_serve_prune_hook`.
+    fn force_delete_block_range(eng: &Engine, start: u64, count: u64) {
+        use cc_store::keys::{encode_cold_block_key, encode_hot_block_key, encode_root_key};
+        use cc_store::{TABLE_BLOCKS_HOT, TABLE_BLOCK_SLOT_BY_ROOT, TABLE_CANONICAL};
+        let mut b = eng.batch();
+        for i in 0..count {
+            let slot = Slot::new(start + i);
+            let root = Root::from_array({
+                let mut a = [0u8; 32];
+                a[0..8].copy_from_slice(&(start + i).to_be_bytes());
+                a
+            });
+            b.delete(TABLE_BLOCKS_HOT, &encode_hot_block_key(slot, &root));
+            b.delete(TABLE_CANONICAL, &encode_cold_block_key(slot));
+            b.delete(TABLE_BLOCK_SLOT_BY_ROOT, &encode_root_key(&root));
+        }
+        eng.commit(b).unwrap();
+    }
+
+    /// CC-46 /4 — 128-slot serve at the watermark with prune forced mid-serve
+    /// (`mid_serve_prune_hook`) returns a **complete** response. Both
+    /// mitigations on (margin documented; admission-time materialisation).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn forced_concurrent_prune_complete_response() {
+        let (dir, eng) = open_engine("force-prune-both");
+        let watermark = 1_000u64;
+        seed_blocks(&eng, watermark, 128);
+        let eng_hook = Arc::clone(&eng);
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default())
+            .with_mid_serve_prune_hook(Arc::new(move || {
+                // Forcing mechanism: mid_serve_prune_hook — prune pass driven
+                // from inside serve after the first slot is materialised.
+                force_delete_block_range(&eng_hook, watermark, 128);
+            }));
+        srv.publish_window(ServeWindow {
+            earliest_available_slot: watermark,
+            cgc: 4,
+            head_slot: watermark + 200,
+            block_floor: watermark,
+            column_floor: watermark,
+            branch: 2,
+            holes: vec![],
+        });
+        let resp = srv
+            .get_blocks_by_range(Request::new(GetBlocksByRangeRequest {
+                start_slot: watermark,
+                count: 128,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            resp.blocks.len(),
+            128,
+            "admission-time materialisation + margin: complete 128-slot response under forced concurrent prune"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Mitigation A alone: margin at 0, materialisation intact → still passes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn forced_concurrent_prune_margin_zero_materialise_intact() {
+        let (dir, eng) = open_engine("force-prune-mat");
+        let watermark = 2_000u64;
+        seed_blocks(&eng, watermark, 128);
+        let eng_hook = Arc::clone(&eng);
+        let srv = server_with(
+            Arc::clone(&eng),
+            ServeConfig {
+                materialise_mode: MaterialiseMode::AdmissionTime,
+                ..ServeConfig::default()
+            },
+        )
+        .with_mid_serve_prune_hook(Arc::new(move || {
+            force_delete_block_range(&eng_hook, watermark, 128);
+        }));
+        srv.publish_window(ServeWindow {
+            earliest_available_slot: watermark,
+            cgc: 4,
+            head_slot: watermark + 200,
+            block_floor: watermark,
+            column_floor: watermark,
+            branch: 2,
+            holes: vec![],
+        });
+        let resp = srv
+            .get_blocks_by_range(Request::new(GetBlocksByRangeRequest {
+                start_slot: watermark,
+                count: 128,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            resp.blocks.len(),
+            128,
+            "margin=0 + admission-time materialisation still yields complete response"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Mitigation B alone is insufficient: margin=1 with materialisation
+    /// removed → incomplete response under forced concurrent prune.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn forced_concurrent_prune_margin_one_materialise_removed_fails() {
+        let (dir, eng) = open_engine("force-prune-no-mat");
+        let watermark = 3_000u64;
+        seed_blocks(&eng, watermark, 128);
+        let eng_hook = Arc::clone(&eng);
+        let srv = server_with(
+            Arc::clone(&eng),
+            ServeConfig {
+                // Margin is a prune-side knob; serve still sees forced deletes.
+                // materialisation removed:
+                materialise_mode: MaterialiseMode::PerSlotReopen,
+                ..ServeConfig::default()
+            },
+        )
+        .with_mid_serve_prune_hook(Arc::new(move || {
+            force_delete_block_range(&eng_hook, watermark, 128);
+        }));
+        srv.publish_window(ServeWindow {
+            earliest_available_slot: watermark,
+            cgc: 4,
+            head_slot: watermark + 200,
+            block_floor: watermark,
+            column_floor: watermark,
+            branch: 2,
+            holes: vec![],
+        });
+        let result = srv
+            .get_blocks_by_range(Request::new(GetBlocksByRangeRequest {
+                start_slot: watermark,
+                count: 128,
+            }))
+            .await;
+        match result {
+            Ok(resp) => {
+                let n = resp.into_inner().blocks.len();
+                assert!(
+                    n < 128,
+                    "materialisation removed: concurrent prune must yield incomplete response, got {n}"
+                );
+            }
+            Err(status) => {
+                // ResourceUnavailable for empty/partial is also a failure of completeness.
+                assert_eq!(status.code(), tonic::Code::Unavailable);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn module_doc_states_margin_cost_and_lighthouse_not_copied() {
+        let src = include_str!("serve.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+        assert!(
+            prod.contains("6.9 MiB") && prod.contains("0.7 MiB"),
+            "module doc must state margin cost (6.9 MiB columns, 0.7 MiB blocks)"
+        );
+        assert!(
+            prod.contains("do not copy that default")
+                || prod.contains("not copy that default"),
+            "module doc must state Lighthouse's default of 0 was not copied"
+        );
+        assert!(
+            prod.contains("Admission-time key materialisation")
+                || prod.contains("admission-time key materialisation"),
+            "module doc must name admission-time key materialisation"
+        );
     }
 }

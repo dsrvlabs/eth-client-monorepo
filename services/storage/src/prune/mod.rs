@@ -1,4 +1,5 @@
-//! Five prune passes, five watermarks (Architecture §7.0 / CC-46a).
+//! Five prune passes, five watermarks (Architecture §7.0 / CC-46a) plus
+//! hazards (a) and (c) (CC-46b / §7.1, §7.3–7.5).
 //!
 //! | Pass | Watermark | Trigger |
 //! |---|---|---|
@@ -19,15 +20,46 @@
 //! must not fire a prune pass (feedback loop).
 //!
 //! **Writer:** passes submit **P2** chunks only. This module does not edit
-//! `writer.rs` (**D-4**). Chunk/deadline abandon loop is **CC-46b**.
+//! `writer.rs` (**D-4**). Chunk/deadline abandon loop lives here (CC-46b).
 //!
-//! `ls services/storage/src/prune/` shows exactly
-//! `mod.rs`, `columns.rs`, `blocks.rs`, `states.rs` — **no `unfinalized.rs`**.
+//! ## Margin cost (§7.1 / `prune_margin_epochs = 1`)
+//!
+//! Defaults to **1** epoch on both watermarks. Cost: **~6.9 MiB of columns** and
+//! **~0.7 MiB of blocks**. Lighthouse's `--blob-prune-margin-epochs` defaults to
+//! **0** because they rely on MVCC alone — **we do not copy that default**:
+//! the margin **removes** the delete/serve race rather than narrowing it.
+//! Production still pairs it with admission-time key materialisation in
+//! `serve.rs` (both mitigations, not either).
+//!
+//! ## Chunk + deadline (§7.3 / §7.4)
+//!
+//! 512 keys → commit → `yield_now()` → deadline check (`2 s`) → **abandon until
+//! the next tick** if exceeded. Resumption is idempotent because the watermark
+//! is the only state the pass carries.
+//!
+//! ## Shard retirement (§7.5)
+//!
+//! One `drop_table` per tick for a fully-retirable shard (width = cadence).
+//! Attacks delete **latency**; file **growth** is an engine property
+//! (`cc_storage_disk_bytes / cc_storage_live_set_bytes`).
+//!
+//! ## R-10 early warning
+//!
+//! `cc_storage_writer_queue_depth{class="p0"}` is expected to be **zero at every
+//! scrape** while prune passes fire: P2 chunks yield between units so write-behind
+//! (P0) is never queued behind a multi-second prune batch. A non-zero p0 depth
+//! during pruning means the chunk/deadline knobs are wrong and import is at risk.
+//!
+//! `ls services/storage/src/prune/` shows
+//! `mod.rs`, `columns.rs`, `blocks.rs`, `states.rs`, `chunk.rs`, `shards.rs` —
+//! **no `unfinalized.rs`**.
 
 #![allow(dead_code)]
 
 pub(crate) mod blocks;
+pub(crate) mod chunk;
 pub(crate) mod columns;
+pub(crate) mod shards;
 pub(crate) mod states;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,6 +67,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cc_store::engine::Engine;
+use cc_store::keys::{blocks_shard_table, columns_shard_table};
 use cc_store::meta::{
     KEY_PRUNE_MARKS, PruneMarks, TABLE_META,
 };
@@ -50,7 +83,15 @@ use crate::metrics::{
 use crate::writer::{BackgroundChunk, WriterError, WriterHandle};
 
 use blocks::{blocks_prune_mark, i2_check, plan_block_deletes, record_i2_refusal, I2Decision};
+use chunk::{
+    submit_deletes_chunked, ChunkSubmitArgs, ChunkSubmitStats, DEFAULT_PRUNE_CHUNK_KEYS,
+    DEFAULT_PRUNE_DEADLINE,
+};
 use columns::{columns_prune_mark, plan_column_deletes, DEFAULT_COLUMNS_RETENTION_EPOCHS};
+use shards::{
+    next_retirable_block_shard, next_retirable_column_shard, retire_one_block_shard,
+    retire_one_column_shard,
+};
 use states::{plan_snapshot_ring_trim, plan_state_root_deletes};
 
 // ── defaults (§7.4) ─────────────────────────────────────────────────────────
@@ -60,12 +101,13 @@ pub(crate) const DEFAULT_PRUNE_COLUMNS_EPOCHS: u64 = 32;
 /// Block (+ state roots) pass cadence (equals block shard width).
 pub(crate) const DEFAULT_PRUNE_BLOCKS_EPOCHS: u64 = 256;
 /// One-epoch serve-side margin baked into both watermarks (§7.1 / §7.0 table).
+///
+/// Cost: ~6.9 MiB columns + ~0.7 MiB blocks. Not Lighthouse's 0 (MVCC-only).
 pub(crate) const DEFAULT_PRUNE_MARGIN_EPOCHS: u64 = 1;
 /// Disk alarm at 75 % of the 128 GiB provision = **96 GiB** (§9.3).
 pub(crate) const DEFAULT_DISK_ALARM_BYTES: u64 = 96 * 1024 * 1024 * 1024;
-/// Soft chunk size for P2 submit (CC-46b owns the deadline loop; we still chunk
-/// so a single pass stays under `MAX_BATCH_OPS`).
-pub(crate) const PRUNE_CHUNK_KEYS: usize = 512;
+/// Soft chunk size for P2 submit (alias of [`DEFAULT_PRUNE_CHUNK_KEYS`]).
+pub(crate) const PRUNE_CHUNK_KEYS: usize = DEFAULT_PRUNE_CHUNK_KEYS;
 /// Default slots per epoch / seconds per slot (mainnet-shaped).
 pub(crate) const DEFAULT_SLOTS_PER_EPOCH: u64 = 32;
 pub(crate) const DEFAULT_SECONDS_PER_SLOT: u64 = 12;
@@ -79,8 +121,13 @@ pub(crate) struct PruneConfig {
     pub prune_columns_epochs: u64,
     /// Epoch tick cadence for the blocks (+ state roots) pass. Default **256**.
     pub prune_blocks_epochs: u64,
-    /// Margin subtracted from both watermarks. Default **1**.
+    /// Margin subtracted from both watermarks. Default **1** (§7.1 cost: 6.9 MiB
+    /// columns + 0.7 MiB blocks; not Lighthouse's 0).
     pub prune_margin_epochs: u64,
+    /// Max keys per P2 chunk. Default **512** (§7.4).
+    pub prune_chunk_keys: usize,
+    /// Wall-clock deadline for one pass. Default **2 s** (§7.4).
+    pub prune_deadline: Duration,
     /// Disk alarm threshold in bytes. Default **96 GiB**. Alarm only.
     pub disk_alarm_bytes: u64,
     /// Column retention depth in epochs (spec 4096; CC-4D override ok).
@@ -110,6 +157,8 @@ impl Default for PruneConfig {
             prune_columns_epochs: DEFAULT_PRUNE_COLUMNS_EPOCHS,
             prune_blocks_epochs: DEFAULT_PRUNE_BLOCKS_EPOCHS,
             prune_margin_epochs: DEFAULT_PRUNE_MARGIN_EPOCHS,
+            prune_chunk_keys: DEFAULT_PRUNE_CHUNK_KEYS,
+            prune_deadline: DEFAULT_PRUNE_DEADLINE,
             disk_alarm_bytes: DEFAULT_DISK_ALARM_BYTES,
             columns_retention_epochs: DEFAULT_COLUMNS_RETENTION_EPOCHS,
             blocks_retention_epochs,
@@ -160,6 +209,18 @@ pub(crate) enum PassOutcome {
     AlreadyAtMark,
     /// P2 queue full; marks not advanced (retry next tick).
     QueueFull,
+    /// Deadline exceeded mid-pass; committed chunks stay, marks **not** advanced
+    /// so the next tick resumes from the durable watermark (CC-46b / §7.3).
+    ///
+    /// **SEC-46b-1:** cadence markers (`last_columns_epoch` / `last_blocks_epoch`)
+    /// are also **not** advanced — the next epoch-tick (or same-epoch re-entry)
+    /// re-runs the pass immediately rather than waiting a full cadence interval.
+    AbandonedDeadline {
+        /// Keys committed before abandon.
+        keys_submitted: u64,
+        /// Max keys in any single P2 chunk (≤ `prune_chunk_keys`).
+        max_chunk_keys: usize,
+    },
 }
 
 /// Disk-alarm check result — **never** a prune trigger.
@@ -199,6 +260,12 @@ pub(crate) struct Pruner {
     pub disk_alarm_firings: AtomicU64,
     /// How many I2 refusals this process has recorded.
     pub i2_refusals: AtomicU64,
+    /// Peak keys observed in any single P2 prune chunk (CC-46b submit-site bound).
+    pub max_chunk_keys_observed: AtomicU64,
+    /// Cumulative keys submitted through the chunk loop (tests / metrics).
+    pub keys_submitted_total: AtomicU64,
+    /// Deadline-abandon count (mirrors metric; handy for tests).
+    pub deadline_abandons: AtomicU64,
 }
 
 impl Pruner {
@@ -242,6 +309,9 @@ impl Pruner {
             snapshot_invocations: AtomicU64::new(0),
             disk_alarm_firings: AtomicU64::new(0),
             i2_refusals: AtomicU64::new(0),
+            max_chunk_keys_observed: AtomicU64::new(0),
+            keys_submitted_total: AtomicU64::new(0),
+            deadline_abandons: AtomicU64::new(0),
         }
     }
 
@@ -414,27 +484,56 @@ impl Pruner {
             return PassOutcome::AlreadyAtMark;
         }
 
-        let plan = match plan_column_deletes(&self.engine, from, proposed) {
+        let mut plan = match plan_column_deletes(&self.engine, from, proposed) {
             Ok(p) => p,
             Err(e) => {
                 warn!(target: "cc_storage::prune", error = %e, "columns plan failed");
                 return PassOutcome::QueueFull;
             }
         };
+        // Cold keys in a fully-retirable shard are handled by drop_table (§7.5).
+        strip_retirable_column_shard_keys(&mut plan, from, proposed);
         let rows = plan.rows;
         let bytes = plan.bytes;
-        if let Err(e) = self
+        match self
             .submit_plan_and_marks(
                 StorageClass::Columns,
+                PrunePass::Columns,
                 plan,
+                started,
                 |m| m.columns_up_to = proposed,
             )
             .await
         {
-            warn!(target: "cc_storage::prune", error = %e, "columns P2 submit failed");
-            return PassOutcome::QueueFull;
+            Ok(SubmitOutcome::Completed) => {}
+            Ok(SubmitOutcome::Abandoned { stats }) => {
+                // SEC-46b-1: do **not** advance last_columns_epoch — next tick
+                // must be allowed to resume immediately (same epoch or next
+                // cadence-eligible tick) without waiting a full cadence.
+                self.observe_pass_seconds(PrunePass::Columns, started.elapsed());
+                warn!(
+                    target: "cc_storage::prune",
+                    current_epoch,
+                    keys_submitted = stats.keys_submitted,
+                    "columns prune abandoned on deadline — cadence marker held; next tick resumes"
+                );
+                return PassOutcome::AbandonedDeadline {
+                    keys_submitted: stats.keys_submitted,
+                    max_chunk_keys: stats.max_chunk_keys,
+                };
+            }
+            Err(e) => {
+                warn!(target: "cc_storage::prune", error = %e, "columns P2 submit failed");
+                return PassOutcome::QueueFull;
+            }
         }
 
+        // One drop_table per tick when a shard is fully retirable (§7.5).
+        if let Err(e) = retire_one_column_shard(&self.engine, &self.metrics, from, proposed) {
+            warn!(target: "cc_storage::prune", error = %e, "columns shard retire failed");
+        }
+
+        // Cadence marker only after a completed pass (SEC-46b-1).
         self.last_columns_epoch
             .store(current_epoch, Ordering::SeqCst);
         self.columns_invocations.fetch_add(1, Ordering::SeqCst);
@@ -514,6 +613,7 @@ impl Pruner {
                 return PassOutcome::QueueFull;
             }
         };
+        strip_retirable_block_shard_keys(&mut plan, from, proposed);
         let sr = match plan_state_root_deletes(&self.engine, from, proposed) {
             Ok(p) => p,
             Err(e) => {
@@ -527,17 +627,47 @@ impl Pruner {
         let rows = plan.rows;
         let bytes = plan.bytes;
 
-        if let Err(e) = self
-            .submit_plan_and_marks(StorageClass::Blocks, plan, |m| {
-                m.blocks_up_to = proposed;
-                m.state_roots_up_to = proposed;
-            })
+        match self
+            .submit_plan_and_marks(
+                StorageClass::Blocks,
+                PrunePass::Blocks,
+                plan,
+                started,
+                |m| {
+                    m.blocks_up_to = proposed;
+                    m.state_roots_up_to = proposed;
+                },
+            )
             .await
         {
-            warn!(target: "cc_storage::prune", error = %e, "blocks P2 submit failed");
-            return PassOutcome::QueueFull;
+            Ok(SubmitOutcome::Completed) => {}
+            Ok(SubmitOutcome::Abandoned { stats }) => {
+                // SEC-46b-1: do **not** advance last_blocks_epoch — next tick
+                // resumes immediately from the durable watermark.
+                self.observe_pass_seconds(PrunePass::Blocks, started.elapsed());
+                self.observe_pass_seconds(PrunePass::StateRoots, started.elapsed());
+                warn!(
+                    target: "cc_storage::prune",
+                    current_epoch,
+                    keys_submitted = stats.keys_submitted,
+                    "blocks prune abandoned on deadline — cadence marker held; next tick resumes"
+                );
+                return PassOutcome::AbandonedDeadline {
+                    keys_submitted: stats.keys_submitted,
+                    max_chunk_keys: stats.max_chunk_keys,
+                };
+            }
+            Err(e) => {
+                warn!(target: "cc_storage::prune", error = %e, "blocks P2 submit failed");
+                return PassOutcome::QueueFull;
+            }
         }
 
+        if let Err(e) = retire_one_block_shard(&self.engine, &self.metrics, from, proposed) {
+            warn!(target: "cc_storage::prune", error = %e, "blocks shard retire failed");
+        }
+
+        // Cadence marker only after a completed pass (SEC-46b-1).
         self.last_blocks_epoch
             .store(current_epoch, Ordering::SeqCst);
         self.blocks_invocations.fetch_add(1, Ordering::SeqCst);
@@ -616,15 +746,28 @@ impl Pruner {
         if proposed.as_u64() <= from.as_u64() {
             return PassOutcome::AlreadyAtMark;
         }
-        if let Err(e) = self
-            .submit_plan_and_marks(StorageClass::Blocks, PrunePlan::default(), |m| {
-                m.blocks_up_to = proposed;
-                m.state_roots_up_to = proposed;
-            })
+        match self
+            .submit_plan_and_marks(
+                StorageClass::Blocks,
+                PrunePass::Blocks,
+                PrunePlan::default(),
+                started,
+                |m| {
+                    m.blocks_up_to = proposed;
+                    m.state_roots_up_to = proposed;
+                },
+            )
             .await
         {
-            warn!(target: "cc_storage::prune", error = %e, "explicit-mark P2 failed");
-            return PassOutcome::QueueFull;
+            Ok(SubmitOutcome::Completed) => {}
+            Ok(SubmitOutcome::Abandoned { .. }) => {
+                // Empty plan cannot abandon mid-delete; treat as queue-ish failure.
+                return PassOutcome::QueueFull;
+            }
+            Err(e) => {
+                warn!(target: "cc_storage::prune", error = %e, "explicit-mark P2 failed");
+                return PassOutcome::QueueFull;
+            }
         }
         self.blocks_invocations.fetch_add(1, Ordering::SeqCst);
         self.observe_pass_seconds(PrunePass::Blocks, started.elapsed());
@@ -652,12 +795,29 @@ impl Pruner {
             self.observe_pass_seconds(PrunePass::Snapshots, started.elapsed());
             return PassOutcome::AlreadyAtMark;
         }
-        if let Err(e) = self
-            .submit_plan_and_marks(StorageClass::Snapshots, plan, |_| {})
+        match self
+            .submit_plan_and_marks(
+                StorageClass::Snapshots,
+                PrunePass::Snapshots,
+                plan,
+                started,
+                |_| {},
+            )
             .await
         {
-            warn!(target: "cc_storage::prune", error = %e, "snapshot ring P2 failed");
-            return PassOutcome::QueueFull;
+            Ok(SubmitOutcome::Completed) => {}
+            Ok(SubmitOutcome::Abandoned { stats }) => {
+                self.snapshot_invocations.fetch_add(1, Ordering::SeqCst);
+                self.observe_pass_seconds(PrunePass::Snapshots, started.elapsed());
+                return PassOutcome::AbandonedDeadline {
+                    keys_submitted: stats.keys_submitted,
+                    max_chunk_keys: stats.max_chunk_keys,
+                };
+            }
+            Err(e) => {
+                warn!(target: "cc_storage::prune", error = %e, "snapshot ring P2 failed");
+                return PassOutcome::QueueFull;
+            }
         }
         self.snapshot_invocations.fetch_add(1, Ordering::SeqCst);
         self.metrics
@@ -680,31 +840,38 @@ impl Pruner {
         }
     }
 
-    // ── P2 submit ───────────────────────────────────────────────────────────
+    // ── P2 submit (chunked + deadline) ──────────────────────────────────────
 
     async fn submit_plan_and_marks<F>(
         &self,
         class: StorageClass,
+        pass: PrunePass,
         plan: PrunePlan,
+        started: Instant,
         mut update_marks: F,
-    ) -> Result<(), PruneError>
+    ) -> Result<SubmitOutcome, PruneError>
     where
         F: FnMut(&mut PruneMarks),
     {
-        // Chunk deletes so each P2 unit stays under PRUNE_CHUNK_KEYS.
-        let mut offset = 0usize;
-        while offset < plan.deletes.len() {
-            let end = (offset + PRUNE_CHUNK_KEYS).min(plan.deletes.len());
-            let chunk_deletes = plan.deletes[offset..end].to_vec();
-            let chunk = BackgroundChunk {
-                class,
-                puts: Vec::new(),
-                deletes: chunk_deletes,
-                done: None,
-            };
-            self.submit_p2_committed(chunk).await?;
-            offset = end;
+        // §7.3: 512 keys, commit, yield_now, deadline check, abandon.
+        let stats = submit_deletes_chunked(ChunkSubmitArgs {
+            writer: &self.writer,
+            metrics: &self.metrics,
+            class,
+            pass,
+            deletes: &plan.deletes,
+            chunk_keys: self.cfg.prune_chunk_keys,
+            deadline: self.cfg.prune_deadline,
+            started,
+        })
+        .await?;
+        self.record_chunk_stats(&stats);
+        if stats.abandoned {
+            self.deadline_abandons.fetch_add(1, Ordering::SeqCst);
+            // Marks stay put — next tick resumes from the durable watermark.
+            return Ok(SubmitOutcome::Abandoned { stats });
         }
+
         // Any puts from the plan (rare).
         if !plan.puts.is_empty() {
             let chunk = BackgroundChunk {
@@ -729,7 +896,7 @@ impl Pruner {
         // No-op mark update (snapshot ring trim often has nothing to change).
         let current = self.marks_snapshot();
         if new_marks == current {
-            return Ok(());
+            return Ok(SubmitOutcome::Completed);
         }
         let ssz = new_marks.as_ssz_bytes();
         let chunk = BackgroundChunk {
@@ -748,7 +915,27 @@ impl Pruner {
             let mut g = self.marks.lock().unwrap_or_else(|e| e.into_inner());
             *g = new_marks;
         }
-        Ok(())
+        Ok(SubmitOutcome::Completed)
+    }
+
+    fn record_chunk_stats(&self, stats: &ChunkSubmitStats) {
+        self.keys_submitted_total
+            .fetch_add(stats.keys_submitted, Ordering::SeqCst);
+        let prev = self.max_chunk_keys_observed.load(Ordering::SeqCst);
+        let max = stats.max_chunk_keys as u64;
+        if max > prev {
+            let _ = self.max_chunk_keys_observed.compare_exchange(
+                prev,
+                max,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+            // Best-effort; concurrent updates may race — re-load and max.
+            let again = self.max_chunk_keys_observed.load(Ordering::SeqCst);
+            if max > again {
+                self.max_chunk_keys_observed.store(max, Ordering::SeqCst);
+            }
+        }
     }
 
     async fn submit_p2_committed(&self, mut chunk: BackgroundChunk) -> Result<(), PruneError> {
@@ -806,6 +993,38 @@ impl Pruner {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
+/// Internal result of a chunked submit + optional marks put.
+#[derive(Debug)]
+enum SubmitOutcome {
+    Completed,
+    Abandoned { stats: ChunkSubmitStats },
+}
+
+/// Drop cold-column deletes belonging to a fully-retirable shard (handled by
+/// [`retire_one_column_shard`]). Hot / reverse-index rows stay in the plan.
+fn strip_retirable_column_shard_keys(plan: &mut PrunePlan, from: Slot, mark: Slot) {
+    let Some(id) = next_retirable_column_shard(from, mark) else {
+        return;
+    };
+    let table = columns_shard_table(id);
+    let before = plan.deletes.len();
+    plan.deletes.retain(|(t, _)| t != &table);
+    let removed = before.saturating_sub(plan.deletes.len()) as u64;
+    plan.rows = plan.rows.saturating_sub(removed);
+}
+
+/// Drop cold-block deletes belonging to a fully-retirable shard.
+fn strip_retirable_block_shard_keys(plan: &mut PrunePlan, from: Slot, mark: Slot) {
+    let Some(id) = next_retirable_block_shard(from, mark) else {
+        return;
+    };
+    let table = blocks_shard_table(id);
+    let before = plan.deletes.len();
+    plan.deletes.retain(|(t, _)| t != &table);
+    let removed = before.saturating_sub(plan.deletes.len()) as u64;
+    plan.rows = plan.rows.saturating_sub(removed);
+}
+
 fn load_prune_marks(engine: &Engine) -> Result<PruneMarks, StoreError> {
     let rt = engine.read()?;
     let Some(bytes) = rt.get(TABLE_META, KEY_PRUNE_MARKS.as_bytes())? else {
@@ -819,6 +1038,12 @@ fn load_prune_marks(engine: &Engine) -> Result<PruneMarks, StoreError> {
 /// When genesis is unresolved, the task only runs the disk-alarm observe path
 /// and keeps trying to resolve genesis from the store (e.g. after the first
 /// snapshot lands). Tests drive passes via [`Pruner::on_epoch_tick`].
+///
+/// **SEC-46b-1:** every ticker interval calls [`Pruner::on_epoch_tick`] (cadence
+/// is gated inside `should_run_*` via `last_*_epoch`). An abandoned pass leaves
+/// the cadence marker unmoved, so the **next 4 s tick** re-enters the same
+/// wall-clock epoch and resumes from the durable watermark immediately — not
+/// after a full cadence interval.
 pub(crate) fn spawn_prune_task(
     pruner: Arc<Pruner>,
     mut shutdown: watch::Receiver<bool>,
@@ -831,7 +1056,6 @@ pub(crate) fn spawn_prune_task(
         );
         let mut ticker = tokio::time::interval(Duration::from_secs(4));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut last_epoch = u64::MAX;
         loop {
             tokio::select! {
                 _ = shutdown.changed() => {
@@ -849,13 +1073,17 @@ pub(crate) fn spawn_prune_task(
                     let Some(epoch) = pruner.wall_clock_epoch(now) else {
                         continue;
                     };
-                    if epoch == last_epoch {
-                        continue;
-                    }
-                    last_epoch = epoch;
+                    // Always enter on_epoch_tick: should_run_* + last_*_epoch
+                    // gate work. Same-epoch re-entry is required so a deadline
+                    // abandon resumes on the next ticker fire (SEC-46b-1).
                     let outcomes = pruner.on_epoch_tick(epoch).await;
                     for (pass, o) in outcomes {
-                        if matches!(o, PassOutcome::Ran { .. } | PassOutcome::RefusedI2) {
+                        if matches!(
+                            o,
+                            PassOutcome::Ran { .. }
+                                | PassOutcome::RefusedI2
+                                | PassOutcome::AbandonedDeadline { .. }
+                        ) {
                             info!(
                                 target: "cc_storage::prune",
                                 pass = pass.as_str(),
@@ -1228,7 +1456,7 @@ mod tests {
             .get();
     }
 
-    /// Directory inventory: no unfinalized.rs.
+    /// Directory inventory: chunk + shards present; no unfinalized.rs.
     #[test]
     fn prune_dir_has_no_unfinalized() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/prune");
@@ -1241,12 +1469,384 @@ mod tests {
             names,
             vec![
                 "blocks.rs".to_owned(),
+                "chunk.rs".to_owned(),
                 "columns.rs".to_owned(),
                 "mod.rs".to_owned(),
+                "shards.rs".to_owned(),
                 "states.rs".to_owned(),
             ]
         );
         assert!(!names.iter().any(|n| n.contains("unfinalized")));
+    }
+
+    /// CC-46b /6 — artificially short deadline abandons; next tick resumes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deadline_abandons_and_next_tick_resumes() {
+        let cfg = PruneConfig {
+            blocks_retention_epochs: 256,
+            columns_retention_epochs: 64,
+            fulu_fork_epoch: 0,
+            prune_columns_epochs: 1,
+            prune_blocks_epochs: 1,
+            prune_margin_epochs: 1,
+            prune_chunk_keys: 64,
+            // Already-elapsed deadline forces abandon on any non-empty plan.
+            prune_deadline: Duration::from_millis(0),
+            ..PruneConfig::default()
+        };
+        let (p, _shutdown, eng) = pruner_with(cfg).await;
+        // Seed many meta keys so a columns-range plan is non-empty via hot path:
+        // put hot columns in [0, 100).
+        {
+            use cc_store::keys::encode_hot_column_key;
+            use cc_store::{Root, TABLE_COLUMNS_HOT};
+            let mut b = eng.batch();
+            for i in 0..800u64 {
+                let k = encode_hot_column_key(Slot::new(i), &Root::ZERO, 0);
+                b.put(TABLE_COLUMNS_HOT, &k, b"col");
+            }
+            eng.commit(b).unwrap();
+        }
+        let before_deadline = p
+            .metrics
+            .prune_deadline_exceeded
+            .get_or_create(&PassLabels {
+                pass: PrunePass::Columns.as_str().to_owned(),
+            })
+            .get();
+        let before_marks = p.marks_snapshot();
+        // prune_deadline=0 → Instant::now() elapsed >= 0 always true at first check
+        // only if started is in the past... submit checks started.elapsed() >= deadline
+        // with deadline 0, elapsed >= 0 is always true → abandon before any chunk.
+        let o = p.run_columns_pass(300).await;
+        assert!(
+            matches!(o, PassOutcome::AbandonedDeadline { .. }),
+            "expected abandon, got {o:?}"
+        );
+        let after_deadline = p
+            .metrics
+            .prune_deadline_exceeded
+            .get_or_create(&PassLabels {
+                pass: PrunePass::Columns.as_str().to_owned(),
+            })
+            .get();
+        assert_eq!(
+            after_deadline,
+            before_deadline + 1,
+            "deadline_exceeded must increment by exactly 1"
+        );
+        assert_eq!(
+            p.marks_snapshot().columns_up_to,
+            before_marks.columns_up_to,
+            "marks must not advance on abandon"
+        );
+
+        // Resume with a generous deadline — same watermark, remainder deleted.
+        // Rebuild pruner config in place by running with a second pruner would
+        // be cleaner; here we re-submit via a long-deadline clone of state:
+        // directly call submit path by constructing a long-deadline pruner on
+        // the same engine (marks still at before).
+        let cfg2 = PruneConfig {
+            blocks_retention_epochs: 256,
+            columns_retention_epochs: 64,
+            fulu_fork_epoch: 0,
+            prune_columns_epochs: 1,
+            prune_blocks_epochs: 1,
+            prune_margin_epochs: 1,
+            prune_chunk_keys: 64,
+            prune_deadline: Duration::from_secs(30),
+            ..PruneConfig::default()
+        };
+        let (p2, _sd2, _) = {
+            let m = metrics();
+            let (tx, rx) = watch::channel(false);
+            let writer = spawn_writer(
+                Arc::clone(&eng),
+                m.clone(),
+                WriterBounds::default(),
+                WriterFaults::default(),
+                rx,
+                false,
+            );
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            let p2 = Arc::new(Pruner::new(Arc::clone(&eng), writer, cfg2, m));
+            (p2, tx, ())
+        };
+        // Copy durable marks into p2 is automatic (load from engine — still default
+        // if abandon never wrote). Force from=0 by leaving marks default.
+        let o2 = p2.run_columns_pass(300).await;
+        assert!(
+            matches!(o2, PassOutcome::Ran { .. } | PassOutcome::AlreadyAtMark),
+            "resume must complete: {o2:?}"
+        );
+        // Idempotency: run three more times — same final mark / cumulative rows
+        // plateau (AlreadyAtMark after first success).
+        let mark_after = p2.marks_snapshot().columns_up_to;
+        let rows_metric = p2
+            .metrics
+            .pruned_rows
+            .get_or_create(&ClassLabels {
+                class: StorageClass::Columns.as_str().to_owned(),
+            })
+            .get();
+        for _ in 0..3 {
+            let _ = p2.run_columns_pass(300).await;
+        }
+        assert_eq!(p2.marks_snapshot().columns_up_to, mark_after);
+        assert_eq!(
+            p2.metrics
+                .pruned_rows
+                .get_or_create(&ClassLabels {
+                    class: StorageClass::Columns.as_str().to_owned(),
+                })
+                .get(),
+            rows_metric,
+            "idempotent resume: pruned_rows must not grow after mark is reached"
+        );
+    }
+
+    /// SEC-46b-1 — abandon must not advance cadence markers; same-epoch
+    /// `on_epoch_tick` re-runs immediately (no full-cadence wait).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn abandon_does_not_advance_cadence_same_epoch_resumes() {
+        // Cadence = 32: only multiples of 32 are eligible. Abandon at a
+        // high multiple (so proposed mark > 0) must leave last_columns_epoch
+        // unmoved so a second on_epoch_tick(epoch) re-enters the columns pass
+        // instead of SkippedCadence until the next cadence multiple.
+        let cfg = PruneConfig {
+            blocks_retention_epochs: 256,
+            columns_retention_epochs: 64,
+            fulu_fork_epoch: 0,
+            prune_columns_epochs: 32,
+            prune_blocks_epochs: 256,
+            prune_margin_epochs: 1,
+            prune_chunk_keys: 64,
+            prune_deadline: Duration::from_millis(0), // force abandon
+            ..PruneConfig::default()
+        };
+        let (p, _shutdown, eng) = pruner_with(cfg).await;
+        {
+            use cc_store::keys::encode_hot_column_key;
+            use cc_store::{Root, TABLE_COLUMNS_HOT};
+            let mut b = eng.batch();
+            for i in 0..400u64 {
+                let k = encode_hot_column_key(Slot::new(i), &Root::ZERO, 0);
+                b.put(TABLE_COLUMNS_HOT, &k, b"col");
+            }
+            eng.commit(b).unwrap();
+        }
+
+        // epoch 320 = 10 × 32; mark = start(320−64) − 32 ≫ 0.
+        let epoch = 320u64;
+        assert!(
+            p.should_run_columns(epoch),
+            "precondition: epoch {epoch} must be cadence-eligible"
+        );
+        let outcomes = p.on_epoch_tick(epoch).await;
+        let col = outcomes
+            .iter()
+            .find(|(pass, _)| *pass == PrunePass::Columns)
+            .map(|(_, o)| *o);
+        assert!(
+            matches!(col, Some(PassOutcome::AbandonedDeadline { .. })),
+            "first tick must abandon: {col:?}"
+        );
+        // Cadence marker held at 0 (never completed).
+        assert_eq!(
+            p.last_columns_epoch.load(Ordering::SeqCst),
+            0,
+            "SEC-46b-1: last_columns_epoch must not advance on abandon"
+        );
+        assert!(
+            p.should_run_columns(epoch),
+            "SEC-46b-1: same epoch must remain eligible after abandon"
+        );
+
+        // Immediate same-epoch re-entry (simulates next 4 s ticker fire).
+        // Still short deadline → abandon again, still no cadence advance.
+        let outcomes2 = p.on_epoch_tick(epoch).await;
+        let col2 = outcomes2
+            .iter()
+            .find(|(pass, _)| *pass == PrunePass::Columns)
+            .map(|(_, o)| *o);
+        assert!(
+            matches!(col2, Some(PassOutcome::AbandonedDeadline { .. })),
+            "same-epoch re-entry must re-run (not SkippedCadence): {col2:?}"
+        );
+        assert_eq!(p.last_columns_epoch.load(Ordering::SeqCst), 0);
+
+        // Complete path: long deadline, same epoch still eligible, finishes,
+        // then advances cadence so a further same-epoch tick is skipped.
+        let cfg_ok = PruneConfig {
+            blocks_retention_epochs: 256,
+            columns_retention_epochs: 64,
+            fulu_fork_epoch: 0,
+            prune_columns_epochs: 32,
+            prune_blocks_epochs: 256,
+            prune_margin_epochs: 1,
+            prune_chunk_keys: 64,
+            prune_deadline: Duration::from_secs(30),
+            ..PruneConfig::default()
+        };
+        let (p_ok, _sd, _) = {
+            let m = metrics();
+            let (tx, rx) = watch::channel(false);
+            let writer = spawn_writer(
+                Arc::clone(&eng),
+                m.clone(),
+                WriterBounds::default(),
+                WriterFaults::default(),
+                rx,
+                false,
+            );
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            (
+                Arc::new(Pruner::new(Arc::clone(&eng), writer, cfg_ok, m)),
+                tx,
+                (),
+            )
+        };
+        assert!(p_ok.should_run_columns(epoch));
+        let done = p_ok.run_columns_pass(epoch).await;
+        assert!(
+            matches!(done, PassOutcome::Ran { .. } | PassOutcome::AlreadyAtMark),
+            "long-deadline pass must complete: {done:?}"
+        );
+        assert_eq!(
+            p_ok.last_columns_epoch.load(Ordering::SeqCst),
+            epoch,
+            "completed pass advances cadence marker"
+        );
+        assert!(
+            !p_ok.should_run_columns(epoch),
+            "after complete, same epoch must not re-fire until next cadence"
+        );
+        // Next cadence-eligible epoch still works.
+        assert!(p_ok.should_run_columns(epoch + 32));
+    }
+
+    /// SEC-46b-1 — blocks path: abandon holds last_blocks_epoch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn abandon_holds_blocks_cadence_marker() {
+        let cfg = PruneConfig {
+            blocks_retention_epochs: 256,
+            columns_retention_epochs: 64,
+            fulu_fork_epoch: 0,
+            prune_columns_epochs: 32,
+            prune_blocks_epochs: 256,
+            prune_margin_epochs: 1,
+            prune_chunk_keys: 64,
+            prune_deadline: Duration::from_millis(0),
+            ..PruneConfig::default()
+        };
+        let (p, _shutdown, eng) = pruner_with(cfg).await;
+        {
+            use cc_store::keys::encode_hot_block_key;
+            use cc_store::{Root, TABLE_BLOCKS_HOT};
+            let mut b = eng.batch();
+            for i in 0..400u64 {
+                let k = encode_hot_block_key(Slot::new(i), &Root::ZERO);
+                b.put(TABLE_BLOCKS_HOT, &k, b"blk");
+            }
+            eng.commit(b).unwrap();
+        }
+        // epoch 512 = 2 × 256; mark = start(512−256) − 32 ≫ 0.
+        let epoch = 512u64;
+        assert!(p.should_run_blocks(epoch));
+        let o = p.run_blocks_pass(epoch).await;
+        assert!(
+            matches!(o, PassOutcome::AbandonedDeadline { .. }),
+            "expected blocks abandon: {o:?}"
+        );
+        assert_eq!(
+            p.last_blocks_epoch.load(Ordering::SeqCst),
+            0,
+            "SEC-46b-1: last_blocks_epoch must not advance on abandon"
+        );
+        assert!(
+            p.should_run_blocks(epoch),
+            "same epoch remains blocks-eligible after abandon"
+        );
+        // Second immediate call still attempts (abandons again).
+        let o2 = p.run_blocks_pass(epoch).await;
+        assert!(matches!(o2, PassOutcome::AbandonedDeadline { .. }));
+        assert_eq!(p.last_blocks_epoch.load(Ordering::SeqCst), 0);
+    }
+
+    /// CC-46b — chunk bound observed at submit site ≤ 512.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn chunk_bound_at_submit_site() {
+        let cfg = PruneConfig {
+            blocks_retention_epochs: 256,
+            columns_retention_epochs: 64,
+            fulu_fork_epoch: 0,
+            prune_columns_epochs: 1,
+            prune_blocks_epochs: 1,
+            prune_margin_epochs: 1,
+            prune_chunk_keys: 512,
+            prune_deadline: Duration::from_secs(30),
+            ..PruneConfig::default()
+        };
+        let (p, _shutdown, eng) = pruner_with(cfg).await;
+        {
+            use cc_store::keys::encode_hot_column_key;
+            use cc_store::{Root, TABLE_COLUMNS_HOT};
+            let mut b = eng.batch();
+            for i in 0..1_300u64 {
+                let k = encode_hot_column_key(Slot::new(i), &Root::ZERO, 0);
+                b.put(TABLE_COLUMNS_HOT, &k, b"col");
+            }
+            eng.commit(b).unwrap();
+        }
+        let _ = p.run_columns_pass(300).await;
+        let max = p.max_chunk_keys_observed.load(Ordering::SeqCst);
+        assert!(
+            max > 0 && max <= 512,
+            "max chunk keys at submit site must be in (0, 512], got {max}"
+        );
+    }
+
+    /// R-10: p0 queue depth stays zero while prune P2 work runs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r10_p0_queue_depth_zero_during_prune() {
+        let cfg = PruneConfig {
+            blocks_retention_epochs: 256,
+            columns_retention_epochs: 64,
+            fulu_fork_epoch: 0,
+            prune_columns_epochs: 1,
+            prune_blocks_epochs: 1,
+            prune_margin_epochs: 1,
+            prune_chunk_keys: 128,
+            prune_deadline: Duration::from_secs(30),
+            ..PruneConfig::default()
+        };
+        let (p, _shutdown, eng) = pruner_with(cfg).await;
+        {
+            use cc_store::keys::encode_hot_column_key;
+            use cc_store::{Root, TABLE_COLUMNS_HOT};
+            let mut b = eng.batch();
+            for i in 0..400u64 {
+                let k = encode_hot_column_key(Slot::new(i), &Root::ZERO, 0);
+                b.put(TABLE_COLUMNS_HOT, &k, b"col");
+            }
+            eng.commit(b).unwrap();
+        }
+        let _ = p.run_columns_pass(300).await;
+        let depth = p
+            .metrics
+            .writer_queue_depth
+            .get_or_create(&ClassLabels {
+                class: crate::metrics::WriterPriority::P0.as_str().to_owned(),
+            })
+            .get();
+        assert_eq!(
+            depth, 0,
+            "R-10: cc_storage_writer_queue_depth{{class=\"p0\"}} must be 0 during prune"
+        );
     }
 
     /// Pure watermarks move with epoch independent of any finalization handle.

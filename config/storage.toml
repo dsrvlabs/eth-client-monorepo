@@ -82,6 +82,8 @@ prune_columns_epochs = 32
 # Override: CC_STORAGE_PRUNE_BLOCKS_EPOCHS=256
 prune_blocks_epochs = 256
 # One-epoch serve-side margin baked into both watermarks (§7.1).
+# Cost: ~6.9 MiB columns + ~0.7 MiB blocks. Lighthouse defaults to 0 (MVCC-only);
+# we do **not** copy that default — the margin removes the delete/serve race.
 # Override: CC_STORAGE_PRUNE_MARGIN_EPOCHS=1
 prune_margin_epochs = 1
 # Disk watermark: **alarm only, never a trigger** (§7.4 / §9.3).
@@ -93,6 +95,16 @@ disk_alarm_bytes = 103079215104
 # When unset, resolved from the network fixture, then from a store snapshot's
 # BeaconState.genesis_time. Override: CC_STORAGE_GENESIS_TIME=...
 genesis_time = 1742213400
+
+# ── CC-46b chunk / deadline (Architecture §7.3 / §7.4) ───────────────────────
+# Keys per P2 prune chunk. 512 → ~16 chunks for an 8 200-key column pass in the
+# un-sharded fallback; one chunk stays far under the 500 ms falsifier boundary.
+# Override: CC_STORAGE_PRUNE_CHUNK_KEYS=256
+prune_chunk_keys = 512
+# Wall-clock deadline for one prune pass. 2 s is under one slot; on exceed the
+# pass **abandons** until the next tick (marks unchanged → idempotent resume).
+# Override: CC_STORAGE_PRUNE_DEADLINE_MS=2000
+prune_deadline_ms = 2000
 
 
 # CC-4D / Architecture §10.4 — dangerous knobs (config, not env).

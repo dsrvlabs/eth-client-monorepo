@@ -30,6 +30,7 @@ use tokio::sync::watch;
 use tonic::service::Routes;
 use migrate::{MigrationConfig, Migrator};
 use prune::{
+    chunk::{DEFAULT_PRUNE_CHUNK_KEYS, DEFAULT_PRUNE_DEADLINE},
     columns::DEFAULT_COLUMNS_RETENTION_EPOCHS, genesis_time_from_fixture, spawn_prune_task,
     PruneConfig, Pruner, DEFAULT_DISK_ALARM_BYTES, DEFAULT_PRUNE_BLOCKS_EPOCHS,
     DEFAULT_PRUNE_COLUMNS_EPOCHS, DEFAULT_PRUNE_MARGIN_EPOCHS,
@@ -100,6 +101,12 @@ struct StorageConfig {
     /// Margin epochs baked into both watermarks (default **1**).
     #[serde(default = "default_prune_margin_epochs")]
     prune_margin_epochs: u64,
+    /// Keys per P2 prune chunk (default **512**). CC-46b / §7.4.
+    #[serde(default = "default_prune_chunk_keys")]
+    prune_chunk_keys: usize,
+    /// Prune-pass wall-clock deadline in milliseconds (default **2000**). CC-46b.
+    #[serde(default = "default_prune_deadline_ms")]
+    prune_deadline_ms: u64,
     /// Disk alarm threshold in bytes (default **96 GiB**). Alarm only, never a trigger.
     #[serde(default = "default_disk_alarm_bytes")]
     disk_alarm_bytes: u64,
@@ -230,6 +237,12 @@ fn default_prune_blocks_epochs() -> u64 {
 fn default_prune_margin_epochs() -> u64 {
     DEFAULT_PRUNE_MARGIN_EPOCHS
 }
+fn default_prune_chunk_keys() -> usize {
+    DEFAULT_PRUNE_CHUNK_KEYS
+}
+fn default_prune_deadline_ms() -> u64 {
+    DEFAULT_PRUNE_DEADLINE.as_millis() as u64
+}
 fn default_disk_alarm_bytes() -> u64 {
     DEFAULT_DISK_ALARM_BYTES
 }
@@ -271,6 +284,7 @@ impl StorageConfig {
             buffer_bytes: self.serve_buffer_bytes.max(1),
             permits: self.serve_permits.max(1),
             queue_timeout: Duration::from_millis(self.serve_queue_timeout_ms.max(1)),
+            materialise_mode: serve::MaterialiseMode::AdmissionTime,
         }
     }
 
@@ -339,6 +353,8 @@ impl StorageConfig {
             prune_columns_epochs: self.prune_columns_epochs.max(1),
             prune_blocks_epochs: self.prune_blocks_epochs.max(1),
             prune_margin_epochs: self.prune_margin_epochs,
+            prune_chunk_keys: self.prune_chunk_keys.max(1),
+            prune_deadline: Duration::from_millis(self.prune_deadline_ms.max(1)),
             disk_alarm_bytes: self.disk_alarm_bytes.max(1),
             columns_retention_epochs: columns_retention,
             blocks_retention_epochs: blocks_retention,
@@ -539,6 +555,8 @@ async fn main() -> anyhow::Result<()> {
                     prune_columns_epochs = cfg.prune_columns_epochs,
                     prune_blocks_epochs = cfg.prune_blocks_epochs,
                     prune_margin_epochs = cfg.prune_margin_epochs,
+                    prune_chunk_keys = cfg.prune_chunk_keys,
+                    prune_deadline_ms = cfg.prune_deadline_ms,
                     disk_alarm_bytes = cfg.disk_alarm_bytes,
                     serve_buffer_bytes = cfg.serve_buffer_bytes,
                     serve_permits = cfg.serve_permits,
@@ -741,7 +759,7 @@ mod config_tests {
         assert!(text.contains("serve_queue_timeout_ms"));
     }
 
-    /// CC-46a: prune cadence / margin / disk alarm defaults in storage.toml.
+    /// CC-46a/b: prune cadence / margin / chunk / deadline / disk alarm defaults.
     #[test]
     fn prune_knobs_defaults() {
         let _g = env_lock();
@@ -749,6 +767,8 @@ mod config_tests {
             std::env::remove_var("CC_STORAGE_PRUNE_COLUMNS_EPOCHS");
             std::env::remove_var("CC_STORAGE_PRUNE_BLOCKS_EPOCHS");
             std::env::remove_var("CC_STORAGE_PRUNE_MARGIN_EPOCHS");
+            std::env::remove_var("CC_STORAGE_PRUNE_CHUNK_KEYS");
+            std::env::remove_var("CC_STORAGE_PRUNE_DEADLINE_MS");
             std::env::remove_var("CC_STORAGE_DISK_ALARM_BYTES");
             std::env::remove_var("CC_STORAGE_GENESIS_TIME");
         }
@@ -758,6 +778,8 @@ mod config_tests {
         assert_eq!(cfg.prune_columns_epochs, 32);
         assert_eq!(cfg.prune_blocks_epochs, 256);
         assert_eq!(cfg.prune_margin_epochs, 1);
+        assert_eq!(cfg.prune_chunk_keys, 512);
+        assert_eq!(cfg.prune_deadline_ms, 2_000);
         assert_eq!(cfg.disk_alarm_bytes, 96 * 1024 * 1024 * 1024);
         // Hoodi wall-clock genesis (MIN_GENESIS_TIME + GENESIS_DELAY).
         assert_eq!(cfg.genesis_time, Some(1_742_213_400));
@@ -765,11 +787,17 @@ mod config_tests {
         assert!(text.contains("prune_columns_epochs"));
         assert!(text.contains("prune_blocks_epochs"));
         assert!(text.contains("prune_margin_epochs"));
+        assert!(text.contains("prune_chunk_keys"));
+        assert!(text.contains("prune_deadline_ms"));
         assert!(text.contains("disk_alarm_bytes"));
         assert!(text.contains("genesis_time"));
         assert!(
             text.contains("alarm only") || text.contains("never a trigger"),
             "disk alarm comment must state alarm-only semantics"
+        );
+        assert!(
+            text.contains("6.9 MiB") || text.contains("do **not** copy"),
+            "margin comment must state cost / not copying Lighthouse 0"
         );
     }
 
