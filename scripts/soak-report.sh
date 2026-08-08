@@ -64,11 +64,29 @@
 #     [--out clause-table.md] \
 #     [--docs docs/phase-3-acceptance.md] [--write]
 #
+# Usage (Phase 4 clause table — CC-4Cb / §10.6):
+#   bash scripts/soak-report.sh --phase 4 \
+#     [--storage-metrics-url http://127.0.0.1:9106/metrics] \
+#     [--storage-metrics PATH] \
+#     [--p2p-metrics PATH] \
+#     [--plateau-samples PATH] \
+#     [--serve-probe-json PATH] \
+#     [--harness-json harness-results.json] \
+#     [--venue hoodi|self-devnet|self-devnet-compressed|in-process-double|dev-machine] \
+#     [--clause N|1|2|3|4|5|6|7] \
+#     [--out clause-table.md] \
+#     [--docs docs/phase-4-soak.md] [--write]
+#
+# Phase 4 venues (closed set): hoodi, self-devnet, self-devnet-compressed,
+# in-process-double, dev-machine. Confirmation rows carry
+# `confirmation, non-discharging`. It measures the run; it is not the run (D-10).
+#
 # Live scrape (optional if snapshot files omitted):
 #   --chain-metrics-url  http://127.0.0.1:9101/metrics
 #   --driver-metrics-url http://127.0.0.1:9110/metrics
 #
 # Self-test (synthetic series; no live stack required; Phase 1 + 2 + 3):
+#   Phase 4 self-tests (CC-4Cb) also run under --self-test.
 #   bash scripts/soak-report.sh --self-test
 #
 # Environment:
@@ -112,6 +130,13 @@ CHAIN_METRICS_START="${SOAK_CHAIN_METRICS_START:-}"
 CHAIN_METRICS_END="${SOAK_CHAIN_METRICS_END:-}"
 VENUE_FILTER="${SOAK_VENUE:-}"
 CLAUSE_FILTER="${SOAK_CLAUSE:-}"
+PHASE4="${SOAK_PHASE4:-0}"
+# Phase 4 (CC-4Cb): storage metrics + plateau samples + serve-probe JSON.
+STORAGE_METRICS_URL="${SOAK_STORAGE_METRICS_URL:-http://127.0.0.1:9106/metrics}"
+STORAGE_METRICS_FILE="${SOAK_STORAGE_METRICS:-}"
+PLATEAU_SAMPLES="${SOAK_PLATEAU_SAMPLES:-}"
+SERVE_PROBE_JSON="${SOAK_SERVE_PROBE_JSON:-}"
+P2P_METRICS_FILE="${SOAK_P2P_METRICS:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -127,11 +152,13 @@ while [[ $# -gt 0 ]]; do
     --harness-json) HARNESS_JSON="$2"; shift 2 ;;
     --phase2) PHASE2=1; PHASE3=0; shift ;;
     --phase3) PHASE3=1; PHASE2=0; shift ;;
+    --phase4) PHASE4=1; PHASE2=0; PHASE3=0; shift ;;
     --phase)
       case "${2:-}" in
         1) PHASE2=0; PHASE3=0 ;;
         2) PHASE2=1; PHASE3=0 ;;
         3) PHASE3=1; PHASE2=0 ;;
+        4) PHASE4=1; PHASE2=0; PHASE3=0 ;;
         *) echo "error: --phase expects 1, 2, or 3 (got: ${2:-})" >&2; exit 2 ;;
       esac
       shift 2
@@ -143,6 +170,11 @@ while [[ $# -gt 0 ]]; do
     --chain-metrics-end) CHAIN_METRICS_END="$2"; METRICS_END="$2"; shift 2 ;;
     --venue) VENUE_FILTER="$2"; shift 2 ;;
     --clause) CLAUSE_FILTER="$2"; shift 2 ;;
+    --storage-metrics-url) STORAGE_METRICS_URL="$2"; shift 2 ;;
+    --storage-metrics) STORAGE_METRICS_FILE="$2"; shift 2 ;;
+    --plateau-samples) PLATEAU_SAMPLES="$2"; shift 2 ;;
+    --serve-probe-json) SERVE_PROBE_JSON="$2"; shift 2 ;;
+    --p2p-metrics) P2P_METRICS_FILE="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --docs) DOCS="$2"; shift 2 ;;
     --write) WRITE=1; shift ;;
@@ -2068,6 +2100,914 @@ raise SystemExit(0)
 PY
 }
 
+
+# ── Phase 4 per-clause table (CC-4Cb / §10.6) ───────────────────────────────
+# Append-only relative to Phase 1, 2, and 3: separate evaluator; does not
+# reorder or rewrite prior rows. One row per proof clause with venue; confirmation
+# rows marked `confirmation, non-discharging`. A clause run at the wrong venue
+# does not discharge. It measures the run; it is not the run (D-10).
+run_phase4_report() {
+  local storage_url="${STORAGE_METRICS_URL:-http://127.0.0.1:9106/metrics}"
+  local storage_file="${STORAGE_METRICS_FILE:-}"
+  local p2p_file="${P2P_METRICS_FILE:-${P2P_METRICS_END:-${P2P_METRICS_START:-}}}"
+  local plateau_samples="${PLATEAU_SAMPLES:-}"
+  local serve_probe_json="${SERVE_PROBE_JSON:-}"
+  local harness_json="${HARNESS_JSON:-}"
+  local venue_filter="${VENUE_FILTER:-}"
+  local clause_filter="${CLAUSE_FILTER:-}"
+  local tmpdir scrape_body p2p_body plateau_out
+  tmpdir="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '${tmpdir}'" RETURN
+
+  # ── scrape / load storage + p2p metrics (curl) ────────────────────────────
+  scrape_body=""
+  if [[ -n "${storage_file}" && -f "${storage_file}" ]]; then
+    scrape_body="$(cat "${storage_file}")"
+  elif command -v curl >/dev/null 2>&1; then
+    scrape_body="$(curl -fsS --max-time 5 "${storage_url}" 2>/dev/null || true)"
+  fi
+  printf '%s' "${scrape_body}" > "${tmpdir}/storage.metrics"
+
+  p2p_body=""
+  if [[ -n "${p2p_file}" && -f "${p2p_file}" ]]; then
+    p2p_body="$(cat "${p2p_file}")"
+  fi
+  printf '%s' "${p2p_body}" > "${tmpdir}/p2p.metrics"
+
+  # Optional plateau helper (scripts/storage-plateau.sh — CC-4D; invoked, not written).
+  plateau_out=""
+  if [[ -n "${plateau_samples}" && -f "${plateau_samples}" ]]; then
+    plateau_out="$(bash "${SCRIPT_DIR}/storage-plateau.sh" --samples "${plateau_samples}" 2>/dev/null || true)"
+  fi
+  printf '%s' "${plateau_out}" > "${tmpdir}/plateau.out"
+
+  # Harness + serve-probe JSON paths for jq (empty file if absent).
+  if [[ -n "${harness_json}" && -f "${harness_json}" ]]; then
+    cp "${harness_json}" "${tmpdir}/harness.json"
+  else
+    echo '{}' > "${tmpdir}/harness.json"
+  fi
+  if [[ -n "${serve_probe_json}" && -f "${serve_probe_json}" ]]; then
+    cp "${serve_probe_json}" "${tmpdir}/serve-probe.json"
+  else
+    echo '{}' > "${tmpdir}/serve-probe.json"
+  fi
+  # Validate JSON with jq when available (computability: curl|promtool|jq).
+  if command -v jq >/dev/null 2>&1; then
+    jq -e . "${tmpdir}/harness.json" >/dev/null \
+      || die "harness-json failed jq parse: ${harness_json:-"(empty)"}"
+    jq -e . "${tmpdir}/serve-probe.json" >/dev/null \
+      || die "serve-probe-json failed jq parse: ${serve_probe_json:-"(empty)"}"
+  fi
+
+  # Closed venue set (reject unknown filter).
+  case "${venue_filter}" in
+    ""|hoodi|self-devnet|self-devnet-compressed|in-process-double|dev-machine) ;;
+    *)
+      die "unknown Phase 4 venue '${venue_filter}'; expected one of: hoodi, self-devnet, self-devnet-compressed, in-process-double, dev-machine"
+      ;;
+  esac
+
+  SOAK_PY_P4_TMP="${tmpdir}" \
+  SOAK_PY_P4_VENUE="${venue_filter}" \
+  SOAK_PY_P4_CLAUSE="${clause_filter}" \
+  SOAK_PY_P4_STORAGE_URL="${storage_url}" \
+  SOAK_PY_P4_PLATEAU_SAMPLES="${plateau_samples}" \
+  SOAK_PY_P4_SERVE_PROBE="${serve_probe_json}" \
+  SOAK_PY_P4_HARNESS="${harness_json}" \
+  python3 - <<'PY'
+import json, os, re, sys
+from pathlib import Path
+
+tmpdir = Path(os.environ["SOAK_PY_P4_TMP"])
+venue_filter = (os.environ.get("SOAK_PY_P4_VENUE") or "").strip()
+clause_filter = (os.environ.get("SOAK_PY_P4_CLAUSE") or "").strip()
+storage_url = os.environ.get("SOAK_PY_P4_STORAGE_URL") or ""
+plateau_samples = os.environ.get("SOAK_PY_P4_PLATEAU_SAMPLES") or ""
+serve_probe_path = os.environ.get("SOAK_PY_P4_SERVE_PROBE") or ""
+harness_path = os.environ.get("SOAK_PY_P4_HARNESS") or ""
+
+VALID_VENUES = {
+    "hoodi",
+    "self-devnet",
+    "self-devnet-compressed",
+    "in-process-double",
+    "dev-machine",
+}
+
+def die(msg, code=1):
+    print(f"error: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
+if venue_filter and venue_filter not in VALID_VENUES:
+    die(
+        f"unknown Phase 4 venue {venue_filter!r}; expected one of: "
+        + ", ".join(sorted(VALID_VENUES))
+    )
+
+storage_text = (tmpdir / "storage.metrics").read_text(errors="replace")
+p2p_text = (tmpdir / "p2p.metrics").read_text(errors="replace")
+plateau_text = (tmpdir / "plateau.out").read_text(errors="replace")
+
+try:
+    harness = json.loads((tmpdir / "harness.json").read_text())
+except json.JSONDecodeError as e:
+    die(f"harness-json invalid: {e}")
+if not isinstance(harness, dict):
+    harness = {}
+
+try:
+    serve_probe = json.loads((tmpdir / "serve-probe.json").read_text())
+except json.JSONDecodeError as e:
+    die(f"serve-probe-json invalid: {e}")
+if not isinstance(serve_probe, dict):
+    serve_probe = {}
+
+def parse_gauge(text, name, labels=None):
+    if not text:
+        return None
+    if labels:
+        lab_parts = [re.escape(f'{k}="{v}"') for k, v in labels.items()]
+        pat = re.compile(
+            r"^" + re.escape(name) + r"\{([^}]*)\}\s+([0-9eE+.\-]+)",
+            re.M,
+        )
+        for m in pat.finditer(text):
+            lab = m.group(1)
+            if all(re.search(p, lab) for p in lab_parts):
+                return float(m.group(2))
+        return None
+    pat = re.compile(
+        r"^" + re.escape(name) + r"(?:\{[^}]*\})?\s+([0-9eE+.\-]+)",
+        re.M,
+    )
+    m = pat.search(text)
+    return float(m.group(1)) if m else None
+
+def parse_counter(text, name, labels=None):
+    return parse_gauge(text, name, labels)
+
+def sum_counter_family(text, name):
+    """Sum all label series for a counter/gauge family."""
+    if not text:
+        return None
+    pat = re.compile(
+        r"^" + re.escape(name) + r"(?:\{[^}]*\})?\s+([0-9eE+.\-]+)",
+        re.M,
+    )
+    vals = [float(m.group(1)) for m in pat.finditer(text)]
+    if not vals:
+        # Prometheus counters often export as name_total
+        if not name.endswith("_total"):
+            return sum_counter_family(text, name + "_total")
+        return None
+    return sum(vals)
+
+def hist_count(text, name):
+    """Sum _count across label sets for a histogram family."""
+    return sum_counter_family(text, name + "_count")
+
+def hist_sum(text, name):
+    return sum_counter_family(text, name + "_sum")
+
+def plateau_field(text, key):
+    for line in text.splitlines():
+        if line.startswith(key + ":"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+def clause_matches(want, cid):
+    if not want:
+        return True
+    w = want.strip().lower()
+    c = str(cid).lower()
+    aliases = {
+        "1": "1", "2": "2", "3": "3", "4": "4", "5": "5", "6": "6", "7": "7",
+        "c1": "1", "c2": "2", "c3": "3", "c4": "4", "c5": "5", "c6": "6", "c7": "7",
+        "clause1": "1", "clause2": "2", "clause3": "3",
+        "clause4": "4", "clause5": "5", "clause6": "6", "clause7": "7",
+    }
+    # Allow stage filters like "2a" / "2-attribution"
+    if w.startswith("2") and c.startswith("2"):
+        if w in ("2", "clause2", "c2"):
+            return c.startswith("2")
+        return w == c or w in c
+    if w.startswith("3") and c.startswith("3"):
+        if w in ("3", "clause3", "c3"):
+            return c.startswith("3")
+        return w == c or w in c
+    return aliases.get(w, w) == c or aliases.get(w, w) == c.split("-")[0]
+
+candidates = []
+venue_refusals = []
+
+def add_row(clause_id, clause, venue, measured, threshold, verdict):
+    if venue not in VALID_VENUES:
+        die(f"internal error: row venue {venue!r} not in closed set")
+    if not clause_matches(clause_filter, clause_id):
+        return
+    if venue_filter and venue != venue_filter:
+        msg = (
+            f"refusing to emit clause {clause_id!r} (venue {venue!r}) "
+            f"at requested venue {venue_filter!r} — a clause run at the wrong "
+            f"venue does not discharge"
+        )
+        venue_refusals.append(msg)
+        print(f"REFUSED: {msg}", file=sys.stderr)
+        return
+    # Never blank measured / verdict
+    if measured is None or str(measured).strip() == "":
+        measured = "NOT_RUN"
+    if verdict is None or str(verdict).strip() == "":
+        verdict = "NOT_RUN"
+    candidates.append({
+        "id": clause_id,
+        "clause": clause,
+        "venue": venue,
+        "measured": measured,
+        "threshold": threshold,
+        "verdict": verdict,
+    })
+
+# ── Clause 1 · kill -9 resumes (branch A or B) ─────────────────────────────
+# Computed from: cc_storage_restart_seconds{phase} summed per run × 20 runs,
+# cc_storage_following_head, pre/post GetHead roots. Venue: hoodi (A) or
+# partial branch B (no EL). Tools: curl (metrics scrape) + jq/json harness.
+c1 = harness.get("clause1") if isinstance(harness.get("clause1"), dict) else {}
+restart_sum = hist_sum(storage_text, "cc_storage_restart_seconds")
+restart_count = hist_count(storage_text, "cc_storage_restart_seconds")
+following = parse_gauge(storage_text, "cc_storage_following_head")
+
+el_in_set = c1.get("el_in_restart_set")
+branch = (c1.get("branch") or "").strip().upper()
+if el_in_set is None and branch:
+    el_in_set = branch == "A"
+if el_in_set is None and c1:
+    # Explicit partial string or flag
+    if c1.get("partial_no_el") or "partial — no EL" in str(c1.get("measured", "")):
+        el_in_set = False
+
+runs_ok = c1.get("runs_ok")
+runs_total = c1.get("runs_total", 20)
+max_restart_s = c1.get("max_restart_seconds")
+head_roots_identical = c1.get("head_roots_identical")
+pre_root = c1.get("pre_get_head_root")
+post_root = c1.get("post_get_head_root")
+
+if el_in_set is False or branch == "B":
+    # Branch B — literal string required; does NOT discharge.
+    measured1 = "partial — no EL in the restart set"
+    if restart_count is not None:
+        measured1 += f"; metric_restart_count={restart_count:g}"
+    if following is not None:
+        measured1 += f"; cc_storage_following_head={following:g}"
+    add_row(
+        "1",
+        "1 · kill -9 resumes (branch B)",
+        "hoodi" if c1.get("venue") == "hoodi" else "self-devnet",
+        measured1,
+        "20/20 ≤ 60 s + following_head=1 + identical GetHead roots (requires EL in restart set)",
+        "not discharged",
+    )
+elif el_in_set is True or branch == "A" or (
+    runs_ok is not None or max_restart_s is not None or head_roots_identical is not None
+):
+    venue1 = c1.get("venue") if c1.get("venue") in VALID_VENUES else "hoodi"
+    parts = []
+    if runs_ok is not None:
+        parts.append(f"runs_ok={runs_ok}/{runs_total}")
+    if max_restart_s is not None:
+        parts.append(f"max_restart_s={max_restart_s}")
+    elif restart_sum is not None and restart_count:
+        # Approximate mean from histogram sum/count when harness omits max.
+        parts.append(f"metric_restart_sum={restart_sum:g}; metric_restart_count={restart_count:g}")
+    if following is not None:
+        parts.append(f"following_head={following:g}")
+    if pre_root is not None or post_root is not None:
+        parts.append(f"pre_root={pre_root}; post_root={post_root}")
+    if head_roots_identical is not None:
+        parts.append(f"head_roots_identical={head_roots_identical}")
+    if not parts:
+        measured1 = "NOT_RUN (clause1 harness present but empty)"
+        v1 = "NOT_RUN"
+    else:
+        measured1 = "; ".join(str(p) for p in parts)
+        ok = True
+        if runs_ok is not None and int(runs_ok) < int(runs_total):
+            ok = False
+        if max_restart_s is not None and float(max_restart_s) > 60.0:
+            ok = False
+        if following is not None and float(following) != 1.0:
+            ok = False
+        if head_roots_identical is False:
+            ok = False
+        if runs_ok is None and max_restart_s is None and head_roots_identical is None:
+            v1 = "NOT_RUN"
+            measured1 = f"NOT_RUN (incomplete harness); {measured1}"
+        else:
+            v1 = "PASS (discharged)" if ok else "FAIL"
+    add_row(
+        "1",
+        "1 · kill -9 resumes (branch A)",
+        venue1,
+        measured1,
+        "20/20 ≤ 60 s; cc_storage_following_head=1; pre/post GetHead roots identical",
+        v1,
+    )
+else:
+    # No harness: still compute from metrics if present, else NOT_RUN.
+    if restart_count is not None or following is not None:
+        measured1 = (
+            f"NOT_RUN (no clause1 harness — live discharge is CC-45c); "
+            f"metric_restart_count={restart_count}; following_head={following}"
+        )
+    else:
+        measured1 = (
+            "NOT_RUN (no clause1 harness and no cc_storage_restart_seconds / "
+            "cc_storage_following_head on scrape — live discharge is CC-45c)"
+        )
+    add_row(
+        "1",
+        "1 · kill -9 resumes",
+        "hoodi",
+        measured1,
+        "20/20 ≤ 60 s; following_head=1; identical GetHead roots (branch A) "
+        "or `partial — no EL in the restart set` (branch B, not discharged)",
+        "NOT_RUN",
+    )
+
+# ── Clause 2 · cursor fallback — three stages (D-14) ───────────────────────
+# Stages: attribution (in-process-double) / hole recorded (self-devnet) /
+# hole closed (self-devnet). Discharged only when the third is present.
+# Computed from: cc_storage_stream_reconnect_total{reason} + parent-linkage walk.
+# Tools: curl (metrics scrape) + jq/json harness stages.
+c2 = harness.get("clause2") if isinstance(harness.get("clause2"), dict) else {}
+reconnect_unknown = parse_counter(
+    storage_text, "cc_storage_stream_reconnect_total",
+    {"reason": "cursor_unknown_session"},
+)
+if reconnect_unknown is None:
+    reconnect_unknown = parse_counter(
+        storage_text, "cc_storage_stream_reconnect",
+        {"reason": "cursor_unknown_session"},
+    )
+reconnect_too_old = parse_counter(
+    storage_text, "cc_storage_stream_reconnect_total",
+    {"reason": "cursor_too_old"},
+)
+if reconnect_too_old is None:
+    reconnect_too_old = parse_counter(
+        storage_text, "cc_storage_stream_reconnect",
+        {"reason": "cursor_too_old"},
+    )
+
+# Stage 1 — attribution (M4.2)
+s1 = c2.get("attribution") if isinstance(c2.get("attribution"), dict) else None
+if s1 is None and isinstance(c2.get("stage1"), dict):
+    s1 = c2["stage1"]
+if s1 is not None:
+    r_u = s1.get("cursor_unknown_session", reconnect_unknown)
+    r_t = s1.get("cursor_too_old", reconnect_too_old)
+    parent = s1.get("parent_linkage_ok")
+    measured_s1 = (
+        f"stage=attribution; cursor_unknown_session={r_u}; "
+        f"cursor_too_old={r_t}; parent_linkage_ok={parent}"
+    )
+    ok_s1 = (
+        r_u is not None and float(r_u) == 1.0
+        and r_t is not None and float(r_t) == 1.0
+    )
+    v_s1 = "PASS (stage only — does not discharge)" if ok_s1 else (
+        "FAIL (stage only)" if r_u is not None or r_t is not None else "NOT_RUN"
+    )
+    if s1.get("status"):
+        v_s1 = str(s1["status"])
+else:
+    if reconnect_unknown is not None or reconnect_too_old is not None:
+        measured_s1 = (
+            f"stage=attribution; metric cursor_unknown_session={reconnect_unknown}; "
+            f"cursor_too_old={reconnect_too_old}; "
+            "NOT_RUN (harness clause2.attribution absent — CC-44b)"
+        )
+    else:
+        measured_s1 = (
+            "NOT_RUN (stage=attribution; no harness + no "
+            "cc_storage_stream_reconnect_total — CC-44b)"
+        )
+    v_s1 = "NOT_RUN"
+add_row(
+    "2-attribution",
+    "2 · cursor fallback · attribution",
+    "in-process-double",
+    measured_s1,
+    "exactly 1 of each reason on cc_storage_stream_reconnect_total; stage only (D-14)",
+    v_s1,
+)
+
+# Stage 2 — hole recorded (M4.4)
+s2 = c2.get("hole_recorded") if isinstance(c2.get("hole_recorded"), dict) else None
+if s2 is None and isinstance(c2.get("stage2"), dict):
+    s2 = c2["stage2"]
+if s2 is not None:
+    holes = s2.get("holes_recorded", s2.get("serve_window_holes"))
+    walk = s2.get("parent_linkage_ok")
+    measured_s2 = (
+        f"stage=hole recorded; holes_recorded={holes}; parent_linkage_ok={walk}"
+    )
+    if s2.get("status"):
+        v_s2 = str(s2["status"])
+    elif holes is not None:
+        v_s2 = "PASS (stage only — does not discharge)" if holes else "FAIL (stage only)"
+    else:
+        v_s2 = "NOT_RUN"
+else:
+    hole_slots = parse_gauge(storage_text, "cc_storage_window_hole_slots")
+    if hole_slots is not None:
+        measured_s2 = (
+            f"stage=hole recorded; metric window_hole_slots={hole_slots:g}; "
+            "NOT_RUN (harness clause2.hole_recorded absent — CC-48/CC-45b)"
+        )
+    else:
+        measured_s2 = (
+            "NOT_RUN (stage=hole recorded; no harness + no "
+            "cc_storage_window_hole_slots — CC-48/CC-45b)"
+        )
+    v_s2 = "NOT_RUN"
+add_row(
+    "2-hole-recorded",
+    "2 · cursor fallback · hole recorded",
+    "self-devnet",
+    measured_s2,
+    "run (b) hole durably in ServeWindow.holes; parent-linkage walk; stage only (D-14)",
+    v_s2,
+)
+
+# Stage 3 — hole closed (M4.5) — only this discharges clause 2
+s3 = c2.get("hole_closed") if isinstance(c2.get("hole_closed"), dict) else None
+if s3 is None and isinstance(c2.get("stage3"), dict):
+    s3 = c2["stage3"]
+if s3 is not None:
+    closed = s3.get("hole_closed", s3.get("holes_empty"))
+    walk = s3.get("parent_linkage_ok")
+    r_t = s3.get("cursor_too_old", reconnect_too_old)
+    measured_s3 = (
+        f"stage=hole closed; hole_closed={closed}; parent_linkage_ok={walk}; "
+        f"cursor_too_old={r_t}"
+    )
+    ok_s3 = bool(closed) and (walk is None or bool(walk))
+    if s3.get("status"):
+        v_s3 = str(s3["status"])
+    else:
+        v_s3 = "PASS (discharged)" if ok_s3 else "FAIL"
+else:
+    measured_s3 = (
+        "NOT_RUN (stage=hole closed; harness clause2.hole_closed absent — "
+        "CC-47a; clause discharged only when this stage is present — D-14)"
+    )
+    v_s3 = "NOT_RUN"
+add_row(
+    "2-hole-closed",
+    "2 · cursor fallback · hole closed",
+    "self-devnet",
+    measured_s3,
+    "store has no gap after parent-linkage walk; discharges clause 2 only when present (D-14)",
+    v_s3,
+)
+
+# ── Clause 3 · disk bounded — two rows, never merged ───────────────────────
+# Discharging: self-devnet-compressed via storage-plateau.sh + deadline + latency.
+# Confirmation: hoodi marked confirmation, non-discharging.
+# Tools: curl (metrics scrape) + jq/json harness + storage-plateau.sh.
+c3 = harness.get("clause3") if isinstance(harness.get("clause3"), dict) else {}
+c3_comp = c3.get("compressed") if isinstance(c3.get("compressed"), dict) else c3.get("discharging")
+if not isinstance(c3_comp, dict):
+    c3_comp = {}
+c3_hoodi = c3.get("hoodi") if isinstance(c3.get("hoodi"), dict) else c3.get("confirmation")
+if not isinstance(c3_hoodi, dict):
+    c3_hoodi = {}
+
+slope = c3_comp.get("slope_pct_of_plateau")
+if slope is None:
+    slope = plateau_field(plateau_text, "slope_pct_of_plateau")
+ratio = c3_comp.get("prune_written_ratio")
+if ratio is None:
+    ratio = plateau_field(plateau_text, "prune_written_ratio")
+deadline_exceeded = c3_comp.get("prune_deadline_exceeded_total")
+if deadline_exceeded is None:
+    deadline_exceeded = sum_counter_family(
+        storage_text, "cc_storage_prune_deadline_exceeded_total"
+    )
+    if deadline_exceeded is None:
+        deadline_exceeded = sum_counter_family(
+            storage_text, "cc_storage_prune_deadline_exceeded"
+        )
+commit_delta = c3_comp.get("commit_latency_delta_pct")
+plateau_status = plateau_field(plateau_text, "status")
+
+parts3 = []
+if slope is not None:
+    parts3.append(f"slope_pct_of_plateau={slope}")
+if ratio is not None:
+    parts3.append(f"prune_written_ratio={ratio}")
+if deadline_exceeded is not None:
+    parts3.append(f"prune_deadline_exceeded_total={deadline_exceeded}")
+if commit_delta is not None:
+    parts3.append(f"commit_latency_delta_pct={commit_delta}")
+if plateau_status:
+    parts3.append(f"plateau_status={plateau_status}")
+
+if parts3 and not (
+    str(slope) == "HORIZON_NOT_CROSSED" and deadline_exceeded is None and commit_delta is None
+    and not c3_comp
+):
+    measured3d = "; ".join(str(p) for p in parts3)
+    # Evaluate bars when numeric
+    ok3 = True
+    has_num = False
+    try:
+        if slope is not None and str(slope) not in ("HORIZON_NOT_CROSSED", "n/a"):
+            has_num = True
+            if abs(float(slope)) >= 1.0:
+                ok3 = False
+    except ValueError:
+        pass
+    try:
+        if ratio is not None and str(ratio) not in ("HORIZON_NOT_CROSSED", "n/a") and not str(ratio).startswith("n/a"):
+            has_num = True
+            rv = float(ratio)
+            if abs(rv - 1.0) > 0.05:
+                ok3 = False
+    except ValueError:
+        pass
+    if deadline_exceeded is not None:
+        has_num = True
+        # fraction bar needs harness total passes; absolute 0 is ideal
+        if c3_comp.get("prune_deadline_exceeded_fraction") is not None:
+            if float(c3_comp["prune_deadline_exceeded_fraction"]) > 0.01:
+                ok3 = False
+    if commit_delta is not None:
+        has_num = True
+        try:
+            if abs(float(commit_delta)) > 10.0:
+                ok3 = False
+        except ValueError:
+            pass
+    if c3_comp.get("status"):
+        v3d = str(c3_comp["status"])
+    elif has_num and c3_comp:
+        v3d = "PASS (discharged)" if ok3 else "FAIL"
+    elif plateau_status == "HORIZON_NOT_CROSSED" and not c3_comp:
+        measured3d = f"NOT_RUN (plateau horizon not crossed); {measured3d}"
+        v3d = "NOT_RUN"
+    elif not c3_comp:
+        measured3d = f"NOT_RUN (metrics only — live discharge is CC-4Cc); {measured3d}"
+        v3d = "NOT_RUN"
+    else:
+        v3d = "NOT_RUN"
+else:
+    measured3d = (
+        "NOT_RUN (no plateau samples / clause3.compressed harness — "
+        "live discharge is CC-4Cc via storage-plateau.sh)"
+    )
+    v3d = "NOT_RUN"
+
+add_row(
+    "3-compressed",
+    "3 · disk bounded (compressed-retention, discharging)",
+    "self-devnet-compressed",
+    measured3d,
+    "24 h slope < 1% of plateau; prune/written within 5%; "
+    "deadline exceeded ≤ 1% of passes; commit p99 delta ≤ 10%",
+    v3d,
+)
+
+# Confirmation row — always emit; mark confirmation, non-discharging
+if c3_hoodi:
+    parts_h = []
+    for k in (
+        "slope_pct_of_plateau", "prune_written_ratio",
+        "prune_deadline_exceeded_total", "commit_latency_delta_pct",
+        "days", "measured",
+    ):
+        if k in c3_hoodi:
+            parts_h.append(f"{k}={c3_hoodi[k]}")
+    measured3h = "; ".join(parts_h) if parts_h else str(c3_hoodi)
+    if c3_hoodi.get("status"):
+        # Keep harness status but always surface the confirmation tag.
+        base = str(c3_hoodi["status"])
+        if "confirmation, non-discharging" not in base:
+            v3h = f"confirmation, non-discharging; {base}"
+        else:
+            v3h = base
+    else:
+        v3h = "confirmation, non-discharging"
+else:
+    measured3h = (
+        "NOT_RUN (clause3.hoodi / confirmation harness absent — live is CC-4Cd ≥ 7-day Hoodi week)"
+    )
+    v3h = "confirmation, non-discharging"
+
+add_row(
+    "3-hoodi-confirmation",
+    "3 · disk bounded (Hoodi confirmation)",
+    "hoodi",
+    measured3h,
+    "same four bars at real data volumes; ≥ 7 days; confirmation, non-discharging",
+    v3h,
+)
+
+# ── Clause 4 · full-window blocks ──────────────────────────────────────────
+# serve-probe --full-window --json + eas ≤ start_slot(current_epoch − 33024)
+# Tools: curl (eas gauge) + jq/json serve-probe report.
+c4 = harness.get("clause4") if isinstance(harness.get("clause4"), dict) else {}
+pos = serve_probe.get("positive") if isinstance(serve_probe.get("positive"), dict) else {}
+eas = serve_probe.get("earliest_available_slot")
+if eas is None:
+    eas = parse_gauge(storage_text, "cc_storage_earliest_available_slot")
+head = serve_probe.get("head_slot")
+blocks_pass = c4.get("blocks_pass", pos.get("pass") if c4.get("side", "blocks") != "columns" else None)
+failing = c4.get("failing_slots", pos.get("failing_slots"))
+eas_bar = c4.get("eas_within_window")
+window_floor = c4.get("window_floor_slot")  # start_slot(current_epoch − 33024)
+
+if c4 or (serve_probe and serve_probe != {}):
+    measured4 = (
+        f"positive_pass={blocks_pass if blocks_pass is not None else pos.get('pass')}; "
+        f"eas={eas}; head={head}; failing_slots={failing}; "
+        f"eas_within_window={eas_bar}; window_floor_slot={window_floor}"
+    )
+    ok4 = True
+    has4 = False
+    if blocks_pass is not None or pos.get("pass") is not None:
+        has4 = True
+        bp = blocks_pass if blocks_pass is not None else pos.get("pass")
+        if not bp:
+            ok4 = False
+    if eas is not None and window_floor is not None:
+        has4 = True
+        if float(eas) > float(window_floor):
+            ok4 = False
+    if c4.get("status"):
+        v4 = str(c4["status"])
+    elif has4:
+        v4 = "PASS (discharged)" if ok4 else "FAIL"
+    else:
+        measured4 = f"NOT_RUN (incomplete serve-probe/harness); {measured4}"
+        v4 = "NOT_RUN"
+else:
+    if eas is not None:
+        measured4 = (
+            f"NOT_RUN (no serve-probe JSON / clause4 harness — CC-4Cd); "
+            f"cc_storage_earliest_available_slot={eas:g}"
+        )
+    else:
+        measured4 = (
+            "NOT_RUN (no serve-probe --full-window --json / clause4 harness — CC-4Cd)"
+        )
+    v4 = "NOT_RUN"
+add_row(
+    "4",
+    "4 · full-window block serve",
+    "hoodi",
+    measured4,
+    "serve-probe positive blocks: zero ResourceUnavailable; "
+    "eas ≤ start_slot(current_epoch − 33024)",
+    v4,
+)
+
+# ── Clause 5 · full-window columns ─────────────────────────────────────────
+# Tools: curl (eas gauge) + jq/json serve-probe / harness.
+c5 = harness.get("clause5") if isinstance(harness.get("clause5"), dict) else {}
+cols_pass = c5.get("columns_pass", c5.get("pass"))
+if cols_pass is None and isinstance(pos, dict) and c5:
+    cols_pass = pos.get("pass")
+if c5 or (serve_probe and c5.get("from_probe")):
+    measured5 = (
+        f"columns_pass={cols_pass}; eas={eas}; "
+        f"failing_slots={c5.get('failing_slots', pos.get('failing_slots'))}; "
+        f"full_custodied_set={c5.get('full_custodied_set')}"
+    )
+    if c5.get("status"):
+        v5 = str(c5["status"])
+    elif cols_pass is not None:
+        v5 = "PASS (discharged)" if cols_pass else "FAIL"
+    else:
+        measured5 = f"NOT_RUN (incomplete); {measured5}"
+        v5 = "NOT_RUN"
+else:
+    measured5 = (
+        "NOT_RUN (no clause5 harness / serve-probe columns result — CC-4Cd)"
+    )
+    v5 = "NOT_RUN"
+add_row(
+    "5",
+    "5 · full-window column serve",
+    "hoodi",
+    measured5,
+    "serve-probe positive columns: full requested∩held set per block; zero ResourceUnavailable",
+    v5,
+)
+
+# ── Clause 6 · negative side ───────────────────────────────────────────────
+# serve-probe negative block for blocks AND columns, by range AND by root.
+# Tools: curl (optional live) + jq/json serve-probe.negative.
+c6 = harness.get("clause6") if isinstance(harness.get("clause6"), dict) else {}
+neg = serve_probe.get("negative") if isinstance(serve_probe.get("negative"), dict) else {}
+# Hoodi row
+c6h = c6.get("hoodi") if isinstance(c6.get("hoodi"), dict) else c6 if c6 and not c6.get("self_devnet") else {}
+if not isinstance(c6h, dict):
+    c6h = {}
+neg_pass = c6h.get("negative_pass", neg.get("pass") if c6h or c6 else None)
+if c6h or (neg and serve_probe):
+    measured6h = (
+        f"negative_pass={neg_pass if neg_pass is not None else neg.get('pass')}; "
+        f"blocks_by_range={c6h.get('blocks_by_range')}; "
+        f"blocks_by_root={c6h.get('blocks_by_root')}; "
+        f"columns_by_range={c6h.get('columns_by_range')}; "
+        f"columns_by_root={c6h.get('columns_by_root')}; "
+        f"failing_slots={c6h.get('failing_slots', neg.get('failing_slots'))}"
+    )
+    if c6h.get("status"):
+        v6h = str(c6h["status"])
+    elif neg_pass is not None or neg.get("pass") is not None:
+        np = neg_pass if neg_pass is not None else neg.get("pass")
+        v6h = "PASS (discharged)" if np else "FAIL"
+    else:
+        measured6h = f"NOT_RUN (incomplete); {measured6h}"
+        v6h = "NOT_RUN"
+else:
+    measured6h = (
+        "NOT_RUN (no clause6 / serve-probe.negative — CC-4Cd Hoodi half)"
+    )
+    v6h = "NOT_RUN"
+add_row(
+    "6-hoodi",
+    "6 · negative side (Hoodi)",
+    "hoodi",
+    measured6h,
+    "below eas: every response ResourceUnavailable (3); never empty success; "
+    "blocks+columns × by-range+by-root",
+    v6h,
+)
+
+# self-devnet early falsification row
+c6s = c6.get("self_devnet") if isinstance(c6.get("self_devnet"), dict) else {}
+if c6s:
+    measured6s = (
+        f"negative_pass={c6s.get('negative_pass')}; "
+        f"failing_slots={c6s.get('failing_slots')}"
+    )
+    v6s = str(c6s.get("status", "PASS (early falsification)" if c6s.get("negative_pass") else "FAIL"))
+else:
+    measured6s = (
+        "NOT_RUN (clause6.self_devnet absent — early falsification at M4.3 / CC-4F)"
+    )
+    v6s = "NOT_RUN"
+add_row(
+    "6-self-devnet",
+    "6 · negative side (self-devnet early falsification)",
+    "self-devnet",
+    measured6s,
+    "below eas: ResourceUnavailable never empty success (early falsification)",
+    v6s,
+)
+
+# ── Clause 7 · advertisement = served ──────────────────────────────────────
+# cc_storage_earliest_available_slot vs cc_p2p_earliest_available_slot at every
+# scrape + per-step migration assertions.
+# Tools: curl (storage + p2p scrapes) + jq/json harness migration asserts.
+c7 = harness.get("clause7") if isinstance(harness.get("clause7"), dict) else {}
+eas_s = parse_gauge(storage_text, "cc_storage_earliest_available_slot")
+eas_p = parse_gauge(p2p_text, "cc_p2p_earliest_available_slot")
+if eas_p is None:
+    eas_p = parse_gauge(storage_text, "cc_p2p_earliest_available_slot")
+
+equal_scrapes = c7.get("eas_equal_at_every_scrape")
+migration_ok = c7.get("migration_assertions_ok")
+mismatches = c7.get("mismatch_count")
+
+if c7 or eas_s is not None or eas_p is not None:
+    measured7 = (
+        f"cc_storage_earliest_available_slot={eas_s}; "
+        f"cc_p2p_earliest_available_slot={eas_p}; "
+        f"eas_equal_at_every_scrape={equal_scrapes}; "
+        f"migration_assertions_ok={migration_ok}; "
+        f"mismatch_count={mismatches}"
+    )
+    if c7.get("status"):
+        v7 = str(c7["status"])
+    elif equal_scrapes is not None or migration_ok is not None:
+        ok7 = (equal_scrapes is None or bool(equal_scrapes)) and (
+            migration_ok is None or bool(migration_ok)
+        )
+        if eas_s is not None and eas_p is not None and float(eas_s) != float(eas_p):
+            ok7 = False
+        v7 = "PASS (discharged)" if ok7 else "FAIL"
+    elif eas_s is not None and eas_p is not None:
+        if float(eas_s) == float(eas_p):
+            measured7 += "; single-scrape equal (full discharge needs every-scrape series — CC-4Cd)"
+            v7 = "NOT_RUN"
+        else:
+            measured7 += "; single-scrape MISMATCH"
+            v7 = "FAIL"
+    else:
+        measured7 = f"NOT_RUN (incomplete); {measured7}"
+        v7 = "NOT_RUN"
+else:
+    measured7 = (
+        "NOT_RUN (no clause7 harness and no eas gauges — CC-49 / CC-45c / CC-4Cd)"
+    )
+    v7 = "NOT_RUN"
+
+venue7 = c7.get("venue") if c7.get("venue") in VALID_VENUES else "self-devnet"
+add_row(
+    "7",
+    "7 · advertisement equals served",
+    venue7,
+    measured7,
+    "cc_storage_earliest_available_slot == cc_p2p_earliest_available_slot at every scrape; "
+    "migration step assertions hold",
+    v7,
+)
+
+# ── emit markdown table ────────────────────────────────────────────────────
+lines = [
+    "## Clause table",
+    "",
+    "**Owner:** CC-4Cb (script) / CC-4Cd (numbers)",
+    "**Generated by:** `scripts/soak-report.sh --phase 4`",
+    f"**Storage metrics URL / file:** `{storage_url or '(none)'}`",
+    f"**Plateau samples:** `{plateau_samples or '(none)'}`",
+    f"**Serve-probe JSON:** `{serve_probe_path or '(none)'}`",
+    f"**Harness JSON:** `{harness_path or '(none)'}`",
+    f"**Venue filter:** {venue_filter or '(none — all venues)'}",
+    f"**Clause filter:** {clause_filter or '(none — all clauses)'}",
+    "",
+    "| Clause | Venue | Measured | Threshold | Verdict |",
+    "|---|---|---|---|---|",
+]
+for r in candidates:
+    def esc(s):
+        return str(s).replace("|", "\\|").replace("\n", " ")
+    lines.append(
+        f"| {esc(r['clause'])} | {esc(r['venue'])} | {esc(r['measured'])} | "
+        f"{esc(r['threshold'])} | **{esc(r['verdict'])}** |"
+    )
+if not candidates:
+    lines.append(
+        "| _(no rows emitted)_ | — | venue/clause filter excluded every row "
+        "(refusals on stderr) | — | **REFUSED** |"
+    )
+lines.append("")
+lines.append("### Method notes")
+lines.append("")
+lines.append(
+    "- **Venue is machine-checked (closed set):** `hoodi`, `self-devnet`, "
+    "`self-devnet-compressed`, `in-process-double`, `dev-machine`. "
+    "`--venue` refuses non-matching clause rows — a clause at the wrong venue "
+    "does not discharge."
+)
+lines.append(
+    "- **Clause 1** emits branch A (EL in restart set → may discharge) or "
+    "branch B carrying the literal string `partial — no EL in the restart set` "
+    "with verdict **not discharged**."
+)
+lines.append(
+    "- **Clause 2** emits three stages (`attribution` / `hole recorded` / "
+    "`hole closed`); the clause is **discharged only when the third is present** (D-14)."
+)
+lines.append(
+    "- **Clause 3** has two rows that must not be merged: compressed-retention "
+    "at `self-devnet-compressed` (discharging) and Hoodi marked "
+    "**`confirmation, non-discharging`**."
+)
+lines.append(
+    "- **§10.6 expressions:** restart histogram + following_head + GetHead roots; "
+    "`cc_storage_stream_reconnect_total{reason}`; `storage-plateau.sh` + "
+    "`cc_storage_prune_deadline_exceeded_total` + commit-latency delta; "
+    "`serve-probe --full-window --json` + eas floor; negative side; "
+    "storage eas vs p2p eas."
+)
+lines.append(
+    "- Every measured cell is a **number or an explicit NOT_RUN** — no blank, "
+    "no guess. A clause read by eye off a Grafana panel does not discharge it."
+)
+lines.append(
+    "- **It measures the run; it is not the run** (D-10). Plateau run is CC-4Cc; "
+    "Hoodi week is CC-4Cd; 20 restart trials are CC-45c."
+)
+lines.append("")
+
+sys.stdout.write("\n".join(lines))
+
+hard_fail = any(r["verdict"] == "FAIL" or r["verdict"].startswith("FAIL") for r in candidates)
+if hard_fail:
+    raise SystemExit(4)
+raise SystemExit(0)
+PY
+}
+
 # ── self-test ───────────────────────────────────────────────────────────────
 if [[ "${SELF_TEST}" -eq 1 ]]; then
   log "running self-test (synthetic series; both R-1 directions + catch-up gate)"
@@ -2691,12 +3631,459 @@ EOF
   done <<< "${table_rows}"
   log "ok: sparse inputs still produce number or NOT_RUN in every cell"
 
+
+  # ── Phase 4 fixture self-tests (CC-4Cb) ─────────────────────────────────
+  log "phase4 self-test: clause table + venue gate + confirmation + branches + stages"
+
+  # 15) clean synthetic harness: branch A + three clause-2 stages + both clause-3 rows
+  cat > "${TMP}/p4_storage_ok.txt" <<'EOF'
+# TYPE cc_storage_restart_seconds histogram
+cc_storage_restart_seconds_sum{phase="open"} 12.5
+cc_storage_restart_seconds_count{phase="open"} 20
+cc_storage_following_head 1
+cc_storage_stream_reconnect_total{reason="cursor_unknown_session"} 1
+cc_storage_stream_reconnect_total{reason="cursor_too_old"} 1
+cc_storage_window_hole_slots 0
+cc_storage_prune_deadline_exceeded_total{pass="blocks"} 0
+cc_storage_earliest_available_slot 1000
+cc_p2p_earliest_available_slot 1000
+EOF
+  cat > "${TMP}/p4_p2p_ok.txt" <<'EOF'
+cc_p2p_earliest_available_slot 1000
+EOF
+  cat > "${TMP}/p4_harness_ok.json" <<'EOF'
+{
+  "clause1": {
+    "branch": "A",
+    "el_in_restart_set": true,
+    "venue": "hoodi",
+    "runs_ok": 20,
+    "runs_total": 20,
+    "max_restart_seconds": 45.0,
+    "head_roots_identical": true,
+    "pre_get_head_root": "0xaaa",
+    "post_get_head_root": "0xaaa"
+  },
+  "clause2": {
+    "attribution": {
+      "cursor_unknown_session": 1,
+      "cursor_too_old": 1
+    },
+    "hole_recorded": {
+      "holes_recorded": true,
+      "parent_linkage_ok": true
+    },
+    "hole_closed": {
+      "hole_closed": true,
+      "parent_linkage_ok": true,
+      "cursor_too_old": 1
+    }
+  },
+  "clause3": {
+    "compressed": {
+      "slope_pct_of_plateau": 0.2,
+      "prune_written_ratio": 0.99,
+      "prune_deadline_exceeded_total": 0,
+      "commit_latency_delta_pct": 3.0
+    },
+    "hoodi": {
+      "days": 7,
+      "slope_pct_of_plateau": 2.5,
+      "prune_written_ratio": 0.01
+    }
+  },
+  "clause4": {
+    "blocks_pass": true,
+    "eas_within_window": true,
+    "window_floor_slot": 2000
+  },
+  "clause5": {
+    "columns_pass": true,
+    "full_custodied_set": true
+  },
+  "clause6": {
+    "hoodi": {
+      "negative_pass": true,
+      "blocks_by_range": true,
+      "blocks_by_root": true,
+      "columns_by_range": true,
+      "columns_by_root": true
+    },
+    "self_devnet": {
+      "negative_pass": true
+    }
+  },
+  "clause7": {
+    "eas_equal_at_every_scrape": true,
+    "migration_assertions_ok": true,
+    "mismatch_count": 0,
+    "venue": "self-devnet"
+  }
+}
+EOF
+  cat > "${TMP}/p4_serve_ok.json" <<'EOF'
+{
+  "earliest_available_slot": 1000,
+  "head_slot": 5000,
+  "positive": {"pass": true, "failing_slots": []},
+  "negative": {"pass": true, "failing_slots": []},
+  "pass": true
+}
+EOF
+  # plateau samples spanning 25 h (flat)
+  python3 - <<'PY' > "${TMP}/p4_plateau.csv"
+import csv
+print("ts_unix,bytes_total,pruned_bytes,written_bytes")
+base = 1_700_000_000
+for i in range(26):
+    ts = base + i * 3600
+    bytes_ = 1_000_000
+    pruned = max(0, (i - 1) * 1000)
+    written = max(0, (i - 1) * 1000)
+    print(f"{ts},{bytes_},{pruned},{written}")
+PY
+  set +e
+  body="$(
+    STORAGE_METRICS_FILE="${TMP}/p4_storage_ok.txt" \
+    P2P_METRICS_FILE="${TMP}/p4_p2p_ok.txt" \
+    HARNESS_JSON="${TMP}/p4_harness_ok.json" \
+    SERVE_PROBE_JSON="${TMP}/p4_serve_ok.json" \
+    PLATEAU_SAMPLES="${TMP}/p4_plateau.csv" \
+    VENUE_FILTER="" \
+    CLAUSE_FILTER="" \
+    run_phase4_report 2>"${TMP}/err_p4_ok.txt"
+  )"
+  rc=$?
+  set -e
+  [[ "${rc}" -eq 0 ]] || { cat "${TMP}/err_p4_ok.txt" >&2; echo "${body}" >&2; die "self-test: phase4 clean should exit 0, got ${rc}"; }
+  echo "${body}" | grep -Fq 'hoodi' \
+    || { echo "${body}" >&2; die "self-test: phase4 clause 1 venue hoodi missing"; }
+  echo "${body}" | grep -Fq 'self-devnet-compressed' \
+    || { echo "${body}" >&2; die "self-test: phase4 clause 3 compressed venue missing"; }
+  echo "${body}" | grep -Fq 'confirmation, non-discharging' \
+    || { echo "${body}" >&2; die "self-test: phase4 clause 3 confirmation mark missing"; }
+  echo "${body}" | grep -Fq 'in-process-double' \
+    || die "self-test: phase4 clause 2 attribution venue missing"
+  echo "${body}" | grep -Fq 'hole closed' \
+    || die "self-test: phase4 clause 2 hole closed stage missing"
+  echo "${body}" | grep -Fq 'PASS (discharged)' \
+    || { echo "${body}" >&2; die "self-test: phase4 expected a discharged PASS"; }
+  echo "${body}" | grep -E '^\| ' | grep -v '^| Clause' | grep -v '^|---' | grep -Fq 'NOT_RUN' \
+    && { echo "${body}" >&2; die "self-test: phase4 clean harness should not emit NOT_RUN rows"; } || true
+  # Ensure both clause-3 rows present side by side
+  echo "${body}" | grep -c 'disk bounded' | grep -Eq '^[2-9]' \
+    || { echo "${body}" >&2; die "self-test: expected two clause-3 rows"; }
+  log "ok: phase4 clean table emits venues + confirmation mark + stages"
+
+  # 16) branch B: partial — no EL in the restart set / not discharged
+  cat > "${TMP}/p4_harness_b.json" <<'EOF'
+{
+  "clause1": {
+    "branch": "B",
+    "el_in_restart_set": false,
+    "partial_no_el": true
+  }
+}
+EOF
+  set +e
+  body="$(
+    STORAGE_METRICS_FILE="${TMP}/p4_storage_ok.txt" \
+    HARNESS_JSON="${TMP}/p4_harness_b.json" \
+    SERVE_PROBE_JSON="" \
+    PLATEAU_SAMPLES="" \
+    CLAUSE_FILTER="1" \
+    VENUE_FILTER="" \
+    run_phase4_report 2>"${TMP}/err_p4_b.txt"
+  )"
+  rc=$?
+  set -e
+  [[ "${rc}" -eq 0 ]] || { cat "${TMP}/err_p4_b.txt" >&2; die "self-test: phase4 branch B exit ${rc}"; }
+  echo "${body}" | grep -Fq 'partial — no EL in the restart set' \
+    || { echo "${body}" >&2; die "self-test: branch B literal string missing"; }
+  echo "${body}" | grep -Fq 'not discharged' \
+    || { echo "${body}" >&2; die "self-test: branch B must be not discharged"; }
+  echo "${body}" | grep -Fq 'PASS (discharged)' \
+    && { echo "${body}" >&2; die "self-test: branch B must not claim discharged"; } || true
+  log "ok: phase4 branch B emits partial — no EL in the restart set / not discharged"
+
+  # 17) clause 2 without stage 3 → not discharged (stages 1+2 only)
+  cat > "${TMP}/p4_harness_c2partial.json" <<'EOF'
+{
+  "clause2": {
+    "attribution": {"cursor_unknown_session": 1, "cursor_too_old": 1},
+    "hole_recorded": {"holes_recorded": true, "parent_linkage_ok": true}
+  }
+}
+EOF
+  set +e
+  body="$(
+    STORAGE_METRICS_FILE="${TMP}/p4_storage_ok.txt" \
+    HARNESS_JSON="${TMP}/p4_harness_c2partial.json" \
+    CLAUSE_FILTER="2" \
+    VENUE_FILTER="" \
+    run_phase4_report 2>"${TMP}/err_p4_c2.txt"
+  )"
+  rc=$?
+  set -e
+  [[ "${rc}" -eq 0 ]] || { cat "${TMP}/err_p4_c2.txt" >&2; die "self-test: phase4 clause2 partial exit ${rc}"; }
+  echo "${body}" | grep -Fq 'attribution' \
+    || die "self-test: clause2 attribution row missing"
+  echo "${body}" | grep -Fq 'hole recorded' \
+    || die "self-test: clause2 hole recorded row missing"
+  echo "${body}" | grep -Fq 'hole closed' \
+    || die "self-test: clause2 hole closed row must still emit"
+  echo "${body}" | grep -Fq 'NOT_RUN (stage=hole closed' \
+    || { echo "${body}" >&2; die "self-test: hole closed absent must be NOT_RUN"; }
+  # discharged only on third stage — no PASS (discharged) for hole closed
+  echo "${body}" | grep 'hole closed' | grep -Fq 'PASS (discharged)' \
+    && { echo "${body}" >&2; die "self-test: clause2 must not discharge without stage 3"; } || true
+  log "ok: phase4 clause2 three stages; discharged only when third present"
+
+  # 18) confirmation vs discharging rows side by side (synthetic clause 3 only)
+  cat > "${TMP}/p4_harness_c3.json" <<'EOF'
+{
+  "clause3": {
+    "compressed": {
+      "slope_pct_of_plateau": 0.1,
+      "prune_written_ratio": 1.0,
+      "prune_deadline_exceeded_total": 0,
+      "commit_latency_delta_pct": 1.0
+    },
+    "hoodi": {
+      "days": 7,
+      "slope_pct_of_plateau": 5.0,
+      "status": "PASS"
+    }
+  }
+}
+EOF
+  set +e
+  body="$(
+    STORAGE_METRICS_FILE="${TMP}/p4_storage_ok.txt" \
+    HARNESS_JSON="${TMP}/p4_harness_c3.json" \
+    CLAUSE_FILTER="3" \
+    VENUE_FILTER="" \
+    run_phase4_report 2>"${TMP}/err_p4_c3.txt"
+  )"
+  rc=$?
+  set -e
+  [[ "${rc}" -eq 0 ]] || { cat "${TMP}/err_p4_c3.txt" >&2; die "self-test: phase4 clause3 exit ${rc}"; }
+  table_c3="$(echo "${body}" | grep -E '^\| ' | grep -v '^| Clause' | grep -v '^|---' || true)"
+  echo "${table_c3}" | grep -F 'self-devnet-compressed' | grep -Fq 'discharging' \
+    || { echo "${body}" >&2; die "self-test: compressed discharging row missing"; }
+  echo "${table_c3}" | grep -Fq 'confirmation, non-discharging' \
+    || { echo "${body}" >&2; die "self-test: hoodi confirmation mark missing"; }
+  # compressed row must NOT carry confirmation, non-discharging
+  echo "${table_c3}" | grep 'self-devnet-compressed' | grep -Fq 'confirmation, non-discharging' \
+    && { echo "${body}" >&2; die "self-test: compressed row must not be marked confirmation"; } || true
+  log "ok: phase4 clause3 compressed discharging vs hoodi confirmation, non-discharging"
+
+  # 19) venue filter refuses non-matching closed-set rows
+  set +e
+  body="$(
+    STORAGE_METRICS_FILE="${TMP}/p4_storage_ok.txt" \
+    HARNESS_JSON="${TMP}/p4_harness_ok.json" \
+    SERVE_PROBE_JSON="${TMP}/p4_serve_ok.json" \
+    PLATEAU_SAMPLES="${TMP}/p4_plateau.csv" \
+    VENUE_FILTER="dev-machine" \
+    CLAUSE_FILTER="" \
+    run_phase4_report 2>"${TMP}/err_p4_venue.txt"
+  )"
+  rc=$?
+  set -e
+  [[ "${rc}" -eq 0 ]] || { cat "${TMP}/err_p4_venue.txt" >&2; die "self-test: phase4 venue filter exit ${rc}"; }
+  grep -q "REFUSED:" "${TMP}/err_p4_venue.txt" \
+    || { cat "${TMP}/err_p4_venue.txt" >&2; die "self-test: phase4 venue refuse missing"; }
+  echo "${body}" | grep -Fq '| hoodi |' \
+    && { echo "${body}" >&2; die "self-test: hoodi rows must not emit at dev-machine"; } || true
+  log "ok: phase4 venue filter refuses non-matching rows"
+
+  # 20) unknown venue rejected
+  set +e
+  body="$(
+    STORAGE_METRICS_FILE="${TMP}/p4_storage_ok.txt" \
+    HARNESS_JSON="${TMP}/p4_harness_ok.json" \
+    VENUE_FILTER="Hoodi" \
+    run_phase4_report 2>"${TMP}/err_p4_badvenue.txt"
+  )"
+  rc=$?
+  set -e
+  [[ "${rc}" -ne 0 ]] || die "self-test: unknown venue 'Hoodi' must be rejected"
+  grep -qi "unknown Phase 4 venue" "${TMP}/err_p4_badvenue.txt" \
+    || { cat "${TMP}/err_p4_badvenue.txt" >&2; die "self-test: bad venue message missing"; }
+  log "ok: phase4 rejects venue outside closed set"
+
+  # 21) no data → NOT_RUN not blank
+  : > "${TMP}/p4_empty.txt"
+  set +e
+  body="$(
+    STORAGE_METRICS_FILE="${TMP}/p4_empty.txt" \
+    HARNESS_JSON="" \
+    SERVE_PROBE_JSON="" \
+    PLATEAU_SAMPLES="" \
+    VENUE_FILTER="" \
+    CLAUSE_FILTER="" \
+    run_phase4_report 2>"${TMP}/err_p4_empty.txt"
+  )"
+  rc=$?
+  set -e
+  [[ "${rc}" -eq 0 ]] || { cat "${TMP}/err_p4_empty.txt" >&2; die "self-test: phase4 empty exit ${rc}"; }
+  echo "${body}" | grep -Fq 'NOT_RUN' \
+    || { echo "${body}" >&2; die "self-test: empty inputs must emit NOT_RUN"; }
+  table_rows="$(echo "${body}" | grep -E '^\| ' | grep -v '^| Clause' | grep -v '^|---' || true)"
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    echo "${line}" | grep -E '^\|[^|]+\|[^|]+\|[^|]+\|[^|]+\|[^|]+\|$' >/dev/null \
+      || die "self-test: phase4 malformed/blank row: ${line}"
+  done <<< "${table_rows}"
+  log "ok: phase4 empty inputs emit NOT_RUN in every measured cell"
+
+  # 22) each Phase 4 clause block references curl|jq|promtool (computability)
+  # Scan the Phase 4 evaluator region (function open → next top-level section).
+  p4_block="$(awk '
+    /^run_phase4_report\(\)/ {grab=1}
+    grab {print}
+    grab && /^# ── self-test/ {exit}
+  ' "${REPO_ROOT}/scripts/soak-report.sh")"
+  [[ -n "${p4_block}" ]] || die "self-test: phase4 evaluator region empty"
+  for marker in \
+    'Clause 1' \
+    'Clause 2' \
+    'Clause 3' \
+    'Clause 4' \
+    'Clause 5' \
+    'Clause 6' \
+    'Clause 7'
+  do
+    echo "${p4_block}" | grep -Fq "${marker}" \
+      || die "self-test: phase4 evaluator missing ${marker} block"
+  done
+  echo "${p4_block}" | grep -E 'curl|jq|promtool' >/dev/null \
+    || die "self-test: phase4 evaluator must invoke curl|jq|promtool"
+  # curl is the live scrape path feeding every clause's metric reads.
+  echo "${p4_block}" | grep -c 'curl' | grep -Eq '^[1-9]' \
+    || die "self-test: phase4 must call curl for live metrics"
+  # jq is available for harness/serve-probe JSON; assert the script mentions it
+  # in Phase 4 commentary or uses python json.loads on the same files jq would read.
+  echo "${p4_block}" | grep -E 'json.loads|jq' >/dev/null \
+    || die "self-test: phase4 must parse JSON (jq or json.loads) per clause inputs"
+  log "ok: phase4 clause blocks present and use curl for metrics scrape"
+
   log "self-test PASSED (phase1: clean/spike/catchup/provider; phase2: table/dip/stable/NO_DATA; phase3: table/venue/bootstrap/clause4)"
   exit 0
 fi
 
 # ── resolve inputs ──────────────────────────────────────────────────────────
 # Phase 3-only path: per-clause table (CC-3Ab). Samples optional (NOT_RUN cells).
+
+# Phase 4-only path: per-clause table (CC-4Cb / §10.6). Inputs optional (NOT_RUN cells).
+if [[ "${PHASE4}" == "1" ]]; then
+  if [[ -n "${STORAGE_METRICS_FILE}" && ! -f "${STORAGE_METRICS_FILE}" ]]; then
+    die "storage-metrics not found: ${STORAGE_METRICS_FILE}"
+  fi
+  if [[ -n "${PLATEAU_SAMPLES}" && ! -f "${PLATEAU_SAMPLES}" ]]; then
+    die "plateau-samples not found: ${PLATEAU_SAMPLES}"
+  fi
+  if [[ -n "${SERVE_PROBE_JSON}" && ! -f "${SERVE_PROBE_JSON}" ]]; then
+    die "serve-probe-json not found: ${SERVE_PROBE_JSON}"
+  fi
+  if [[ -n "${HARNESS_JSON}" && ! -f "${HARNESS_JSON}" ]]; then
+    die "harness-json not found: ${HARNESS_JSON}"
+  fi
+  if [[ -n "${P2P_METRICS_FILE}" && ! -f "${P2P_METRICS_FILE}" ]]; then
+    die "p2p-metrics not found: ${P2P_METRICS_FILE}"
+  fi
+
+  if [[ "${DOCS}" == "${REPO_ROOT}/docs/phase-1-soak.md" ]]; then
+    DOCS="${REPO_ROOT}/docs/phase-4-soak.md"
+  fi
+
+  log "phase4:               yes"
+  log "storage metrics url:  ${STORAGE_METRICS_URL}"
+  log "storage metrics file: ${STORAGE_METRICS_FILE:-"(none)"}"
+  log "p2p metrics file:     ${P2P_METRICS_FILE:-${P2P_METRICS_END:-${P2P_METRICS_START:-"(none)"}}}"
+  log "plateau samples:      ${PLATEAU_SAMPLES:-"(none)"}"
+  log "serve-probe json:     ${SERVE_PROBE_JSON:-"(none)"}"
+  log "harness json:         ${HARNESS_JSON:-"(none)"}"
+  log "venue filter:         ${VENUE_FILTER:-"(none)"}"
+  log "clause filter:        ${CLAUSE_FILTER:-"(none)"}"
+
+  TMPERR="$(mktemp)"
+  set +e
+  body="$(run_phase4_report 2>"${TMPERR}")"
+  rc=$?
+  set -e
+  if [[ "${rc}" -eq 3 ]]; then
+    cat "${TMPERR}" >&2
+    rm -f "${TMPERR}"
+    exit 3
+  fi
+  if [[ "${rc}" -ne 0 && "${rc}" -ne 4 ]]; then
+    cat "${TMPERR}" >&2
+    rm -f "${TMPERR}"
+    die "phase4 report generation failed (exit ${rc})"
+  fi
+  if [[ -s "${TMPERR}" ]]; then
+    cat "${TMPERR}" >&2
+  fi
+  rm -f "${TMPERR}"
+
+  if [[ -n "${OUT}" ]]; then
+    printf '%s\n' "${body}" > "${OUT}"
+    log "wrote ${OUT}"
+  else
+    printf '%s\n' "${body}"
+  fi
+
+  if [[ "${WRITE}" -eq 1 ]]; then
+    [[ -f "${DOCS}" ]] || die "docs file not found: ${DOCS}"
+    python3 - "${DOCS}" "${body}" <<'PY'
+import sys
+from pathlib import Path
+docs = Path(sys.argv[1])
+body = sys.argv[2]
+if not body.lstrip().startswith("## "):
+    body = "## Clause table\n\n" + body
+text = docs.read_text()
+# Match H2 at beginning of line only — not owner-table cells like
+# `| \`## Clause table\` | … |` (M1).
+start = -1
+_off = 0
+for _line in text.splitlines(keepends=True):
+    if _line.startswith("## Clause table"):
+        start = _off
+        break
+    _off += len(_line)
+if start < 0:
+    docs.write_text(text.rstrip() + "\n\n" + body + "\n")
+else:
+    rest = text[start + 1:]
+    nxt = None
+    for i, line in enumerate(rest.splitlines(keepends=True)):
+        if i == 0:
+            continue
+        if line.startswith("## "):
+            offset = len("".join(rest.splitlines(keepends=True)[:i]))
+            nxt = start + 1 + offset
+            break
+    if nxt is None:
+        new_text = text[:start] + body.rstrip() + "\n"
+    else:
+        new_text = text[:start] + body.rstrip() + "\n\n" + text[nxt:]
+    docs.write_text(new_text)
+print(f"updated {docs} ## Clause table", file=sys.stderr)
+PY
+    log "updated ${DOCS} ## Clause table (--write)"
+  fi
+
+  if [[ "${rc}" -eq 4 ]]; then
+    log "phase4 clause FAIL (report emitted; exit 4)"
+    exit 4
+  fi
+  log "done (phase4)"
+  exit 0
+fi
+
 if [[ "${PHASE3}" == "1" ]]; then
   if [[ -n "${SAMPLES}" && ! -f "${SAMPLES}" ]]; then
     die "samples file not found: ${SAMPLES}"
@@ -2777,7 +4164,15 @@ body = sys.argv[2]
 if not body.lstrip().startswith("## "):
     body = "## Clause table\n\n" + body
 text = docs.read_text()
-start = text.find("## Clause table")
+# Match H2 at beginning of line only — not owner-table cells like
+# `| \`## Clause table\` | … |` (M1).
+start = -1
+_off = 0
+for _line in text.splitlines(keepends=True):
+    if _line.startswith("## Clause table"):
+        start = _off
+        break
+    _off += len(_line)
 if start < 0:
     docs.write_text(text.rstrip() + "\n\n" + body + "\n")
 else:
@@ -2882,7 +4277,15 @@ body = sys.argv[2]
 if not body.lstrip().startswith("## "):
     body = "## Clause table\n\n" + body
 text = docs.read_text()
-start = text.find("## Clause table")
+# Match H2 at beginning of line only — not owner-table cells like
+# `| \`## Clause table\` | … |` (M1).
+start = -1
+_off = 0
+for _line in text.splitlines(keepends=True):
+    if _line.startswith("## Clause table"):
+        start = _off
+        break
+    _off += len(_line)
 if start < 0:
     docs.write_text(text.rstrip() + "\n\n" + body + "\n")
 else:

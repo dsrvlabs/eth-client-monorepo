@@ -2,14 +2,31 @@
 
 This document is **append-only within named sections**. Owning issues fill only
 their section; do not rewrite another issue's section. Skeleton opened by
-**CC-4B** (Amendment 5) with the `OQ-1` foreign-peer probe section only; later
-issues append their own sections (full skeleton at M4.3 / `CC-4Cb`).
+**CC-4B** (Amendment 5) with the `OQ-1` foreign-peer probe section; **CC-4Cb**
+lands the remaining named-section headers (empty) plus the D-12 gating record.
+Later issues fill numbers only — the instrument measures the runs; it is not a
+run (D-10).
 
 | Section | Owner |
 |---|---|
 | `## OQ-1 — foreign-peer probe` | **CC-4B** |
+| `## Engine falsifier — both layouts` | **CC-40b** |
 | `## Snapshot terms` | **CC-42** |
-| `## V-10 / Clause 3 (M4.2 entry)` | **CC-42** |
+| `## Phase 1 clause gating (D-12)` | **CC-4Cb** |
+| `## Clause 1 — restart trials` | **CC-45c** |
+| `## Clause 2 — cursor fallback` | **CC-44b** / **CC-48** / **CC-47a** |
+| `## Clause 3 — compressed-retention plateau (discharging)` | **CC-4Cc** |
+| `## Clause 3 — Hoodi confirmation (non-discharging)` | **CC-4Cd** |
+| `## Clauses 4, 5, 6, 7 — Hoodi` | **CC-4Cd** |
+| `## CC-4G — cgc rehearsal` | **CC-4G** |
+| `## Machine and environment` | **CC-4Cd** |
+| `## Run record` | **CC-4Cb** skeleton; numbers **CC-4Cd** |
+| `## Clause table` | **CC-4Cb** skeleton; numbers **CC-4Cd** |
+
+Report instrument: `bash scripts/soak-report.sh --phase 4` (CC-4Cb / §10.6).
+Venues are the closed set `hoodi | self-devnet | self-devnet-compressed |
+in-process-double | dev-machine`. Confirmation rows carry
+`confirmation, non-discharging`.
 
 ## OQ-1 — foreign-peer probe
 
@@ -105,6 +122,12 @@ cc-serve-probe \
 probe's identify observation (JSON / stderr Status line), advertised
 `earliest_available_slot`, and block/column results just above it.
 
+## Engine falsifier — both layouts
+
+**Owner:** CC-40b  
+**Status:** empty skeleton (Amendment 5 / CC-4Cb). Numbers land in this section
+only.
+
 ## Snapshot terms
 
 **Owner:** CC-42  
@@ -164,49 +187,132 @@ storage.snapshot_epochs = 32
 storage.snapshot_ring   = 4
 ```
 
-## V-10 / Clause 3 (M4.2 entry)
+## Phase 1 clause gating (D-12)
 
-**Owner:** CC-42  
+**Owner:** CC-4Cb  
 **Date:** 2026-08-08  
+**Milestone:** M4.3
 
-### V-10 — mid-gate and CC-1H
+### Decision (not an oversight)
 
-| Field | Value |
-|---|---|
-| Command | `cargo test -p cc-chain --test offline_replay cc1h_mid_gate_with_fork_choice_clone -- --nocapture` |
-| Recorded in | `docs/phase-1-soak.md` (mid-gate section) |
-| Result **today** (this worktree's recorded soak) | **PASS** — max epoch wall **774.81 ms** &lt; 1000 ms bar |
-| Hash share | mean **21.0 %**, max **25.2 %** |
-| **CC-1H promoted?** | **No** — mid gate closed without promoting hierarchical state |
-| Implication for CC-42 | Cheap diffing (`hdiff`) remains **unavailable** (§3.3); cadence is the only lever. `CC-4K` stays unscheduled. |
+**D-12's inversion is recorded here as a decision, not an oversight.**
 
-### Phase 1 Clause 3 number (D-12)
-
-| Metric | Bar | Recorded | Status |
+| Phase 1 clause | Gates Phase 4? | Scope | Rationale |
 |---|---|---|---|
-| Epoch p95 (mid-gate max wall used as the available number) | ≤ 1000 ms | **774.81 ms** max wall | **PASS** (from phase-1-soak; not re-run in this agent session as a fresh p95 histogram) |
-| `process_block` p95 | ≤ 400 ms | See phase-1-soak / engine-latency — mid-gate path is epoch ST + FC clone, not a live `process_block` p95 series | **Recorded reference; not re-instrumented here** |
+| **Clause 3** (epoch p95 ≤ 1000 ms; `process_block` p95 ≤ 400 ms) | **Yes — hard gate** | **`CC-42` and `CC-46a` only** — and on **nothing else** | Both issues add work to the same slot budget; a snapshot cadence (or prune path) chosen against an unmeasured baseline is a guess |
+| **Clause 2** (≥ 24 h Hoodi soak) | **No — not a gate at all** | — | A 24 h soak that a restart would void is precisely the thing Phase 4 removes the need for; requiring it first is **circular** |
 
-**D-12 inversion (stated):** Phase 1's **Clause 3 gates CC-42** (and CC-46); Phase 1's **Clause 2** (24 h soak) **does not**. A snapshot cadence chosen against an unmeasured baseline is a guess; a 24 h soak that a restart would void is circular with Phase 4's purpose.
+### Phase 1 Clause 3 reading as of M4.3
 
-**What was used instead of a fresh Clause 3 NOT_RUN:** the committed mid-gate table in `docs/phase-1-soak.md` (max wall 774.81 ms) plus this issue's term-(c) measurement closing OQ-P4-4. If a later operator re-runs the mid-gate and sees a regression above 1000 ms, re-derive term 4 of §3.4 and re-check the 60 s restart bar margin.
+| Source | Metric | Bar | Recorded | Status |
+|---|---|---|---|---|
+| `docs/phase-1-soak.md` mid-gate (V-10) | Epoch wall (stand-in for p95) | ≤ 1000 ms | **774.81 ms** max wall | **PASS** |
+| mid-gate path | `process_block` p95 | ≤ 400 ms | See phase-1-soak / engine-latency — mid-gate path is epoch ST + FC clone, not a live `process_block` p95 series | **Recorded reference; not re-instrumented at M4.3** |
+| CC-1H | Hierarchical state promoted? | — | **No** | mid gate closed without promoting hierarchical state |
 
-## V-10 / Clause 3 (M4.3 entry — CC-46a)
+**Commands used (V-10 re-read at M4.2 / M4.3 entry):**
 
-**Owner:** CC-46a  
-**Date:** 2026-08-08  
+```text
+cargo test -p cc-chain --test offline_replay cc1h_mid_gate_with_fork_choice_clone -- --nocapture
+```
 
-### V-10 re-read
+**M4.2 entry (CC-42):** Clause 3 number below bar → CC-42 proceeded.  
+**M4.3 entry (CC-46a):** same recorded mid-gate number → CC-46a proceeded.  
+No fresh Clause 3 histogram was re-run in those agent sessions; the committed
+`docs/phase-1-soak.md` mid-gate table is the authority. If a later operator
+re-runs the mid-gate and sees a regression above 1000 ms, re-derive term 4 of
+§3.4 and re-check the 60 s restart bar margin.
+
+**What was used instead of a fresh Clause 3 `NOT_RUN`:** the committed mid-gate
+table (max wall 774.81 ms) plus CC-42's term-(c) measurement closing OQ-P4-4.
+Phase 1's **Clause 2** was **not** required at either entry.
+
+### Implication for cheap diffing
+
+`CC-1H` remains unpromoted → cheap diffing (`hdiff`) remains **unavailable**
+(§3.3); cadence is the only lever. `CC-4K` stays unscheduled.
+
+## Clause 1 — restart trials
+
+**Owner:** CC-45c  
+**Status:** empty skeleton (Amendment 5 / CC-4Cb). Numbers land in this section
+only. Branch A (Hoodi stack with Phase 3's EL) discharges; branch B records the
+literal string `partial — no EL in the restart set` and does **not** discharge.
+
+## Clause 2 — cursor fallback
+
+**Owner:** CC-44b / CC-48 / CC-47a  
+**Status:** empty skeleton (Amendment 5 / CC-4Cb). Three stages (D-14); only the
+third discharges.
+
+### M4.2 attribution
+
+**Owner:** CC-44b  
+**Status:** empty.
+
+### M4.4 hole recorded
+
+**Owner:** CC-48 / CC-45b  
+**Status:** empty.
+
+### M4.5 hole closed
+
+**Owner:** CC-47a  
+**Status:** empty.
+
+## Clause 3 — compressed-retention plateau (discharging)
+
+**Owner:** CC-4Cc  
+**Status:** empty skeleton (Amendment 5 / CC-4Cb). Discharging venue:
+`self-devnet-compressed`. The plateau run itself is CC-4Cc — this section
+receives numbers only.
+
+## Clause 3 — Hoodi confirmation (non-discharging)
+
+**Owner:** CC-4Cd  
+**Status:** empty skeleton (Amendment 5 / CC-4Cb). Row marked
+`confirmation, non-discharging`. Must not be merged with the compressed-retention
+discharging row.
+
+## Clauses 4, 5, 6, 7 — Hoodi
+
+**Owner:** CC-4Cd  
+**Status:** empty skeleton (Amendment 5 / CC-4Cb). Full-window serve-probe
+(blocks + columns), negative side, and advertisement=served.
+
+## CC-4G — cgc rehearsal
+
+**Owner:** CC-4G  
+**Status:** empty skeleton (Amendment 5 / CC-4Cb).
+
+## Machine and environment
+
+**Owner:** CC-4Cd  
+**Status:** empty skeleton (Amendment 5 / CC-4Cb). Machine spec + V-6 `df -h`.
+
+## Run record
+
+**Owner:** CC-4Cb skeleton; numbers **CC-4Cd**  
+**Status:** skeleton only — it measures the runs; it is not a run (D-10).
 
 | Field | Value |
 |---|---|
-| Command | `cargo test -p cc-chain --test offline_replay cc1h_mid_gate_with_fork_choice_clone -- --nocapture` |
-| Recorded in | `docs/phase-1-soak.md` (mid-gate section); re-affirmed from M4.2 entry above |
-| Result | **PASS** — max epoch wall **774.81 ms** &lt; 1000 ms bar |
-| **CC-1H promoted?** | **No** |
-| Phase 1 Clause 3 number | **774.81 ms** max epoch wall (mid-gate stand-in for p95) |
-| Status | **PASS** — not `NOT_RUN` |
+| Phase | 4 |
+| Instrument | `bash scripts/soak-report.sh --phase 4` |
+| Plateau run | **CC-4Cc** (not this issue) |
+| Hoodi week | **CC-4Cd** (not this issue) |
+| Restart trials | **CC-45c** (not this issue) |
+| Git SHA | _TBD at fill-in_ |
+| Start / end | _TBD_ |
+| Venue(s) | closed set per clause row |
 
-### D-12 gating decision (CC-46a)
+## Clause table
 
-Phase 1's **Clause 3 is a hard gate on CC-46** (PRD / issue **D-12**). The recorded mid-gate number is **below** the 1000 ms bar, so **CC-46a proceeds**. Phase 1's **Clause 2** (24 h Hoodi soak) **does not** gate this issue. No fresh Clause 3 histogram was re-run in this agent session; the committed phase-1-soak mid-gate table is the authority.
+**Owner:** CC-4Cb (script) / CC-4Cd (numbers)  
+**Generated by:** `bash scripts/soak-report.sh --phase 4`  
+**Status:** skeleton — paste script output here after a live or harness-backed
+run. Columns: `clause | venue | measured | threshold | verdict`.
+
+| Clause | Venue | Measured | Threshold | Verdict |
+|---|---|---|---|---|
+| _TBD_ | _TBD_ | **NOT_RUN** | — | **NOT_RUN** |
