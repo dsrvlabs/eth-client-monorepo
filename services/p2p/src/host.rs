@@ -49,6 +49,7 @@ use crate::reqresp::ping::{decode_ping_ssz, encode_ping_response, Ping};
 use crate::reqresp::server::{BlockServeState, ServeResultLabel};
 use crate::reqresp::status::{decode_status_ssz, encode_status_response, StatusV2};
 use crate::reqresp::Protocol;
+use crate::storage_client::StorageClientHandle;
 use crate::verdict::{to_message_acceptance, Verdict};
 use cc_proto::p2p::Reason;
 use cc_types::preset::Mainnet;
@@ -111,6 +112,11 @@ pub struct SwarmTask {
     /// Block ByRange / ByRoot / ByHead serve state (CC-23c). `None` until a
     /// backfill cache is attached (still ResourceUnavailable stub).
     pub block_serve: Option<BlockServeState>,
+    /// CC-4F storage client handle (availability + WatchServeWindow window).
+    /// When storage is down, cache-miss serve paths answer ResourceUnavailable
+    /// (never empty success). Full cache-miss fetch via gRPC is residual until
+    /// the async serve bridge lands (CC-48 / deeper cache).
+    pub storage: Option<std::sync::Arc<StorageClientHandle>>,
 }
 
 impl SwarmTask {
@@ -142,6 +148,7 @@ impl SwarmTask {
             inbound_limiter: InboundRateLimiter::new(),
             handshake: None,
             block_serve: None,
+            storage: None,
         }
     }
 
@@ -156,6 +163,13 @@ impl SwarmTask {
     #[must_use]
     pub fn with_block_serve(mut self, state: BlockServeState) -> Self {
         self.block_serve = Some(state);
+        self
+    }
+
+    /// Attach CC-4F storage client handle (degrade path + window stream).
+    #[must_use]
+    pub fn with_storage(mut self, handle: std::sync::Arc<StorageClientHandle>) -> Self {
+        self.storage = Some(handle);
         self
     }
 }
@@ -819,6 +833,19 @@ fn handle_block_protocol(
                 ResponseCode::ResourceUnavailable => ServeResultLabel::ResourceUnavailable,
                 _ => ServeResultLabel::Failure,
             };
+            // Cache miss + storage down → explicit ResourceUnavailable (never empty).
+            if label == ServeResultLabel::ResourceUnavailable
+                && task
+                    .storage
+                    .as_ref()
+                    .is_some_and(|s| !s.is_available())
+            {
+                return (
+                    encode_storage_unavailable(protocol),
+                    "resource_unavailable",
+                    false,
+                );
+            }
             return (
                 encode_error_response(&e.to_chunk(), protocol),
                 label.as_str(),
@@ -901,6 +928,18 @@ fn handle_column_protocol(
                 ResponseCode::ResourceUnavailable => ServeResultLabel::ResourceUnavailable,
                 _ => ServeResultLabel::Failure,
             };
+            if label == ServeResultLabel::ResourceUnavailable
+                && task
+                    .storage
+                    .as_ref()
+                    .is_some_and(|s| !s.is_available())
+            {
+                return (
+                    encode_storage_unavailable(protocol),
+                    "resource_unavailable",
+                    false,
+                );
+            }
             return (
                 encode_error_response(&e.to_chunk(), protocol),
                 label.as_str(),
@@ -1200,6 +1239,16 @@ fn encode_resource_unavailable(protocol: Protocol) -> Vec<u8> {
     let chunk = ResponseChunk::Error {
         code: ResponseCode::ResourceUnavailable.as_u8(),
         message: b"handler not ready".to_vec(),
+    };
+    encode_error_response(&chunk, protocol)
+}
+
+/// Cache miss while storage backend is down — **never** an empty success (CC-4F /7).
+fn encode_storage_unavailable(protocol: Protocol) -> Vec<u8> {
+    let chunk = ResponseChunk::Error {
+        code: ResponseCode::ResourceUnavailable.as_u8(),
+        message: b"storage backend unreachable; ResourceUnavailable (never empty success)"
+            .to_vec(),
     };
     encode_error_response(&chunk, protocol)
 }

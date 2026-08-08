@@ -63,6 +63,17 @@ writer_p1_bound = 64
 # P2 background → writer: 256 chunks; on full **drop newest** + count.
 writer_p2_bound = 256
 
+# ── CC-4F serve path (Architecture §7.2 / Deviations 4) ───────────────────────
+# Per-response materialise buffer. 64 MiB × serve_permits(4) = 256 MiB ceiling.
+# Override: CC_STORAGE_SERVE_BUFFER_BYTES=33554432
+serve_buffer_bytes = 67108864
+# Admission semaphore permits (default 4).
+# Override: CC_STORAGE_SERVE_PERMITS=2
+serve_permits = 4
+# Max wait for a permit before RESOURCE_EXHAUSTED (never empty success).
+# Override: CC_STORAGE_SERVE_QUEUE_TIMEOUT_MS=2000
+serve_queue_timeout_ms = 2000
+
 # CC-4D / Architecture §10.4 — dangerous knobs (config, not env).
 # Uncomment only on the self-devnet; startup refuses unless
 # genesis_validators_root is neither Hoodi's nor mainnet's.

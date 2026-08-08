@@ -31,6 +31,8 @@ slot_clock_offset_seconds = 0
 
 [peers]
 chain = "http://127.0.0.1:9001"
+# CC-4F ninth contract — storage serve path + WatchServeWindow.
+storage = "http://127.0.0.1:9006"
 
 # CC-20c peer-manager knobs (defaults; static peers empty until operators set them).
 [peer_manager]

@@ -56,6 +56,9 @@ use crate::reqresp::{CgcPolicy, HandshakeDeps};
 use crate::identity::{self, IdentityError};
 use crate::metrics::{P2pMetrics, QueueName};
 use crate::peer_manager::{PeerManager, PeerManagerConfig, run_peer_manager};
+use crate::storage_client::{
+    spawn_watch_serve_window, StorageClient, StorageClientConfig, StorageClientHandle,
+};
 use crate::supervisor::{
     SupervisedTask, SupervisorOutcome, TaskPolicy, factory_from_future, run_supervisor,
 };
@@ -95,6 +98,11 @@ pub struct RuntimeConfig {
     pub chain_uri: String,
     /// When false, do not spawn the chain-stream client (unit tests).
     pub enable_chain_stream: bool,
+    /// gRPC URI for storage (`peers.storage` / `CC_P2P_PEERS__STORAGE`).
+    /// Empty disables the CC-4F storage client.
+    pub storage_uri: String,
+    /// When false, do not spawn WatchServeWindow / storage client.
+    pub enable_storage_client: bool,
     /// Gossipsub heartbeat interval — stall bound is derived from this (§2.3).
     pub heartbeat_interval: Duration,
     /// **Test-only:** swarm task panics immediately so the process-fatal path
@@ -119,6 +127,8 @@ impl Default for RuntimeConfig {
             enable_discovery: true,
             chain_uri: String::new(),
             enable_chain_stream: false,
+            storage_uri: String::new(),
+            enable_storage_client: false,
             // Match `cc_libp2p::BehaviourConfig::default().heartbeat_interval`.
             heartbeat_interval: Duration::from_secs(1),
             test_swarm_panic: false,
@@ -351,8 +361,30 @@ pub async fn serve(
         } else {
             CgcPolicy::accept_low_cgc()
         };
+        // CC-4F: storage client shares the handshake ServeWindow AtomicU64.
+        // Residual vs CC-26a cache window: cache still owns its own recompute
+        // until CC-48 deletes the eviction-path write and unifies writers.
+        // WatchServeWindow is the sole *storage-driven* write site.
+        let storage_handle = if cfg.enable_storage_client && !cfg.storage_uri.is_empty() {
+            let handle = Arc::new(StorageClientHandle::new(Arc::clone(&handshake_deps.window)));
+            let sc_cfg = StorageClientConfig {
+                storage_uri: cfg.storage_uri.clone(),
+                ..StorageClientConfig::default()
+            };
+            // Keep a client alive for future cache-miss fetch (CC-48/serve path);
+            // availability is driven by the watch task.
+            let _client = StorageClient::new(sc_cfg.clone(), Arc::clone(&handle));
+            let _watch = spawn_watch_serve_window(sc_cfg, Arc::clone(&handle), shutdown_rx.clone());
+            info!(
+                storage_uri = %cfg.storage_uri,
+                "CC-4F storage client + WatchServeWindow spawned"
+            );
+            Some(handle)
+        } else {
+            None
+        };
         let handshake = HandshakeRuntime::new(fork_ctx.clone(), handshake_deps);
-        let swarm_task = SwarmTask::new(
+        let mut swarm_task = SwarmTask::new(
             swarm,
             cmd_rx,
             gossip_tx,
@@ -363,6 +395,9 @@ pub async fn serve(
             metrics.clone(),
         )
         .with_handshake(handshake);
+        if let Some(h) = storage_handle {
+            swarm_task = swarm_task.with_storage(h);
+        }
         let listen_for_swarm = cfg.listen_multiaddr.clone();
         let swarm_cell = Mutex::new(Some(swarm_task));
         let swarm_factory = factory_from_future("swarm", move || {

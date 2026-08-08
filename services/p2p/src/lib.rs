@@ -30,6 +30,8 @@
 //! - **CC-29a**: Phase 2 metric family declarations (binary registers them)
 //! - **CC-38b**: EngineStream server (`engine_stream`) — ninth contract p2p side,
 //!   §5.5 inject into sampling tracker, SubscriptionSet producer (CC-21 hook consumer)
+//! - **CC-4F**: storage client (`storage_client`) — ninth contract p2p↔storage,
+//!   WatchServeWindow reconnect, ResourceUnavailable-never-empty-success
 
 #![allow(missing_docs)]
 
@@ -49,6 +51,7 @@ pub mod metrics;
 pub mod peer_manager;
 pub mod reqresp;
 pub mod service;
+pub mod storage_client;
 pub mod supervisor;
 pub mod verdict;
 

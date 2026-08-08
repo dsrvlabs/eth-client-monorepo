@@ -21,9 +21,16 @@ lint:
       # EngineStream uses EngineToP2p / P2pToEngine (Architecture §5.2), not
       # EngineStreamRequest/Response — same house style as P2pStream.
       - eth/p2p/v1/p2p.proto
+      # CC-4F / Architecture §1.6: shared GetBlocksResponse / GetColumnsResponse
+      # for ByRange+ByRoot, and stream payload types ServeWindow / StateChunk
+      # (not WatchServeWindowResponse / GetSnapshotStateResponse).
+      - eth/storage/v1/storage.proto
     RPC_REQUEST_STANDARD_NAME:
       - eth/chain/v1/chain.proto
       - eth/p2p/v1/p2p.proto
+    # Shared ByRange/ByRoot response types (Architecture §1.6).
+    RPC_REQUEST_RESPONSE_UNIQUE:
+      - eth/storage/v1/storage.proto
 breaking:
   use:
     - FILE

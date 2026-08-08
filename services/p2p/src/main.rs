@@ -387,6 +387,13 @@ impl P2pConfig {
             .unwrap_or_default();
         // http::Uri Display yields the authority form; empty peers → disable.
         let enable_chain_stream = !chain_uri.is_empty();
+        let storage_uri = self
+            .service
+            .peers
+            .get("storage")
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let enable_storage_client = !storage_uri.is_empty();
         Ok(RuntimeConfig {
             node_key_path: self.node_key_path.clone(),
             listen_multiaddr,
@@ -406,6 +413,8 @@ impl P2pConfig {
             enable_discovery: self.enable_discovery,
             chain_uri,
             enable_chain_stream,
+            storage_uri,
+            enable_storage_client,
             heartbeat_interval: Duration::from_secs(1),
             test_swarm_panic: false,
             reject_low_cgc_peers: self.reject_low_cgc_peers,
