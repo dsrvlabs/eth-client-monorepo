@@ -1150,6 +1150,7 @@ dependencies = [
  "cc-crypto",
  "cc-libp2p",
  "cc-proto",
+ "cc-spec-tests",
  "cc-types",
  "clap",
  "discv5",
@@ -1161,6 +1162,7 @@ dependencies = [
  "prometheus-client",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2 0.10.9",
  "smallvec",
  "snap",
@@ -1237,6 +1239,7 @@ dependencies = [
 name = "cc-storage"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "anyhow",
  "cc-bootstrap",
  "cc-config",

@@ -893,7 +893,86 @@ as OQ-1).
 ## CC-4G — cgc rehearsal
 
 **Owner:** CC-4G  
-**Status:** empty skeleton (Amendment 5 / CC-4Cb).
+**Date:** 2026-08-09  
+**Status:** unit + docs discharged; **live four-effects run `NOT_RUN`**.
+
+Phase 4 builds and rehearses the **cgc 4 → 8** transition. OQ-6 is resolved:
+`get_custody_groups(node_id, count)` walks discovery order and only sorts at the
+end (`BTreeSet`), so the cgc=4 set is always ⊆ the cgc=8 set. A raise never
+invalidates stored columns for the old indices — only four new indices need
+backfill. **No product code change** is required for the live raise path
+(config + restart); this issue adds regression tests + this soak section.
+
+### CC-4G /3 — narrowing is correct, not a regression
+
+A **narrowing** advertised window on a cgc raise is **correct, not a
+regression** (§5.4): the four new custody indices were never custodied, so the
+column floor `C` for the extended set is head-ish; with `C > R` (sidecar
+retention floor) the two-branch rule returns to **branch 2** and advertises
+`max(B, C)` until the new indices backfill over the 4 096-epoch window.
+Lighthouse's `DataColumnCustodyInfo.earliest_data_column_slot` is the same
+model (earliest slot from which the node can serve its *current* custodied
+column set).
+
+### Unit path results
+
+| Check | Path | Corpus / name | Result |
+|---|---|---|---|
+| **Subset property** | `services/p2p/tests/custody_subset.rs` | **11** mainnet Fulu `networking` / `get_custody_groups` vectors + **2 000** fixed-seed random node ids | unit |
+| **Atomicity (abort)** | `services/storage/tests/cgc_raise.rs` | `cgc_raise_fail_commit_preserves_old_pair` | unit |
+| **Atomicity (success)** | same | `cgc_raise_success_atomic_new_pair` | unit |
+| **Four effects (synthetic)** | same | `effect1_*` … `effect4_*` | unit |
+
+Commands:
+
+```text
+cargo test -p cc-p2p --test custody_subset --locked
+cargo test -p cc-storage --test cgc_raise --locked
+```
+
+### Live four-effects run — `NOT_RUN`
+
+**Status:** **`NOT_RUN`**. No exclusive Hoodi node with a complete column window
+and 20 min–1.3 h wall clock was available in this agent session. **Do not invent
+PASS numbers** for effects 1–4 live metrics.
+
+| Residual blocker | Detail |
+|---|---|
+| **No exclusive Hoodi stack** | no D-11 exclusive machine / compose stack for a config-only cgc raise |
+| **No complete column window at cgc=4** | live raise needs a node that already serves the four old indices over the sidecar retention period so effect 2 is a real branch-1 → branch-2 flip |
+| **Wall clock** | 20 min–1.3 h continuous observation window not started |
+| **Return to cgc=4** | post-run config restore is operator-owned; Phase 6 owns production raise |
+
+### Procedure checklist (live raise — one continuous run)
+
+One start timestamp and one end timestamp for the whole sequence. Config-only
+cgc change + restart; no product binary swap required for the raise itself.
+
+1. **Preflight** — node at `cgc = 4`, column window complete for the four
+   custodied indices (`C ≤ R`, branch 1), metrics scrape healthy.
+2. **Record t0** — start timestamp; scrape
+   `cc_storage_window_branch`, `earliest_available_slot` / serve-window export,
+   custodied index set, column row counts for the four old indices.
+3. **Config-only raise** — set custody group count to **8** in config; **restart**
+   the node (same binary).
+4. **Effect 1** — new custody set = old ∪ four new indices; size 8; old four
+   still present (`get_custody_groups` / ENR / MetaData).
+5. **Effect 2** — branch → **2**; advertised eas **narrows** (sidecar floor
+   until new indices backfill). Treat as correct (§5.4), not a regression.
+6. **Effect 3** — row counts (or held set) for the **four old** indices
+   unchanged across the raise.
+7. **Effect 4** — after new indices backfill to `C ≤ R`, branch returns to **1**
+   and the advertised window widens again (observe within the same run window
+   or note still-backfilling at t1).
+8. **Record t1** — end timestamp; final scrapes; write numbers into this
+   section (replace `NOT_RUN` only with measured values).
+9. **Restore** — return node to **`cgc = 4`** (Phase 6 owns production raise).
+
+### Note on product surface
+
+The live path is **config + restart**. This issue's deliverable is the subset
+property test, the atomic cgc+window raise tests / four-effects unit model, and
+this residual-honest soak record — not a production cgc=8 default.
 
 ## Machine and environment
 

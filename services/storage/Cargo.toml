@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[lib]
+name = "cc_storage"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cc-storage"
 path = "src/main.rs"
@@ -36,3 +40,5 @@ tracing = { workspace = true }
 [dev-dependencies]
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+# CC-4G four-effects model: node_id → get_custody_groups.
+alloy-primitives = { workspace = true }

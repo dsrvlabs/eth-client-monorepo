@@ -60,3 +60,7 @@ tokio = { workspace = true, features = ["test-util"] }
 tokio-stream = { version = "0.1", features = ["sync", "net"] }
 prometheus-client = { workspace = true }
 futures = { workspace = true }
+# CC-4G /1 custody subset: Fulu networking get_custody_groups vectors.
+cc-spec-tests = { workspace = true }
+serde_yaml = { workspace = true }
+serde = { workspace = true }
