@@ -10,6 +10,7 @@
 //! | one contiguous frontier | progress only moves **non-increasing** (descending backfill) |
 //! | resume within one batch | in-flight batch at kill is lost; 64 slots is the honest bar |
 //! | column completion | `oldest_custodied ≤ start_slot(current_epoch − 4096)` |
+//! | block completion | `blocks_oldest ≤ start_slot(current_epoch − min_epochs)` (CC-4A floor) |
 //!
 //! Load / store of the meta singleton rides the same transaction as the batch
 //! (`PutBackfillBatch`); helpers here never open their own writer.
@@ -220,6 +221,42 @@ pub fn serve_window_above_column_target(
     earliest_available_slot.as_u64() > column_backfill_target_slot(current_epoch).as_u64()
 }
 
+/// Block backfill target slot: `start_slot(current_epoch − min_epochs)`.
+///
+/// `min_epochs` is **CC-4A's computed**
+/// [`crate::window::compute_min_epochs_for_block_requests`] value — never a
+/// hard-coded `33024` in production call sites (CC-4A /4 grep).
+#[must_use]
+pub fn block_backfill_target_slot(current_epoch: u64, min_epochs: u64) -> Slot {
+    let target_epoch = current_epoch.saturating_sub(min_epochs);
+    epoch_start_slot(target_epoch)
+}
+
+/// Block completion predicate (CC-47 /7 block class / CC-47b).
+///
+/// `oldest_contiguous_block_slot ≤ start_slot(current_epoch − min_epochs)`,
+/// where `min_epochs` is the CC-4A computed floor.
+#[must_use]
+pub fn block_backfill_complete(
+    oldest_block: Slot,
+    current_epoch: u64,
+    min_epochs: u64,
+) -> bool {
+    let target = block_backfill_target_slot(current_epoch, min_epochs);
+    oldest_block.as_u64() <= target.as_u64()
+}
+
+/// Whether the serve window is above its block target (fifth-trigger half for blocks).
+#[must_use]
+pub fn serve_window_above_block_target(
+    earliest_available_slot: Slot,
+    current_epoch: u64,
+    min_epochs: u64,
+) -> bool {
+    earliest_available_slot.as_u64()
+        > block_backfill_target_slot(current_epoch, min_epochs).as_u64()
+}
+
 // ── Resume ──────────────────────────────────────────────────────────────────
 
 /// Resume frontier for columns: `C` from durable progress (or `fallback`).
@@ -231,6 +268,33 @@ pub fn resume_column_frontier(
 ) -> Slot {
     match progress {
         Some(p) => oldest_custodied_column_slot(p, custodied_indices),
+        None => fallback,
+    }
+}
+
+/// Resume frontier for blocks: durable `blocks_oldest` (or `fallback`).
+///
+/// Companion to [`resume_column_frontier`]. The parent root is available via
+/// [`BackfillProgress::blocks_oldest_parent`] when progress is present.
+#[must_use]
+pub fn resume_block_frontier(
+    progress: Option<&BackfillProgress>,
+    fallback: Slot,
+) -> Slot {
+    match progress {
+        Some(p) => p.blocks_oldest,
+        None => fallback,
+    }
+}
+
+/// Resume the block frontier parent root (or `fallback`).
+#[must_use]
+pub fn resume_block_parent(
+    progress: Option<&BackfillProgress>,
+    fallback: cc_types::Root,
+) -> cc_types::Root {
+    match progress {
+        Some(p) => p.blocks_oldest_parent,
         None => fallback,
     }
 }
@@ -433,5 +497,103 @@ mod tests {
         assert_eq!(p.blocks_oldest, Slot::new(36));
         let err = apply_block_batch_progress(&mut p, Slot::new(50), Root::default()).unwrap_err();
         assert!(matches!(err, ProgressError::NonMonotone { .. }));
+    }
+
+    #[test]
+    fn apply_block_batch_persists_oldest_and_parent() {
+        // CC-47b: oldest_contiguous_block_slot + oldest_block_parent per batch.
+        let mut p = progress_at(10_000, &[10_000]);
+        p.blocks_oldest = Slot::new(10_000);
+        p.blocks_oldest_parent = Root::from_array([0xAA; 32]);
+        let parent = Root::from_array([0xBB; 32]);
+        apply_block_batch_progress(&mut p, Slot::new(9_936), parent).unwrap();
+        assert_eq!(p.blocks_oldest, Slot::new(9_936));
+        assert_eq!(p.blocks_oldest_parent, parent);
+
+        // Same-transaction roundtrip: progress key survives a commit.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("cc-store-bf-block-{n}-{nanos}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let engine = Engine::open(
+            &dir,
+            EngineOptions::default().with_durability(Durability::None),
+        )
+        .expect("open");
+        let mut batch = engine.batch();
+        put_backfill_progress(&mut batch, &p);
+        engine.commit(batch).unwrap();
+        let loaded = load_backfill_progress(&engine).unwrap().unwrap();
+        assert_eq!(loaded.blocks_oldest, Slot::new(9_936));
+        assert_eq!(loaded.blocks_oldest_parent, parent);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn block_completion_predicate_uses_computed_min_epochs() {
+        // CC-4A floor: pass min_epochs in (never hard-code 33024 as authority).
+        // Hoodi/mainnet arithmetic: 256 + 65536/2 = 33024 — used only as the
+        // *test input* representing the computed result.
+        let min_epochs = 256u64 + 65_536 / 2;
+        let current = 50_000u64;
+        let target = block_backfill_target_slot(current, min_epochs);
+        assert_eq!(
+            target,
+            epoch_start_slot(current.saturating_sub(min_epochs))
+        );
+        // Above target → incomplete.
+        assert!(!block_backfill_complete(
+            Slot::new(target.as_u64() + 1),
+            current,
+            min_epochs
+        ));
+        // At / below target → complete.
+        assert!(block_backfill_complete(target, current, min_epochs));
+        assert!(block_backfill_complete(
+            Slot::new(target.as_u64().saturating_sub(1)),
+            current,
+            min_epochs
+        ));
+    }
+
+    #[test]
+    fn resume_block_frontier_reads_durable_oldest() {
+        let mut p = progress_at(500, &[500]);
+        p.blocks_oldest = Slot::new(420);
+        p.blocks_oldest_parent = Root::from_array([0x42; 32]);
+        assert_eq!(
+            resume_block_frontier(Some(&p), Slot::new(0)),
+            Slot::new(420)
+        );
+        assert_eq!(
+            resume_block_parent(Some(&p), Root::default()),
+            Root::from_array([0x42; 32])
+        );
+        assert_eq!(
+            resume_block_frontier(None, Slot::new(99)),
+            Slot::new(99)
+        );
+        // Kill mid-batch: durable stays; in-flight lost ≤ 64 slots.
+        let in_flight = Slot::new(420 - BACKFILL_BATCH_SLOT_LIMIT);
+        assert!(resume_within_one_batch(in_flight, Slot::new(420)));
+    }
+
+    #[test]
+    fn serve_window_above_block_target_detects_fifth_trigger() {
+        let min_epochs = 256u64 + 65_536 / 2;
+        let current = 50_000u64;
+        let target = block_backfill_target_slot(current, min_epochs);
+        assert!(serve_window_above_block_target(
+            Slot::new(target.as_u64() + 32),
+            current,
+            min_epochs
+        ));
+        assert!(!serve_window_above_block_target(target, current, min_epochs));
     }
 }

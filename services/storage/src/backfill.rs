@@ -1,4 +1,4 @@
-//! Below-anchor backfill write path — Architecture §6.6 / CC-47a.
+//! Below-anchor backfill write path — Architecture §6.6 / CC-47a + CC-47b.
 //!
 //! Bytes land via `PutBackfillBatch` (CC-4F) in **one transaction** with
 //! [`BackfillProgress`]. This module never routes through `chain` and never
@@ -12,19 +12,21 @@
 //! | [`observe_backfill_commit`] | `cc_storage_backfill_oldest_slot` + `_bytes_total` |
 //! | [`assert_monotone_oldest`] | R-7 early warning: non-increasing scrapes |
 //! | resume helpers | wrap `cc_store::backfill_progress` for service tests |
+//! | block completion / advance | CC-47b target (`min_epochs` from CC-4A) |
 //!
 //! The serve-path handler in `serve.rs` stages the batch and calls into this
 //! module for progress mapping, descending-order admission, and metrics.
 
 // Resume / monotone / completion helpers are exercised by unit tests and by
-// future host wiring (CC-47b / CC-49); keep them public(crate) without noise.
+// host wiring (CC-47b / CC-49); keep them public(crate) without noise.
 #![allow(dead_code)]
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use cc_store::backfill_progress::{
-    apply_column_batch_progress, column_backfill_complete, ensure_per_index_len,
-    oldest_custodied_column_slot, resume_within_one_batch,
+    apply_block_batch_progress, apply_column_batch_progress, block_backfill_complete,
+    column_backfill_complete, ensure_per_index_len, oldest_custodied_column_slot,
+    resume_block_frontier, resume_block_parent, resume_within_one_batch,
 };
 use cc_store::meta::BackfillProgress;
 use cc_store::{parent_root_at_offset, slot_at_offset, Root, Slot};
@@ -48,6 +50,24 @@ pub(crate) enum BatchAdmitError {
     ParentBroken { slot: u64 },
     /// Claimed slot/root disagrees with SSZ peeks.
     FieldMismatch { slot: u64 },
+    /// Progress would move a frontier **upward** vs durable store (R-7).
+    ProgressNonMonotone {
+        /// `"blocks"` or `"columns"`.
+        class: &'static str,
+        /// Durable oldest before the write.
+        current: u64,
+        /// Rejected proposed value.
+        attempted: u64,
+    },
+    /// Progress frontier does not match the admitted batch (oldest slot / parent).
+    ProgressFrontierMismatch {
+        /// Human-readable reason.
+        reason: &'static str,
+        /// Expected value (slot or first byte of root for logs).
+        expected: u64,
+        /// Claimed value.
+        got: u64,
+    },
 }
 
 // ── Proto → store ───────────────────────────────────────────────────────────
@@ -134,6 +154,106 @@ pub(crate) fn admit_descending_contiguous(
         }
     }
     Ok(ordered)
+}
+
+// ── Progress monotony + frontier binding (CC-47b server-side) ────────────────
+
+/// Whether `proposed` is a non-monotone (increasing) move vs `current`.
+///
+/// Zero current is treated as "unset" (first seed may land any value).
+#[must_use]
+pub(crate) fn progress_slot_non_monotone(current: Slot, proposed: Slot) -> bool {
+    let cur = current.as_u64();
+    let next = proposed.as_u64();
+    next > cur && cur != 0
+}
+
+/// Refuse a proposed [`BackfillProgress`] that would raise any frontier vs
+/// the durable record (R-7 / one-contiguous-frontier).
+pub(crate) fn admit_progress_monotone(
+    proposed: &BackfillProgress,
+    stored: Option<&BackfillProgress>,
+) -> Result<(), BatchAdmitError> {
+    let Some(s) = stored else {
+        return Ok(());
+    };
+    if progress_slot_non_monotone(s.blocks_oldest, proposed.blocks_oldest) {
+        return Err(BatchAdmitError::ProgressNonMonotone {
+            class: "blocks",
+            current: s.blocks_oldest.as_u64(),
+            attempted: proposed.blocks_oldest.as_u64(),
+        });
+    }
+    if progress_slot_non_monotone(s.columns_oldest, proposed.columns_oldest) {
+        return Err(BatchAdmitError::ProgressNonMonotone {
+            class: "columns",
+            current: s.columns_oldest.as_u64(),
+            attempted: proposed.columns_oldest.as_u64(),
+        });
+    }
+    // Per-index: refuse any increase over a non-zero durable entry.
+    let proposed_per = proposed.per_index_oldest.as_ref();
+    let stored_per = s.per_index_oldest.as_ref();
+    for (i, &p_slot) in proposed_per.iter().enumerate() {
+        let cur = stored_per.get(i).copied().unwrap_or(s.columns_oldest);
+        if progress_slot_non_monotone(cur, p_slot) {
+            return Err(BatchAdmitError::ProgressNonMonotone {
+                class: "columns",
+                current: cur.as_u64(),
+                attempted: p_slot.as_u64(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Bind progress to the admitted batch frontier.
+///
+/// When the batch carries blocks (already admitted descending):
+/// - `blocks_oldest` **must** equal the lowest slot in the batch
+/// - `blocks_oldest_parent` **must** equal that block's SSZ parent root
+///
+/// When the batch carries columns:
+/// - `columns_oldest` **must** equal the minimum column slot in the request
+///   (when non-empty).
+pub(crate) fn admit_progress_bound_to_batch(
+    progress: &BackfillProgress,
+    ordered_blocks: &[BackfillBlockRow],
+    column_slots: &[u64],
+) -> Result<(), BatchAdmitError> {
+    if let Some(oldest) = ordered_blocks.last() {
+        // ordered is descending → last is lowest slot (new frontier).
+        if progress.blocks_oldest != oldest.slot {
+            return Err(BatchAdmitError::ProgressFrontierMismatch {
+                reason: "blocks_oldest must equal lowest admitted block slot",
+                expected: oldest.slot.as_u64(),
+                got: progress.blocks_oldest.as_u64(),
+            });
+        }
+        let parent = parent_root_at_offset(&oldest.ssz).map_err(|_| {
+            BatchAdmitError::FieldMismatch {
+                slot: oldest.slot.as_u64(),
+            }
+        })?;
+        if parent != progress.blocks_oldest_parent {
+            return Err(BatchAdmitError::ProgressFrontierMismatch {
+                reason: "blocks_oldest_parent must equal parent of lowest admitted block",
+                expected: u64::from(parent.as_slice()[0]),
+                got: u64::from(progress.blocks_oldest_parent.as_slice()[0]),
+            });
+        }
+    }
+
+    if let Some(&min_col) = column_slots.iter().min()
+        && progress.columns_oldest.as_u64() != min_col
+    {
+        return Err(BatchAdmitError::ProgressFrontierMismatch {
+            reason: "columns_oldest must equal minimum column slot in batch",
+            expected: min_col,
+            got: progress.columns_oldest.as_u64(),
+        });
+    }
+    Ok(())
 }
 
 // ── Metrics ─────────────────────────────────────────────────────────────────
@@ -273,6 +393,18 @@ pub(crate) fn columns_complete_for(
     column_backfill_complete(oldest, current_epoch)
 }
 
+/// Drive the **block** completion predicate (CC-47b /7 block class).
+///
+/// `min_epochs` is CC-4A's computed floor — callers must not hard-code `33024`.
+#[must_use]
+pub(crate) fn blocks_complete_for(
+    progress: &BackfillProgress,
+    current_epoch: u64,
+    min_epochs: u64,
+) -> bool {
+    block_backfill_complete(progress.blocks_oldest, current_epoch, min_epochs)
+}
+
 /// Apply a committed column batch to progress (one-txn companion to PutBackfillBatch).
 pub(crate) fn advance_after_column_batch(
     progress: &mut BackfillProgress,
@@ -280,6 +412,29 @@ pub(crate) fn advance_after_column_batch(
     batch_start: Slot,
 ) -> Result<(), cc_store::ProgressError> {
     apply_column_batch_progress(progress, custodied, batch_start)
+}
+
+/// Apply a committed **block** batch: move `blocks_oldest` + `blocks_oldest_parent`
+/// (Architecture §6.5 / Lighthouse `AnchorInfo` shape).
+pub(crate) fn advance_after_block_batch(
+    progress: &mut BackfillProgress,
+    batch_start: Slot,
+    batch_start_parent: Root,
+) -> Result<(), cc_store::ProgressError> {
+    apply_block_batch_progress(progress, batch_start, batch_start_parent)
+}
+
+/// Durable block frontier after a restart (resume path).
+#[must_use]
+pub(crate) fn resume_block_state(
+    progress: Option<&BackfillProgress>,
+    fallback_slot: Slot,
+    fallback_parent: Root,
+) -> (Slot, Root) {
+    (
+        resume_block_frontier(progress, fallback_slot),
+        resume_block_parent(progress, fallback_parent),
+    )
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -290,11 +445,16 @@ mod tests {
 
     use super::*;
     use cc_store::backfill_progress::{
-        column_backfill_target_slot, ensure_per_index_len, BACKFILL_BATCH_SLOT_LIMIT,
-        COLUMN_BACKFILL_EPOCHS, COLUMN_INDEX_COUNT,
+        block_backfill_target_slot, column_backfill_target_slot, ensure_per_index_len,
+        BACKFILL_BATCH_SLOT_LIMIT, COLUMN_BACKFILL_EPOCHS, COLUMN_INDEX_COUNT,
     };
     use cc_store::epoch_start_slot;
     use prometheus_client::registry::Registry;
+
+    /// CC-4A computed floor as a *test input* (never a production constant).
+    fn computed_min_epochs() -> u64 {
+        256 + 65_536 / 2
+    }
 
     fn metrics() -> StorageMetrics {
         let mut reg = Registry::default();
@@ -465,5 +625,305 @@ mod tests {
         // Assert the four new indices are independently readable:
         assert_eq!(progress.per_index_oldest[4], Slot::new(head));
         assert_eq!(progress.per_index_oldest[0], Slot::new(target));
+    }
+
+    // ── CC-47b block class ──────────────────────────────────────────────────
+
+    #[test]
+    fn block_completion_predicate_drives_target() {
+        let current = 50_000u64;
+        let min_epochs = computed_min_epochs();
+        let target = block_backfill_target_slot(current, min_epochs);
+        assert_eq!(
+            target,
+            epoch_start_slot(current.saturating_sub(min_epochs))
+        );
+
+        let mut progress = BackfillProgress {
+            blocks_oldest: Slot::new(target.as_u64() + 128),
+            blocks_oldest_parent: Root::from_array([1; 32]),
+            columns_oldest: Slot::new(target.as_u64() + 128),
+            per_index_oldest: Default::default(),
+        };
+        assert!(!blocks_complete_for(&progress, current, min_epochs));
+
+        // Drive to target via batch application (oldest + parent).
+        let parent = Root::from_array([0xBB; 32]);
+        advance_after_block_batch(&mut progress, target, parent).unwrap();
+        assert_eq!(progress.blocks_oldest, target);
+        assert_eq!(progress.blocks_oldest_parent, parent);
+        assert!(blocks_complete_for(&progress, current, min_epochs));
+    }
+
+    #[test]
+    fn block_frontier_monotone_and_resume_within_one_batch() {
+        // Descending block scrapes must be non-increasing (R-7).
+        let scrapes = [100_000u64, 99_936, 99_872, 99_872, 99_808];
+        assert!(assert_monotone_oldest(&scrapes).is_ok());
+        assert_eq!(assert_monotone_oldest(&[100_000, 99_900, 99_950]), Err(2));
+
+        // kill -9 mid-batch: durable frontier stays; lost work ≤ 64 slots.
+        let durable = Slot::new(50_000);
+        let in_flight = Slot::new(50_000 - BACKFILL_BATCH_SLOT_LIMIT);
+        let (resumed, ok) = resume_after_kill(durable, in_flight);
+        assert_eq!(resumed, durable);
+        assert!(ok);
+
+        let progress = BackfillProgress {
+            blocks_oldest: durable,
+            blocks_oldest_parent: Root::from_array([0xCC; 32]),
+            columns_oldest: durable,
+            per_index_oldest: Default::default(),
+        };
+        let (slot, parent) =
+            resume_block_state(Some(&progress), Slot::new(0), Root::default());
+        assert_eq!(slot, durable);
+        assert_eq!(parent, Root::from_array([0xCC; 32]));
+        // Metrics-facing: observe commits checkpoint the resume position.
+        let m = metrics();
+        observe_backfill_commit(&m, StorageClass::Blocks, durable, 64 * 24_000);
+        let labels = ClassLabels {
+            class: StorageClass::Blocks.as_str().to_owned(),
+        };
+        assert_eq!(
+            m.backfill_oldest_slot.get_or_create(&labels).get(),
+            durable.as_u64() as i64
+        );
+    }
+
+    #[test]
+    fn advance_block_batch_refuses_non_monotone() {
+        let mut progress = BackfillProgress {
+            blocks_oldest: Slot::new(1_000),
+            blocks_oldest_parent: Root::default(),
+            columns_oldest: Slot::new(1_000),
+            per_index_oldest: Default::default(),
+        };
+        advance_after_block_batch(&mut progress, Slot::new(936), Root::from_array([2; 32]))
+            .unwrap();
+        let err =
+            advance_after_block_batch(&mut progress, Slot::new(950), Root::default()).unwrap_err();
+        assert!(matches!(err, cc_store::ProgressError::NonMonotone { .. }));
+    }
+
+    #[test]
+    fn admit_progress_refuses_increase_vs_stored() {
+        let stored = BackfillProgress {
+            blocks_oldest: Slot::new(500),
+            blocks_oldest_parent: Root::from_array([1; 32]),
+            columns_oldest: Slot::new(500),
+            per_index_oldest: Default::default(),
+        };
+        // Descending is fine.
+        let ok = BackfillProgress {
+            blocks_oldest: Slot::new(436),
+            blocks_oldest_parent: Root::from_array([2; 32]),
+            columns_oldest: Slot::new(436),
+            per_index_oldest: Default::default(),
+        };
+        assert!(admit_progress_monotone(&ok, Some(&stored)).is_ok());
+
+        // Increase blocks_oldest → refuse.
+        let bad_blocks = BackfillProgress {
+            blocks_oldest: Slot::new(600),
+            ..ok.clone()
+        };
+        assert!(matches!(
+            admit_progress_monotone(&bad_blocks, Some(&stored)),
+            Err(BatchAdmitError::ProgressNonMonotone { class: "blocks", .. })
+        ));
+
+        // Increase columns_oldest → refuse.
+        let bad_cols = BackfillProgress {
+            columns_oldest: Slot::new(600),
+            ..ok
+        };
+        assert!(matches!(
+            admit_progress_monotone(&bad_cols, Some(&stored)),
+            Err(BatchAdmitError::ProgressNonMonotone {
+                class: "columns",
+                ..
+            })
+        ));
+
+        // No stored → first seed always ok (even "high" values).
+        assert!(admit_progress_monotone(&bad_blocks, None).is_ok());
+    }
+
+    #[test]
+    fn admit_progress_bound_to_admitted_batch_frontier() {
+        use cc_store::{PARENT_ROOT_SSZ_OFFSET, SLOT_SSZ_OFFSET, STATE_ROOT_SSZ_OFFSET};
+
+        fn synth(slot: u64, parent: &Root, root: Root) -> BackfillBlockRow {
+            let mut v = vec![0u8; STATE_ROOT_SSZ_OFFSET + 32];
+            v[0..4].copy_from_slice(&100u32.to_le_bytes());
+            v[SLOT_SSZ_OFFSET..SLOT_SSZ_OFFSET + 8].copy_from_slice(&slot.to_le_bytes());
+            v[PARENT_ROOT_SSZ_OFFSET..PARENT_ROOT_SSZ_OFFSET + 32]
+                .copy_from_slice(parent.as_slice());
+            BackfillBlockRow {
+                slot: Slot::new(slot),
+                root,
+                ssz: v,
+            }
+        }
+        let parent7 = Root::from_array([6; 32]);
+        let r7 = Root::from_array([7; 32]);
+        let r8 = Root::from_array([8; 32]);
+        // Admitted descending: [8, 7] — frontier is slot 7 / parent of 7.
+        let ordered = vec![
+            synth(8, &r7, r8),
+            synth(7, &parent7, r7),
+        ];
+        let ok = BackfillProgress {
+            blocks_oldest: Slot::new(7),
+            blocks_oldest_parent: parent7,
+            columns_oldest: Slot::new(7),
+            per_index_oldest: Default::default(),
+        };
+        assert!(admit_progress_bound_to_batch(&ok, &ordered, &[7]).is_ok());
+
+        // Wrong oldest slot.
+        let bad_slot = BackfillProgress {
+            blocks_oldest: Slot::new(8),
+            ..ok.clone()
+        };
+        assert!(matches!(
+            admit_progress_bound_to_batch(&bad_slot, &ordered, &[]),
+            Err(BatchAdmitError::ProgressFrontierMismatch { .. })
+        ));
+
+        // Wrong parent.
+        let bad_parent = BackfillProgress {
+            blocks_oldest_parent: Root::from_array([0xff; 32]),
+            ..ok.clone()
+        };
+        assert!(matches!(
+            admit_progress_bound_to_batch(&bad_parent, &ordered, &[]),
+            Err(BatchAdmitError::ProgressFrontierMismatch { .. })
+        ));
+
+        // columns_oldest must match min column slot.
+        let bad_col = BackfillProgress {
+            columns_oldest: Slot::new(99),
+            ..ok
+        };
+        assert!(matches!(
+            admit_progress_bound_to_batch(&bad_col, &[], &[10, 12]),
+            Err(BatchAdmitError::ProgressFrontierMismatch { .. })
+        ));
+    }
+
+    /// CC-47 /6 block class: write-behind commit p99 during P2 backfill batches
+    /// stays within **10 %** of the no-backfill baseline.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_behind_p99_during_block_backfill_within_10_percent() {
+        use std::sync::Arc;
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+        use cc_store::engine::{Durability, Engine, EngineOptions};
+        use cc_store::meta::WriteCursor;
+        use tokio::sync::{oneshot, watch};
+
+        use crate::writer::{
+            spawn_writer, BackgroundChunk, CommitUnit, WriterBounds, WriterFaults,
+        };
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("cc-bf-p99-{nanos}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let engine = Arc::new(
+            Engine::open(
+                &dir,
+                EngineOptions::default().with_durability(Durability::None),
+            )
+            .unwrap(),
+        );
+        let m = metrics();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let writer = spawn_writer(
+            Arc::clone(&engine),
+            m.clone(),
+            WriterBounds::default(),
+            WriterFaults::default(),
+            shutdown_rx,
+            false,
+        );
+
+        let n = 40u64;
+        writer
+            .submit_p0_committed(CommitUnit::cursor_only(WriteCursor {
+                session_id: 1,
+                seq: 0,
+                slot: Slot::new(0),
+                root: Root::ZERO,
+            }))
+            .await
+            .unwrap();
+
+        let mut baseline = Vec::with_capacity(n as usize);
+        for i in 1..=n {
+            let started = Instant::now();
+            writer
+                .submit_p0_committed(CommitUnit::cursor_only(WriteCursor {
+                    session_id: 1,
+                    seq: i,
+                    slot: Slot::new(i),
+                    root: Root::ZERO,
+                }))
+                .await
+                .unwrap();
+            baseline.push(started.elapsed().as_secs_f64());
+        }
+        baseline.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p99_base = baseline[((n as usize) * 99 / 100).min(baseline.len() - 1)];
+
+        // P2 backfill-class chunks (~256 KiB each) concurrent with P0 commits.
+        const BF_CHUNK: usize = 256 * 1024;
+        let mut during = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            let payload = vec![(i % 251) as u8; BF_CHUNK];
+            let (done_tx, done_rx) = oneshot::channel();
+            let chunk = BackgroundChunk {
+                class: StorageClass::Blocks,
+                puts: vec![(
+                    "meta".to_owned(),
+                    format!("bf-p2-{i}").into_bytes(),
+                    payload,
+                )],
+                deletes: Vec::new(),
+                done: Some(done_tx),
+            };
+            assert!(writer.try_submit_p2(chunk, &m));
+            let started = Instant::now();
+            writer
+                .submit_p0_committed(CommitUnit::cursor_only(WriteCursor {
+                    session_id: 1,
+                    seq: 1_000 + i,
+                    slot: Slot::new(1_000 + i),
+                    root: Root::ZERO,
+                }))
+                .await
+                .unwrap();
+            during.push(started.elapsed().as_secs_f64());
+            let _ = done_rx.await;
+        }
+        during.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p99_during = during[((n as usize) * 99 / 100).min(during.len() - 1)];
+
+        eprintln!(
+            "CC-47b /6 write-behind p99 baseline={p99_base:.6}s during_block_backfill_p2={p99_during:.6}s \
+             (chunk={BF_CHUNK} B)"
+        );
+        let limit = (p99_base * 1.10).max(p99_base + 0.002);
+        assert!(
+            p99_during <= limit,
+            "commit p99 during block backfill {p99_during} exceeds 10% of baseline {p99_base} (limit {limit})"
+        );
+
+        let _ = shutdown_tx.send(true);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

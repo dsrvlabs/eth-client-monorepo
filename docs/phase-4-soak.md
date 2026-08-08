@@ -588,6 +588,36 @@ discharging row.
 **Status:** empty skeleton (Amendment 5 / CC-4Cb). Full-window serve-probe
 (blocks + columns), negative side, and advertisement=served.
 
+### CC-47b — block backfill mechanism + run (g) residual
+
+**Owner:** CC-47b (mechanism / unit path); **CC-4Cd** (Hoodi proof clause 4 fill-in)  
+**Status:** **`NOT_RUN`** — clause 4 is not discharged.
+
+Block-target below-anchor path is **implemented and unit-tested** in this tree:
+
+| Surface | Location |
+|---|---|
+| Block completion / target (CC-4A `min_epochs`) | `crates/store/src/backfill_progress.rs` |
+| `blocks_oldest` + `blocks_oldest_parent` per batch | same + `services/storage/src/backfill.rs` |
+| Outbound **128 blocks / 10 s** self-limit + counters | `services/p2p/src/backfill/rate.rs` + planner `schedule_at` |
+| Resume / monotone / write-behind ≤ 10 % | `services/storage/src/backfill.rs` tests |
+| Live residual instrument | `bash scripts/block-backfill-monitor.sh` |
+
+A live exclusive ~985k-block / 5.3–21.4 h run that:
+
+1. records **V-9** wall-clock extrapolation (Phase 2 soak or one-hour fallback),
+2. asserts outbound ≤ 128 blocks / 10 s **per peer** over a 10-minute window
+   against our own counters (per-peer distribution recorded),
+3. `kill -9` mid-backfill and resumes within one batch
+   (`cc_storage_backfill_oldest_slot{class="blocks"}` delta ≤ 64),
+4. keeps the frontier **non-increasing** at every scrape (R-7 first hour),
+5. discharges proof clause 4 via `bin/serve-probe --full-window` on Hoodi,
+
+was **not** executed in this session. No bar numbers are invented. Until that
+run is recorded here (machine exclusive / D-11, git SHA, durability), clause 4
+remains **not discharged**. The clause is rescheduled never weakened if V-9 > 24 h
+(`M4.5b`).
+
 ## CC-4G — cgc rehearsal
 
 **Owner:** CC-4G  

@@ -1,4 +1,4 @@
-//! Backfill cache, serve window, and range planner — Architecture §9 / CC-26 + §6 / CC-47a.
+//! Backfill cache, serve window, and range planner — Architecture §9 / CC-26 + §6 / CC-47a/b.
 //!
 //! | Module | Role |
 //! |--------|------|
@@ -6,10 +6,12 @@
 //! | [`window`] | `earliest_available_slot` as one `AtomicU64` (ADR P2-14 / CC-48 one-writer) |
 //! | [`planner`] | Gap detection (five triggers), ≤64-slot batches, oldest-first import (CC-26b/CC-47a) |
 //! | [`below`] | Below-anchor mode: custodied 4, parent+BLS verify, PutBackfillBatch path (CC-47a) |
+//! | [`rate`] | Outbound 128 blocks / 10 s per-peer self-limit + counters (CC-47b /5) |
 
 pub mod below;
 pub mod cache;
 pub mod planner;
+pub mod rate;
 pub mod window;
 
 pub use below::{
@@ -28,5 +30,8 @@ pub use planner::{
     GapDetector, GapTrigger, ImportReady, RecordedGap, BATCH_MAX_PEER_ATTEMPTS, BATCH_SLOT_LIMIT,
     BATCH_TIMEOUT_CAP, CLOCK_STALL_THRESHOLD, HEAD_JUMP_THRESHOLD, MAX_CONCURRENT_BATCHES,
     PEER_STATUS_GAP_THRESHOLD,
+};
+pub use rate::{
+    OutboundBlockBudget, OUTBOUND_BLOCKS_CAPACITY, OUTBOUND_BLOCKS_WINDOW,
 };
 pub use window::{compute_earliest_available_slot, ServeWindow, EMPTY_WINDOW_SLOT};

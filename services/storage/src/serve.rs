@@ -104,7 +104,8 @@ use crate::history::{
     not_available_status, snapshot_state_at, SnapshotLookup, DEFAULT_STATE_CHUNK_BYTES,
 };
 use crate::backfill::{
-    admit_descending_contiguous, observe_put_backfill_batch, proto_progress_to_store,
+    admit_descending_contiguous, admit_progress_bound_to_batch, admit_progress_monotone,
+    observe_put_backfill_batch, proto_progress_to_store,
     BackfillBlockRow, BatchAdmitError,
 };
 use crate::metrics::{
@@ -797,9 +798,19 @@ impl StorageService for StorageServer {
             None => None,
         };
 
+        let column_slots: Vec<u64> = req.columns.iter().map(|c| c.slot).collect();
+
         // Stage under a short-lived read txn, then commit as ONE unit.
         let (batch, blocks_written, columns_written, block_bytes, column_bytes) = {
             let rt = engine.read().map_err(store_status)?;
+
+            // Server-side monotony + frontier bind (CC-47b): refuse before staging.
+            if let Some(ref p) = progress {
+                let stored = cc_store::load_backfill_progress_txn(&rt).map_err(store_status)?;
+                admit_progress_monotone(p, stored.as_ref()).map_err(admit_status)?;
+                admit_progress_bound_to_batch(p, &ordered, &column_slots).map_err(admit_status)?;
+            }
+
             let mut batch = engine.batch();
             let mut blocks_written = 0u64;
             let mut columns_written = 0u64;
@@ -1309,6 +1320,20 @@ fn admit_status(e: BatchAdmitError) -> Status {
         )),
         BatchAdmitError::FieldMismatch { slot } => Status::invalid_argument(format!(
             "backfill batch field mismatch at slot {slot} (SSZ peeks disagree with claim)"
+        )),
+        BatchAdmitError::ProgressNonMonotone {
+            class,
+            current,
+            attempted,
+        } => Status::failed_precondition(format!(
+            "backfill progress non-monotone for {class}: durable oldest={current}, attempted={attempted}"
+        )),
+        BatchAdmitError::ProgressFrontierMismatch {
+            reason,
+            expected,
+            got,
+        } => Status::invalid_argument(format!(
+            "backfill progress not bound to admitted batch: {reason} (expected={expected}, got={got})"
         )),
     }
 }
@@ -2026,6 +2051,106 @@ mod tests {
             .get(TABLE_META, KEY_BACKFILL_PROG.as_bytes())
             .unwrap()
             .is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_backfill_batch_refuses_non_monotone_progress() {
+        let (dir, eng) = open_engine("bf-mono");
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+        // Seed durable progress at slot 10.
+        let root10 = root_n(0x10);
+        let ssz10 = synth_block(10, &Root::ZERO, &root_n(1));
+        srv.put_backfill_batch(Request::new(PutBackfillBatchRequest {
+            blocks: vec![BackfillBlock {
+                slot: 10,
+                root: root10.as_slice().to_vec(),
+                ssz: ssz10,
+            }],
+            columns: vec![],
+            progress: Some(ProtoBackfillProgress {
+                blocks_oldest: 10,
+                blocks_oldest_parent: Root::ZERO.as_slice().to_vec(),
+                columns_oldest: 10,
+                per_index_oldest: vec![],
+            }),
+        }))
+        .await
+        .unwrap();
+
+        // Attempt to raise blocks_oldest to 20 — must refuse (R-7).
+        let root20 = root_n(0x20);
+        let ssz20 = synth_block(20, &Root::ZERO, &root_n(1));
+        let err = srv
+            .put_backfill_batch(Request::new(PutBackfillBatchRequest {
+                blocks: vec![BackfillBlock {
+                    slot: 20,
+                    root: root20.as_slice().to_vec(),
+                    ssz: ssz20,
+                }],
+                columns: vec![],
+                progress: Some(ProtoBackfillProgress {
+                    blocks_oldest: 20,
+                    blocks_oldest_parent: Root::ZERO.as_slice().to_vec(),
+                    columns_oldest: 20,
+                    per_index_oldest: vec![],
+                }),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(err.message().contains("non-monotone"));
+
+        // Descending commit still works.
+        let root5 = root_n(0x05);
+        let ssz5 = synth_block(5, &Root::ZERO, &root_n(1));
+        srv.put_backfill_batch(Request::new(PutBackfillBatchRequest {
+            blocks: vec![BackfillBlock {
+                slot: 5,
+                root: root5.as_slice().to_vec(),
+                ssz: ssz5,
+            }],
+            columns: vec![],
+            progress: Some(ProtoBackfillProgress {
+                blocks_oldest: 5,
+                blocks_oldest_parent: Root::ZERO.as_slice().to_vec(),
+                columns_oldest: 5,
+                per_index_oldest: vec![],
+            }),
+        }))
+        .await
+        .unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_backfill_batch_refuses_progress_not_bound_to_batch() {
+        let (dir, eng) = open_engine("bf-bind");
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+        let root = root_n(0x33);
+        let ssz = synth_block(9, &Root::ZERO, &root_n(1));
+        // Progress claims oldest=1 but batch only has slot 9.
+        let err = srv
+            .put_backfill_batch(Request::new(PutBackfillBatchRequest {
+                blocks: vec![BackfillBlock {
+                    slot: 9,
+                    root: root.as_slice().to_vec(),
+                    ssz,
+                }],
+                columns: vec![],
+                progress: Some(ProtoBackfillProgress {
+                    blocks_oldest: 1,
+                    blocks_oldest_parent: Root::ZERO.as_slice().to_vec(),
+                    columns_oldest: 1,
+                    per_index_oldest: vec![],
+                }),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("not bound"));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

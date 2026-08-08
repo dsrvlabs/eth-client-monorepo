@@ -16,12 +16,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cc_libp2p::PeerId;
 use cc_types::primitives::Slot;
 use tracing::{debug, warn};
 
+use crate::backfill::rate::OutboundBlockBudget;
 use crate::das::sampling::SamplingTracker;
 use crate::metrics::{ColumnSource, DaOutcome, P2pMetrics};
 use crate::reqresp::blocks::BlocksByRangeRequest;
@@ -591,6 +592,8 @@ pub struct BackfillPlanner {
     last_trigger: Option<GapTrigger>,
     /// How many times each trigger was accepted (test-visible).
     trigger_counts: HashMap<GapTrigger, u64>,
+    /// Outbound block self-limit (CC-47b /5 — 128 blocks / 10 s per peer).
+    outbound_blocks: OutboundBlockBudget,
 }
 
 impl fmt::Debug for BackfillPlanner {
@@ -635,6 +638,7 @@ impl BackfillPlanner {
             anchor_slot: None,
             last_trigger: None,
             trigger_counts: HashMap::new(),
+            outbound_blocks: OutboundBlockBudget::new(),
         }
     }
 
@@ -653,6 +657,17 @@ impl BackfillPlanner {
     pub fn with_metrics(mut self, metrics: P2pMetrics) -> Self {
         self.metrics = Some(metrics);
         self
+    }
+
+    /// Borrow the outbound block budget (CC-47b /5 counters + bound checks).
+    #[must_use]
+    pub fn outbound_block_budget(&self) -> &OutboundBlockBudget {
+        &self.outbound_blocks
+    }
+
+    /// Mutable budget (tests that inject time / force reserves).
+    pub fn outbound_block_budget_mut(&mut self) -> &mut OutboundBlockBudget {
+        &mut self.outbound_blocks
     }
 
     /// Sampled columns this planner will request on the **forward** path
@@ -884,10 +899,24 @@ impl BackfillPlanner {
     /// Assign pending batches to peers (≤ [`MAX_CONCURRENT_BATCHES`] in flight).
     ///
     /// Prefers distinct peers. Returns `(batch_id, peer, plan)` assignments.
+    ///
+    /// Respects the outbound block budget (CC-47b /5): a peer that would exceed
+    /// 128 blocks / 10 s is skipped so the planner cannot concentrate the whole
+    /// queue on the single deepest window.
     pub fn schedule(
         &mut self,
         peers: &[BackfillPeer],
         scheduler: &mut RequestScheduler,
+    ) -> Vec<(u32, PeerId, BatchPlan)> {
+        self.schedule_at(peers, scheduler, Instant::now())
+    }
+
+    /// [`Self::schedule`] with an explicit clock (unit tests inject time).
+    pub fn schedule_at(
+        &mut self,
+        peers: &[BackfillPeer],
+        scheduler: &mut RequestScheduler,
+        now: Instant,
     ) -> Vec<(u32, PeerId, BatchPlan)> {
         let mut assignments = Vec::new();
         let mut peers_in_use: HashSet<PeerId> = self
@@ -914,13 +943,24 @@ impl BackfillPlanner {
             };
             let plan = self.batches[idx].plan;
             let tried = self.batches[idx].peers_tried.clone();
+            let count = plan.count;
+
+            // Pre-filter peers with enough outbound budget for this batch count.
+            // (available mutates only the peer's token-bucket refill timestamp.)
+            let mut with_budget: HashSet<PeerId> = HashSet::new();
+            for p in peers {
+                if p.eligible_for(plan.start_slot)
+                    && !tried.contains(&p.peer_id)
+                    && self.outbound_blocks.available(p.peer_id, now) >= count
+                {
+                    with_budget.insert(p.peer_id);
+                }
+            }
 
             let candidates: Vec<PeerView> = peers
                 .iter()
                 .filter(|p| {
-                    p.eligible_for(plan.start_slot)
-                        && !tried.contains(&p.peer_id)
-                        && !peers_in_use.contains(&p.peer_id)
+                    with_budget.contains(&p.peer_id) && !peers_in_use.contains(&p.peer_id)
                 })
                 .map(|p| PeerView {
                     peer_id: p.peer_id,
@@ -928,11 +968,11 @@ impl BackfillPlanner {
                 })
                 .collect();
 
-            // Fall back: allow peer reuse if no distinct peer free.
+            // Fall back: allow peer reuse if no distinct peer free (still rate-capped).
             let candidates = if candidates.is_empty() {
                 peers
                     .iter()
-                    .filter(|p| p.eligible_for(plan.start_slot) && !tried.contains(&p.peer_id))
+                    .filter(|p| with_budget.contains(&p.peer_id))
                     .map(|p| PeerView {
                         peer_id: p.peer_id,
                         app_score: p.app_score,
@@ -943,15 +983,8 @@ impl BackfillPlanner {
             };
 
             if candidates.is_empty() {
-                // No eligible peer left for this batch — try next pending later.
-                // If max attempts already spent, abandon is handled on failure path;
-                // here we skip until a peer appears or fail is recorded.
-                if tried.len() as u8 >= BATCH_MAX_PEER_ATTEMPTS {
-                    self.abandon_batch(idx);
-                }
-                // Avoid infinite loop on the same pending batch with no peers.
-                // Mark a soft skip by rotating: move to end via temporary status? 
-                // Break and retry next tick.
+                // No eligible peer with budget — wait for refill / new peers.
+                // Do not abandon solely on rate limit (peers_tried is for failures).
                 break;
             }
 
@@ -963,6 +996,21 @@ impl BackfillPlanner {
                 break;
             };
 
+            // Debit budget; if a race emptied it, try another peer next loop.
+            if !self
+                .outbound_blocks
+                .try_reserve(choice.peer, count, now)
+            {
+                break;
+            }
+
+            // Local schedule attach: batch must still be Pending. If not
+            // (concurrent mutation), refund the reservation cheaply.
+            if self.batches[idx].status != BatchStatus::Pending {
+                let _ = self.outbound_blocks.refund(choice.peer, count, now);
+                continue;
+            }
+
             let batch = &mut self.batches[idx];
             batch.status = BatchStatus::InFlight;
             batch.current_peer = Some(choice.peer);
@@ -971,6 +1019,12 @@ impl BackfillPlanner {
             assignments.push((batch.id, choice.peer, plan));
         }
         assignments
+    }
+
+    /// Refund outbound block budget for an assignment the host could not
+    /// dispatch (local failure before the wire). Does not touch batch state.
+    pub fn refund_outbound_reservation(&mut self, peer: PeerId, count: u64, now: Instant) -> bool {
+        self.outbound_blocks.refund(peer, count, now)
     }
 
     /// Record a successful fetch for `batch_id`.
@@ -1818,5 +1872,92 @@ mod tests {
     fn expected_chunks_counts_blocks_and_sampled_columns() {
         // 64 blocks × (1 + 8 cols) = 576
         assert_eq!(expected_chunks(64, 8), 64 + 64 * 8);
+    }
+
+    // ── CC-47b outbound bound ───────────────────────────────────────────────
+
+    #[test]
+    fn schedule_respects_outbound_128_blocks_per_10s_per_peer() {
+        // One peer advertising a deep window: planner must not schedule more
+        // than 128 blocks against it inside one 10 s budget window.
+        let mut planner = BackfillPlanner::new(sampled_eight());
+        planner.set_anchor(10_000, root(0));
+        // 4 × 64 = 256 slots of below-anchor work.
+        planner.on_gap(GapDetected {
+            from_slot: Slot::new(9_744),
+            to_slot: Slot::new(9_999),
+            trigger: GapTrigger::ServeWindowHoles,
+        });
+        assert!(planner.batches().len() >= 4);
+
+        let peers = vec![bf_peer(1, 0, true)];
+        let mut sched = RequestScheduler::new();
+        let t0 = Instant::now();
+        let a1 = planner.schedule_at(&peers, &mut sched, t0);
+        // Capacity 128 → at most two 64-slot batches on one peer.
+        assert!(
+            a1.len() <= 2,
+            "single peer must not receive >128 blocks in one window (got {})",
+            a1.len()
+        );
+        let total: u64 = a1.iter().map(|(_, _, p)| p.count).sum();
+        assert!(total <= 128, "reserved {total} blocks");
+        // Further schedule at same instant: no more budget.
+        let a2 = planner.schedule_at(&peers, &mut sched, t0);
+        assert!(a2.is_empty(), "budget exhausted at t0");
+        assert!(planner.outbound_block_budget().within_bound());
+        assert_eq!(
+            planner.outbound_block_budget().total_requested(peer_from_byte(1)),
+            total
+        );
+    }
+
+    #[test]
+    fn schedule_spreads_across_peers_under_bound() {
+        let mut planner = BackfillPlanner::new(sampled_eight());
+        planner.set_anchor(10_000, root(0));
+        planner.on_gap(GapDetected {
+            from_slot: Slot::new(9_744),
+            to_slot: Slot::new(9_999),
+            trigger: GapTrigger::ServeWindowHoles,
+        });
+        let peers: Vec<BackfillPeer> = (1..=4).map(|n| bf_peer(n, 0, true)).collect();
+        let mut sched = RequestScheduler::new();
+        let t0 = Instant::now();
+        let assigns = planner.schedule_at(&peers, &mut sched, t0);
+        // Four concurrent batches on four peers = 256 slots, each peer ≤ 64.
+        assert_eq!(assigns.len(), MAX_CONCURRENT_BATCHES.min(planner.batches().len()));
+        assert!(planner.outbound_block_budget().within_bound());
+        let totals = planner.outbound_block_budget().per_peer_totals();
+        // Distribution is recorded so concentration is visible.
+        assert!(!totals.is_empty());
+        for (_, c) in &totals {
+            assert!(*c <= 128);
+        }
+    }
+
+    #[test]
+    fn refund_outbound_on_local_dispatch_failure() {
+        let mut planner = BackfillPlanner::new(sampled_eight());
+        planner.set_anchor(10_000, root(0));
+        // Two 64-slot batches so a single peer can take both only after refund.
+        planner.on_gap(GapDetected {
+            from_slot: Slot::new(9_872),
+            to_slot: Slot::new(9_999),
+            trigger: GapTrigger::ServeWindowHoles,
+        });
+        let peers = vec![bf_peer(1, 0, true), bf_peer(2, 0, true)];
+        let mut sched = RequestScheduler::new();
+        let t0 = Instant::now();
+        let assigns = planner.schedule_at(&peers, &mut sched, t0);
+        assert!(!assigns.is_empty());
+        let (_id, peer, plan) = assigns[0];
+        let before = planner.outbound_block_budget_mut().available(peer, t0);
+        assert_eq!(before, 128 - plan.count);
+        // Host cannot dispatch (local) — refund restores that peer's window budget.
+        assert!(planner.refund_outbound_reservation(peer, plan.count, t0));
+        assert_eq!(planner.outbound_block_budget_mut().available(peer, t0), 128);
+        // Cumulative counter is not reduced (attempts scheduled, not window).
+        assert!(planner.outbound_block_budget().total_requested(peer) >= plan.count);
     }
 }

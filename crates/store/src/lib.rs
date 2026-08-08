@@ -48,11 +48,12 @@ pub mod window;
 
 pub use backfill_progress::{
     advance_per_index_oldest, apply_block_batch_progress, apply_column_batch_progress,
-    column_backfill_complete, column_backfill_target_slot, ensure_per_index_len,
-    load_backfill_progress, load_backfill_progress_txn, oldest_custodied_column_slot,
-    put_backfill_progress, resume_column_frontier, resume_within_one_batch,
-    serve_window_above_column_target, BACKFILL_BATCH_SLOT_LIMIT, COLUMN_BACKFILL_EPOCHS,
-    COLUMN_INDEX_COUNT, ProgressError,
+    block_backfill_complete, block_backfill_target_slot, column_backfill_complete,
+    column_backfill_target_slot, ensure_per_index_len, load_backfill_progress,
+    load_backfill_progress_txn, oldest_custodied_column_slot, put_backfill_progress,
+    resume_block_frontier, resume_block_parent, resume_column_frontier, resume_within_one_batch,
+    serve_window_above_block_target, serve_window_above_column_target, BACKFILL_BATCH_SLOT_LIMIT,
+    COLUMN_BACKFILL_EPOCHS, COLUMN_INDEX_COUNT, ProgressError,
 };
 pub use blocks::{
     BlockClassStats, MAX_BLOCKS_BY_RANGE, PARENT_ROOT_SSZ_OFFSET, PutBlockOutcome, RangeBlock,
