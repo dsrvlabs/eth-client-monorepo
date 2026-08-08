@@ -250,6 +250,8 @@ async fn main() -> anyhow::Result<()> {
             max_resident_states: cfg.max_resident_states,
             body_ring_capacity: cfg.body_ring_capacity,
             engine_uri: cfg.engine_uri.clone(),
+            // Production: wall-clock SlotTick for fcU floor + pending_* expiry.
+            slot_tick_enabled: true,
             ..CoreConfig::default()
         };
         let svc_boot = svc.clone();

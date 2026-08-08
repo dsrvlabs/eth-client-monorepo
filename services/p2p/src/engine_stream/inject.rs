@@ -1173,9 +1173,9 @@ mod tests {
             guard.get(&root(9)).is_none(),
             "real tracker has no task — inject did not cross the edge"
         );
-        // GetHead does not advance past a deferred block — that assertion lives
-        // on chain/FC; here we prove the DA signal never fired despite inject
-        // success.
+        // Fork-choice head does not advance past a deferred block — that check
+        // lives on chain/FC; here we prove the DA signal never fired despite
+        // inject success.
     }
 
     #[test]

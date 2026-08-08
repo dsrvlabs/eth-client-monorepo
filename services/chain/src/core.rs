@@ -165,6 +165,14 @@ pub struct CoreConfig {
     pub engine_pending_timeout_slots: u64,
     /// gRPC URI for `EngineService` (CC-32b). Not a health peer (ADR P3-02).
     pub engine_uri: String,
+    /// Spawn the per-slot `SlotTick` floor (fcU floor + pending_* expiry + wall-clock
+    /// `on_tick`).
+    ///
+    /// **Default `false`.** Fixture/integration tests carefully seed store time
+    /// (e.g. Hoodi offline replay); a wall-clock tick would jump past the
+    /// imported chain and leave `get_head` stranded. Production `main` enables
+    /// this (CC-33 /7, CC-36a).
+    pub slot_tick_enabled: bool,
 }
 
 impl Default for CoreConfig {
@@ -177,6 +185,7 @@ impl Default for CoreConfig {
             da_pending_timeout_slots: DEFAULT_DA_PENDING_TIMEOUT_SLOTS,
             engine_pending_timeout_slots: DEFAULT_ENGINE_PENDING_TIMEOUT_SLOTS,
             engine_uri: crate::engine_client::DEFAULT_ENGINE_URI.to_owned(),
+            slot_tick_enabled: false,
         }
     }
 }
@@ -500,22 +509,28 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
 
     // Per-slot fcU floor ticker (CC-33 /7). try_send so a busy import queue
     // never blocks the ticker; drops under load are fine (next slot retries).
-    let tick_tx = cmd_tx.clone();
-    let tick_secs = config.seconds_per_slot.max(1);
-    let _fcu_ticker = thread::Builder::new()
-        .name("chain-fcu-floor".into())
-        .spawn(move || {
-            loop {
-                thread::sleep(Duration::from_secs(tick_secs));
-                if tick_tx.try_send(CoreCommand::SlotTick).is_err() {
-                    // Channel full or closed — exit if closed; otherwise skip.
-                    if tick_tx.is_closed() {
-                        break;
+    // Gated by `slot_tick_enabled` so fixture tests keep exclusive control of
+    // store time (wall-clock on_tick would strand get_head past the chain).
+    let _fcu_ticker = if core_cfg.slot_tick_enabled {
+        let tick_tx = cmd_tx.clone();
+        let tick_secs = config.seconds_per_slot.max(1);
+        thread::Builder::new()
+            .name("chain-fcu-floor".into())
+            .spawn(move || {
+                loop {
+                    thread::sleep(Duration::from_secs(tick_secs));
+                    if tick_tx.try_send(CoreCommand::SlotTick).is_err() {
+                        // Channel full or closed — exit if closed; otherwise skip.
+                        if tick_tx.is_closed() {
+                            break;
+                        }
                     }
                 }
-            }
-        })
-        .ok();
+            })
+            .ok()
+    } else {
+        None
+    };
 
     // Capture multi-threaded runtime handle for GrpcFcuSink (§2.4). Absent in
     // pure unit tests that spawn the core off a runtime → fcU stays disabled.

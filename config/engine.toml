@@ -11,10 +11,8 @@ log_filter = "info"
 # must not make engine NOT_SERVING (the fast path is an accelerator).
 p2p_uri = "http://127.0.0.1:9002"
 
-[peers]
-chain = "http://127.0.0.1:9001"
-
 # ── CC-30a Engine API transport (Architecture §3.6, §7) ─────────────────────
+# Root-level keys (must appear *before* any [table] that would capture them).
 # Authenticated JSON-RPC endpoint (compose: http://el:8551).
 el_endpoint = "http://127.0.0.1:8551"
 # Hex-encoded 32-byte JWT secret (optional 0x prefix). Override:
@@ -26,6 +24,9 @@ jwt_secret_path = "secrets/jwt.hex"
 # Never configure the soft deadline as a timeout; never use SECONDS_PER_SLOT.
 slot_duration_ms = 12000
 attestation_due_bps = 3333
+
+[peers]
+chain = "http://127.0.0.1:9001"
 
 # Five transport timeouts (spec) + operator multiplier (scales these five only).
 [timeouts]
