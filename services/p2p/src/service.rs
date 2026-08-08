@@ -106,6 +106,9 @@ pub struct RuntimeConfig {
     /// Fail-closed grace after `WatchServeWindow` disconnect (`p2p.window_stale_grace`).
     /// Default 60 s (CC-48 §5.5).
     pub window_stale_grace: Duration,
+    /// CC-49 /7: advertise storage's block floor (branch 1) when true.
+    /// Default **true** (ship-as-designed-pending-OQ-1 while OQ-1 is NOT_RUN).
+    pub advertise_block_floor: bool,
     /// Gossipsub heartbeat interval — stall bound is derived from this (§2.3).
     pub heartbeat_interval: Duration,
     /// **Test-only:** swarm task panics immediately so the process-fatal path
@@ -133,6 +136,7 @@ impl Default for RuntimeConfig {
             storage_uri: String::new(),
             enable_storage_client: false,
             window_stale_grace: crate::storage_client::DEFAULT_WINDOW_STALE_GRACE,
+            advertise_block_floor: true,
             // Match `cc_libp2p::BehaviourConfig::default().heartbeat_interval`.
             heartbeat_interval: Duration::from_secs(1),
             test_swarm_panic: false,
@@ -381,6 +385,7 @@ pub async fn serve(
             let sc_cfg = StorageClientConfig {
                 storage_uri: cfg.storage_uri.clone(),
                 window_stale_grace: cfg.window_stale_grace,
+                advertise_block_floor: cfg.advertise_block_floor,
                 ..StorageClientConfig::default()
             };
             // Keep a client alive for future cache-miss fetch;
@@ -395,7 +400,8 @@ pub async fn serve(
             info!(
                 storage_uri = %cfg.storage_uri,
                 window_stale_grace_secs = cfg.window_stale_grace.as_secs(),
-                "CC-4F storage client + WatchServeWindow spawned (CC-48 one-writer)"
+                advertise_block_floor = cfg.advertise_block_floor,
+                "CC-4F storage client + WatchServeWindow spawned (CC-48 one-writer / CC-49 gate)"
             );
             Some(handle)
         } else {

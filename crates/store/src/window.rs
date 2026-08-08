@@ -11,12 +11,23 @@
 //!
 //! [`derive_serve_window`] recomputes `earliest_available_slot` from
 //! `AnchorInfo.oldest_block_slot` (`B`), `ColumnInfo.oldest_custodied_column_slot`
-//! (`C`), and `ServeWindow.holes`. There is **no** independent setter for
+//! (`C`), `current_slot` (for the sidecar retention floor `R`), and
+//! `ServeWindow.holes`. There is **no** independent setter for
 //! `earliest_available_slot` or `cgc` — the only public mutator takes a whole
 //! [`ServeWindow`] ([`put_serve_window`]).
 //!
-//! At M4.4 this module emits **branch 2 only** (`max(B, C)` raised past holes),
-//! reproducing Phase 2's answer. The two-branch flip is **`CC-49`**.
+//! # CC-49 — two-branch flip (§5.1)
+//!
+//! [`earliest_available_slot`] implements the Status v2 note: when the node can
+//! serve all sidecars over the **sidecar** retention period (`C ≤ R`) it
+//! advertises the block floor `B` (branch 1); otherwise `max(B, C)` (branch 2).
+//! The flip is driven by the column completion predicate (CC-47 /7), not a
+//! timer. [`WindowBranch`] is written into [`ServeWindow::branch`] and exported
+//! as the `cc_storage_window_branch` metric label.
+//!
+//! **`CC-4G`'s `cgc` raise is a *return* to branch 2 and that is correct, not a
+//! regression** (§5.4): new custodied indices make `C` head-ish again until the
+//! extended set is backfilled over the 4 096-epoch window.
 //!
 //! Incremental maintenance of `B` / `C` / `holes` lives here as pure helpers so
 //! backfill and the `CURSOR_TOO_OLD` path can update floors in O(1) without
@@ -26,8 +37,9 @@
 //!
 //! - **SEC-4A-1** — arithmetic is **fail-closed** (`checked_div` / `checked_add`);
 //!   overflow never wraps to a silent wrong floor.
-//! - **SEC-4A-2** (dual authority with Phase 2 `services/p2p`) — **wontfix here**.
-//!   Wiring a single authority is `CC-49`.
+//! - **SEC-4A-2** (dual authority with Phase 2 `services/p2p`) — the store is
+//!   the derivation authority; p2p only reads the stream (CC-48) and may gate
+//!   advertisement behind `p2p.advertise_block_floor` (CC-49 /7, OQ-1).
 
 use std::fs;
 use std::path::Path;
@@ -43,6 +55,7 @@ use crate::engine::{Batch, Engine, StoreError};
 use crate::meta::{
     AnchorInfo, ColumnInfo, KEY_SERVE_WINDOW, ServeWindow, SlotRange, TABLE_META,
 };
+use crate::split::SLOTS_PER_EPOCH;
 
 /// Config scalars that enter the block serve-window floor.
 ///
@@ -217,16 +230,22 @@ struct RawServeWindowYaml {
 }
 
 // ---------------------------------------------------------------------------
-// CC-48 — derived ServeWindow (branch 2), incremental B / C / holes
+// CC-48 / CC-49 — derived ServeWindow (two branches), incremental B / C / holes
 // ---------------------------------------------------------------------------
 
 /// Hard bound on `ServeWindow.holes` (Architecture §5.2). A 65th entry is an
 /// alarm: the store is too broken to describe precisely.
 pub const MAX_SERVE_WINDOW_HOLES: usize = 64;
 
+/// Spec `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` (≈ 18 days).
+///
+/// Sidecar retention period for the branch condition — **not** the block window.
+pub const MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: u64 = 4_096;
+
 /// Branch tag written into [`ServeWindow::branch`].
 ///
-/// CC-48 always emits [`WindowBranch::Two`]. CC-49 owns the flip.
+/// Exported as the `cc_storage_window_branch` metric (1 | 2) so a wrong branch
+/// is visible in one glance rather than inferred from a 129-day discrepancy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum WindowBranch {
@@ -237,10 +256,58 @@ pub enum WindowBranch {
 }
 
 impl WindowBranch {
-    /// Wire / SSZ tag.
+    /// Wire / SSZ / metric tag.
     #[must_use]
     pub const fn as_u8(self) -> u8 {
         self as u8
+    }
+}
+
+/// Sidecar retention floor `R = current_slot − 4096 × SLOTS_PER_EPOCH`.
+///
+/// Branch condition is over this floor only (Architecture §5.1 / §5.4).
+#[must_use]
+pub fn sidecar_retention_floor(current_slot: Slot) -> Slot {
+    let r = current_slot.as_u64().saturating_sub(
+        MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS.saturating_mul(SLOTS_PER_EPOCH),
+    );
+    Slot::new(r)
+}
+
+/// Spec two-branch rule for the advertised block floor (before hole raise).
+///
+/// `specs/fulu/p2p-interface.md`, Status v2 note (`v1.7.0-alpha.13`), verbatim:
+///
+///  - If the node is able to serve all blocks throughout the entire sidecars retention
+///    period ... but is NOT able to serve all sidecars during this period, it should
+///    advertise the earliest slot from which it can serve all sidecars.
+///  - If the node is able to serve all sidecars throughout the entire sidecars retention
+///    period ..., it should advertise the earliest slot from which it can serve all blocks.
+///
+/// ```text
+/// R = current_slot − min_epochs_for_data_column_sidecars_requests × SLOTS_PER_EPOCH
+/// if C ≤ R { B } else { max(B, C) }
+/// ```
+///
+/// The `max` in branch 2 is **not** decoration: the field is *"the slot of
+/// earliest available **block**"*, so it may never sit below `B` (a bare `C`
+/// would advertise blocks we do not hold whenever `C < B`).
+///
+/// No wall-clock / timer input — only floors and `current_slot`.
+#[must_use]
+pub fn earliest_available_slot(
+    b: Slot,
+    c: Slot,
+    current_slot: Slot,
+) -> (Slot, WindowBranch) {
+    let r = sidecar_retention_floor(current_slot);
+    if c.as_u64() <= r.as_u64() {
+        (b, WindowBranch::One)
+    } else {
+        (
+            Slot::new(b.as_u64().max(c.as_u64())),
+            WindowBranch::Two,
+        )
     }
 }
 
@@ -313,10 +380,11 @@ pub enum ServeWindowError {
     },
 }
 
-/// Derive a complete [`ServeWindow`] under **branch 2** (CC-48 / M4.4).
+/// Derive a complete [`ServeWindow`] under the CC-49 two-branch rule.
 ///
 /// ```text
-/// eas = raise_for_holes(max(B, C), holes)
+/// (base, branch) = earliest_available_slot(B, C, current_slot)
+/// eas            = raise_for_holes(base, holes)
 /// ```
 ///
 /// There is no setter for `earliest_available_slot` or `cgc` independently —
@@ -330,6 +398,7 @@ pub fn derive_serve_window(
     column_floor: Slot,
     cgc: u64,
     holes: &[SlotRange],
+    current_slot: Slot,
 ) -> Result<ServeWindow, ServeWindowError> {
     if holes.len() > MAX_SERVE_WINDOW_HOLES {
         return Err(ServeWindowError::HoleCapExceeded {
@@ -337,7 +406,7 @@ pub fn derive_serve_window(
             cap: MAX_SERVE_WINDOW_HOLES,
         });
     }
-    let base = Slot::new(block_floor.as_u64().max(column_floor.as_u64()));
+    let (base, branch) = earliest_available_slot(block_floor, column_floor, current_slot);
     let eas = raise_for_holes(base, holes);
     let holes_list = VariableList::new(holes.to_vec()).map_err(|_| {
         // Length already checked; VariableList capacity is U64 == 64.
@@ -349,24 +418,26 @@ pub fn derive_serve_window(
     Ok(ServeWindow {
         earliest_available_slot: eas,
         cgc,
-        branch: WindowBranch::Two.as_u8(),
+        branch: branch.as_u8(),
         block_floor,
         column_floor,
         holes: holes_list,
     })
 }
 
-/// Re-derive from live [`AnchorInfo`] / [`ColumnInfo`] / hole list (branch 2).
+/// Re-derive from live [`AnchorInfo`] / [`ColumnInfo`] / hole list.
 pub fn derive_serve_window_from_meta(
     anchor: &AnchorInfo,
     columns: &ColumnInfo,
     holes: &[SlotRange],
+    current_slot: Slot,
 ) -> Result<ServeWindow, ServeWindowError> {
     derive_serve_window(
         anchor.oldest_block_slot,
         columns.oldest_custodied_column_slot,
         columns.cgc,
         holes,
+        current_slot,
     )
 }
 
@@ -511,11 +582,13 @@ pub fn write_derived_serve_window(
     column_floor: Slot,
     cgc: u64,
     holes: &[SlotRange],
+    current_slot: Slot,
     fail_commit: bool,
 ) -> Result<ServeWindow, StoreError> {
-    let window = derive_serve_window(block_floor, column_floor, cgc, holes).map_err(|e| {
-        StoreError::Codec(e.to_string())
-    })?;
+    let window =
+        derive_serve_window(block_floor, column_floor, cgc, holes, current_slot).map_err(|e| {
+            StoreError::Codec(e.to_string())
+        })?;
     let mut batch = engine.batch();
     put_serve_window(&mut batch, &window);
     if fail_commit {
@@ -537,6 +610,7 @@ pub fn write_serve_window_from_meta(
     anchor: &AnchorInfo,
     columns: &ColumnInfo,
     holes: &[SlotRange],
+    current_slot: Slot,
     fail_commit: bool,
 ) -> Result<ServeWindow, StoreError> {
     write_derived_serve_window(
@@ -545,6 +619,7 @@ pub fn write_serve_window_from_meta(
         columns.oldest_custodied_column_slot,
         columns.cgc,
         holes,
+        current_slot,
         fail_commit,
     )
 }
@@ -687,13 +762,18 @@ mod tests {
         check_min_epochs_for_block_requests(&cfg).expect("hoodi fixture must start");
     }
 
-    // ── CC-48 derivation ────────────────────────────────────────────────────
+    // ── CC-48 / CC-49 derivation ─────────────────────────────────────────────
 
     fn hole(start: u64, end: u64) -> SlotRange {
         SlotRange {
             start: Slot::new(start),
             end: Slot::new(end),
         }
+    }
+
+    /// `current_slot = 0` → `R = 0`. Any `C > 0` stays on branch 2 (Phase-2 shape).
+    fn head0() -> Slot {
+        Slot::new(0)
     }
 
     fn temp_engine(label: &str) -> (PathBuf, Engine) {
@@ -716,14 +796,14 @@ mod tests {
     /// Branch 2: eas = max(B, C) with no holes.
     #[test]
     fn derive_branch_two_is_max_b_c() {
-        let w = derive_serve_window(Slot::new(10), Slot::new(20), 4, &[]).unwrap();
+        let w = derive_serve_window(Slot::new(10), Slot::new(20), 4, &[], head0()).unwrap();
         assert_eq!(w.earliest_available_slot, Slot::new(20));
         assert_eq!(w.block_floor, Slot::new(10));
         assert_eq!(w.column_floor, Slot::new(20));
         assert_eq!(w.cgc, 4);
         assert_eq!(w.branch, WindowBranch::Two.as_u8());
 
-        let w2 = derive_serve_window(Slot::new(50), Slot::new(20), 4, &[]).unwrap();
+        let w2 = derive_serve_window(Slot::new(50), Slot::new(20), 4, &[], head0()).unwrap();
         assert_eq!(w2.earliest_available_slot, Slot::new(50));
     }
 
@@ -731,7 +811,7 @@ mod tests {
     #[test]
     fn derive_hole_at_eas_raises() {
         let holes = [hole(20, 25)];
-        let w = derive_serve_window(Slot::new(10), Slot::new(20), 4, &holes).unwrap();
+        let w = derive_serve_window(Slot::new(10), Slot::new(20), 4, &holes, head0()).unwrap();
         assert_eq!(w.earliest_available_slot, Slot::new(25));
     }
 
@@ -739,7 +819,7 @@ mod tests {
     #[test]
     fn derive_hole_near_head_raises() {
         let holes = [hole(99, 100)];
-        let w = derive_serve_window(Slot::new(10), Slot::new(10), 4, &holes).unwrap();
+        let w = derive_serve_window(Slot::new(10), Slot::new(10), 4, &holes, head0()).unwrap();
         assert_eq!(w.earliest_available_slot, Slot::new(100));
     }
 
@@ -747,7 +827,7 @@ mod tests {
     #[test]
     fn derive_hole_below_base_ignored() {
         let holes = [hole(1, 5)];
-        let w = derive_serve_window(Slot::new(10), Slot::new(10), 4, &holes).unwrap();
+        let w = derive_serve_window(Slot::new(10), Slot::new(10), 4, &holes, head0()).unwrap();
         assert_eq!(w.earliest_available_slot, Slot::new(10));
     }
 
@@ -808,9 +888,9 @@ mod tests {
         assert_eq!(hole_slots_total(&holes), 64);
 
         // Derive with 64 ok; with 65 must refuse (never truncate free-ride).
-        assert!(derive_serve_window(Slot::new(0), Slot::new(0), 4, &holes).is_ok());
+        assert!(derive_serve_window(Slot::new(0), Slot::new(0), 4, &holes, head0()).is_ok());
         holes.push(hole(10_000, 10_001));
-        let err = derive_serve_window(Slot::new(0), Slot::new(0), 4, &holes).unwrap_err();
+        let err = derive_serve_window(Slot::new(0), Slot::new(0), 4, &holes, head0()).unwrap_err();
         assert!(matches!(
             err,
             ServeWindowError::HoleCapExceeded { got: 65, cap: 64 }
@@ -823,6 +903,7 @@ mod tests {
             Slot::new(0),
             4,
             &holes,
+            head0(),
             false,
         )
         .unwrap_err();
@@ -839,7 +920,9 @@ mod tests {
         let mut b = Slot::new(100);
         let mut c = Slot::new(100);
         let mut holes: Vec<SlotRange> = Vec::new();
-        let mut prev = derive_serve_window(b, c, 4, &holes)
+        // Head far enough that C stays above R while both floors descend (branch 2).
+        let current = Slot::new(1_000_000);
+        let mut prev = derive_serve_window(b, c, 4, &holes, current)
             .unwrap()
             .earliest_available_slot
             .as_u64();
@@ -857,11 +940,10 @@ mod tests {
             }
             b = Slot::new(b.as_u64().saturating_sub(2));
             c = Slot::new(c.as_u64().saturating_sub(1));
-            let w = derive_serve_window(b, c, 4, &holes).unwrap();
+            let w = derive_serve_window(b, c, 4, &holes, current).unwrap();
             let eas = w.earliest_available_slot.as_u64();
-            // Never below max(B, C) before hole raise — and never below either floor.
-            assert!(eas >= b.as_u64().max(c.as_u64()) || !holes.is_empty());
-            let base = b.as_u64().max(c.as_u64());
+            let (base_slot, _) = earliest_available_slot(b, c, current);
+            let base = base_slot.as_u64();
             assert!(eas >= base || holes.iter().any(|h| h.end.as_u64() > base));
             // Monotone non-increasing once holes are stable or filled.
             if holes.is_empty() {
@@ -885,10 +967,14 @@ mod tests {
                 .into_iter()
                 .map(|s| hole(s, s.saturating_add(3)))
                 .collect();
-            let w = derive_serve_window(Slot::new(b), Slot::new(c), 4, &holes)
+            // current_slot = 0 → R = 0; C > 0 ⇒ branch 2; C == 0 ⇒ branch 1.
+            let current = Slot::new(0);
+            let w = derive_serve_window(Slot::new(b), Slot::new(c), 4, &holes, current)
                 .expect("≤8 holes fits cap");
             let eas = w.earliest_available_slot.as_u64();
-            let base = b.max(c);
+            let (base_slot, branch) = earliest_available_slot(Slot::new(b), Slot::new(c), current);
+            let base = base_slot.as_u64();
+            prop_assert_eq!(w.branch, branch.as_u8());
             prop_assert!(eas >= base, "eas {eas} < base {base}");
             for h in &holes {
                 if h.end.as_u64() > base && h.start.as_u64() < h.end.as_u64() {
@@ -904,7 +990,7 @@ mod tests {
                 }
             }
             // Contiguous present: eas is exactly raise_for_holes(base).
-            prop_assert_eq!(eas, raise_for_holes(Slot::new(base), &holes).as_u64());
+            prop_assert_eq!(eas, raise_for_holes(base_slot, &holes).as_u64());
         }
     }
 
@@ -920,8 +1006,14 @@ mod tests {
             oldest_custodied_column_slot: Slot::new(50),
         };
         assert!(try_extend_column_floor(&mut cols, Slot::new(49), false, true));
-        let w =
-            derive_serve_window(Slot::new(40), cols.oldest_custodied_column_slot, 4, &[]).unwrap();
+        let w = derive_serve_window(
+            Slot::new(40),
+            cols.oldest_custodied_column_slot,
+            4,
+            &[],
+            head0(),
+        )
+        .unwrap();
         assert_eq!(w.earliest_available_slot, Slot::new(49));
     }
 
@@ -956,6 +1048,7 @@ mod tests {
             Slot::new(20),
             4,
             &[],
+            head0(),
             /*fail_commit=*/ true,
         )
         .expect_err("must fail");
@@ -981,6 +1074,7 @@ mod tests {
             Slot::new(20),
             8,
             &holes,
+            head0(),
             false,
         )
         .expect("write");
@@ -1002,6 +1096,7 @@ mod tests {
             Slot::new(120),
             4,
             &[],
+            head0(),
             false,
         )
         .expect("write");
@@ -1014,6 +1109,7 @@ mod tests {
             loaded.column_floor,
             loaded.cgc,
             loaded.holes.as_ref(),
+            head0(),
         )
         .unwrap();
         assert!(
@@ -1028,6 +1124,7 @@ mod tests {
             loaded.column_floor,
             loaded.cgc,
             &[hole(120, 125)],
+            head0(),
         )
         .unwrap();
         assert_eq!(with_hole.earliest_available_slot, Slot::new(125));
@@ -1075,5 +1172,199 @@ mod tests {
         // meta defines the container field; derivation assigns only inside derive_*.
         let meta_src = include_str!("meta.rs");
         assert!(meta_src.contains("earliest_available_slot"));
+    }
+
+    // ── CC-49 — two-branch flip ──────────────────────────────────────────────
+
+    /// Spec quote is part of the deliverable (`sidecars retention` + pin).
+    #[test]
+    fn spec_text_quoted_above_earliest_available_slot() {
+        let src = include_str!("window.rs");
+        assert!(
+            src.contains("sidecars retention"),
+            "must quote the Status v2 note containing 'sidecars retention'"
+        );
+        assert!(
+            src.contains("specs/fulu/p2p-interface.md") && src.contains("v1.7.0-alpha.13"),
+            "must name the pinned spec path and tag"
+        );
+        assert!(
+            src.contains("pub fn earliest_available_slot"),
+            "function must exist under that name"
+        );
+    }
+
+    /// CC-49 /1 both directions: C ≤ R → B (branch 1); synthetic hole re-opens branch 2.
+    #[test]
+    fn both_directions_branch_one_and_synthetic_hole_reopens_branch_two() {
+        // current_epoch = 6000 → R ≈ start of epoch (6000 − 4096) mid-slot.
+        let current_epoch = 6_000u64;
+        let current_slot = Slot::new(current_epoch * SLOTS_PER_EPOCH);
+        let r = sidecar_retention_floor(current_slot);
+        assert_eq!(
+            r,
+            Slot::new(
+                current_slot
+                    .as_u64()
+                    .saturating_sub(MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS * SLOTS_PER_EPOCH)
+            )
+        );
+
+        // Column window complete: C ≤ R, B still high (block backfill unfinished).
+        let b = Slot::new(r.as_u64() + 50_000);
+        let c = r; // at the retention floor
+        let w1 = derive_serve_window(b, c, 4, &[], current_slot).unwrap();
+        assert_eq!(w1.branch, WindowBranch::One.as_u8());
+        assert_eq!(w1.earliest_available_slot, b, "branch 1 advertises B");
+
+        // Synthetic hole re-opened inside the column window: raise C above R.
+        let c_hole = Slot::new(r.as_u64() + 1);
+        let w2 = derive_serve_window(b, c_hole, 4, &[], current_slot).unwrap();
+        assert_eq!(w2.branch, WindowBranch::Two.as_u8());
+        assert_eq!(
+            w2.earliest_available_slot.as_u64(),
+            b.as_u64().max(c_hole.as_u64()),
+            "branch 2 advertises max(B, C)"
+        );
+    }
+
+    /// CC-49 /2 — flip driven by column completion predicate, not a timer.
+    #[test]
+    fn flip_triggered_by_column_completion_predicate_not_timer() {
+        use crate::backfill_progress::{
+            column_backfill_complete, column_backfill_target_slot, COLUMN_BACKFILL_EPOCHS,
+        };
+
+        let current_epoch = 6_000u64;
+        let current_slot = Slot::new(current_epoch * SLOTS_PER_EPOCH);
+        let target = column_backfill_target_slot(current_epoch);
+        assert_eq!(
+            target.as_u64(),
+            (current_epoch - COLUMN_BACKFILL_EPOCHS) * SLOTS_PER_EPOCH
+        );
+
+        // Incomplete columns → branch 2.
+        let b = Slot::new(target.as_u64() + 10_000);
+        let c_incomplete = Slot::new(target.as_u64() + 1);
+        assert!(!column_backfill_complete(c_incomplete, current_epoch));
+        let w_inc = derive_serve_window(b, c_incomplete, 4, &[], current_slot).unwrap();
+        assert_eq!(w_inc.branch, WindowBranch::Two.as_u8());
+
+        // Drive the predicate to complete → branch 1.
+        let c_complete = target;
+        assert!(column_backfill_complete(c_complete, current_epoch));
+        let w_c = derive_serve_window(b, c_complete, 4, &[], current_slot).unwrap();
+        assert_eq!(w_c.branch, WindowBranch::One.as_u8());
+        assert_eq!(w_c.earliest_available_slot, b);
+
+        // No timer types on the flip path.
+        let src = include_str!("window.rs");
+        let flip_region = src
+            .split("pub fn earliest_available_slot")
+            .nth(1)
+            .expect("function body");
+        let flip_fn = flip_region.split("pub fn derive_serve_window").next().unwrap();
+        for forbidden in ["Instant", "elapsed", "SystemTime"] {
+            assert!(
+                !flip_fn.contains(forbidden),
+                "flip path must not use {forbidden}"
+            );
+        }
+    }
+
+    /// CC-49 /3 — max is not decoration: C < B still advertises B on branch 2.
+    #[test]
+    fn branch_two_max_never_advertises_below_b_when_c_lt_b() {
+        // C > R so branch 2, but C < B.
+        let current = Slot::new(1_000);
+        let b = Slot::new(500);
+        let c = Slot::new(100); // > R=0 when current small... need C > R
+        // With current=1000, R = 0 if 1000 < 4096*32. 4096*32 = 131072.
+        // So R=0 for current=1000; C=100 > 0 → branch 2.
+        let (base, branch) = earliest_available_slot(b, c, current);
+        assert_eq!(branch, WindowBranch::Two);
+        assert_eq!(base, b, "max(B, C) with C < B must yield B, never bare C");
+        let w = derive_serve_window(b, c, 4, &[], current).unwrap();
+        assert_eq!(w.earliest_available_slot, b);
+        assert_eq!(w.branch, WindowBranch::Two.as_u8());
+    }
+
+    /// CC-49 /4 — branch condition is over the *sidecar* window only.
+    ///
+    /// Columns complete, block backfill still 100 days from its target → branch 1
+    /// with a still-moving B; metric tag is 1.
+    #[test]
+    fn branch_one_while_block_backfill_100_days_from_target() {
+        const SECONDS_PER_SLOT: u64 = 12;
+        const DAY_SLOTS: u64 = 86_400 / SECONDS_PER_SLOT; // 7200
+
+        let current_epoch = 50_000u64;
+        let current_slot = Slot::new(current_epoch * SLOTS_PER_EPOCH);
+        let r = sidecar_retention_floor(current_slot);
+
+        // Columns done (C ≤ R).
+        let c = r;
+        // Block floor still 100 days *above* the full block target (still descending).
+        // Full block target ≈ current − 33024 epochs; we place B 100 days short of that.
+        let block_target_epochs = 33_024u64;
+        let full_block_floor =
+            current_slot
+                .as_u64()
+                .saturating_sub(block_target_epochs.saturating_mul(SLOTS_PER_EPOCH));
+        let b = Slot::new(full_block_floor.saturating_add(100 * DAY_SLOTS));
+        assert!(b.as_u64() > full_block_floor, "B still moving toward target");
+        assert!(c.as_u64() <= r.as_u64());
+
+        let w = derive_serve_window(b, c, 4, &[], current_slot).unwrap();
+        assert_eq!(
+            w.branch,
+            WindowBranch::One.as_u8(),
+            "cc_storage_window_branch must read 1"
+        );
+        assert_eq!(w.earliest_available_slot, b, "still-moving B is advertised");
+    }
+
+    /// CC-49 /5 — magnitude: full windows, branch-1 answer > 100 days older than branch-2.
+    #[test]
+    fn full_windows_branch_one_is_more_than_100_days_older_than_branch_two() {
+        const SECONDS_PER_SLOT: u64 = 12;
+        const DAY_SLOTS: u64 = 86_400 / SECONDS_PER_SLOT;
+
+        // Hold both full windows: B = current − 33024 epochs, C = current − 4096 epochs.
+        let current_epoch = 100_000u64;
+        let current_slot = Slot::new(current_epoch * SLOTS_PER_EPOCH);
+        let b = Slot::new(
+            current_slot
+                .as_u64()
+                .saturating_sub(33_024u64.saturating_mul(SLOTS_PER_EPOCH)),
+        );
+        let c = Slot::new(
+            current_slot
+                .as_u64()
+                .saturating_sub(
+                    MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS.saturating_mul(SLOTS_PER_EPOCH),
+                ),
+        );
+        assert!(c.as_u64() <= sidecar_retention_floor(current_slot).as_u64());
+
+        let branch1 = derive_serve_window(b, c, 4, &[], current_slot).unwrap();
+        assert_eq!(branch1.branch, WindowBranch::One.as_u8());
+        assert_eq!(branch1.earliest_available_slot, b);
+
+        // Branch-2 answer for the same floors (what Phase 2 / incomplete would advertise).
+        let branch2_base = Slot::new(b.as_u64().max(c.as_u64()));
+        assert_eq!(branch2_base, c, "with full windows C > B so max is C");
+
+        let delta_slots = branch2_base
+            .as_u64()
+            .saturating_sub(branch1.earliest_available_slot.as_u64());
+        let delta_days = delta_slots * SECONDS_PER_SLOT / 86_400;
+        assert!(
+            delta_days > 100,
+            "branch-1 must be > 100 days older than branch-2; got {delta_days} days \
+             ({delta_slots} slots at 12 s); DAY_SLOTS={DAY_SLOTS}"
+        );
+        // Sanity: ~129 days (33024 − 4096) epochs × 32 × 12 / 86400.
+        assert!(delta_days > 120 && delta_days < 140, "expected ~129 days, got {delta_days}");
     }
 }

@@ -292,7 +292,7 @@ impl StorageServer {
         self.window_tx.send_replace(window);
     }
 
-    /// Derive, persist, and publish a serve window from floors + holes (CC-48).
+    /// Derive, persist, and publish a serve window from floors + holes (CC-48 / CC-49).
     #[allow(dead_code)] // wired by backfill / hole paths as they land
     pub(crate) fn derive_and_publish_window(
         &self,
@@ -300,6 +300,7 @@ impl StorageServer {
         column_floor: Slot,
         cgc: u64,
         holes: &[cc_store::meta::SlotRange],
+        current_slot: Slot,
     ) -> Result<cc_store::meta::ServeWindow, Status> {
         let engine = self.engine()?;
         let stored = cc_store::write_derived_serve_window(
@@ -308,6 +309,7 @@ impl StorageServer {
             column_floor,
             cgc,
             holes,
+            current_slot,
             false,
         )
         .map_err(store_status)?;

@@ -7,7 +7,9 @@
 //! four serve handlers only **read**.
 //!
 //! Pure [`compute_earliest_available_slot`] remains for the in-memory **cache
-//! floor** used by §5.5 fail-closed collapse (not the advertised atomic).
+//! floor** used by §5.5 fail-closed collapse (not the advertised atomic). The
+//! **advertised** value is storage's two-branch derivation (CC-49); this module
+//! no longer owns a Phase-2 `anchor`-clamped advertisement formula.
 //!
 //! # Seed (honesty)
 //!
@@ -21,14 +23,18 @@ use cc_types::primitives::Slot;
 /// Sentinel: no slots available (empty serve window).
 pub const EMPTY_WINDOW_SLOT: u64 = u64::MAX;
 
-/// Pure recompute of the earliest serveable slot over a contiguous head range.
+/// Pure recompute of the in-memory **cache floor** over a contiguous head range.
 ///
-/// Spec delta 5 / §9.6 (testable form):
+/// Used only for §5.5 fail-closed collapse when `WatchServeWindow` is stale —
+/// **not** the Status-advertised window (that is storage / CC-49).
+///
+/// Walks the contiguous complete suffix from `head` down to `walk_floor`, then
+/// clamps the result so it never sits below `anchor`:
 ///
 /// ```text
-/// earliest_available_slot = max(anchor_slot,
-///     oldest slot s such that for all t in [s, head]:
-///         slot t is complete)
+/// cache_floor = clamp_at_or_above_anchor(
+///     oldest slot s such that for all t in [s, head]: slot t is complete
+/// )
 /// ```
 ///
 /// Completeness is defined by the caller (block + all **custodied** columns, or
@@ -36,7 +42,7 @@ pub const EMPTY_WINDOW_SLOT: u64 = u64::MAX;
 /// and this returns `head + 1` (still clamped to `≥ anchor`).
 ///
 /// `walk_floor` caps how far back the walk may go (O(window depth), not O(head)):
-/// typically `max(anchor, head.saturating_sub(max_depth))`.
+/// typically the higher of `anchor` and `head.saturating_sub(max_depth)`.
 #[must_use]
 pub fn compute_earliest_available_slot(
     anchor: Slot,

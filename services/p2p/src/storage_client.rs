@@ -58,6 +58,11 @@ pub struct StorageClientConfig {
     /// How long to keep the last advertised window after disconnect before
     /// collapsing to the cache floor (`p2p.window_stale_grace`, default 60 s).
     pub window_stale_grace: Duration,
+    /// CC-49 /7 — when true, advertise storage's derived `earliest_available_slot`
+    /// (including branch 1 / block floor). When false, force a branch-2-style
+    /// `max(block_floor, column_floor)` advertisement. Default **true**
+    /// (ship-as-designed-pending-OQ-1 while OQ-1 is NOT_RUN).
+    pub advertise_block_floor: bool,
 }
 
 impl Default for StorageClientConfig {
@@ -68,8 +73,29 @@ impl Default for StorageClientConfig {
             backoff_cap: STORAGE_BACKOFF_CAP,
             connect_timeout: STORAGE_CONNECT_TIMEOUT,
             window_stale_grace: DEFAULT_WINDOW_STALE_GRACE,
+            advertise_block_floor: true,
         }
     }
+}
+
+/// Select the slot written into the Status AtomicU64 from a stream message.
+///
+/// When [`StorageClientConfig::advertise_block_floor`] is true the store's
+/// derived value is used. When false (OQ-1 "ship behind flag" outcome) a
+/// branch-2-style floor is forced: `max(block_floor, column_floor)`, raised
+/// to the store's eas when holes already pushed it higher.
+#[must_use]
+pub fn advertised_slot_from_serve_window(
+    earliest_available_slot: u64,
+    block_floor: u64,
+    column_floor: u64,
+    advertise_block_floor: bool,
+) -> Slot {
+    if advertise_block_floor {
+        return Slot::new(earliest_available_slot);
+    }
+    let branch2_base = block_floor.max(column_floor);
+    Slot::new(earliest_available_slot.max(branch2_base))
 }
 
 /// Shared handle: available flag + serve window + cache floor for collapse.
@@ -481,10 +507,15 @@ async fn run_watch_once(
                     Some(Ok(msg)) => {
                         // Sole production write site for earliest_available_slot
                         // from storage (CC-48 / §5.3). Also reverses collapse.
-                        handle.apply_stream_window(
-                            Slot::new(msg.earliest_available_slot),
-                            metrics,
+                        // CC-49 /7: optional branch-2-style override when
+                        // `p2p.advertise_block_floor = false`.
+                        let slot = advertised_slot_from_serve_window(
+                            msg.earliest_available_slot,
+                            msg.block_floor,
+                            msg.column_floor,
+                            cfg.advertise_block_floor,
                         );
+                        handle.apply_stream_window(slot, metrics);
                         handle.set_available(true);
                         saw_message = true;
                     }
@@ -743,5 +774,31 @@ mod tests {
             call_sites, 2,
             "expected stream apply + collapse only, got {call_sites}"
         );
+    }
+
+    /// CC-49 /7 — `p2p.advertise_block_floor` gates branch-1 advertisement.
+    #[test]
+    fn advertise_block_floor_gate_selects_branch_style() {
+        // Full-window shape: B deep, C near sidecar floor, store eas = B (branch 1).
+        let b = 1_000u64;
+        let c = 500_000u64;
+        let eas = b;
+        assert_eq!(
+            advertised_slot_from_serve_window(eas, b, c, true).as_u64(),
+            eas,
+            "true → ship store's branch-1 answer"
+        );
+        assert_eq!(
+            advertised_slot_from_serve_window(eas, b, c, false).as_u64(),
+            c,
+            "false → force max(B, C) branch-2 style"
+        );
+        // Holes already raised eas above max(B, C): keep the higher floor.
+        assert_eq!(
+            advertised_slot_from_serve_window(600_000, b, c, false).as_u64(),
+            600_000
+        );
+        // Default config is true (OQ-1 NOT_RUN → ship-as-designed-pending-OQ-1).
+        assert!(StorageClientConfig::default().advertise_block_floor);
     }
 }

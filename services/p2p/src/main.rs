@@ -169,10 +169,22 @@ struct P2pConfig {
     /// `WatchServeWindow` disconnect before collapsing to the cache floor.
     #[serde(default = "default_window_stale_grace_secs")]
     window_stale_grace_secs: u64,
+    /// CC-49 /7 — when true (default), Status advertises storage's branch-1
+    /// block floor. When false, p2p forces a branch-2-style
+    /// `max(block_floor, column_floor)` advertisement while the store still
+    /// holds the full window. Default **true** while OQ-1 is NOT_RUN
+    /// (ship-as-designed-pending-OQ-1; see `docs/phase-4-soak.md` § OQ-1).
+    #[serde(default = "default_advertise_block_floor")]
+    advertise_block_floor: bool,
 }
 
 fn default_window_stale_grace_secs() -> u64 {
     60
+}
+
+fn default_advertise_block_floor() -> bool {
+    // OQ-1 NOT_RUN → ship as designed (pending foreign-peer confirmation).
+    true
 }
 
 fn default_enable_discovery() -> bool {
@@ -424,6 +436,7 @@ impl P2pConfig {
             storage_uri,
             enable_storage_client,
             window_stale_grace: Duration::from_secs(self.window_stale_grace_secs),
+            advertise_block_floor: self.advertise_block_floor,
             heartbeat_interval: Duration::from_secs(1),
             test_swarm_panic: false,
             reject_low_cgc_peers: self.reject_low_cgc_peers,

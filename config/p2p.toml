@@ -22,6 +22,12 @@ reject_low_cgc_peers = false
 # disconnect, then fail-closed collapse to the in-memory cache floor.
 # Root-level key (not under [peers] or [clock] — those tables have typed fields).
 window_stale_grace_secs = 60
+# CC-49 /7 shipping gate (OQ-1). When true, Status advertises storage's
+# two-branch answer including branch-1 block floor. When false, forces a
+# branch-2-style max(block_floor, column_floor) advertisement while the store
+# still holds the full window. Default true = ship-as-designed-pending-OQ-1
+# (see docs/phase-4-soak.md ## OQ-1; do not invent foreign-peer rows).
+advertise_block_floor = true
 
 [clock]
 # Until the first ChainView (CC-27a), slot clock is config-sourced.

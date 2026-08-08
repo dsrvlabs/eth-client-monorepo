@@ -229,12 +229,26 @@ pub fn validate_root_list_len(len: usize) -> Result<(), BlockServeError> {
 // ── Window / epoch honesty (§7.5) ───────────────────────────────────────────
 
 /// Spec `compute_min_epochs_for_block_requests()` — returns the config constant.
+///
+/// Phase 4 authority for the arithmetic is `cc_store::window` (CC-4A). This
+/// Phase 2 constant keeps the inlined form so production code never hard-codes
+/// the decimal `33024` (CC-4A /4).
 #[must_use]
 pub const fn compute_min_epochs_for_block_requests() -> u64 {
     MIN_EPOCHS_FOR_BLOCK_REQUESTS
 }
 
 /// `minimum_request_epoch(blocks) = max(current − min_epochs, FULU_FORK_EPOCH)`.
+///
+/// **CC-4A /5 (D-5) — `FULU_FORK_EPOCH` clamp retained as a
+/// simplification licensed by D1 (spec delta 3).** The consensus-specs p2p
+/// interface clamps ByRange / ByRoot historical floors at `GENESIS_EPOCH` and
+/// clamps ByHead at nothing; the Phase 2 (`CC-23c`) floor of `FULU_FORK_EPOCH`
+/// on the *block* path is **not** spec-derived. It is kept deliberately:
+/// today's Hoodi `FULU_FORK_EPOCH` (50 688) only rises, and past that epoch the
+/// clamp agrees with `current − compute_min_epochs_for_block_requests()` once
+/// `current ≥ FULU + min_epochs`. Silently keeping an unexplained clamp is
+/// what this comment (and the matching unit test) prevents.
 #[must_use]
 pub fn minimum_request_epoch_blocks(current_epoch: Epoch, fulu_fork_epoch: Epoch) -> Epoch {
     let floor = current_epoch
@@ -1036,5 +1050,39 @@ mod tests {
         );
         // No second store type in production code.
         assert!(!prod.contains("HashMap<Slot"));
+    }
+
+    /// CC-4A /5 (D-5) — FULU clamp retained; agrees with CC-4A floor at today's epoch.
+    ///
+    /// Spec delta 3 would clamp at GENESIS_EPOCH only. Our retained
+    /// `FULU_FORK_EPOCH` floor is a *simplification licensed by D1*. At a
+    /// "today" epoch well past `FULU + min_epochs` the clamp does not bind, so
+    /// `minimum_request_epoch_blocks` equals `current − compute_min_epochs…`
+    /// (the CC-4A computed floor offset).
+    #[test]
+    fn fulu_clamp_retained_agrees_with_cc4a_floor_at_todays_epoch() {
+        let cfg = hoodi_cfg();
+        let fulu = cfg.fulu_fork_epoch;
+        let min_epochs = compute_min_epochs_for_block_requests();
+        // "Today": comfortably past FULU + min_epochs so the FULU arm of max() is idle.
+        let today = Epoch::new(fulu.as_u64().saturating_add(min_epochs).saturating_add(10_000));
+        let pure = today.as_u64().saturating_sub(min_epochs);
+        let clamped = minimum_request_epoch_blocks(today, fulu);
+        assert_eq!(
+            clamped.as_u64(),
+            pure,
+            "at today's epoch the FULU clamp must agree with CC-4A's computed offset"
+        );
+        // Clamp still present in production (not silently removed).
+        let src = include_str!("blocks.rs");
+        let prod = src.split("mod tests").next().expect("tests module");
+        assert!(
+            prod.contains("FULU_FORK_EPOCH")
+                && prod.contains("simplification licensed by D1"),
+            "must retain the clamp with the D1 licensing comment"
+        );
+        // And when current is exactly FULU, the floor is FULU (clamp binds).
+        let at_fulu = minimum_request_epoch_blocks(fulu, fulu);
+        assert_eq!(at_fulu, fulu);
     }
 }

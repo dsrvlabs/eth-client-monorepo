@@ -98,13 +98,17 @@ cargo test -p cc-serve-probe --locked --test negative_stub \
 
 ### §5.6 outcome sentence
 
-**Not selected — OQ-1 NOT_RUN.** Until foreign-peer rows exist, the M4.1 branch
-decision among (1) ship as designed / (2) ship behind
-`p2p.advertise_block_floor = false` / (3) ship as designed with the observed
-distribution recorded **cannot** be made from live data. Default engineering
-posture remains: store holds the full window under every outcome; the advertise
-boolean stays open until OQ-1 is filled. **This line is residual debt for the
-next operator with Hoodi dial access.**
+**Selected (pending foreign confirmation): (1) ship as designed — pending OQ-1.**
+
+OQ-1 remains **`NOT_RUN`** (no foreign-peer multiaddrs; **do not invent peer
+rows**). Under that residual, **CC-49** ships the two-branch flip with
+`p2p.advertise_block_floor = true` (config default and `config/p2p.toml`). The
+store holds the full window under every outcome; the boolean is the only switch
+if a later operator run selects (2) ship behind `false` or (3) ship as designed
+with the observed distribution. **Residual debt:** re-run
+`bin/serve-probe` against 5–10 Hoodi peers × Lighthouse / Prysm / Nimbus / Teku
+/ Grandine when dial access exists, fill the peer table above, and reaffirm or
+revise this outcome from live data.
 
 ### Command shape for the later fill-in
 
