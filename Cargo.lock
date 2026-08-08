@@ -1285,6 +1285,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cc-store-tool"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cc-store",
+ "clap",
+ "hex",
+]
+
+[[package]]
 name = "cc-types"
 version = "0.1.0"
 dependencies = [

@@ -22,6 +22,8 @@ members = [
   "crates/store",
   "bin/store-bench",
   "bin/serve-probe",
+  # CC-4J offline store tool: 19 → 20.
+  "bin/cc-store",
 ]
 
 [workspace.package]

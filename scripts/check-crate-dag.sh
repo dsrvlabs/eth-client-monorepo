@@ -128,6 +128,8 @@ allowed_deps() {
     cc-store-bench)       echo "cc-store" ;;
     cc-serve-probe)       echo "cc-libp2p cc-types cc-config" ;;
     cc-storage)           echo "cc-bootstrap cc-config cc-proto cc-types cc-state-transition cc-store" ;;
+    # CC-4J: offline tool; append-only (Amendment 8) — edge set is cc-store only.
+    cc-store-tool)        echo "cc-store" ;;
     *)
       echo "error: unknown workspace member: $1" >&2
       return 1

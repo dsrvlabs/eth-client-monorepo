@@ -7,12 +7,50 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use redb::{Database, ReadableDatabase, TableDefinition, TableHandle};
+use redb::{
+    Database, DatabaseError, ReadOnlyDatabase, ReadableDatabase, TableDefinition, TableHandle,
+};
 
 use super::{
     Durability, EngineOptions, MAX_BATCH_OPS, MAX_INTERNED_TABLE_NAMES, MAX_RANGE_BYTES,
     MAX_RANGE_ENTRIES, StoreError, db_file_path,
 };
+
+/// Map redb open errors, naming the live-lock case for offline tooling (CC-4J).
+fn map_database_error(err: DatabaseError) -> StoreError {
+    match err {
+        DatabaseError::DatabaseAlreadyOpen => StoreError::DatabaseLocked,
+        other => StoreError::engine(other),
+    }
+}
+
+/// Internal redb handle: read-write exclusive or read-only shared readers.
+enum DbInner {
+    ReadWrite(Database),
+    ReadOnly(ReadOnlyDatabase),
+}
+
+impl std::fmt::Debug for DbInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReadWrite(_) => f.write_str("DbInner::ReadWrite(..)"),
+            Self::ReadOnly(_) => f.write_str("DbInner::ReadOnly(..)"),
+        }
+    }
+}
+
+impl DbInner {
+    fn begin_read(&self) -> Result<redb::ReadTransaction, StoreError> {
+        match self {
+            Self::ReadWrite(db) => db.begin_read().map_err(StoreError::engine),
+            Self::ReadOnly(db) => db.begin_read().map_err(StoreError::engine),
+        }
+    }
+
+    const fn is_read_only(&self) -> bool {
+        matches!(self, Self::ReadOnly(_))
+    }
+}
 
 type NameIntern = Arc<Mutex<HashMap<String, &'static str>>>;
 
@@ -157,9 +195,13 @@ pub struct BatchPutsDeletes {
 /// mutex is held **only** around those begin calls (and for the full `compact`,
 /// which needs `&mut Database`). Concurrent `read()` during `commit()`/fsync is
 /// therefore allowed (Architecture §8.1 #4 / review F1).
+///
+/// [`Engine::open_read_only`] uses redb's shared read lock so offline tools
+/// (`bin/cc-store`) never take the writer lock; a live node still yields
+/// [`StoreError::DatabaseLocked`].
 #[derive(Debug)]
 pub struct Engine {
-    db: Mutex<Database>,
+    db: Mutex<DbInner>,
     path: PathBuf,
     durability: Durability,
     names: NameIntern,
@@ -178,23 +220,80 @@ impl Engine {
             validate_data_dir(path)?;
         }
         let file = db_file_path(path);
-        // Refuse to open if store.redb is a symlink.
-        if file.exists() {
-            let meta = std::fs::symlink_metadata(&file)?;
-            if meta.file_type().is_symlink() {
-                return Err(StoreError::Config(format!(
-                    "refusing to open symlink store file {}",
-                    file.display()
-                )));
-            }
-        }
-        let db = Database::create(&file).map_err(StoreError::engine)?;
+        refuse_symlink_store(&file)?;
+        let db = Database::create(&file).map_err(map_database_error)?;
         Ok(Self {
-            db: Mutex::new(db),
+            db: Mutex::new(DbInner::ReadWrite(db)),
             path: file,
             durability: opts.durability,
             names: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// Open an **existing** store for read-write without creating a new file.
+    ///
+    /// Used by on-demand compaction (`bin/cc-store compact`). Refuses a missing
+    /// `store.redb` and maps a live writer lock to [`StoreError::DatabaseLocked`].
+    pub fn open_existing(path: &Path, opts: EngineOptions) -> Result<Self, StoreError> {
+        validate_data_dir(path)?;
+        if !path.exists() {
+            return Err(StoreError::Config(format!(
+                "data directory does not exist: {}",
+                path.display()
+            )));
+        }
+        let file = db_file_path(path);
+        if !file.exists() {
+            return Err(StoreError::Config(format!(
+                "store file missing: {}",
+                file.display()
+            )));
+        }
+        refuse_symlink_store(&file)?;
+        let db = Database::builder().open(&file).map_err(map_database_error)?;
+        Ok(Self {
+            db: Mutex::new(DbInner::ReadWrite(db)),
+            path: file,
+            durability: opts.durability,
+            names: Arc::new(Mutex::new(HashMap::new())),
+        })
+    }
+
+    /// Open an existing store **read-only** (redb shared lock).
+    ///
+    /// Does not create directories or files. Concurrent with other read-only
+    /// openers; refuses if a writer holds the store ([`StoreError::DatabaseLocked`]).
+    pub fn open_read_only(path: &Path) -> Result<Self, StoreError> {
+        validate_data_dir(path)?;
+        if !path.exists() {
+            return Err(StoreError::Config(format!(
+                "data directory does not exist: {}",
+                path.display()
+            )));
+        }
+        let file = db_file_path(path);
+        if !file.exists() {
+            return Err(StoreError::Config(format!(
+                "store file missing: {}",
+                file.display()
+            )));
+        }
+        refuse_symlink_store(&file)?;
+        let db = ReadOnlyDatabase::open(&file).map_err(map_database_error)?;
+        Ok(Self {
+            db: Mutex::new(DbInner::ReadOnly(db)),
+            path: file,
+            durability: Durability::Immediate,
+            names: Arc::new(Mutex::new(HashMap::new())),
+        })
+    }
+
+    /// Whether this engine was opened with [`Self::open_read_only`].
+    pub fn is_read_only(&self) -> bool {
+        self.db
+            .lock()
+            .map(|g| g.is_read_only())
+            .unwrap_or(false)
     }
 
     /// Durability setting this engine was opened with.
@@ -214,14 +313,17 @@ impl Engine {
         Ok(table_def(intern_name(&self.names, name)?))
     }
 
+    fn lock_db(&self) -> Result<std::sync::MutexGuard<'_, DbInner>, StoreError> {
+        self.db
+            .lock()
+            .map_err(|_| StoreError::engine("engine lock poisoned"))
+    }
+
     pub fn read(&self) -> Result<ReadTxn, StoreError> {
         // Lock only for begin_read; ReadTransaction is self-contained (Arc).
         let txn = {
-            let db = self
-                .db
-                .lock()
-                .map_err(|_| StoreError::engine("engine lock poisoned"))?;
-            db.begin_read().map_err(StoreError::engine)?
+            let db = self.lock_db()?;
+            db.begin_read()?
         };
         Ok(ReadTxn {
             txn,
@@ -245,11 +347,15 @@ impl Engine {
         // Lock only for begin_write; drop before ops + fsync so concurrent
         // begin_read can proceed (F1 / Architecture §8.1 #4).
         let mut txn = {
-            let db = self
-                .db
-                .lock()
-                .map_err(|_| StoreError::engine("engine lock poisoned"))?;
-            db.begin_write().map_err(StoreError::engine)?
+            let db = self.lock_db()?;
+            match &*db {
+                DbInner::ReadOnly(_) => {
+                    return Err(StoreError::Config(
+                        "read-only engine refuses writes".into(),
+                    ));
+                }
+                DbInner::ReadWrite(rw) => rw.begin_write().map_err(StoreError::engine)?,
+            }
         };
         apply_durability(&mut txn, self.durability)?;
 
@@ -281,11 +387,8 @@ impl Engine {
 
     pub fn table_names(&self) -> Result<Vec<String>, StoreError> {
         let txn = {
-            let db = self
-                .db
-                .lock()
-                .map_err(|_| StoreError::engine("engine lock poisoned"))?;
-            db.begin_read().map_err(StoreError::engine)?
+            let db = self.lock_db()?;
+            db.begin_read()?
         };
         let mut names = Vec::new();
         for handle in txn.list_tables().map_err(StoreError::engine)? {
@@ -298,11 +401,15 @@ impl Engine {
     pub fn drop_table(&self, name: &str) -> Result<(), StoreError> {
         let def = self.def(name)?;
         let mut txn = {
-            let db = self
-                .db
-                .lock()
-                .map_err(|_| StoreError::engine("engine lock poisoned"))?;
-            db.begin_write().map_err(StoreError::engine)?
+            let db = self.lock_db()?;
+            match &*db {
+                DbInner::ReadOnly(_) => {
+                    return Err(StoreError::Config(
+                        "read-only engine refuses drop_table".into(),
+                    ));
+                }
+                DbInner::ReadWrite(rw) => rw.begin_write().map_err(StoreError::engine)?,
+            }
         };
         apply_durability(&mut txn, self.durability)?;
         let _existed = txn.delete_table(def).map_err(StoreError::engine)?;
@@ -316,17 +423,33 @@ impl Engine {
 
     pub fn compact(&self) -> Result<bool, StoreError> {
         // compact needs &mut Database — hold the mutex for the whole call.
-        let mut db = self
-            .db
-            .lock()
-            .map_err(|_| StoreError::engine("engine lock poisoned"))?;
-        db.compact().map_err(StoreError::engine)
+        let mut guard = self.lock_db()?;
+        match &mut *guard {
+            DbInner::ReadOnly(_) => Err(StoreError::Config(
+                "read-only engine refuses compact".into(),
+            )),
+            DbInner::ReadWrite(db) => db.compact().map_err(StoreError::engine),
+        }
     }
 
     /// Path of the on-disk database file.
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// Refuse a symlink at `store.redb` (path policy / medium 7).
+fn refuse_symlink_store(file: &Path) -> Result<(), StoreError> {
+    if file.exists() {
+        let meta = std::fs::symlink_metadata(file)?;
+        if meta.file_type().is_symlink() {
+            return Err(StoreError::Config(format!(
+                "refusing to open symlink store file {}",
+                file.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Data directory policy: must be a real directory, never a symlink (medium 7).
@@ -569,6 +692,59 @@ mod tests {
         eng.commit(b).unwrap();
         assert!(eng.file_len().unwrap() > 0);
         let _ = eng.compact().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_read_only_reads_and_refuses_writes() {
+        let dir = tmp_dir("ro");
+        {
+            let eng = Engine::open(&dir, EngineOptions::default()).unwrap();
+            let mut b = eng.batch();
+            b.put("t", b"k", b"v");
+            eng.commit(b).unwrap();
+        }
+        let ro = Engine::open_read_only(&dir).unwrap();
+        assert!(ro.is_read_only());
+        assert_eq!(
+            ro.read().unwrap().get("t", b"k").unwrap().as_deref(),
+            Some(&b"v"[..])
+        );
+        let mut b = ro.batch();
+        b.put("t", b"k2", b"v2");
+        let err = ro.commit(b).unwrap_err();
+        assert!(
+            matches!(err, StoreError::Config(_)),
+            "read-only must refuse writes: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_read_only_refuses_live_writer_lock() {
+        let dir = tmp_dir("ro-locked");
+        let writer = Engine::open(&dir, EngineOptions::default()).unwrap();
+        let mut b = writer.batch();
+        b.put("t", b"k", b"v");
+        writer.commit(b).unwrap();
+        let err = Engine::open_read_only(&dir).unwrap_err();
+        assert!(
+            matches!(err, StoreError::DatabaseLocked),
+            "expected DatabaseLocked, got {err:?}"
+        );
+        drop(writer);
+        // After writer drops, read-only succeeds.
+        let ro = Engine::open_read_only(&dir).unwrap();
+        assert!(ro.is_read_only());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_existing_missing_file_refused() {
+        let dir = tmp_dir("existing-missing");
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = Engine::open_existing(&dir, EngineOptions::default()).unwrap_err();
+        assert!(matches!(err, StoreError::Config(_)), "got {err:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -144,6 +144,13 @@ pub enum StoreError {
         /// Table name where the collision was observed.
         table: String,
     },
+    /// Another process holds the redb file lock (CC-4J offline tool / live node).
+    ///
+    /// Raised when opening for read or write while a live writer holds the store.
+    /// Named so `bin/cc-store verify` can refuse to race a running node without
+    /// string-matching engine messages.
+    #[error("store database locked: another process holds the file lock")]
+    DatabaseLocked,
 }
 
 impl StoreError {
