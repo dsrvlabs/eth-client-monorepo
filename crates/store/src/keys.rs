@@ -1,0 +1,222 @@
+//! Big-endian fixed-width key codecs and shard arithmetic (Architecture §2.1 / §2.4).
+//!
+//! Byte order **is** key order: `encode(a) < encode(b) ⟺ a < b`. Values stay opaque.
+
+use cc_types::{Root, Slot};
+
+/// Spec mainnet slots per epoch (also minimal for these codecs' arithmetic unit).
+pub const SLOTS_PER_EPOCH: u64 = 32;
+
+/// Column shard width in epochs (Deviation 1 / ADR P4-10).
+pub const COLUMN_SHARD_EPOCHS: u64 = 32;
+
+/// Block shard width in epochs (Deviation 1 / ADR P4-10).
+pub const BLOCK_SHARD_EPOCHS: u64 = 256;
+
+/// Epoch of a slot (`slot // SLOTS_PER_EPOCH`).
+pub fn epoch_of(slot: Slot) -> u64 {
+    slot.as_u64() / SLOTS_PER_EPOCH
+}
+
+/// Column-class shard id for `slot` (32-epoch shards).
+pub fn column_shard_id(slot: Slot) -> u64 {
+    epoch_of(slot) / COLUMN_SHARD_EPOCHS
+}
+
+/// Block-class shard id for `slot` (256-epoch shards).
+pub fn block_shard_id(slot: Slot) -> u64 {
+    epoch_of(slot) / BLOCK_SHARD_EPOCHS
+}
+
+/// First slot of column shard `id`.
+pub fn column_shard_start_slot(shard_id: u64) -> Slot {
+    Slot::new(
+        shard_id
+            .saturating_mul(COLUMN_SHARD_EPOCHS)
+            .saturating_mul(SLOTS_PER_EPOCH),
+    )
+}
+
+/// First slot of block shard `id`.
+pub fn block_shard_start_slot(shard_id: u64) -> Slot {
+    Slot::new(
+        shard_id
+            .saturating_mul(BLOCK_SHARD_EPOCHS)
+            .saturating_mul(SLOTS_PER_EPOCH),
+    )
+}
+
+/// Zero-padded shard table suffix (`columns_00042`).
+pub fn format_shard_suffix(shard_id: u64) -> String {
+    format!("{shard_id:05}")
+}
+
+/// `columns_{shard}` table name.
+pub fn columns_shard_table(shard_id: u64) -> String {
+    format!("columns_{}", format_shard_suffix(shard_id))
+}
+
+/// `blocks_{shard}` table name.
+pub fn blocks_shard_table(shard_id: u64) -> String {
+    format!("blocks_{}", format_shard_suffix(shard_id))
+}
+
+// ---------------------------------------------------------------------------
+// Encodings — fixed-width BE concatenations
+// ---------------------------------------------------------------------------
+
+/// Hot block key: `slot:u64be ‖ root:32` (40 B).
+pub fn encode_hot_block_key(slot: Slot, root: &Root) -> [u8; 40] {
+    let mut out = [0u8; 40];
+    out[..8].copy_from_slice(&slot.as_u64().to_be_bytes());
+    out[8..].copy_from_slice(root.as_slice());
+    out
+}
+
+/// Cold block key: `slot:u64be` (8 B).
+pub fn encode_cold_block_key(slot: Slot) -> [u8; 8] {
+    slot.as_u64().to_be_bytes()
+}
+
+/// Hot column key: `slot:u64be ‖ root:32 ‖ idx:u16be` (42 B).
+pub fn encode_hot_column_key(slot: Slot, root: &Root, index: u16) -> [u8; 42] {
+    let mut out = [0u8; 42];
+    out[..8].copy_from_slice(&slot.as_u64().to_be_bytes());
+    out[8..40].copy_from_slice(root.as_slice());
+    out[40..].copy_from_slice(&index.to_be_bytes());
+    out
+}
+
+/// Cold column key: `slot:u64be ‖ idx:u16be` (10 B).
+pub fn encode_cold_column_key(slot: Slot, index: u16) -> [u8; 10] {
+    let mut out = [0u8; 10];
+    out[..8].copy_from_slice(&slot.as_u64().to_be_bytes());
+    out[8..].copy_from_slice(&index.to_be_bytes());
+    out
+}
+
+/// Flat-layout key with shard prefix: `shard:u16be ‖ slot:u64be ‖ idx:u16be` (12 B).
+///
+/// Used when shards are key prefixes inside one table (Architecture §2.4 fallback).
+pub fn encode_flat_column_key(shard_id: u16, slot: Slot, index: u16) -> [u8; 12] {
+    let mut out = [0u8; 12];
+    out[..2].copy_from_slice(&shard_id.to_be_bytes());
+    out[2..10].copy_from_slice(&slot.as_u64().to_be_bytes());
+    out[10..].copy_from_slice(&index.to_be_bytes());
+    out
+}
+
+/// Exclusive end key for all cold columns at `slot` (prefix successor).
+pub fn cold_column_slot_end(slot: Slot) -> [u8; 10] {
+    // Next slot's zero index — half-open range over this slot's columns.
+    encode_cold_column_key(Slot::new(slot.as_u64().saturating_add(1)), 0)
+}
+
+/// Half-open range covering every cold column key in `[start_slot, end_slot)`.
+pub fn cold_column_slot_range(start_slot: Slot, end_slot: Slot) -> ([u8; 10], [u8; 10]) {
+    (
+        encode_cold_column_key(start_slot, 0),
+        encode_cold_column_key(end_slot, 0),
+    )
+}
+
+/// Half-open range for one epoch of cold columns (32 slots).
+pub fn cold_column_epoch_range(epoch: u64) -> ([u8; 10], [u8; 10]) {
+    let start = Slot::new(epoch.saturating_mul(SLOTS_PER_EPOCH));
+    let end = Slot::new(epoch.saturating_add(1).saturating_mul(SLOTS_PER_EPOCH));
+    cold_column_slot_range(start, end)
+}
+
+/// Half-open range for one epoch of cold blocks.
+pub fn cold_block_epoch_range(epoch: u64) -> ([u8; 8], [u8; 8]) {
+    let start = epoch.saturating_mul(SLOTS_PER_EPOCH);
+    let end = epoch.saturating_add(1).saturating_mul(SLOTS_PER_EPOCH);
+    (start.to_be_bytes(), end.to_be_bytes())
+}
+
+/// Ordering key used by the §2.1 property test: `(slot, root, index)` as cold/hot composite.
+///
+/// Encodes the hot column key so the property covers all three components.
+pub fn encode_order_key(slot: Slot, root: &Root, index: u16) -> [u8; 42] {
+    encode_hot_column_key(slot, root, index)
+}
+
+/// Lexicographic compare of the triple as the schema orders it.
+pub fn order_triple(a: (Slot, Root, u16), b: (Slot, Root, u16)) -> std::cmp::Ordering {
+    a.0.as_u64()
+        .cmp(&b.0.as_u64())
+        .then_with(|| a.1.as_slice().cmp(b.1.as_slice()))
+        .then_with(|| a.2.cmp(&b.2))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn column_shard_boundaries() {
+        // slot 0 → shard 0
+        assert_eq!(column_shard_id(Slot::new(0)), 0);
+        // last slot of shard 0: epochs 0..31 → slots 0..1023
+        let last_of_0 = Slot::new(COLUMN_SHARD_EPOCHS * SLOTS_PER_EPOCH - 1);
+        assert_eq!(column_shard_id(last_of_0), 0);
+        // first slot of shard 1
+        let first_of_1 = Slot::new(COLUMN_SHARD_EPOCHS * SLOTS_PER_EPOCH);
+        assert_eq!(column_shard_id(first_of_1), 1);
+        // last of shard n, first of n+1 for n=3
+        let n = 3u64;
+        let last_n = Slot::new((n + 1) * COLUMN_SHARD_EPOCHS * SLOTS_PER_EPOCH - 1);
+        let first_np1 = Slot::new((n + 1) * COLUMN_SHARD_EPOCHS * SLOTS_PER_EPOCH);
+        assert_eq!(column_shard_id(last_n), n);
+        assert_eq!(column_shard_id(first_np1), n + 1);
+        assert_eq!(column_shard_start_slot(n + 1).as_u64(), first_np1.as_u64());
+    }
+
+    #[test]
+    fn block_shard_boundaries() {
+        assert_eq!(block_shard_id(Slot::new(0)), 0);
+        let last_of_0 = Slot::new(BLOCK_SHARD_EPOCHS * SLOTS_PER_EPOCH - 1);
+        assert_eq!(block_shard_id(last_of_0), 0);
+        let first_of_1 = Slot::new(BLOCK_SHARD_EPOCHS * SLOTS_PER_EPOCH);
+        assert_eq!(block_shard_id(first_of_1), 1);
+        let n = 2u64;
+        let last_n = Slot::new((n + 1) * BLOCK_SHARD_EPOCHS * SLOTS_PER_EPOCH - 1);
+        let first_np1 = Slot::new((n + 1) * BLOCK_SHARD_EPOCHS * SLOTS_PER_EPOCH);
+        assert_eq!(block_shard_id(last_n), n);
+        assert_eq!(block_shard_id(first_np1), n + 1);
+    }
+
+    #[test]
+    fn cold_column_keys_order_by_slot_then_index() {
+        let a = encode_cold_column_key(Slot::new(1), 0);
+        let b = encode_cold_column_key(Slot::new(1), 1);
+        let c = encode_cold_column_key(Slot::new(2), 0);
+        assert!(a < b);
+        assert!(b < c);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(10_000))]
+
+        #[test]
+        fn encode_order_is_triple_order(
+            s1 in 0u64..1_000_000,
+            s2 in 0u64..1_000_000,
+            r1 in prop::array::uniform32(any::<u8>()),
+            r2 in prop::array::uniform32(any::<u8>()),
+            i1 in any::<u16>(),
+            i2 in any::<u16>(),
+        ) {
+            let a = (Slot::new(s1), Root::from_array(r1), i1);
+            let b = (Slot::new(s2), Root::from_array(r2), i2);
+            let ea = encode_order_key(a.0, &a.1, a.2);
+            let eb = encode_order_key(b.0, &b.1, b.2);
+            let byte_ord = ea.as_slice().cmp(eb.as_slice());
+            let triple_ord = order_triple(a, b);
+            prop_assert_eq!(byte_ord, triple_ord);
+        }
+    }
+}

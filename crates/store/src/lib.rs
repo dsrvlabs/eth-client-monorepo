@@ -1,16 +1,26 @@
 //! Persistent store library (Phase 4 store DAG).
 //!
-//! Engine, codecs, and schema land in later issues. This crate depends only on
-//! `cc-types` in the workspace DAG permanently. Consensus container types must
-//! not appear here; the store holds opaque bytes under typed keys.
+//! - [`engine`] — twelve-method concrete `Engine` (CC-40b / Architecture §1.1)
+//! - [`keys`] — big-endian fixed-width codecs + shard arithmetic (§2.1 / §2.4)
+//! - [`buckets`] — histogram boundaries shared with metrics and `bin/store-bench` (CC-4Ca)
 //!
-//! [`buckets`] is Stream V's one file inside `crates/store` (CC-4Ca / Amendment 7):
-//! histogram boundary arrays shared by `services/storage` and `bin/store-bench`.
+//! Schema / meta records land in CC-40a on top of this seam. This crate depends
+//! only on `cc-types` among workspace members; consensus containers must not
+//! appear here (opaque bytes under typed keys).
 
 #![allow(missing_docs)]
 
 /// Histogram bucket boundaries for the storage metric surface (§10.2 / CC-4Ca).
 pub mod buckets;
+/// Concrete engine seam (CC-40/3: engine crate name only under `engine/`).
+pub mod engine;
+/// Key codecs and shard arithmetic.
+pub mod keys;
 
-/// Placeholder so dependents can touch the crate until the real API lands.
-pub const STUB_VERSION: u32 = 0;
+pub use engine::{
+    Batch, Durability, Engine, EngineOptions, MAX_BATCH_OPS, MAX_INTERNED_TABLE_NAMES,
+    MAX_RANGE_BYTES, MAX_RANGE_ENTRIES, RangeIter, ReadTxn, StoreError, db_file_path,
+};
+
+// Re-export key primitives so `bin/store-bench` (DAG: cc-store only) can build keys.
+pub use cc_types::{Epoch, Root, Slot};

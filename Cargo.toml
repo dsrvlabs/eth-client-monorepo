@@ -168,6 +168,8 @@ crc32fast = "1.5.0"
 
 # Phase 4 store DAG workspace admission — append-only path pin (engine line later).
 cc-store = { path = "crates/store" }
+# CC-40b engine seam (Architecture §1.1 / §8); V-4: crates.io max 4.x minor as of adoption.
+redb = "4.1.0"
 
 [profile.release]
 opt-level = 3

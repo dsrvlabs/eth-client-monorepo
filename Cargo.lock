@@ -1250,13 +1250,18 @@ name = "cc-store"
 version = "0.1.0"
 dependencies = [
  "cc-types",
+ "proptest",
+ "redb",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
 name = "cc-store-bench"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "cc-store",
+ "clap",
 ]
 
 [[package]]
@@ -5280,6 +5285,15 @@ dependencies = [
  "rustls-pki-types",
  "time",
  "yasna 0.5.2",
+]
+
+[[package]]
+name = "redb"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e925444704b5f17d32bf42f5b6e2df050bceebc3dcd6e71cc73dafe8092e839"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

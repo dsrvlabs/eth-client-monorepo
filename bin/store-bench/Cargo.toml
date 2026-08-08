@@ -17,3 +17,5 @@ workspace = true
 [dependencies]
 # Allowed workspace edge ceiling: {cc-store} (Phase 4 store DAG).
 cc-store = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }

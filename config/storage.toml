@@ -8,3 +8,8 @@ log_filter = "info"
 
 [peers]
 chain = "http://127.0.0.1:9001"
+
+# CC-40b durability knob (Architecture §8.4 / ADR P4-05).
+# immediate = 1PC+C (default); paranoid = Immediate + two-phase commit.
+# Override: CC_STORAGE_DURABILITY=paranoid (figment env layer in cc-config).
+durability = "immediate"

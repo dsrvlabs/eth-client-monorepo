@@ -11,5 +11,11 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-# Permanent DAG rule: cc-types only (Phase 4 store DAG / Architecture §1.1).
+# Permanent DAG rule: cc-types only among workspace crates (Phase 4 / Architecture §1.1).
 cc-types = { workspace = true }
+# Engine body (CC-40b). Named only under crates/store/src/engine/ (CC-40/3).
+redb = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
