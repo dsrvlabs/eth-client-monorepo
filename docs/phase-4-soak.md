@@ -8,6 +8,8 @@ issues append their own sections (full skeleton at M4.3 / `CC-4Cb`).
 | Section | Owner |
 |---|---|
 | `## OQ-1 — foreign-peer probe` | **CC-4B** |
+| `## Snapshot terms` | **CC-42** |
+| `## V-10 / Clause 3 (M4.2 entry)` | **CC-42** |
 
 ## OQ-1 — foreign-peer probe
 
@@ -102,3 +104,89 @@ cc-serve-probe \
 `--fork-digest` is required and never derived. Record `agent_version` from the
 probe's identify observation (JSON / stderr Status line), advertised
 `earliest_available_slot`, and block/column results just above it.
+
+## Snapshot terms
+
+**Owner:** CC-42  
+**Date:** 2026-08-08  
+**Machine:** Apple M4 Pro, 24 GB RAM, macOS aarch64 (dev machine)  
+**Metric families:** `cc_storage_snapshot_seconds{phase=replay|serialize|write|load}`,
+`cc_storage_snapshot_bytes`, `cc_storage_snapshot_ring_depth`,
+`cc_storage_replay_divergence_total`  
+**Bucket boundary:** `cc_storage_snapshot_seconds` has an exact **5.0** boundary
+(§10.2) so the cadence conditional is a count, not an interpolation.
+
+### Measured BeaconState size (CC-42 /4)
+
+| Field | Value |
+|---|---|
+| Source | Hoodi fixture cache `~/.cache/cc-hoodi-fixtures/3649472/beacon_state.ssz` (CC-10b pin) |
+| Slot | **3649472** |
+| **Byte count (uncompressed SSZ)** | **205 205 311** (~195.7 MiB) |
+| **Validator-set size** | **1 455 439** |
+| Compression | **none** (ADR P4-14) — stored length equals SSZ length |
+
+The design does **not** depend on a 150–200 MB estimate; the numbers above are
+what the cadence and disk model use from this measurement.
+
+### Three terms measured separately (CC-42 /3 / OQ-P4-4)
+
+| Term | Phase label | What | Measured | Notes |
+|---|---|---|---|---|
+| **(a)** | `replay` | Epoch-transition time during storage own-replay | **605.29 ms / epoch** (mean wall) | Reference: Phase 1 mid-gate mean wall. Own-replay now runs real `state_transition` / `process_slots` (`NoVerification` + always-Valid EL stub). Continuous-chain `phase=replay` samples accumulate on live write-behind. |
+| **(b)** | `serialize` + `write` | SSZ serialize + P2 write | **serialize 0.053 s** (Hoodi state); write = one P2 put+evict | Unit criterion CC-42/2: P0 commit p99 during **8 MiB** P2 snapshot writes within 10 % of baseline (writer P0-priority). **Residual:** full ~200 MB Hoodi P2 write wall is soak-only (not the 10 % commit criterion). |
+| **(c)** | `load` | SSZ deserialize + tree-hash-cache rebuild | **2.97 s** (warm) / **4.80 s** (cold first sample) | Both ≤ **5.0 s**. Command: `cargo test -p cc-storage --bins term_c_hoodi -- --nocapture` |
+
+### Cadence conditional (executed in this issue)
+
+| Check | Value |
+|---|---|
+| Term (c) vs 5.0 s boundary | **4.80 s max observed ≤ 5.0** |
+| Decision | **Keep `storage.snapshot_epochs = 32`** |
+| Fallback (if term (c) > 5.0) | Drop to **16** and re-derive CC-45 /6 — **not taken** |
+
+`OQ-P4-4` is closed by the term-(c) measurement above.
+
+### Ring and divergence (unit-level)
+
+| Check | Result |
+|---|---|
+| Fifth snapshot evicts oldest; `cc_storage_snapshot_ring_depth` stays 4 | **PASS** (`cc-store` + `cc-storage` ring tests) |
+| Divergence guard: corrupt expected root → fatal + both roots + counter +1 | **PASS** (`replay::tests::divergence_guard_fatal_logs_and_increments_exactly_one`) |
+| Positive path counter at 0 | **PASS** (`replay::tests::positive_snapshot_zero_divergence`) |
+| Commit p99 during snapshot within 10 % of baseline | **PASS** (micro-bench `commit_latency_during_snapshot_within_10_percent`) |
+| Uncompressed (`grep` production body free of flate/zstd/snap) | **PASS** |
+
+### Config
+
+```text
+storage.snapshot_epochs = 32
+storage.snapshot_ring   = 4
+```
+
+## V-10 / Clause 3 (M4.2 entry)
+
+**Owner:** CC-42  
+**Date:** 2026-08-08  
+
+### V-10 — mid-gate and CC-1H
+
+| Field | Value |
+|---|---|
+| Command | `cargo test -p cc-chain --test offline_replay cc1h_mid_gate_with_fork_choice_clone -- --nocapture` |
+| Recorded in | `docs/phase-1-soak.md` (mid-gate section) |
+| Result **today** (this worktree's recorded soak) | **PASS** — max epoch wall **774.81 ms** &lt; 1000 ms bar |
+| Hash share | mean **21.0 %**, max **25.2 %** |
+| **CC-1H promoted?** | **No** — mid gate closed without promoting hierarchical state |
+| Implication for CC-42 | Cheap diffing (`hdiff`) remains **unavailable** (§3.3); cadence is the only lever. `CC-4K` stays unscheduled. |
+
+### Phase 1 Clause 3 number (D-12)
+
+| Metric | Bar | Recorded | Status |
+|---|---|---|---|
+| Epoch p95 (mid-gate max wall used as the available number) | ≤ 1000 ms | **774.81 ms** max wall | **PASS** (from phase-1-soak; not re-run in this agent session as a fresh p95 histogram) |
+| `process_block` p95 | ≤ 400 ms | See phase-1-soak / engine-latency — mid-gate path is epoch ST + FC clone, not a live `process_block` p95 series | **Recorded reference; not re-instrumented here** |
+
+**D-12 inversion (stated):** Phase 1's **Clause 3 gates CC-42** (and CC-46); Phase 1's **Clause 2** (24 h soak) **does not**. A snapshot cadence chosen against an unmeasured baseline is a guess; a 24 h soak that a restart would void is circular with Phase 4's purpose.
+
+**What was used instead of a fresh Clause 3 NOT_RUN:** the committed mid-gate table in `docs/phase-1-soak.md` (max wall 774.81 ms) plus this issue's term-(c) measurement closing OQ-P4-4. If a later operator re-runs the mid-gate and sees a regression above 1000 ms, re-derive term 4 of §3.4 and re-check the 60 s restart bar margin.

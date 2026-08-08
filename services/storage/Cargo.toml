@@ -19,8 +19,10 @@ anyhow = { workspace = true }
 cc-bootstrap = { workspace = true }
 cc-config = { workspace = true }
 cc-proto = { workspace = true }
+cc-state-transition = { workspace = true }
 cc-store = { workspace = true }
 cc-types = { workspace = true }
+ethereum_ssz = { workspace = true }
 futures = { workspace = true }
 prometheus-client = { workspace = true }
 serde = { workspace = true }

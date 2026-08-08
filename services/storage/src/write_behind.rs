@@ -39,6 +39,7 @@ use crate::metrics::{ReconnectReason, StorageMetrics};
 use crate::migrate::{
     Migrator, maybe_migrate_on_finalized, parse_finalized_payload, root_from_event,
 };
+use crate::replay::{ReplayDriver, maybe_snapshot_on_finalized};
 use crate::writer::{
     CommitUnit, StagedBlock, StagedColumn, StagedForkChoiceScalars, WriterError, WriterHandle,
     observe_reconnect,
@@ -162,6 +163,8 @@ impl Accumulator {
 ///
 /// `migrator` is the CC-41 hot/cold split driver; `None` disables migration
 /// (tests that only exercise the stream).
+/// `replayer` is the CC-42 snapshot ring driver; `None` disables finalization-
+/// driven snapshots (the poll-path REPLAY TASK may still run).
 pub(crate) fn spawn_write_behind(
     cfg: WriteBehindConfig,
     writer: WriterHandle,
@@ -169,6 +172,7 @@ pub(crate) fn spawn_write_behind(
     initial_cursor: Option<WriteCursor>,
     shutdown: watch::Receiver<bool>,
     migrator: Option<Arc<Migrator>>,
+    replayer: Option<Arc<ReplayDriver>>,
 ) -> (tokio::task::JoinHandle<()>, Arc<AtomicU64>) {
     let respawns = Arc::new(AtomicU64::new(0));
     let respawns_task = Arc::clone(&respawns);
@@ -181,12 +185,14 @@ pub(crate) fn spawn_write_behind(
             shutdown,
             respawns_task,
             migrator,
+            replayer,
         )
         .await;
     });
     (join, respawns)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn supervise_write_behind(
     cfg: WriteBehindConfig,
     writer: WriterHandle,
@@ -195,6 +201,7 @@ async fn supervise_write_behind(
     mut shutdown: watch::Receiver<bool>,
     respawns: Arc<AtomicU64>,
     migrator: Option<Arc<Migrator>>,
+    replayer: Option<Arc<ReplayDriver>>,
 ) {
     let mut backoff = cfg.backoff_initial;
     loop {
@@ -207,9 +214,18 @@ async fn supervise_write_behind(
         let cursor_i = initial_cursor;
         let shutdown_i = shutdown.clone();
         let migrator_i = migrator.clone();
+        let replayer_i = replayer.clone();
         let inner = tokio::spawn(async move {
-            run_write_behind(cfg_i, writer_i, metrics_i, cursor_i, shutdown_i, migrator_i)
-                .await;
+            run_write_behind(
+                cfg_i,
+                writer_i,
+                metrics_i,
+                cursor_i,
+                shutdown_i,
+                migrator_i,
+                replayer_i,
+            )
+            .await;
         });
         match inner.await {
             Ok(()) => break, // clean shutdown from run_write_behind
@@ -245,6 +261,7 @@ pub(crate) async fn run_write_behind(
     mut durable_cursor: Option<WriteCursor>,
     mut shutdown: watch::Receiver<bool>,
     migrator: Option<Arc<Migrator>>,
+    replayer: Option<Arc<ReplayDriver>>,
 ) {
     let mut backoff = cfg.backoff_initial;
     info!(
@@ -264,6 +281,7 @@ pub(crate) async fn run_write_behind(
             durable_cursor.as_ref(),
             &mut shutdown,
             migrator.as_deref(),
+            replayer.as_deref(),
         )
         .await
         {
@@ -468,6 +486,7 @@ async fn run_session(
     durable_cursor: Option<&WriteCursor>,
     shutdown: &mut watch::Receiver<bool>,
     migrator: Option<&Migrator>,
+    replayer: Option<&ReplayDriver>,
 ) -> SessionEnd {
     let channel = match dial(&cfg.chain_uri, cfg.connect_timeout).await {
         Ok(c) => c,
@@ -626,12 +645,12 @@ async fn run_session(
                             }
                         }
 
-                        // CC-41: FINALIZED_CHECKPOINT drives hot/cold migration
-                        // (Architecture §3.2). Flush any open P0 unit first so no
-                        // uncommitted hot rows for slots ≤ new split land after
-                        // the split advances (I-split-fin write-side).
+                        // CC-41 / CC-42: FINALIZED_CHECKPOINT drives migration
+                        // and (on cadence) the snapshot ring. Flush any open P0
+                        // unit first so no uncommitted hot rows for slots ≤ new
+                        // split land after the split advances (I-split-fin).
                         if ev.kind() == EventKind::FinalizedCheckpoint
-                            && let Some(mig) = migrator
+                            && (migrator.is_some() || replayer.is_some())
                         {
                             if let Some(unit) = take_flush(&mut acc, session_id)
                                 && let Err(e) =
@@ -639,12 +658,13 @@ async fn run_session(
                             {
                                 error!(
                                     error = %e,
-                                    "P0 flush before migration failed"
+                                    "P0 flush before migration/snapshot failed"
                                 );
                             }
                             let finalized_root = root_from_event(&ev.root);
-                            if let Some((epoch, state_root)) = parse_finalized_payload(&ev.payload)
-                            {
+                            let (epoch, state_root) = parse_finalized_payload(&ev.payload)
+                                .unwrap_or_else(|| (ev.slot / 32, Root::default()));
+                            if let Some(mig) = migrator {
                                 maybe_migrate_on_finalized(
                                     mig,
                                     epoch,
@@ -652,13 +672,14 @@ async fn run_session(
                                     state_root,
                                 )
                                 .await;
-                            } else {
-                                let epoch = ev.slot / 32;
-                                maybe_migrate_on_finalized(
-                                    mig,
+                            }
+                            // CC-42: snapshot on cadence after migration advances split.
+                            if let Some(rep) = replayer {
+                                maybe_snapshot_on_finalized(
+                                    rep,
                                     epoch,
                                     finalized_root,
-                                    Root::default(),
+                                    state_root,
                                 )
                                 .await;
                             }

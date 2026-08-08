@@ -8,6 +8,7 @@
 
 mod metrics;
 mod migrate;
+mod replay;
 mod write_behind;
 mod writer;
 
@@ -29,6 +30,7 @@ use tokio::sync::watch;
 use tonic::service::Routes;
 use tonic::{Request, Response, Status};
 use migrate::{MigrationConfig, Migrator};
+use replay::{ReplayConfig, ReplayDriver, spawn_replay_task};
 use write_behind::{WriteBehindConfig, spawn_write_behind};
 use writer::{WriterBounds, WriterFaults, load_write_cursor, spawn_writer};
 use cc_store::SplitLock;
@@ -97,6 +99,12 @@ struct StorageConfig {
     /// CC-41: hot/cold migration cadence in epochs (default **1**).
     #[serde(default = "default_epochs_per_migration")]
     epochs_per_migration: u64,
+    /// CC-42: snapshot cadence in epochs (default **32**).
+    #[serde(default = "default_snapshot_epochs")]
+    snapshot_epochs: u64,
+    /// CC-42: snapshot ring depth (default **4**).
+    #[serde(default = "default_snapshot_ring")]
+    snapshot_ring: u64,
 }
 
 /// `storage.retention_override` — non-spec retention windows for the discharging
@@ -150,6 +158,12 @@ fn default_enable_write_path() -> bool {
 }
 fn default_epochs_per_migration() -> u64 {
     migrate::DEFAULT_EPOCHS_PER_MIGRATION
+}
+fn default_snapshot_epochs() -> u64 {
+    replay::DEFAULT_SNAPSHOT_EPOCHS_CFG
+}
+fn default_snapshot_ring() -> u64 {
+    replay::DEFAULT_SNAPSHOT_RING_CFG
 }
 
 impl StorageConfig {
@@ -211,6 +225,13 @@ impl StorageConfig {
     fn migration_config(&self) -> MigrationConfig {
         MigrationConfig {
             epochs_per_migration: self.epochs_per_migration.max(1),
+        }
+    }
+
+    fn replay_config(&self) -> ReplayConfig {
+        ReplayConfig {
+            snapshot_epochs: self.snapshot_epochs.max(1),
+            snapshot_ring: self.snapshot_ring.max(1),
         }
     }
 }
@@ -339,6 +360,24 @@ mod config_tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("epochs_per_migration"));
     }
+
+    /// CC-42 /1: snapshot_epochs=32, snapshot_ring=4 in storage.toml.
+    #[test]
+    fn snapshot_epochs_and_ring_defaults() {
+        let _g = env_lock();
+        unsafe {
+            std::env::remove_var("CC_STORAGE_SNAPSHOT_EPOCHS");
+            std::env::remove_var("CC_STORAGE_SNAPSHOT_RING");
+        }
+        let path = storage_toml_path();
+        let cfg = cc_config::load_from::<StorageConfig>("storage", &path)
+            .unwrap_or_else(|e| panic!("load {}: {e}", path.display()));
+        assert_eq!(cfg.snapshot_epochs, 32, "Grandine archival interval default");
+        assert_eq!(cfg.snapshot_ring, 4, "ring depth default");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("snapshot_epochs"));
+        assert!(text.contains("snapshot_ring"));
+    }
 }
 
 /// Phase 0 stub: only `GetInfo` is implemented.
@@ -376,7 +415,8 @@ fn open_store(cfg: &StorageConfig) -> anyhow::Result<Store> {
         EngineOptions::default().with_durability(durability),
         &digest_input,
     )?
-    .with_check_invariants(cfg.check_invariants);
+    .with_check_invariants(cfg.check_invariants)
+    .with_snapshot_ring(cfg.snapshot_ring.max(1));
     Store::open(&cfg.data_dir, opts).map_err(|e| anyhow::anyhow!("store open: {e}"))
 }
 
@@ -488,6 +528,15 @@ async fn main() -> anyhow::Result<()> {
                     cfg.migration_config(),
                     storage_metrics.clone(),
                 ));
+                // CC-42: REPLAY TASK — own finalized-state replay + snapshot serialize.
+                let replayer = Arc::new(ReplayDriver::new(
+                    Arc::clone(&engine),
+                    Arc::clone(&split),
+                    writer.clone(),
+                    storage_metrics.clone(),
+                    cfg.replay_config(),
+                ));
+                let _replay_join = spawn_replay_task(Arc::clone(&replayer), shutdown_rx.clone());
                 // Write-behind: respawn-on-panic with backoff (counter-example to writer).
                 let (_wb, _wb_respawns) = spawn_write_behind(
                     cfg.write_behind_config(),
@@ -496,12 +545,15 @@ async fn main() -> anyhow::Result<()> {
                     initial_cursor,
                     shutdown_rx,
                     Some(migrator),
+                    Some(replayer),
                 );
                 tracing::info!(
                     data_dir = %cfg.data_dir.display(),
                     commit_slots = cfg.commit_slots,
                     epochs_per_migration = cfg.epochs_per_migration,
-                    "writer + write-behind + migrator spawned"
+                    snapshot_epochs = cfg.snapshot_epochs,
+                    snapshot_ring = cfg.snapshot_ring,
+                    "writer + write-behind + migrator + replay task spawned"
                 );
                 // Hold engine / split for process lifetime (writer holds Arc).
                 std::mem::forget(engine);

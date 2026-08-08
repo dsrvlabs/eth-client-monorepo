@@ -45,6 +45,16 @@ commit_max_latency_ms = 4000
 # Override: CC_STORAGE_EPOCHS_PER_MIGRATION=4
 epochs_per_migration = 1
 
+# ── CC-42 snapshot ring + storage own replay (Architecture §3.3–3.6) ──────────
+# Cadence 32 epochs (Grandine DEFAULT_ARCHIVAL_EPOCH_INTERVAL). If term (c)
+# (SSZ deserialize + tree-hash-cache rebuild) measures > 5.0 s, this drops to
+# 16 in the same commit (CC-42 /3 conditional). Steady disk is ring-bound.
+# Override: CC_STORAGE_SNAPSHOT_EPOCHS=16
+snapshot_epochs = 32
+# Ring depth 4 — ~0.70 GB resident, cadence-independent (ADR P4-14 uncompressed).
+# Override: CC_STORAGE_SNAPSHOT_RING=4
+snapshot_ring = 4
+
 # ── CC-44b single-writer channel bounds (Architecture §1.5) ──────────────────
 # P0 write-behind → writer: 32 slots' commit units; on full **block** (never drop).
 writer_p0_bound = 32

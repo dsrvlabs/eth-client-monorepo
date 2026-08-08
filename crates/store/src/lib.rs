@@ -11,6 +11,7 @@
 //! - [`canonical`] — slot → canonical root via parent-root walk at offset 116 (CC-43a)
 //! - [`columns`] — hot/cold column tables, by-root index, DA status (CC-43b)
 //! - [`split`] — hot/cold split record, lock order, migration staging (CC-41)
+//! - [`snapshots`] — snapshot ring put/evict, uncompressed SSZ (CC-42)
 //!
 //! This crate depends only on `cc-types` among workspace members; consensus
 //! containers must not appear here (opaque bytes under typed keys).
@@ -35,6 +36,8 @@ pub mod keys;
 pub mod meta;
 /// Schema version, config digest, table registry, [`schema::Store::open`].
 pub mod schema;
+/// Snapshot ring: full-state SSZ put + oldest-first eviction (CC-42).
+pub mod snapshots;
 /// Hot/cold split, lock order, migration staging (CC-41 / Architecture §3.1–3.2).
 pub mod split;
 /// Computed block serve-window floor and vestigial-field cross-check (CC-4A).
@@ -73,6 +76,12 @@ pub use schema::{
     BLOCK_SHARD_WIDTH_EPOCHS, COLUMN_SHARD_WIDTH_EPOCHS, ConfigDigestInput, FIXED_TABLES,
     SCHEMA_VERSION, Store, StoreOpenOptions, compute_config_digest, is_registered_table,
     parse_shard_table,
+};
+pub use snapshots::{
+    DEFAULT_SNAPSHOT_EPOCHS, MAX_SNAPSHOT_BYTES, SnapshotPlan, TABLE_SNAPSHOTS, apply_snapshot_plan,
+    check_snapshot_len, encode_snapshot_key, epoch_of_slot as snapshot_epoch_of_slot, get_snapshot,
+    list_snapshot_slots, newest_snapshot, oldest_snapshot_slot, plan_snapshot_put, put_snapshot,
+    ring_depth, snapshot_due,
 };
 pub use split::{
     DEFAULT_EPOCHS_PER_MIGRATION, MAX_MIGRATION_SLOTS_PER_BATCH, MigrationPlan, MigrationStats,
