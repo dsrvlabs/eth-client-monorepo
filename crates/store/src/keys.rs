@@ -203,6 +203,98 @@ pub fn decode_canonical_entry(key: &[u8], value: &[u8]) -> Option<(Slot, Root)> 
     Some((slot, Root::from_array(root_arr)))
 }
 
+/// Encode a 32-byte root key (`block_slot_by_root`, `state_roots` value side, …).
+pub fn encode_root_key(root: &Root) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out.copy_from_slice(root.as_slice());
+    out
+}
+
+/// Decode a 32-byte root key.
+pub fn decode_root_key(key: &[u8]) -> Option<Root> {
+    if key.len() != 32 {
+        return None;
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(key);
+    Some(Root::from_array(arr))
+}
+
+/// Hot/cold region tag stored in `block_slot_by_root` values (§2.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum BlockRegion {
+    /// Above the split (`blocks_hot`).
+    Hot = 0,
+    /// At or below the split (`blocks_{shard}`).
+    Cold = 1,
+}
+
+impl BlockRegion {
+    /// Parse the region byte; unknown values yield `None`.
+    pub const fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Hot),
+            1 => Some(Self::Cold),
+            _ => None,
+        }
+    }
+
+    /// Wire / stored byte.
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+/// `block_slot_by_root` value: `slot:u64be ‖ region:u8` (9 B).
+pub fn encode_block_slot_by_root_value(slot: Slot, region: BlockRegion) -> [u8; 9] {
+    let mut out = [0u8; 9];
+    out[..8].copy_from_slice(&slot.as_u64().to_be_bytes());
+    out[8] = region.as_u8();
+    out
+}
+
+/// Decode `block_slot_by_root` value.
+pub fn decode_block_slot_by_root_value(value: &[u8]) -> Option<(Slot, BlockRegion)> {
+    if value.len() != 9 {
+        return None;
+    }
+    let mut slot_be = [0u8; 8];
+    slot_be.copy_from_slice(&value[..8]);
+    let region = BlockRegion::from_u8(value[8])?;
+    Some((Slot::new(u64::from_be_bytes(slot_be)), region))
+}
+
+/// Encode a root as a 32-byte table value (`canonical`, `state_roots`).
+pub fn encode_root_value(root: &Root) -> [u8; 32] {
+    encode_root_key(root)
+}
+
+/// Decode a 32-byte root table value.
+pub fn decode_root_value(value: &[u8]) -> Option<Root> {
+    decode_root_key(value)
+}
+
+/// Half-open slot range of block shard `id` (256-epoch width).
+///
+/// `shard_of` / `slots_in` inverses: every slot `s` satisfies
+/// `slots_in(shard_of(s)).0 ≤ s < slots_in(shard_of(s)).1`.
+pub fn block_shard_slot_range(shard_id: u64) -> (Slot, Slot) {
+    let start = block_shard_start_slot(shard_id);
+    let end = block_shard_start_slot(shard_id.saturating_add(1));
+    (start, end)
+}
+
+/// Block-class shard id for `slot` (alias of [`block_shard_id`] for the AC name).
+pub fn shard_of(slot: Slot) -> u64 {
+    block_shard_id(slot)
+}
+
+/// Half-open `[start, end)` slot range for block shard `id` (AC name).
+pub fn slots_in(shard_id: u64) -> (Slot, Slot) {
+    block_shard_slot_range(shard_id)
+}
+
 /// Decode snapshot key (`slot`, 8 B).
 pub fn decode_snapshot_key(key: &[u8]) -> Option<Slot> {
     decode_cold_block_key(key)

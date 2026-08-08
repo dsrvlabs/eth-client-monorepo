@@ -7,14 +7,20 @@
 //! - [`schema`] — schema version, config digest, table registry, open-or-refuse (CC-40a)
 //! - [`window`] — computed block serve-window floor (CC-4A / Architecture §5.1)
 //! - [`invariants`] — §2.7 eight named checks at open and after passes (CC-4H)
+//! - [`blocks`] — hot/cold block tables, by-root index, state roots (CC-43a)
+//! - [`canonical`] — slot → canonical root via parent-root walk at offset 116 (CC-43a)
 //!
 //! This crate depends only on `cc-types` among workspace members; consensus
 //! containers must not appear here (opaque bytes under typed keys).
 
 #![allow(missing_docs)]
 
+/// Block store: hot + sharded cold, by-root index, state roots (CC-43a).
+pub mod blocks;
 /// Histogram bucket boundaries for the storage metric surface (§10.2 / CC-4Ca).
 pub mod buckets;
+/// Canonical chain index maintained by a parent-root walk (CC-43a).
+pub mod canonical;
 /// Concrete engine seam (CC-40/3: engine crate name only under `engine/`).
 pub mod engine;
 /// §2.7 store invariants (CC-4H).
@@ -28,6 +34,16 @@ pub mod schema;
 /// Computed block serve-window floor and vestigial-field cross-check (CC-4A).
 pub mod window;
 
+pub use blocks::{
+    BlockClassStats, MAX_BLOCKS_BY_RANGE, PARENT_ROOT_SSZ_OFFSET, PutBlockOutcome, RangeBlock,
+    SLOT_SSZ_OFFSET, STATE_ROOT_SSZ_OFFSET, TABLE_BLOCK_SLOT_BY_ROOT, TABLE_BLOCKS_HOT,
+    TABLE_STATE_ROOTS, blocks_by_range, get_block_by_root, measure_class_stats,
+    parent_root_at_offset, put_block, slot_at_offset, state_root_at_offset,
+};
+pub use canonical::{
+    CanonicalWalkResult, MAX_CANONICAL_WALK_STEPS, TABLE_CANONICAL, get_canonical,
+    put_block_and_update_head, rewrite_from_head,
+};
 pub use engine::{
     Batch, Durability, Engine, EngineOptions, MAX_BATCH_OPS, MAX_INTERNED_TABLE_NAMES,
     MAX_RANGE_BYTES, MAX_RANGE_ENTRIES, RangeIter, ReadTxn, StoreError, db_file_path,
@@ -37,6 +53,7 @@ pub use invariants::{
     InvariantSink, InvariantViolation, MAX_CONTIG_WALK_SLOTS, MAX_RING_SCAN_ROWS, StoreInvariant,
     TracingSink, check_invariants, run_invariant_checks_if_enabled,
 };
+pub use keys::{BlockRegion, shard_of, slots_in};
 pub use schema::{
     BLOCK_SHARD_WIDTH_EPOCHS, COLUMN_SHARD_WIDTH_EPOCHS, ConfigDigestInput, FIXED_TABLES,
     SCHEMA_VERSION, Store, StoreOpenOptions, compute_config_digest, is_registered_table,

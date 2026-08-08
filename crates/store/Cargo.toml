@@ -31,3 +31,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# Integration tests only: full SSZ decode of a real Hoodi block to assert
+# PARENT_ROOT_SSZ_OFFSET (production code never names the container type).
+# `cc-types` is already a normal dep; re-listed so `tests/*.rs` can name containers.
+cc-types = { workspace = true }
+ethereum_ssz = { workspace = true }

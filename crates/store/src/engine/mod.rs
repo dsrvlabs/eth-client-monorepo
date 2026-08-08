@@ -135,6 +135,15 @@ pub enum StoreError {
         /// Human-readable detail (often names found vs expected).
         detail: String,
     },
+    /// Same key, different value (CC-43 /6). Same bytes are idempotent; this is fatal.
+    ///
+    /// Metrics label domain includes `key_collision` (CC-44b producer); the named
+    /// error is raised at the key-level write path here.
+    #[error("key collision in table {table}: existing value differs under the same key")]
+    KeyCollision {
+        /// Table name where the collision was observed.
+        table: String,
+    },
 }
 
 impl StoreError {
