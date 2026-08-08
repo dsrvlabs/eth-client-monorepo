@@ -263,9 +263,171 @@ third discharges.
 ## Clause 3 — compressed-retention plateau (discharging)
 
 **Owner:** CC-4Cc  
-**Status:** empty skeleton (Amendment 5 / CC-4Cb). Discharging venue:
-`self-devnet-compressed`. The plateau run itself is CC-4Cc — this section
-receives numbers only.
+**Date:** 2026-08-08  
+**Venue:** `self-devnet-compressed`  
+**Profile:** `devnet/retention-compressed.toml`  
+**Instrument:** `bash scripts/storage-plateau.sh` + `bash scripts/soak-report.sh --phase 4`  
+**Covers:** proof clause 3 — discharging; §10.4; **D-10**, **D-11**; `R-15`
+
+### Status
+
+**`NOT_RUN` — clause 3 is not discharged.**
+
+A full ~38 h exclusive compressed-retention plateau run was **not** executed in
+this session. No bar numbers are invented. Until **all four bars** pass after the
+**block horizon is crossed**, with the horizon-crossing timestamp and hour-15
+`R-15` check in this section, the clause remains **not discharged**. A run that
+passes three of four is still **not discharged** (name the failing bar).
+
+This row must **not** be merged with `## Clause 3 — Hoodi confirmation
+(non-discharging)` (`CC-4Cd`, venue `hoodi`).
+
+### Tree facts recorded at open (not a run)
+
+| Field | Value | Source |
+|---|---|---|
+| **Git SHA (tree at record)** | `4aad621586d71df751a91e2d0b2cfe4cb6d92266` | `git rev-parse HEAD` on `feature/cc-4cc-plateau-run-record` @ 2026-08-08 |
+| **Engine** | redb **4.1.0** | `Cargo.toml` workspace pin; `Cargo.lock` `name = "redb"` / `version = "4.1.0"`; `docs/storage-engine.md` |
+| **Durability (production default)** | **`immediate`** (1PC+C) | `config/storage.toml` → `durability = "immediate"`; `EngineOptions` default `Durability::Immediate` |
+| **Retention override (venue profile)** | columns **64** epochs; blocks **256** epochs | `devnet/retention-compressed.toml` `[retention_override]` |
+| **Self-devnet GVR** | `0x4d04ab2dc363bf4d5e09d605f2872f49edf76c0bc09bcd14ad875f11742d11d0` | `devnet/retention-compressed.toml` / `crates/config` `DEVNET_GENESIS_VALIDATORS_ROOT` |
+| **Expected horizons (12 s slots)** | columns ~**3.4 h**; blocks ~**13.7 h**; then **24 h** slope window → ~**38 h** wall | Architecture §10.4 / issue CC-4Cc |
+
+**Run-time durability for a real discharge must be re-recorded from the live
+config** (env override `CC_STORAGE_DURABILITY=paranoid` is legal but changes the
+commit path). Default in-tree is **immediate**.
+
+### CC-4D guard — legal here, illegal on Hoodi/mainnet
+
+`storage.retention_override` is a **dangerous knob** gated by
+`crates/config/src/devnet_guard.rs` (`require_devnet_gvr`). Startup **refuses**
+the same compressed-retention profile when `genesis_validators_root` is Hoodi's
+or mainnet's (or missing). The compressed profile is therefore legal **only** on
+a non-production GVR (self-devnet). **Do not** overlay
+`devnet/retention-compressed.toml` onto Hoodi or mainnet — the guard forbids it;
+the Hoodi week (`CC-4Cd`) uses production retention and is confirmation-only.
+
+### Procedure checklist (for the live ~38 h run)
+
+Operator checklist. Every box must be true for a discharge write-up; this
+session left them unchecked.
+
+- [ ] **Retention profile:** overlay `devnet/retention-compressed.toml` onto the
+      self-devnet storage (and ring) config: `columns_epochs = 64`,
+      `blocks_epochs = 256`, self-devnet GVR set, `event_ring_bytes` as profiled.
+      Confirm guard accepts start (non-Hoodi / non-mainnet GVR).
+- [ ] **Exclusive machine (D-11 / R-8):** for the whole run the host runs the
+      Phase 4 self-devnet stack and **nothing else**. No Hoodi stack, no builds,
+      no container builds, **no `bin/store-bench`** (it writes ~28 GiB/layout and
+      moves `cc_storage_commit_seconds` / `cc_storage_disk_bytes` — contamination
+      appears in the clause, not the report).
+- [ ] **No void conditions:** no `storage` writer panic; no
+      `cc_storage_replay_divergence_total` or `key_collision` increment; no code
+      change / rebuild / redeploy; no machine sleep, reboot, thermal throttle, or
+      OS update; no `docker compose down -v`.
+- [ ] **Samples series:** scrape `cc_storage_bytes_total`,
+      `cc_storage_pruned_bytes*`, `cc_storage_written_bytes*` on a cadence that
+      spans ≥ 24 h **after** block-horizon crossing; write CSV
+      `ts_unix,bytes_total,pruned_bytes,written_bytes` for
+      `bash scripts/storage-plateau.sh --samples PATH`.
+- [ ] **Bar 1 — plateau slope:** `storage-plateau.sh` reports
+      `status: OK` (not `HORIZON_NOT_CROSSED`); 24 h slope of
+      `cc_storage_bytes_total` **&lt; 1 %** of plateau; horizon-crossing timestamp
+      recorded here.
+- [ ] **Bar 2 — prune ≈ ingest:** prune-bytes ÷ written-bytes over the same
+      window **within 5 %** (script `prune_written_ratio`), both classes.
+- [ ] **Bar 3 — deadlines:**
+      `cc_storage_prune_deadline_exceeded_total` / pass count **&lt; 1 %** over the
+      run. (A deadline exceed rate &gt; 1 % fails the bar; it is not a void.)
+- [ ] **Bar 4 — hot path:** p99 ImportBlock-to-persisted latency **during prune
+      passes** within **10 %** of the no-prune baseline; both numbers recorded.
+- [ ] **R-15 hour-15 check:** at **hour 15** (block horizon ~13.7 h at this
+      profile), `cc_storage_pruned_bytes_total` is **non-zero**. Zero at hour 15
+      means the watermark is not advancing (`CC-46a` wall-clock rule). Record the
+      hour-15 reading here. Do **not** judge the plateau solely at hour ~20
+      before the post-horizon 24 h window is complete.
+- [ ] **Report row:** `bash scripts/soak-report.sh --phase 4` emits venue
+      **`self-devnet-compressed`**, the four measured numbers, thresholds, and
+      `discharged` only when all four bars pass; paste into this section.
+- [ ] **Docs-only discharge commit:** touches **only** `docs/phase-4-soak.md`
+      (`git show --stat`). A code change in that commit voids the run.
+
+### Four bars (required — empty until measured)
+
+| Bar | Metric / expression | Threshold | Measured | Verdict |
+|---|---|---|---|---|
+| **1** Plateau + 24 h slope (after block horizon) | `storage-plateau.sh` → `slope_pct_of_plateau` | &lt; 1 % of plateau; no `HORIZON_NOT_CROSSED` | **NOT_RUN** | **NOT_RUN** |
+| **2** Prune equals ingest | `prune_written_ratio` (pruned ÷ written over window) | within **5 %** of 1.0 | **NOT_RUN** | **NOT_RUN** |
+| **3** Prune deadlines | `cc_storage_prune_deadline_exceeded_total` / pass count | **&lt; 1 %** | **NOT_RUN** | **NOT_RUN** |
+| **4** Hot path during prune | p99 ImportBlock→persisted during prune vs no-prune baseline | within **10 %** | **NOT_RUN** | **NOT_RUN** |
+| **R-15** Hour-15 early warning | `cc_storage_pruned_bytes_total` at t ≈ 15 h | **non-zero** | **NOT_RUN** | **NOT_RUN** |
+
+**Clause 3 (compressed) overall:** **`NOT_RUN` — not discharged.**
+
+### Horizon / window fields (fill after live run)
+
+| Field | Value |
+|---|---|
+| Run start (UTC) | **NOT_RUN** |
+| Column horizon crossed (~3.4 h) | **NOT_RUN** |
+| Block horizon crossed (~13.7 h) | **NOT_RUN** |
+| 24 h slope window end (~38 h) | **NOT_RUN** |
+| Hour-15 pruned_bytes reading | **NOT_RUN** |
+| Machine exclusive attestation | **NOT_RUN** (must affirm no second stack / build / `store-bench`) |
+| Live durability used | **NOT_RUN** (tree default `immediate`; re-record from live config) |
+| Live git SHA of binaries | **NOT_RUN** (record above is tree-at-open only) |
+
+### Tooling smoke (instrument works; not a plateau)
+
+These prove `storage-plateau.sh` and the phase-4 report path emit honest
+`NOT_RUN` / `HORIZON_NOT_CROSSED` without a live series. **They do not discharge
+clause 3.**
+
+**`bash scripts/storage-plateau.sh --self-test`** → `self-test: PASS` (short
+series → `HORIZON_NOT_CROSSED`; synthetic 25 h flat series → `status: OK`,
+slope ~0, ratio 1.0).
+
+**Live single-shot (no samples, no metrics listener):**
+
+```text
+$ bash scripts/storage-plateau.sh
+==> live scrape http://127.0.0.1:9106/metrics (single shot cannot span horizon)
+status: HORIZON_NOT_CROSSED
+reason: metrics URL unreachable and no --samples file
+slope_pct_of_plateau: HORIZON_NOT_CROSSED
+prune_written_ratio: HORIZON_NOT_CROSSED
+```
+
+**Short samples file (span ≪ 24 h):**
+
+```text
+$ bash scripts/storage-plateau.sh --samples <short.csv>
+status: HORIZON_NOT_CROSSED
+reason: sample span 900s < horizon 86400s (24 h)
+slope_pct_of_plateau: HORIZON_NOT_CROSSED
+prune_written_ratio: HORIZON_NOT_CROSSED
+sample_span_seconds: 900
+sample_count: 2
+```
+
+**`bash scripts/soak-report.sh --phase 4 --venue self-devnet-compressed --clause 3`**
+(no harness / no plateau samples):
+
+```text
+| Clause | Venue | Measured | Threshold | Verdict |
+| 3 · disk bounded (compressed-retention, discharging) | self-devnet-compressed | NOT_RUN (no plateau samples / clause3.compressed harness — live discharge is CC-4Cc via storage-plateau.sh) | 24 h slope < 1% of plateau; prune/written within 5%; deadline exceeded ≤ 1% of passes; commit p99 delta ≤ 10% | **NOT_RUN** |
+```
+
+(With `--venue self-devnet-compressed` the script also **refuses** to emit the
+Hoodi confirmation row at the wrong venue — correct behaviour.)
+
+### Explicit non-discharge
+
+**Clause 3 is not discharged** until bars 1–4 all pass after the block horizon,
+`R-15` hour-15 is recorded non-zero, the machine was exclusive, and
+`soak-report.sh` emits `self-devnet-compressed` with measured numbers. This
+section currently holds **tree facts + procedure + instrument smoke only**. No
+PASS. No fake discharge.
 
 ## Clause 3 — Hoodi confirmation (non-discharging)
 
