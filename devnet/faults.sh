@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# devnet/faults.sh — docker-level fault primitives (CC-2Jd, CC-4N).
+# devnet/faults.sh — docker-level fault primitives (CC-2Jd, CC-4N, CC-4D).
 #
 # No enclave, no cross-network join recipe — our own compose network only.
 #
 #   offline-gap <container> <minutes>   docker network disconnect → sleep → connect
 #   pause <container> <seconds>         docker pause → sleep → unpause
-#   restart <container>                 kill -s SIGKILL then compose up -d (CC-4N)
+#   restart <container> [--hold <s>]    kill -s SIGKILL, optional hold, then up -d
+#   clock-jump <container> <seconds>    advance container wall clock (CC-4D)
 #
 # Container names are compose *service* names (publisher | node-a | node-b | anchor)
 # or full container ids/names from `docker ps`.
@@ -15,8 +16,11 @@
 # `cc-p2p-identity` on the main stack; identity mounts on the devnet) are one
 # backup unit with the store. A mismatched node_key after restart must surface
 # I-node-id (AnchorInfo.node_id pairing refusal), not a silent re-backfill —
-# wiping volumes would destroy the proof. CC-4D later appends clock-jump and
-# restart --hold.
+# wiping volumes would destroy the proof.
+#
+# CC-4D: clock-jump is exercised once in the landing commit and not inventoried
+# as a fault mode. restart --hold makes clause-2 run (b) runnable (SIGKILL,
+# wait past ring depth, up).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,14 +32,21 @@ usage() {
 Usage:
   $0 offline-gap <container> <minutes>
   $0 pause <container> <seconds>
-  $0 restart <container>
+  $0 restart <container> [--hold <seconds>]
+  $0 clock-jump <container> <seconds>
   $0 exercise-once   # run each primitive once against node-a (acceptance)
 
 Environment:
   CC_DEVNET_NETWORK   docker network name (default: cc-devnet)
 
-restart uses: docker compose kill -s SIGKILL <service> && docker compose up -d
+restart uses: docker compose kill -s SIGKILL <service>
+              [sleep <hold>]
+              docker compose up -d <service>
   — never docker compose down (CC-4N; named volumes must survive the kill-9 clause).
+
+clock-jump advances the container wall clock by <seconds> (docker exec date -s
+or privileged sidecar). Requires CAP_SYS_TIME; may be unavailable on Docker
+Desktop — report honestly rather than inventing a watermark.
 EOF
 }
 
@@ -121,19 +132,82 @@ cmd_restart() {
   # the volumes flag). Pairing refusal (I-node-id): after a restart the store
   # still holds AnchorInfo.node_id; a replaced node_key must refuse open, not
   # re-backfill.
+  # CC-4D: optional --hold <seconds> between kill and up for clause-2 ring depth.
   local name="$1"
-  # Prefer compose service name so kill/up target the project; fall back to id
-  # resolution only for the log line when the service is already known.
+  local hold="${2:-0}"
+  if ! [[ "${hold}" =~ ^[0-9]+$ ]]; then
+    echo "error: --hold seconds must be an integer, got ${hold}" >&2
+    exit 2
+  fi
   local cid
   cid="$(resolve_container "${name}" 2>/dev/null || true)"
   if [[ -n "${cid}" ]]; then
-    echo "==> restart ${name} (${cid}) via kill -s SIGKILL then up -d"
+    echo "==> restart ${name} (${cid}) via kill -s SIGKILL then up -d (hold=${hold}s)"
   else
-    echo "==> restart ${name} via kill -s SIGKILL then up -d"
+    echo "==> restart ${name} via kill -s SIGKILL then up -d (hold=${hold}s)"
   fi
   docker compose -f "${COMPOSE_FILE}" kill -s SIGKILL "${name}"
+  if (( hold > 0 )); then
+    echo "  holding ${hold}s before up (CC-4D --hold)"
+    sleep "${hold}"
+  fi
   docker compose -f "${COMPOSE_FILE}" up -d "${name}"
   echo "  restarted (named volumes retained)"
+}
+
+# CC-4D: docker-level wall-clock advance. Not inventoried as a fault mode —
+# exercised once in the landing commit when CAP_SYS_TIME is available.
+cmd_clock_jump() {
+  local name="$1"
+  local seconds="$2"
+  if ! [[ "${seconds}" =~ ^-?[0-9]+$ ]]; then
+    echo "error: seconds must be an integer, got ${seconds}" >&2
+    exit 2
+  fi
+  local cid
+  cid="$(resolve_container "${name}")"
+  echo "==> clock-jump ${name} (${cid}) by ${seconds}s"
+
+  local before after target
+  before="$(docker exec "${cid}" date -u +%s 2>/dev/null || echo "")"
+
+  # Prefer in-container date -s (needs CAP_SYS_TIME / privileged).
+  local ok=0
+  if [[ -n "${before}" ]]; then
+    target=$(( before + seconds ))
+    if docker exec -u 0 "${cid}" date -s "@${target}" >/dev/null 2>&1; then
+      ok=1
+      echo "  advanced via docker exec date -s @${target}"
+    fi
+  fi
+  if (( ok == 0 )); then
+    if docker exec -u 0 "${cid}" date -s "+${seconds} seconds" >/dev/null 2>&1; then
+      ok=1
+      echo "  advanced via docker exec date -s +${seconds} seconds"
+    fi
+  fi
+  if (( ok == 0 )); then
+    if docker run --rm --privileged --pid="container:${cid}" alpine:3.20 \
+        date -s "+${seconds} seconds" >/dev/null 2>&1; then
+      ok=1
+      echo "  advanced via privileged alpine --pid=container sidecar"
+    fi
+  fi
+
+  if (( ok == 0 )); then
+    echo "error: clock-jump unsupported on this docker (CAP_SYS_TIME / date -s refused)" >&2
+    echo "  honest skip: Docker Desktop and many managed runtimes share host time" >&2
+    echo "  and deny per-container clock writes; re-run on a privileged Linux daemon" >&2
+    exit 3
+  fi
+
+  after="$(docker exec "${cid}" date -u +%s 2>/dev/null || echo "")"
+  if [[ -n "${before}" && -n "${after}" ]]; then
+    local delta=$(( after - before ))
+    echo "  wall-clock before=${before} after=${after} delta=${delta}s (requested ${seconds}s)"
+  else
+    echo "  wall-clock delta unreadable post-jump (date succeeded; scrape skipped)"
+  fi
 }
 
 wait_peers_recovered() {
@@ -168,9 +242,21 @@ cmd_exercise_once() {
   # Recovery via continuous static-peer re-dial (fault_mode H2) — not restart.
   wait_peers_recovered "after-offline-gap"
 
-  echo "-- restart --"
-  cmd_restart "${target}"
+  echo "-- restart --hold 2 --"
+  cmd_restart "${target}" 2
   wait_peers_recovered "after-restart"
+
+  echo "-- clock-jump 45 (best-effort; may exit 3 on unsupported docker) --"
+  if cmd_clock_jump "${target}" 45; then
+    echo "  clock-jump exercised"
+  else
+    local rc=$?
+    if (( rc == 3 )); then
+      echo "  clock-jump SKIPPED (exit 3: CAP_SYS_TIME unavailable) — recorded honestly"
+    else
+      return "${rc}"
+    fi
+  fi
 
   echo "exercise-once: PASS"
 }
@@ -192,8 +278,37 @@ main() {
       cmd_pause "$1" "$2"
       ;;
     restart)
-      [[ $# -eq 1 ]] || { usage; exit 2; }
-      cmd_restart "$1"
+      # restart <container> [--hold <seconds>]
+      local svc=""
+      local hold=0
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --hold)
+            [[ $# -ge 2 ]] || { echo "error: --hold needs a value" >&2; exit 2; }
+            hold="$2"
+            shift 2
+            ;;
+          -h|--help)
+            usage
+            exit 0
+            ;;
+          *)
+            if [[ -n "${svc}" ]]; then
+              echo "error: unexpected argument: $1" >&2
+              usage
+              exit 2
+            fi
+            svc="$1"
+            shift
+            ;;
+        esac
+      done
+      [[ -n "${svc}" ]] || { usage; exit 2; }
+      cmd_restart "${svc}" "${hold}"
+      ;;
+    clock-jump)
+      [[ $# -eq 2 ]] || { usage; exit 2; }
+      cmd_clock_jump "$1" "$2"
       ;;
     exercise-once)
       cmd_exercise_once "${1:-node-a}"

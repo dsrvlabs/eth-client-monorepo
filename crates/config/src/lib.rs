@@ -21,10 +21,17 @@
 //! `EPOCHS_PER_SUBNET_SUBSCRIPTION`, or related values.
 
 mod attestation_subnets;
+mod devnet_guard;
 
 pub use attestation_subnets::{
     ATTESTATION_SUBNET_COUNT, ATTESTATION_SUBNET_EXTRA_BITS, ATTESTATION_SUBNET_PREFIX_BITS,
     AttestationSubnetConfig, EPOCHS_PER_SUBNET_SUBSCRIPTION, NODE_ID_BITS, SUBNETS_PER_NODE,
+};
+pub use devnet_guard::{
+    DEFAULT_EVENT_RING_BYTES, DEVNET_GENESIS_VALIDATORS_ROOT, DangerousKnobError,
+    HOODI_GENESIS_VALIDATORS_ROOT, KNOB_CRASH_POINT, KNOB_EVENT_RING_BYTES_SHRINK,
+    KNOB_RETENTION_OVERRIDE, MAINNET_GENESIS_VALIDATORS_ROOT, check_dangerous_knobs,
+    is_event_ring_bytes_shrink, is_production_network_gvr, require_devnet_gvr,
 };
 
 use std::collections::BTreeMap;

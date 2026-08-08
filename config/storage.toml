@@ -23,5 +23,19 @@ durability = "immediate"
 # Override: CC_STORAGE_CHECK_INVARIANTS=false
 check_invariants = true
 
+# CC-4D / Architecture §10.4 — dangerous knobs (config, not env).
+# Uncomment only on the self-devnet; startup refuses unless
+# genesis_validators_root is neither Hoodi's nor mainnet's.
+# See devnet/retention-compressed.toml for the compressed-retention venue.
+#
+# genesis_validators_root = "0x…"   # required when either knob below is set
+#
+# [retention_override]
+# columns_epochs = 64
+# blocks_epochs  = 256
+#
+# [debug]
+# crash_point = "after_put_before_commit"
+
 [peers]
 chain = "http://127.0.0.1:9001"

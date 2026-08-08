@@ -1030,6 +1030,7 @@ dependencies = [
  "figment",
  "http",
  "serde",
+ "toml",
 ]
 
 [[package]]

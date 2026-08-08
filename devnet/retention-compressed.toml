@@ -1,0 +1,28 @@
+# CC-4D — compressed-retention venue (Architecture §10.4).
+#
+# REFUSED at startup unless genesis_validators_root is neither Hoodi's nor
+# mainnet's (one guard, three dangerous knobs — see crates/config devnet_guard).
+#
+# Columns 64 epochs / blocks 256 epochs: at 12 s slots that is ~3.4 h to the
+# column horizon and ~13.7 h to the block horizon, so a 24 h slope window is
+# reachable inside a ~38 h run (clause 3 discharges on this profile; CC-4Cc).
+#
+# event_ring_bytes = 1 MiB shrinks the data-bus resume window so clause-2 run
+# (b) (`faults.sh restart storage --hold 240`) becomes a four-minute test on
+# the self-devnet (Architecture §4.7); honest wall-clock T stays for Hoodi.
+#
+# This file is a profile document + test fixture. Overlay its fields onto the
+# service configs for a compressed-retention run (multi-file profiles not yet
+# split — config/storage.toml notes the same). Do not load it against Hoodi
+# or mainnet GVR; the guard refuses.
+
+# Self-devnet GVR from expected-manifest.json (CC-2Ja seed).
+genesis_validators_root = "0x4d04ab2dc363bf4d5e09d605f2872f49edf76c0bc09bcd14ad875f11742d11d0"
+
+[retention_override]
+columns_epochs = 64
+blocks_epochs = 256
+
+# Ring-shrinking override for clause-2 four-minute devnet test (CC-44b).
+# Production default is 64 MiB (67108864).
+event_ring_bytes = 1048576

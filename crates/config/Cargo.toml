@@ -14,3 +14,7 @@ workspace = true
 figment = { workspace = true }
 http = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+# Parse `devnet/retention-compressed.toml` in CC-4D guard tests.
+toml = { workspace = true }

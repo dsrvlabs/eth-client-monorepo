@@ -130,6 +130,12 @@ struct ChainConfig {
     /// `[peers]` (ADR P3-02 / health DAG must stay acyclic).
     #[serde(default = "default_engine_uri")]
     engine_uri: String,
+    /// Network identity for the CC-4D dangerous-knob guard.
+    ///
+    /// Required when `event_ring_bytes` is shrunk below the production default
+    /// (64 MiB); must be neither Hoodi's nor mainnet's.
+    #[serde(default)]
+    genesis_validators_root: Option<String>,
 }
 
 fn default_engine_uri() -> String {
@@ -156,6 +162,16 @@ fn default_safe_slots_to_import_optimistically() -> u64 {
 }
 
 impl ChainConfig {
+    /// CC-4D: refuse `event_ring_bytes` shrink unless GVR is devnet-like.
+    fn check_dangerous_knobs(&self) -> Result<(), cc_config::DangerousKnobError> {
+        cc_config::check_dangerous_knobs(
+            self.genesis_validators_root.as_deref(),
+            false,
+            None,
+            Some(self.event_ring_bytes),
+        )
+    }
+
     /// Build the bootstrap [`ServiceSpec`] (D-1: lives in L3, never in `cc-config`).
     fn service_spec(&self) -> ServiceSpec {
         ServiceSpec {
@@ -192,7 +208,16 @@ impl ChainConfig {
 async fn main() -> anyhow::Result<()> {
     // Fail before any bind (CC-09/2): load config, then telemetry, then serve.
     let cfg = cc_config::load::<ChainConfig>(SERVICE)?;
+    // CC-4D: ring-shrinking override is a dangerous knob (devnet-only).
+    cfg.check_dangerous_knobs()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut bs = cc_bootstrap::init(SERVICE, TelemetrySettings::from(&cfg.service))?;
+    if cc_config::is_event_ring_bytes_shrink(cfg.event_ring_bytes) {
+        tracing::warn!(
+            event_ring_bytes = cfg.event_ring_bytes,
+            "chain.event_ring_bytes shrink active (devnet-only; CC-4D)"
+        );
+    }
 
     // CC-1C: register chain metrics into bs.registry between init and serve.
     let chain_metrics = ChainMetrics::register(&mut bs.registry);

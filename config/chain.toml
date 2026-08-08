@@ -13,6 +13,10 @@ body_ring_capacity = 64
 # CC-18c / CC-44a event bus bounds (Architecture §4.3 / §7.3).
 # Two bounds; the **byte ceiling binds first** (OQ-P1-2).
 # 4096 events / 64 MiB → ~33–55 min resume window at cgc=8.
+#
+# CC-4D: shrinking event_ring_bytes below 64 MiB is a dangerous knob —
+# refused at startup unless genesis_validators_root is neither Hoodi's nor
+# mainnet's (devnet 1 MiB override lives in devnet/retention-compressed.toml).
 event_ring_events = 4096
 event_ring_bytes = 67108864
 subscriber_queue_capacity = 256
