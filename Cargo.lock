@@ -1185,6 +1185,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cc-serve-probe"
+version = "0.1.0"
+
+[[package]]
 name = "cc-spec-tests"
 version = "0.1.0"
 dependencies = [
@@ -1222,6 +1226,20 @@ dependencies = [
  "serde",
  "tokio",
  "tonic",
+]
+
+[[package]]
+name = "cc-store"
+version = "0.1.0"
+dependencies = [
+ "cc-types",
+]
+
+[[package]]
+name = "cc-store-bench"
+version = "0.1.0"
+dependencies = [
+ "cc-store",
 ]
 
 [[package]]

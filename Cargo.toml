@@ -18,6 +18,10 @@ members = [
   "services/storage",
   # bin/driver retired at CC-28 — member count 17 → 16; bin/ keeps devnet-gen.
   "bin/devnet-gen",
+  # Phase 4 workspace admission (store DAG): 16 → 19.
+  "crates/store",
+  "bin/store-bench",
+  "bin/serve-probe",
 ]
 
 [workspace.package]
@@ -161,6 +165,9 @@ jsonwebtoken = "9.3.1"
 wiremock = "0.6.5"
 crc32fast = "1.5.0"
 # proptest already pinned at CC-2K; hex already pinned (JWT secret decode).
+
+# Phase 4 store DAG workspace admission — append-only path pin (engine line later).
+cc-store = { path = "crates/store" }
 
 [profile.release]
 opt-level = 3

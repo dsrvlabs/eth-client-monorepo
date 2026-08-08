@@ -40,6 +40,53 @@ while IFS= read -r manifest; do
     "^[[:space:]]*(${pat})[[:space:]]*=|^[[:space:]]*\[dependencies\.(${pat})\]" \
     "$manifest" 2>/dev/null || true)
 done < <(find "$ROOT/services" "$ROOT/crates" "$ROOT/bin" -name Cargo.toml 2>/dev/null | sort)
+
+# --- Phase 4: services/storage may never depend on cc-fork-choice (D-P4-3) ---
+# Explicit named prohibition (not merely an unlisted allowed_deps edge). Filesystem
+# first so the negative-test shape works without a lockfile refresh.
+STORAGE_MANIFEST="$ROOT/services/storage/Cargo.toml"
+if [[ -f "$STORAGE_MANIFEST" ]]; then
+  if grep -qE \
+    '^[[:space:]]*cc-fork-choice[[:space:]]*=|^[[:space:]]*\[dependencies\.cc-fork-choice\]' \
+    "$STORAGE_MANIFEST"; then
+    echo "error: services/storage may never depend on cc-fork-choice" >&2
+    EARLY_FAILED=1
+  fi
+fi
+
+# --- Phase 4: cc-store may depend on cc-types and nothing else permanently (§1.1) ---
+# Filesystem scan: key form `cc-foo =` and table form `[dependencies.cc-foo]`
+# (aligned with storage→fork-choice early rule; negative-test friendly).
+STORE_MANIFEST="$ROOT/crates/store/Cargo.toml"
+if [[ -f "$STORE_MANIFEST" ]]; then
+  while IFS= read -r hit; do
+    [[ -z "$hit" ]] && continue
+    dep=""
+    if [[ "$hit" =~ ^[[:space:]]*(cc-[a-z0-9-]+)[[:space:]]*= ]]; then
+      dep="${BASH_REMATCH[1]}"
+    elif [[ "$hit" =~ ^[[:space:]]*\[dependencies\.(cc-[a-z0-9-]+)\] ]]; then
+      dep="${BASH_REMATCH[1]}"
+    fi
+    if [[ -n "$dep" && "$dep" != "cc-types" ]]; then
+      echo "error: cc-store: forbidden workspace dependency on $dep" >&2
+      EARLY_FAILED=1
+    fi
+  done < <(grep -E \
+    '^[[:space:]]*cc-[a-z0-9-]+[[:space:]]*=|^[[:space:]]*\[dependencies\.cc-[a-z0-9-]+\]' \
+    "$STORE_MANIFEST" 2>/dev/null || true)
+fi
+
+# --- Phase 4: crates/store must not name consensus containers (§1.1) ----------
+# Opaque bytes under typed keys only; cc-types is for Slot/Root/Epoch + meta SSZ.
+STORE_SRC="$ROOT/crates/store/src"
+if [[ -d "$STORE_SRC" ]]; then
+  while IFS= read -r hit; do
+    [[ -z "$hit" ]] && continue
+    echo "error: crates/store must not reference consensus types SignedBeaconBlock|BeaconState|DataColumnSidecar ($hit)" >&2
+    EARLY_FAILED=1
+  done < <(grep -rn "SignedBeaconBlock\|BeaconState\|DataColumnSidecar" "$STORE_SRC" 2>/dev/null || true)
+fi
+
 if [[ "$EARLY_FAILED" -ne 0 ]]; then
   exit 1
 fi
@@ -76,7 +123,11 @@ allowed_deps() {
     # CC-32b: append cc-types (never re-sort). CC-37b: append cc-crypto (never re-sort).
     cc-engine)            echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto" ;;
     cc-beacon-api)        echo "cc-bootstrap cc-config cc-proto" ;;
-    cc-storage)           echo "cc-bootstrap cc-config cc-proto" ;;
+    # Phase 4 store DAG: permanent cc-types-only rule; storage gains cc-store + ST.
+    cc-store)             echo "cc-types" ;;
+    cc-store-bench)       echo "cc-store" ;;
+    cc-serve-probe)       echo "cc-libp2p cc-types cc-config" ;;
+    cc-storage)           echo "cc-bootstrap cc-config cc-proto cc-types cc-state-transition cc-store" ;;
     *)
       echo "error: unknown workspace member: $1" >&2
       return 1
