@@ -306,6 +306,11 @@ impl ChainService for ChainServiceImpl {
     ) -> Result<Response<BoxStreamEvent>, Status> {
         let cursor = request.into_inner().cursor;
         let mut sub = self.events.subscribe(cursor).await?;
+        // CC-44b: storage write-behind needs the live session_id to stamp
+        // durable WriteCursor (Event has no session field). Advertise it on
+        // the response so a live-from-tip subscribe can resume later without
+        // spamming CURSOR_UNKNOWN_SESSION.
+        let session_id = sub.session_id();
 
         // Bridge EventSubscription → async Stream for tonic.
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<cc_proto::chain::Event, Status>>(16);
@@ -327,7 +332,14 @@ impl ChainService for ChainServiceImpl {
         });
 
         let stream = ReceiverStream::new(rx);
-        Ok(Response::new(Box::pin(stream) as BoxStreamEvent))
+        let mut response = Response::new(Box::pin(stream) as BoxStreamEvent);
+        // ASCII digits only — always a valid metadata value.
+        if let Ok(val) = session_id.to_string().parse() {
+            response
+                .metadata_mut()
+                .insert(crate::events::SESSION_ID_METADATA_KEY, val);
+        }
+        Ok(response)
     }
 
     async fn get_committee_shuffling(

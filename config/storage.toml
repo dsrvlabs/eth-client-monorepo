@@ -18,10 +18,33 @@ log_filter = "info"
 # Override: CC_STORAGE_DURABILITY=paranoid (figment env layer in cc-config).
 durability = "immediate"
 
+# On-disk store directory (CC-44b write path). Compose binds a volume here.
+# Override: CC_STORAGE_DATA_DIR=/data/storage
+data_dir = "data/storage"
+
 # CC-4H / §2.7: run store invariants at open (fatal) and after migration/prune
 # (log + count). Devnet default **true**; Hoodi soak **false** (see profile note).
 # Override: CC_STORAGE_CHECK_INVARIANTS=false
 check_invariants = true
+
+# ── CC-44b write-behind commit unit (Architecture §4.4) ──────────────────────
+# One commit per slot. A crash loses everything after the last durable commit, so
+# this value IS the loss bound: at 1 slot, a SIGKILL costs at most one slot of
+# blocks and columns, which the next gap detection refetches. Batching an epoch
+# would make the bound 32 slots and would save ~31 fsyncs per 6.4 minutes.
+commit_slots = 1
+# Flush when this many events accumulate without a slot boundary (default 64).
+commit_max_events = 64
+# Flush after this many milliseconds without a flush (default 4000 = 4 s).
+commit_max_latency_ms = 4000
+
+# ── CC-44b single-writer channel bounds (Architecture §1.5) ──────────────────
+# P0 write-behind → writer: 32 slots' commit units; on full **block** (never drop).
+writer_p0_bound = 32
+# P1 meta → writer: 64; on full **block**.
+writer_p1_bound = 64
+# P2 background → writer: 256 chunks; on full **drop newest** + count.
+writer_p2_bound = 256
 
 # CC-4D / Architecture §10.4 — dangerous knobs (config, not env).
 # Uncomment only on the self-devnet; startup refuses unless

@@ -31,9 +31,39 @@ use prometheus_client::registry::{Registry, Unit};
 // sets unless Architecture §10.1 adds them.
 
 /// Labels for class-scoped storage families.
+///
+/// Closed domain for size/prune/write **data** classes is [`StorageClass`].
+/// Writer mailbox depth / chunk-drop series also use [`WriterPriority`]
+/// (`p0`|`p1`|`p2`) per R-10 (`cc_storage_writer_queue_depth{class="p0"}`).
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub(crate) struct ClassLabels {
     pub class: String,
+}
+
+/// Writer priority-mailbox class labels (Architecture §1.5 / R-10).
+///
+/// Distinct from [`StorageClass`] (blocks|columns|…): these label the three
+/// submit queues in front of the single writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum WriterPriority {
+    P0,
+    P1,
+    P2,
+}
+
+impl WriterPriority {
+    /// Prometheus label value.
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::P0 => "p0",
+            Self::P1 => "p1",
+            Self::P2 => "p2",
+        }
+    }
+
+    /// All variants (seed + tests).
+    pub(crate) const ALL: [Self; 3] = [Self::P0, Self::P1, Self::P2];
 }
 
 /// Labels for prune-pass families.
@@ -745,10 +775,19 @@ impl StorageMetrics {
             let _ = self.shard_dropped.get_or_create(&labels).get();
             self.commit_seconds.get_or_create(&labels).observe(0.0);
             let _ = self.written_bytes.get_or_create(&labels).get();
-            self.writer_queue_depth.get_or_create(&labels).set(0);
+            // Chunk-drop also labels by storage class (prune/backfill drops).
             let _ = self.writer_chunk_dropped.get_or_create(&labels).get();
             self.backfill_oldest_slot.get_or_create(&labels).set(0);
             let _ = self.backfill_bytes.get_or_create(&labels).get();
+        }
+
+        // Writer mailbox depth / drops by priority class (R-10: p0 must stay 0).
+        for pri in WriterPriority::ALL {
+            let labels = ClassLabels {
+                class: pri.as_str().to_owned(),
+            };
+            self.writer_queue_depth.get_or_create(&labels).set(0);
+            let _ = self.writer_chunk_dropped.get_or_create(&labels).get();
         }
 
         self.disk_bytes.set(0);

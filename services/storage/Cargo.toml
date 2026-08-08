@@ -20,9 +20,15 @@ cc-bootstrap = { workspace = true }
 cc-config = { workspace = true }
 cc-proto = { workspace = true }
 cc-store = { workspace = true }
+cc-types = { workspace = true }
+futures = { workspace = true }
 prometheus-client = { workspace = true }
 serde = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 # CC-4H post-pass invariant logging via MetricsInvariantSink.
 tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

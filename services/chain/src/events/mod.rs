@@ -68,6 +68,14 @@ pub use ring::{EventRing, StoredEvent};
 /// gRPC `ErrorInfo.domain` for chain cursor errors.
 pub const ERROR_DOMAIN: &str = "eth.chain.v1";
 
+/// Response metadata key for `SubscribeEvents` live `session_id` (CC-44b).
+///
+/// `Event` does not carry `session_id`; storage reads this on the initial
+/// `SubscribeEvents` response so durable `WriteCursor` resume works after a
+/// live-from-tip subscribe (without it, resume would stamp `session_id=0` and
+/// re-attribute every reconnect as `CURSOR_UNKNOWN_SESSION`).
+pub const SESSION_ID_METADATA_KEY: &str = "x-cc-chain-session-id";
+
 /// Default event-ring **count** capacity (`chain.event_ring_events`; Architecture §4.3).
 ///
 /// Raised from Phase 1's 1 024 so the **byte ceiling binds first** at every

@@ -1,22 +1,34 @@
-//! `storage` service stub — Architecture §4.1, CC-01b / CC-4Ca.
+//! `storage` service — Architecture §4.1, CC-01b / CC-4Ca / CC-44b.
 //!
-//! Phase 0 surface: health + reflection + `GetInfo`. Real RPCs land in Phase 4+.
+//! Phase 0 surface: health + reflection + `GetInfo`. Real serve RPCs land later.
 //! Health peer: `chain` (§6.3).
 //!
 //! CC-4Ca: §10.1 metric families are registered between `init` and `serve`.
-//! This file is append-only thereafter (one task-spawn append per issue).
+//! CC-44b: single writer + write-behind task spawns (append-only here).
 
 mod metrics;
+mod write_behind;
+mod writer;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use cc_bootstrap::{PeerSpec, ServiceSpec, TelemetrySettings};
 use cc_config::ServiceConfig;
 use cc_proto::common::BuildInfo;
 use cc_proto::storage::storage_service_server::{StorageService, StorageServiceServer};
 use cc_proto::storage::{GetInfoRequest, GetInfoResponse};
+use cc_store::engine::{Durability, EngineOptions};
+use cc_store::{ConfigDigestInput, Store, StoreOpenOptions};
+use cc_types::{ChainConfig, Root};
 use metrics::StorageMetrics;
 use serde::Deserialize;
+use tokio::sync::watch;
 use tonic::service::Routes;
 use tonic::{Request, Response, Status};
+use write_behind::{WriteBehindConfig, spawn_write_behind};
+use writer::{WriterBounds, WriterFaults, load_write_cursor, spawn_writer};
 
 /// Process name and config slug (`config/storage.toml`, `CC_STORAGE_*`).
 const SERVICE: &str = "storage";
@@ -36,25 +48,49 @@ struct StorageConfig {
     ///
     /// Devnet/local default in `config/storage.toml` is `true`. Hoodi soak should
     /// set `CC_STORAGE_CHECK_INVARIANTS=false` (no multi-file profiles yet).
-    ///
-    /// Read when `Store::open` is wired into this process (still a Phase 0 stub).
     #[serde(default = "default_check_invariants")]
-    #[allow(dead_code)]
     check_invariants: bool,
-    /// Network identity for the CC-4D dangerous-knob guard.
+    /// On-disk store directory (CC-44b).
+    #[serde(default = "default_data_dir")]
+    data_dir: PathBuf,
+    /// Engine durability token (`immediate` | `paranoid`).
+    #[serde(default = "default_durability")]
+    durability: String,
+    /// Network identity for the CC-4D dangerous-knob guard / config digest.
     ///
     /// Required when [`Self::retention_override`] or [`StorageDebug::crash_point`]
     /// is set; must be neither Hoodi's nor mainnet's.
     #[serde(default)]
     genesis_validators_root: Option<String>,
     /// Compressed-retention venue override (CC-4D / Architecture §10.4).
-    ///
-    /// Devnet-only; refused at startup on Hoodi/mainnet GVR.
     #[serde(default)]
     retention_override: Option<RetentionOverride>,
     /// Fault-injection knobs (CC-4D / Architecture §2.5). Config, not env.
     #[serde(default)]
     debug: StorageDebug,
+    // ── CC-44b write-behind / writer ────────────────────────────────────────
+    /// One commit per N slots — **the loss bound** (§4.4). Default 1.
+    #[serde(default = "default_commit_slots")]
+    commit_slots: u64,
+    /// Flush after this many events without a slot boundary. Default 64.
+    #[serde(default = "default_commit_max_events")]
+    commit_max_events: usize,
+    /// Flush after this many milliseconds. Default 4000.
+    #[serde(default = "default_commit_max_latency_ms")]
+    commit_max_latency_ms: u64,
+    /// P0 channel bound (slots' commit units). Default 32; on full **block**.
+    #[serde(default = "default_writer_p0_bound")]
+    writer_p0_bound: usize,
+    /// P1 channel bound. Default 64; on full **block**.
+    #[serde(default = "default_writer_p1_bound")]
+    writer_p1_bound: usize,
+    /// P2 channel bound. Default 256; on full **drop newest**.
+    #[serde(default = "default_writer_p2_bound")]
+    writer_p2_bound: usize,
+    /// When false, skip opening the store / spawning writer + write-behind
+    /// (Phase 0 compose without a data volume). Default **true**.
+    #[serde(default = "default_enable_write_path")]
+    enable_write_path: bool,
 }
 
 /// `storage.retention_override` — non-spec retention windows for the discharging
@@ -77,7 +113,33 @@ struct StorageDebug {
 }
 
 fn default_check_invariants() -> bool {
-    // Prefer explicit TOML; this default is the local-dev / devnet polarity.
+    true
+}
+fn default_data_dir() -> PathBuf {
+    PathBuf::from("data/storage")
+}
+fn default_durability() -> String {
+    "immediate".to_owned()
+}
+fn default_commit_slots() -> u64 {
+    write_behind::DEFAULT_COMMIT_SLOTS
+}
+fn default_commit_max_events() -> usize {
+    write_behind::DEFAULT_COMMIT_MAX_EVENTS
+}
+fn default_commit_max_latency_ms() -> u64 {
+    4_000
+}
+fn default_writer_p0_bound() -> usize {
+    writer::WRITER_P0_BOUND
+}
+fn default_writer_p1_bound() -> usize {
+    writer::WRITER_P1_BOUND
+}
+fn default_writer_p2_bound() -> usize {
+    writer::WRITER_P2_BOUND
+}
+fn default_enable_write_path() -> bool {
     true
 }
 
@@ -110,6 +172,30 @@ impl StorageConfig {
                 .collect(),
             descriptor_set: cc_proto::FILE_DESCRIPTOR_SET,
             known_methods: vec![GET_INFO_METHOD.to_owned()],
+        }
+    }
+
+    fn writer_bounds(&self) -> WriterBounds {
+        WriterBounds {
+            p0: self.writer_p0_bound.max(1),
+            p1: self.writer_p1_bound.max(1),
+            p2: self.writer_p2_bound.max(1),
+        }
+    }
+
+    fn write_behind_config(&self) -> WriteBehindConfig {
+        let chain_uri = self
+            .service
+            .peers
+            .get("chain")
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| "http://127.0.0.1:9001".to_owned());
+        WriteBehindConfig {
+            chain_uri,
+            commit_slots: self.commit_slots.max(1),
+            commit_max_events: self.commit_max_events.max(1),
+            commit_max_latency: Duration::from_millis(self.commit_max_latency_ms.max(1)),
+            ..WriteBehindConfig::default()
         }
     }
 }
@@ -196,6 +282,30 @@ mod config_tests {
         cfg.check_dangerous_knobs()
             .expect("default storage.toml must start without GVR");
     }
+
+    /// CC-44 /5: `commit_slots = 1` with the loss-bound comment in storage.toml.
+    #[test]
+    fn commit_slots_default_is_one_loss_bound() {
+        let _g = env_lock();
+        unsafe {
+            std::env::remove_var("CC_STORAGE_COMMIT_SLOTS");
+        }
+        let path = storage_toml_path();
+        let cfg = cc_config::load_from::<StorageConfig>("storage", &path)
+            .unwrap_or_else(|e| panic!("load {}: {e}", path.display()));
+        assert_eq!(cfg.commit_slots, 1, "commit_slots IS the loss bound (§4.4)");
+        assert_eq!(cfg.commit_max_events, 64);
+        assert_eq!(cfg.commit_max_latency_ms, 4_000);
+        assert_eq!(cfg.writer_p0_bound, 32);
+        assert_eq!(cfg.writer_p1_bound, 64);
+        assert_eq!(cfg.writer_p2_bound, 256);
+        // Comment presence (loss-bound wording from §4.4).
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("this value IS the loss bound"),
+            "storage.toml must carry the §4.4 loss-bound comment verbatim-ish"
+        );
+    }
 }
 
 /// Phase 0 stub: only `GetInfo` is implemented.
@@ -219,6 +329,73 @@ impl StorageService for StorageStub {
     }
 }
 
+/// Open the store under `data_dir` with durability + digest from config.
+fn open_store(cfg: &StorageConfig) -> anyhow::Result<Store> {
+    let durability = Durability::parse(&cfg.durability)
+        .map_err(|e| anyhow::anyhow!("durability: {e}"))?;
+    let gvr = parse_gvr(cfg.genesis_validators_root.as_deref())?;
+    // Digest inputs: use mainnet-scalar defaults until a network_config path lands.
+    // Fork epochs / BLOB_SCHEDULE come from a minimal mainnet-shaped ChainConfig
+    // so a fresh store opens without a YAML fixture dependency.
+    let chain = ChainConfig::mainnet_like_for_digest();
+    let digest_input = ConfigDigestInput::with_mainnet_scalars(chain, gvr);
+    let opts = StoreOpenOptions::from_config(
+        EngineOptions::default().with_durability(durability),
+        &digest_input,
+    )?
+    .with_check_invariants(cfg.check_invariants);
+    Store::open(&cfg.data_dir, opts).map_err(|e| anyhow::anyhow!("store open: {e}"))
+}
+
+fn parse_gvr(s: Option<&str>) -> anyhow::Result<Root> {
+    let Some(raw) = s.filter(|s| !s.is_empty()) else {
+        // Devnet default: zero root when unset (local write-path bring-up).
+        return Ok(Root::ZERO);
+    };
+    let hex = raw.strip_prefix("0x").unwrap_or(raw);
+    if hex.len() != 64 {
+        anyhow::bail!("genesis_validators_root must be 32-byte hex, got len {}", hex.len());
+    }
+    let mut arr = [0u8; 32];
+    for i in 0..32 {
+        arr[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|e| anyhow::anyhow!("genesis_validators_root hex: {e}"))?;
+    }
+    Ok(Root::from_array(arr))
+}
+
+/// Minimal chain config for the config-digest input when no network YAML is set.
+trait MainnetLikeDigest {
+    fn mainnet_like_for_digest() -> Self;
+}
+
+impl MainnetLikeDigest for ChainConfig {
+    fn mainnet_like_for_digest() -> Self {
+        // Prefer loading the committed Hoodi fixture when present; fall back to
+        // a compile-time skeleton so unit tests / bare binaries still open.
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/types/tests/fixtures/hoodi-config.yaml");
+        if fixture.is_file()
+            && let Ok(cfg) = ChainConfig::from_yaml_file(&fixture)
+        {
+            return cfg;
+        }
+        // Last-resort skeleton (digest is still well-defined).
+        match ChainConfig::from_yaml_str(include_str!(
+            "../../../crates/types/tests/fixtures/hoodi-config.yaml"
+        )) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                // Bundle is compile-time; a parse failure is a shipping bug.
+                tracing::error!(error = %e, "bundled hoodi-config.yaml failed to parse");
+                // Return a zeroed-epoch skeleton via re-parse of empty is impossible;
+                // panic is process-fatal at startup before bind (same as open fail).
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Fail before any bind (CC-09/2): load config, then telemetry, then serve.
@@ -234,13 +411,61 @@ async fn main() -> anyhow::Result<()> {
             "storage.retention_override active (devnet-only compressed retention)"
         );
     }
-    if let Some(ref cp) = cfg.debug.crash_point {
-        if !cp.is_empty() {
-            tracing::warn!(crash_point = %cp, "storage.debug.crash_point active (devnet-only)");
-        }
+    if let Some(ref cp) = cfg.debug.crash_point
+        && !cp.is_empty()
+    {
+        tracing::warn!(crash_point = %cp, "storage.debug.crash_point active (devnet-only)");
     }
     // CC-4Ca: §10.1 families into bs.registry between init and serve (Phase 0 seam).
-    let _storage_metrics = StorageMetrics::register(&mut bs.registry);
+    let storage_metrics = StorageMetrics::register(&mut bs.registry);
+
+    // CC-44b: open store + spawn writer (process-fatal) + write-behind.
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    // Keep shutdown sender alive for process lifetime (SIGTERM path is serve's).
+    let _shutdown_keep = _shutdown_tx;
+    if cfg.enable_write_path {
+        match open_store(&cfg) {
+            Ok(store) => {
+                let engine = Arc::new(store.into_engine());
+                // Only a non-zero session_id is resume-valid (O1 / write_behind::is_resumable).
+                let initial_cursor = load_write_cursor(&engine)
+                    .ok()
+                    .flatten()
+                    .filter(write_behind::is_resumable);
+                let faults = WriterFaults::default();
+                let writer = spawn_writer(
+                    Arc::clone(&engine),
+                    storage_metrics.clone(),
+                    cfg.writer_bounds(),
+                    faults,
+                    shutdown_rx.clone(),
+                    true, // process-fatal on panic (§1.5); write-behind is not
+                );
+                // Write-behind: respawn-on-panic with backoff (counter-example to writer).
+                let (_wb, _wb_respawns) = spawn_write_behind(
+                    cfg.write_behind_config(),
+                    writer,
+                    storage_metrics.clone(),
+                    initial_cursor,
+                    shutdown_rx,
+                );
+                tracing::info!(
+                    data_dir = %cfg.data_dir.display(),
+                    commit_slots = cfg.commit_slots,
+                    "writer + write-behind spawned"
+                );
+                // Hold engine for process lifetime (writer holds Arc).
+                std::mem::forget(engine);
+            }
+            Err(e) => {
+                // Fail closed on open errors when write path is enabled.
+                return Err(e);
+            }
+        }
+    } else {
+        tracing::warn!("enable_write_path=false — writer/write-behind not started");
+    }
+
     let routes = Routes::default().add_service(StorageServiceServer::new(StorageStub));
     cc_bootstrap::serve(bs, cfg.service_spec(), routes).await?;
     Ok(())

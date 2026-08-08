@@ -78,7 +78,7 @@ pub use epoch_context::{EpochContext, EpochContextStore};
 pub use events::{
     DEFAULT_RING_BYTES, DEFAULT_RING_CAPACITY, DEFAULT_SUBSCRIBER_QUEUE_CAPACITY, ERROR_DOMAIN,
     EventInput, EventSubscription, EventsConfig, EventsHandle, MAX_EVENT_PAYLOAD_BYTES, Occupancy,
-    REASON_CURSOR_TOO_OLD, REASON_CURSOR_UNKNOWN_SESSION,
+    REASON_CURSOR_TOO_OLD, REASON_CURSOR_UNKNOWN_SESSION, SESSION_ID_METADATA_KEY,
 };
 pub use head::{HeadSnapshot, HeadSnapshotStore};
 pub use import::{
