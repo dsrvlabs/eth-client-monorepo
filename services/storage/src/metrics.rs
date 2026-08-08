@@ -177,7 +177,10 @@ impl PrunePass {
     ];
 }
 
-/// `protocol` label values for serve families (§10.1) — cardinality 5.
+/// `protocol` label values for serve families (§10.1 + CC-4I).
+///
+/// Base five from Architecture §10.1; CC-4I appends the Phase 6 historical
+/// surface so `cc_storage_serve_seconds{protocol}` covers the 10–50 ms budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ServeProtocol {
     BlocksByRange,
@@ -185,6 +188,14 @@ pub(crate) enum ServeProtocol {
     BlocksByHead,
     ColumnsByRange,
     ColumnsByRoot,
+    /// `GetHistoricalBlock` by root (CC-4I).
+    HistoricalBlockByRoot,
+    /// `GetHistoricalBlock` by slot (CC-4I).
+    HistoricalBlockBySlot,
+    /// `GetSnapshotState` stream (CC-4I).
+    SnapshotState,
+    /// `GetFinalizedCheckpointHistory` (CC-4I).
+    FinalizedCheckpointHistory,
 }
 
 impl ServeProtocol {
@@ -197,16 +208,24 @@ impl ServeProtocol {
             Self::BlocksByHead => "blocks_by_head",
             Self::ColumnsByRange => "columns_by_range",
             Self::ColumnsByRoot => "columns_by_root",
+            Self::HistoricalBlockByRoot => "historical_block_by_root",
+            Self::HistoricalBlockBySlot => "historical_block_by_slot",
+            Self::SnapshotState => "snapshot_state",
+            Self::FinalizedCheckpointHistory => "finalized_checkpoint_history",
         }
     }
 
     /// All variants (seed + tests).
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::BlocksByRange,
         Self::BlocksByRoot,
         Self::BlocksByHead,
         Self::ColumnsByRange,
         Self::ColumnsByRoot,
+        Self::HistoricalBlockByRoot,
+        Self::HistoricalBlockBySlot,
+        Self::SnapshotState,
+        Self::FinalizedCheckpointHistory,
     ];
 }
 
@@ -1136,7 +1155,7 @@ mod tests {
         // §10.1 closed domains with documented cardinalities.
         assert_eq!(StorageClass::ALL.len(), 5);
         assert_eq!(PrunePass::ALL.len(), 5);
-        assert_eq!(ServeProtocol::ALL.len(), 5);
+        assert_eq!(ServeProtocol::ALL.len(), 9);
         assert_eq!(ServeResult::ALL.len(), 4);
         assert_eq!(RestartPhase::ALL.len(), 7);
         assert_eq!(SnapshotPhase::ALL.len(), 4);
@@ -1170,6 +1189,10 @@ mod tests {
                 "blocks_by_head",
                 "columns_by_range",
                 "columns_by_root",
+                "historical_block_by_root",
+                "historical_block_by_slot",
+                "snapshot_state",
+                "finalized_checkpoint_history",
             ])
         );
 

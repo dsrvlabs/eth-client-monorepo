@@ -45,23 +45,41 @@
 //! serve-path ceiling. Over `serve_queue_timeout` the semaphore answers
 //! `RESOURCE_EXHAUSTED`, never an empty success.
 //!
+//! # SEC-4I-1 — `GetSnapshotState` stream admission
+//!
+//! A Hoodi snapshot is ~175–200 MiB (well above `serve_buffer_bytes`). Concurrent
+//! snapshot streams must not share the multi-block serve pool's 4-permit budget
+//! as if each response were ≤ 64 MiB. Instead:
+//!
+//! 1. A **dedicated** `snapshot_permits` semaphore (default **1**) admits at most
+//!    one in-flight snapshot stream.
+//! 2. The permit is **held for the stream lifetime** (moved into the stream), not
+//!    dropped at handler return — so a slow consumer keeps concurrency capped.
+//! 3. Materialised size is fail-closed against [`MAX_SNAPSHOT_BYTES`] (same hard
+//!    cap as the write path), analogous to the serve buffer ceiling.
+//!
 //! # Anti-truncation on the wire (CC-43 /3)
 //!
 //! A response that would hit the buffer ceiling **stops at the previous block
 //! boundary**, never mid-block. Column range/root responses emit whole
 //! `columns_for_block` units only.
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use cc_proto::common::BuildInfo;
 use cc_proto::storage::storage_service_server::StorageService;
 use cc_proto::storage::{
-    BackfillProgress as ProtoBackfillProgress, GetBlocksByRangeRequest, GetBlocksByRootRequest,
-    GetBlocksResponse, GetColumnsByRangeRequest, GetColumnsByRootRequest, GetColumnsResponse,
-    GetHistoricalBlockRequest, GetHistoricalBlockResponse, GetInfoRequest, GetInfoResponse,
-    GetSnapshotStateRequest, PutBackfillBatchRequest, PutBackfillBatchResponse, ServeWindow,
-    SlotRange as ProtoSlotRange, StateChunk, WatchServeWindowRequest, BlockSsz, ColumnSsz,
+    BackfillProgress as ProtoBackfillProgress, FinalizedCheckpoint, GetBlocksByRangeRequest,
+    GetBlocksByRootRequest, GetBlocksResponse, GetColumnsByRangeRequest, GetColumnsByRootRequest,
+    GetColumnsResponse, GetFinalizedCheckpointHistoryRequest,
+    GetFinalizedCheckpointHistoryResponse, GetHistoricalBlockRequest, GetHistoricalBlockResponse,
+    GetInfoRequest, GetInfoResponse, GetSnapshotStateRequest, PutBackfillBatchRequest,
+    PutBackfillBatchResponse, ServeWindow, SlotRange as ProtoSlotRange, StateChunk,
+    WatchServeWindowRequest, BlockSsz, ColumnSsz,
+    get_historical_block_request::Id as HistoricalBlockId,
 };
 use cc_store::canonical::put_canonical;
 use cc_store::engine::Engine;
@@ -72,14 +90,19 @@ use cc_store::meta::{
 use cc_store::{
     blocks_by_range, columns_by_range, columns_for_block, get_block_by_root, get_column_by_root,
     load_split, put_block, put_column, Root, Slot, SszDecode, SszEncode, StoreError,
-    MAX_BLOCKS_BY_RANGE, MAX_COLUMNS_BY_RANGE_SLOTS,
+    MAX_BLOCKS_BY_RANGE, MAX_COLUMNS_BY_RANGE_SLOTS, MAX_SNAPSHOT_BYTES,
 };
+use futures::Stream;
 use futures::StreamExt;
 use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 use tokio_stream::wrappers::WatchStream;
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status};
 
+use crate::history::{
+    finalized_checkpoint_history, historical_block_by_root, historical_block_by_slot,
+    not_available_status, snapshot_state_at, SnapshotLookup, DEFAULT_STATE_CHUNK_BYTES,
+};
 use crate::metrics::{
     ProtocolLabels, ServeLabels, ServeProtocol, ServeResult, StorageMetrics,
 };
@@ -89,6 +112,8 @@ use crate::writer::{MetaUpdate, WriterError, WriterHandle};
 pub(crate) const DEFAULT_SERVE_BUFFER_BYTES: u64 = 64 * 1024 * 1024;
 /// Default admission permits (4 → 256 MiB serve-path ceiling with 64 MiB buffers).
 pub(crate) const DEFAULT_SERVE_PERMITS: usize = 4;
+/// Default concurrent `GetSnapshotState` streams (SEC-4I-1: one full state at a time).
+pub(crate) const DEFAULT_SNAPSHOT_PERMITS: usize = 1;
 /// Default queue wait before `RESOURCE_EXHAUSTED` (2 s).
 pub(crate) const DEFAULT_SERVE_QUEUE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -119,6 +144,14 @@ pub(crate) struct ServeConfig {
     pub buffer_bytes: u64,
     /// Admission semaphore permits.
     pub permits: usize,
+    /// Concurrent `GetSnapshotState` streams (SEC-4I-1; default **1**).
+    pub snapshot_permits: usize,
+    /// Hard size budget for one materialised snapshot (SEC-4I-1).
+    ///
+    /// Default [`MAX_SNAPSHOT_BYTES`] — same fail-closed cap as the write path.
+    /// Analogous to `buffer_bytes` on multi-block serve; a state is atomic so
+    /// oversize is refused entirely (no anti-truncation partial success).
+    pub snapshot_buffer_bytes: u64,
     /// Max wait for a permit before `RESOURCE_EXHAUSTED`.
     pub queue_timeout: Duration,
     /// Key materialisation mode (default [`MaterialiseMode::AdmissionTime`]).
@@ -130,6 +163,8 @@ impl Default for ServeConfig {
         Self {
             buffer_bytes: DEFAULT_SERVE_BUFFER_BYTES,
             permits: DEFAULT_SERVE_PERMITS,
+            snapshot_permits: DEFAULT_SNAPSHOT_PERMITS,
+            snapshot_buffer_bytes: MAX_SNAPSHOT_BYTES,
             queue_timeout: DEFAULT_SERVE_QUEUE_TIMEOUT,
             materialise_mode: MaterialiseMode::AdmissionTime,
         }
@@ -153,6 +188,8 @@ pub(crate) struct StorageServer {
     metrics: StorageMetrics,
     cfg: ServeConfig,
     admits: Arc<Semaphore>,
+    /// Dedicated admit pool for `GetSnapshotState` (SEC-4I-1; default 1 permit).
+    snapshot_admits: Arc<Semaphore>,
     /// Latest serve window; `WatchServeWindow` streams from this.
     window_tx: watch::Sender<ServeWindow>,
     /// Keep at least one receiver alive so `send_replace` always has a subscriber
@@ -179,12 +216,14 @@ impl StorageServer {
     /// Construct the Phase 0-only stub (no store) — used when write path is off.
     pub(crate) fn stub(metrics: StorageMetrics, cfg: ServeConfig) -> Self {
         let permits = cfg.permits.max(1);
+        let snap_permits = cfg.snapshot_permits.max(1);
         let (window_tx, window_rx) = watch::channel(empty_window());
         Self {
             engine: None,
             writer: None,
             metrics,
             admits: Arc::new(Semaphore::new(permits)),
+            snapshot_admits: Arc::new(Semaphore::new(snap_permits)),
             cfg,
             window_tx,
             _window_rx: window_rx,
@@ -201,6 +240,7 @@ impl StorageServer {
         cfg: ServeConfig,
     ) -> Self {
         let permits = cfg.permits.max(1);
+        let snap_permits = cfg.snapshot_permits.max(1);
         let initial = load_window_or_default(&engine);
         let (window_tx, window_rx) = watch::channel(initial);
         Self {
@@ -208,6 +248,7 @@ impl StorageServer {
             writer,
             metrics,
             admits: Arc::new(Semaphore::new(permits)),
+            snapshot_admits: Arc::new(Semaphore::new(snap_permits)),
             cfg,
             window_tx,
             _window_rx: window_rx,
@@ -272,6 +313,47 @@ impl StorageServer {
                     "serve admission queue timeout after {} ms (permits={})",
                     self.cfg.queue_timeout.as_millis(),
                     self.cfg.permits
+                )))
+            }
+        }
+    }
+
+    /// Acquire a **snapshot** admission permit (SEC-4I-1) or `RESOURCE_EXHAUSTED`.
+    ///
+    /// Separate from the multi-block serve pool: one ~200 MiB state stream must
+    /// not be counted as a 64 MiB serve response.
+    async fn admit_snapshot(
+        &self,
+        protocol: ServeProtocol,
+    ) -> Result<OwnedSemaphorePermit, Status> {
+        let started = Instant::now();
+        match tokio::time::timeout(
+            self.cfg.queue_timeout,
+            Arc::clone(&self.snapshot_admits).acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => {
+                self.metrics
+                    .serve_admission_wait_seconds
+                    .observe(started.elapsed().as_secs_f64());
+                Ok(permit)
+            }
+            Ok(Err(_)) => {
+                self.record_serve(protocol, ServeResult::RateLimited, started, 0);
+                Err(Status::resource_exhausted(
+                    "snapshot admission semaphore closed",
+                ))
+            }
+            Err(_) => {
+                self.metrics
+                    .serve_admission_wait_seconds
+                    .observe(started.elapsed().as_secs_f64());
+                self.record_serve(protocol, ServeResult::RateLimited, started, 0);
+                Err(Status::resource_exhausted(format!(
+                    "snapshot admission queue timeout after {} ms (snapshot_permits={})",
+                    self.cfg.queue_timeout.as_millis(),
+                    self.cfg.snapshot_permits
                 )))
             }
         }
@@ -703,28 +785,192 @@ impl StorageService for StorageServer {
 
     async fn get_historical_block(
         &self,
-        _request: Request<GetHistoricalBlockRequest>,
+        request: Request<GetHistoricalBlockRequest>,
     ) -> Result<Response<GetHistoricalBlockResponse>, Status> {
-        // CC-4I implements this method.
-        Err(Status::unimplemented(
-            "GetHistoricalBlock is implemented by CC-4I",
-        ))
+        let started = Instant::now();
+        let req = request.into_inner();
+        let id = req
+            .id
+            .ok_or_else(|| Status::invalid_argument("GetHistoricalBlock.id is required"))?;
+
+        let (protocol, block) = match id {
+            HistoricalBlockId::Root(bytes) => {
+                let protocol = ServeProtocol::HistoricalBlockByRoot;
+                let _permit = self.admit(protocol).await?;
+                let root = parse_root(&bytes)?;
+                let engine = self.engine()?;
+                let materialise_start = Instant::now();
+                let block = historical_block_by_root(engine, &root).map_err(store_status)?;
+                self.observe_read_txn(materialise_start);
+                (protocol, block)
+            }
+            HistoricalBlockId::Slot(slot) => {
+                let protocol = ServeProtocol::HistoricalBlockBySlot;
+                let _permit = self.admit(protocol).await?;
+                let engine = self.engine()?;
+                let materialise_start = Instant::now();
+                let block =
+                    historical_block_by_slot(engine, Slot::new(slot)).map_err(store_status)?;
+                self.observe_read_txn(materialise_start);
+                (protocol, block)
+            }
+        };
+
+        let Some(block) = block else {
+            self.record_serve(protocol, ServeResult::ResourceUnavailable, started, 0);
+            return Err(Status::not_found("historical block not found"));
+        };
+        let bytes = block.ssz.len() as u64;
+        self.record_serve(protocol, ServeResult::Ok, started, bytes);
+        Ok(Response::new(GetHistoricalBlockResponse {
+            ssz: block.ssz,
+            slot: block.slot.as_u64(),
+            root: block.root.as_slice().to_vec(),
+        }))
     }
 
     async fn get_snapshot_state(
         &self,
-        _request: Request<GetSnapshotStateRequest>,
+        request: Request<GetSnapshotStateRequest>,
     ) -> Result<Response<BoxStream<StateChunk>>, Status> {
-        // CC-4I implements this method.
-        Err(Status::unimplemented(
-            "GetSnapshotState is implemented by CC-4I",
-        ))
+        let protocol = ServeProtocol::SnapshotState;
+        let started = Instant::now();
+        // SEC-4I-1: dedicated pool; permit must outlive the stream (moved in).
+        let permit = self.admit_snapshot(protocol).await?;
+        let slot = Slot::new(request.into_inner().slot);
+        let engine = self.engine()?;
+        let materialise_start = Instant::now();
+        // Materialise full snapshot under one short read txn, then drop it
+        // before any chunk reaches the socket (long-reader rule / CRD-6).
+        let lookup = snapshot_state_at(engine, slot).map_err(store_status)?;
+        self.observe_read_txn(materialise_start);
+
+        match lookup {
+            SnapshotLookup::NotAvailable { slot, ring } => {
+                self.record_serve(protocol, ServeResult::ResourceUnavailable, started, 0);
+                // Permit drops here — miss path does not hold concurrency.
+                drop(permit);
+                // Typed NOT_AVAILABLE — no process_slots / replay (CC-4I /2).
+                Err(not_available_status(slot, &ring))
+            }
+            SnapshotLookup::Available(ssz) => {
+                let bytes = ssz.len() as u64;
+                let budget = self.cfg.snapshot_buffer_bytes.min(MAX_SNAPSHOT_BYTES);
+                // Size budget (serve-path analogue): fail closed. A state is
+                // atomic — no anti-truncation partial success.
+                if bytes > budget {
+                    self.record_serve(protocol, ServeResult::Error, started, 0);
+                    drop(permit);
+                    return Err(Status::resource_exhausted(format!(
+                        "snapshot at slot {} is {bytes} bytes; exceeds serve size budget \
+                         ({budget})",
+                        slot.as_u64()
+                    )));
+                }
+                self.record_serve(protocol, ServeResult::Ok, started, bytes);
+                // Progressive chunk stream: one owned SSZ buffer + one chunk at a
+                // time (peak ≈ 1× state + chunk), permit held until stream drop.
+                let stream = SnapshotChunkStream::new(ssz, DEFAULT_STATE_CHUNK_BYTES, permit);
+                Ok(Response::new(Box::pin(stream) as BoxStream<StateChunk>))
+            }
+        }
+    }
+
+    async fn get_finalized_checkpoint_history(
+        &self,
+        _request: Request<GetFinalizedCheckpointHistoryRequest>,
+    ) -> Result<Response<GetFinalizedCheckpointHistoryResponse>, Status> {
+        let protocol = ServeProtocol::FinalizedCheckpointHistory;
+        let started = Instant::now();
+        let _permit = self.admit(protocol).await?;
+        let engine = self.engine()?;
+        let materialise_start = Instant::now();
+        let hist = finalized_checkpoint_history(engine).map_err(store_status)?;
+        self.observe_read_txn(materialise_start);
+
+        let checkpoints: Vec<FinalizedCheckpoint> = hist
+            .into_iter()
+            .map(|c| FinalizedCheckpoint {
+                epoch: c.epoch,
+                root: c.root.as_slice().to_vec(),
+            })
+            .collect();
+        // Small response; byte count is the sum of root lengths.
+        let bytes: u64 = checkpoints.iter().map(|c| c.root.len() as u64).sum();
+        self.record_serve(protocol, ServeResult::Ok, started, bytes);
+        Ok(Response::new(GetFinalizedCheckpointHistoryResponse {
+            checkpoints,
+        }))
     }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Progressive `StateChunk` stream that holds the snapshot admit permit for its
+/// full lifetime (SEC-4I-1).
+///
+/// Materialises one chunk at a time from a single owned SSZ buffer so peak RSS
+/// is ≈ 1× state + one chunk, not a second full copy of pre-built chunks. The
+/// permit drops when the stream is dropped (consumed, cancelled, or error).
+struct SnapshotChunkStream {
+    ssz: Vec<u8>,
+    offset: usize,
+    chunk_bytes: usize,
+    done: bool,
+    /// Held for the stream lifetime — do not drop early.
+    _permit: OwnedSemaphorePermit,
+}
+
+impl SnapshotChunkStream {
+    fn new(ssz: Vec<u8>, chunk_bytes: usize, permit: OwnedSemaphorePermit) -> Self {
+        Self {
+            ssz,
+            offset: 0,
+            chunk_bytes: chunk_bytes.max(1),
+            done: false,
+            _permit: permit,
+        }
+    }
+}
+
+impl Stream for SnapshotChunkStream {
+    type Item = Result<StateChunk, Status>;
+
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.done {
+            return Poll::Ready(None);
+        }
+        let total = this.ssz.len();
+        if total == 0 {
+            this.done = true;
+            this.ssz = Vec::new();
+            return Poll::Ready(Some(Ok(StateChunk {
+                data: Vec::new(),
+                offset: 0,
+                last: true,
+            })));
+        }
+        if this.offset >= total {
+            this.done = true;
+            this.ssz = Vec::new();
+            return Poll::Ready(None);
+        }
+        let end = (this.offset + this.chunk_bytes).min(total);
+        let last = end == total;
+        let data = this.ssz[this.offset..end].to_vec();
+        let offset = this.offset as u64;
+        this.offset = end;
+        if last {
+            this.done = true;
+            // Free the bulk body once the last chunk has its own copy.
+            this.ssz = Vec::new();
+        }
+        Poll::Ready(Some(Ok(StateChunk { data, offset, last })))
+    }
+}
 
 fn empty_window() -> ServeWindow {
     ServeWindow {
@@ -1136,6 +1382,219 @@ mod tests {
             holes: vec![],
         });
         s
+    }
+
+    // ── CC-4I historical surface — RPC-level (no gateway service) ──────────
+
+    #[tokio::test]
+    async fn historical_block_rpc_by_root_and_slot_byte_identical() {
+        use cc_proto::storage::get_historical_block_request::Id;
+        let (dir, eng) = open_engine("hist-rpc-block");
+        let seeded = seed_blocks(&eng, 300, 1);
+        let (root, ssz) = &seeded[0];
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+
+        let by_root = srv
+            .get_historical_block(Request::new(GetHistoricalBlockRequest {
+                id: Some(Id::Root(root.as_slice().to_vec())),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(sha256(&by_root.ssz), sha256(ssz));
+        assert_eq!(by_root.slot, 300);
+        assert_eq!(by_root.root, root.as_slice());
+
+        let by_slot = srv
+            .get_historical_block(Request::new(GetHistoricalBlockRequest {
+                id: Some(Id::Slot(300)),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(sha256(&by_slot.ssz), sha256(ssz));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn snapshot_state_rpc_streams_and_miss_is_not_available() {
+        use crate::history::{process_slots_invocations, reset_process_slots_invocations};
+        use cc_proto::error_info_from_status;
+        use cc_store::put_snapshot;
+        use futures::StreamExt;
+
+        let (dir, eng) = open_engine("hist-rpc-snap");
+        let mut fixture = b"rpc-snapshot-body".to_vec();
+        fixture.resize(64 * 1024 + 9, 0x5A);
+        put_snapshot(&eng, Slot::new(1024), &fixture, 4).unwrap();
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+
+        let mut stream = srv
+            .get_snapshot_state(Request::new(GetSnapshotStateRequest { slot: 1024 }))
+            .await
+            .unwrap()
+            .into_inner();
+        let mut assembled = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let c = chunk.unwrap();
+            assert_eq!(c.offset as usize, assembled.len());
+            assembled.extend_from_slice(&c.data);
+            if c.last {
+                break;
+            }
+        }
+        assert_eq!(sha256(&assembled), sha256(&fixture));
+        // SEC-4I-1: release the snapshot permit before the next admit.
+        drop(stream);
+
+        reset_process_slots_invocations();
+        let err = match srv
+            .get_snapshot_state(Request::new(GetSnapshotStateRequest { slot: 1 }))
+            .await
+        {
+            Ok(_) => panic!("expected NOT_AVAILABLE for slot outside ring"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        let info = error_info_from_status(&err).unwrap().unwrap();
+        assert_eq!(info.reason, "NOT_AVAILABLE");
+        assert_eq!(process_slots_invocations(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SEC-4I-1: open stream holds the snapshot permit; a concurrent admit times out.
+    #[tokio::test]
+    async fn snapshot_state_holds_permit_for_stream_lifetime() {
+        use cc_store::put_snapshot;
+        use futures::StreamExt;
+
+        let (dir, eng) = open_engine("hist-snap-permit");
+        put_snapshot(&eng, Slot::new(64), b"held-stream-body", 4).unwrap();
+        let cfg = ServeConfig {
+            snapshot_permits: 1,
+            queue_timeout: Duration::from_millis(50),
+            ..ServeConfig::default()
+        };
+        let srv = server_with(Arc::clone(&eng), cfg);
+
+        // First stream succeeds and is deliberately not fully drained.
+        let mut held = srv
+            .get_snapshot_state(Request::new(GetSnapshotStateRequest { slot: 64 }))
+            .await
+            .expect("first snapshot admit must succeed")
+            .into_inner();
+        // Pull one chunk so the stream is live; permit still held.
+        let first = held.next().await.expect("chunk").unwrap();
+        assert!(!first.data.is_empty() || first.last);
+
+        // Second concurrent admit must hit the 1-permit ceiling.
+        let err = match srv
+            .get_snapshot_state(Request::new(GetSnapshotStateRequest { slot: 64 }))
+            .await
+        {
+            Ok(_) => panic!("second concurrent GetSnapshotState must be rate-limited"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code(), tonic::Code::ResourceExhausted);
+
+        // Drop the held stream → permit released → third admit succeeds.
+        drop(held);
+        let mut again = srv
+            .get_snapshot_state(Request::new(GetSnapshotStateRequest { slot: 64 }))
+            .await
+            .expect("admit after stream drop must succeed")
+            .into_inner();
+        let mut assembled = Vec::new();
+        while let Some(chunk) = again.next().await {
+            let c = chunk.unwrap();
+            assembled.extend_from_slice(&c.data);
+            if c.last {
+                break;
+            }
+        }
+        assert_eq!(assembled, b"held-stream-body");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SEC-4I-1: materialised snapshot above the configured size budget is refused.
+    #[tokio::test]
+    async fn snapshot_state_refuses_over_size_budget() {
+        use cc_store::put_snapshot;
+
+        let (dir, eng) = open_engine("hist-snap-budget");
+        let body = vec![0xCDu8; 1024];
+        put_snapshot(&eng, Slot::new(32), &body, 4).unwrap();
+
+        let cfg = ServeConfig {
+            snapshot_buffer_bytes: 512, // below body len
+            ..ServeConfig::default()
+        };
+        let srv = server_with(Arc::clone(&eng), cfg);
+        let err = match srv
+            .get_snapshot_state(Request::new(GetSnapshotStateRequest { slot: 32 }))
+            .await
+        {
+            Ok(_) => panic!("over-budget snapshot must be refused"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code(), tonic::Code::ResourceExhausted);
+        assert!(
+            err.message().contains("exceeds serve size budget"),
+            "message={}",
+            err.message()
+        );
+
+        // Same body under the default budget (MAX_SNAPSHOT_BYTES) streams fine.
+        let srv_ok = server_with(Arc::clone(&eng), ServeConfig::default());
+        assert!(srv_ok
+            .get_snapshot_state(Request::new(GetSnapshotStateRequest { slot: 32 }))
+            .await
+            .is_ok());
+        assert_eq!(
+            ServeConfig::default().snapshot_buffer_bytes,
+            MAX_SNAPSHOT_BYTES,
+            "default snapshot budget tracks write-path MAX_SNAPSHOT_BYTES"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn finalized_checkpoint_history_rpc_returns_seeded() {
+        use cc_store::meta::{ForkChoiceScalars, KEY_FC_SCALARS, TABLE_META};
+        use cc_store::SszEncode;
+        use cc_types::{Checkpoint, Epoch};
+
+        let (dir, eng) = open_engine("hist-rpc-fc");
+        let root = root_n(0xCD);
+        let fc = ForkChoiceScalars {
+            time: 1,
+            proposer_boost_root: Root::ZERO,
+            justified: Checkpoint::default(),
+            finalized: Checkpoint {
+                epoch: Epoch::new(7),
+                root,
+            },
+            unrealized_justified: Checkpoint::default(),
+            unrealized_finalized: Checkpoint::default(),
+            head_root: root,
+            head_slot: Slot::new(224),
+        };
+        let mut b = eng.batch();
+        b.put(TABLE_META, KEY_FC_SCALARS.as_bytes(), &fc.as_ssz_bytes());
+        eng.commit(b).unwrap();
+
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+        let resp = srv
+            .get_finalized_checkpoint_history(Request::new(
+                GetFinalizedCheckpointHistoryRequest {},
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(resp.checkpoints.len(), 1);
+        assert_eq!(resp.checkpoints[0].epoch, 7);
+        assert_eq!(resp.checkpoints[0].root, root.as_slice());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1648,12 +2107,14 @@ mod tests {
     }
 
     #[test]
-    fn known_rpc_count_nine() {
-        // Grep-equivalent for acceptance criterion.
+    fn known_rpc_count_ten() {
+        // CC-4F declared nine; CC-4I appends GetFinalizedCheckpointHistory → 10.
         let proto = include_str!("../../../proto/eth/storage/v1/storage.proto");
         let count = proto.lines().filter(|l| l.trim_start().starts_with("rpc ")).count();
-        assert_eq!(count, 9, "storage.proto must declare 9 RPCs");
+        assert_eq!(count, 10, "storage.proto must declare 10 RPCs (9 + CC-4I history)");
         assert!(proto.contains("stream ServeWindow"));
+        assert!(proto.contains("GetFinalizedCheckpointHistory"));
+        assert!(proto.contains("stream StateChunk"));
     }
 
     /// Compile-time: StorageServiceServer wraps our type.

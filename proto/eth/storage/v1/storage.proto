@@ -34,6 +34,9 @@ service StorageService {
   // CC-4I — Phase 6 read surface. Declared here; implemented by CC-4I.
   rpc GetHistoricalBlock(GetHistoricalBlockRequest) returns (GetHistoricalBlockResponse);
   rpc GetSnapshotState(GetSnapshotStateRequest) returns (stream StateChunk);
+  // Additive within eth.storage.v1 (CC-4I): finalized-checkpoint history.
+  rpc GetFinalizedCheckpointHistory(GetFinalizedCheckpointHistoryRequest)
+      returns (GetFinalizedCheckpointHistoryResponse);
 }
 
 message GetInfoRequest {}
@@ -189,4 +192,25 @@ message StateChunk {
   bytes data = 1;
   uint64 offset = 2;
   bool last = 3;
+}
+
+// ---------------------------------------------------------------------------
+// CC-4I additive — finalized-checkpoint history
+// ---------------------------------------------------------------------------
+
+// Empty request: return every finalized checkpoint storage can name from
+// meta ForkChoiceScalars and the snapshot ring (no replay).
+message GetFinalizedCheckpointHistoryRequest {}
+
+// Finalized checkpoint identity (epoch + root). Same field shape as
+// eth.chain.v1.Checkpoint; kept local so storage does not import chain.
+message FinalizedCheckpoint {
+  uint64 epoch = 1;
+  bytes root = 2; // 32 B
+}
+
+message GetFinalizedCheckpointHistoryResponse {
+  // Ascending by epoch. Current FC finalized (when present) plus one entry
+  // per snapshot-ring slot whose canonical root is known.
+  repeated FinalizedCheckpoint checkpoints = 1;
 }

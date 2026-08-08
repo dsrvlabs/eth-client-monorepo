@@ -4,8 +4,9 @@
 //!
 //! CC-4Ca: §10.1 metric families are registered between `init` and `serve`.
 //! CC-44b: single writer + write-behind task spawns (append-only here).
-//! CC-4F: nine-RPC `StorageService` serve pool (materialise-and-drop).
+//! CC-4F / CC-4I: ten-RPC `StorageService` serve pool (materialise-and-drop).
 
+mod history;
 mod metrics;
 mod migrate;
 mod prune;
@@ -60,6 +61,7 @@ const KNOWN_METHODS: &[&str] = &[
     "/eth.storage.v1.StorageService/WatchServeWindow",
     "/eth.storage.v1.StorageService/GetHistoricalBlock",
     "/eth.storage.v1.StorageService/GetSnapshotState",
+    "/eth.storage.v1.StorageService/GetFinalizedCheckpointHistory",
 ];
 
 /// Per-service config: shared [`ServiceConfig`] plus storage-only fields (D-1).
@@ -283,6 +285,9 @@ impl StorageConfig {
         ServeConfig {
             buffer_bytes: self.serve_buffer_bytes.max(1),
             permits: self.serve_permits.max(1),
+            // SEC-4I-1: dedicated snapshot stream pool (default 1) + size budget.
+            snapshot_permits: serve::DEFAULT_SNAPSHOT_PERMITS,
+            snapshot_buffer_bytes: cc_store::MAX_SNAPSHOT_BYTES,
             queue_timeout: Duration::from_millis(self.serve_queue_timeout_ms.max(1)),
             materialise_mode: serve::MaterialiseMode::AdmissionTime,
         }
