@@ -4,6 +4,7 @@
 //! - [`keys`] — big-endian fixed-width codecs + shard arithmetic (§2.1 / §2.4)
 //! - [`buckets`] — histogram boundaries shared with metrics and `bin/store-bench` (CC-4Ca)
 //! - [`meta`] — ten SSZ singleton records (§2.5 / CC-40a)
+//! - [`backfill_progress`] — resumable progress, per-index oldest, column completion (CC-47a)
 //! - [`schema`] — schema version, config digest, table registry, open-or-refuse (CC-40a)
 //! - [`window`] — computed block serve-window floor (CC-4A / Architecture §5.1)
 //! - [`invariants`] — §2.7 eight named checks at open and after passes (CC-4H)
@@ -18,6 +19,8 @@
 
 #![allow(missing_docs)]
 
+/// Backfill progress helpers (CC-47a / Architecture §6.5).
+pub mod backfill_progress;
 /// Block store: hot + sharded cold, by-root index, state roots (CC-43a).
 pub mod blocks;
 /// Histogram bucket boundaries for the storage metric surface (§10.2 / CC-4Ca).
@@ -43,6 +46,14 @@ pub mod split;
 /// Computed block serve-window floor (CC-4A) + derived ServeWindow (CC-48).
 pub mod window;
 
+pub use backfill_progress::{
+    advance_per_index_oldest, apply_block_batch_progress, apply_column_batch_progress,
+    column_backfill_complete, column_backfill_target_slot, ensure_per_index_len,
+    load_backfill_progress, load_backfill_progress_txn, oldest_custodied_column_slot,
+    put_backfill_progress, resume_column_frontier, resume_within_one_batch,
+    serve_window_above_column_target, BACKFILL_BATCH_SLOT_LIMIT, COLUMN_BACKFILL_EPOCHS,
+    COLUMN_INDEX_COUNT, ProgressError,
+};
 pub use blocks::{
     BlockClassStats, MAX_BLOCKS_BY_RANGE, PARENT_ROOT_SSZ_OFFSET, PutBlockOutcome, RangeBlock,
     SLOT_SSZ_OFFSET, STATE_ROOT_SSZ_OFFSET, TABLE_BLOCK_SLOT_BY_ROOT, TABLE_BLOCKS_HOT,

@@ -1,16 +1,18 @@
-//! Backfill planner and gap recovery — Architecture §9.1–§9.4 / CC-26b.
+//! Backfill planner and gap recovery — Architecture §9.1–§9.4 / CC-26b + §6 / CC-47a.
 //!
 //! | Surface | Role |
 //! |---------|------|
-//! | [`GapTrigger`] / [`GapDetected`] | Four gap sources → one event |
-//! | [`GapDetector`] | Head jump, clock stall, peer Status, reconnect |
+//! | [`GapTrigger`] / [`GapDetected`] | **Five** gap sources → one event (CC-47a fifth) |
+//! | [`GapDetector`] | Head jump, clock stall, peer Status, reconnect, **serve-window holes** |
 //! | [`plan_batches`] | Split a gap into ≤ [`BATCH_SLOT_LIMIT`]-slot ranges |
 //! | [`BackfillPlanner`] | ≤ 4 concurrent batches, peer retry, oldest-first import |
+//! | [`BackfillPlanner::custodied_columns`] | Below-anchor mode requests **custodied 4**, not sampled 8 |
 //! | [`parent_linkage_walk`] | Post-run completion criterion (clause 4) |
 //! | [`feed_backfill_to_sampling`] | No DA bypass — same sampling tracker as gossip |
 //!
-//! Transport is a callback seam (same pattern as CC-25 recovery): unit tests
-//! drive the planner with mock fetches; the host wires live ByRange clients.
+//! Below-anchor verification (parent-root + whole-batch BLS, one domain) lives
+//! in [`super::below`]. Transport is a callback seam: unit tests drive the
+//! planner with mock fetches; the host wires live ByRange clients.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -49,7 +51,11 @@ pub const HEAD_JUMP_THRESHOLD: u64 = 1;
 
 // ── Gap detection (§9.1) ────────────────────────────────────────────────────
 
-/// Which of the four §9.1 sensors produced the gap.
+/// Which of the five gap sensors produced the gap (Architecture §9.1 + §4.6 / CC-47a).
+///
+/// The first four are about `chain`'s head versus `p2p`'s view and **cannot see
+/// a hole in a store they do not read**. The fifth is the serve-window path:
+/// storage reports a durable hole (or the window is above its target).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GapTrigger {
     /// `ChainView` head_slot jumped by more than one.
@@ -60,10 +66,13 @@ pub enum GapTrigger {
     PeerStatusAhead,
     /// Transport reconnect after a disconnect.
     TransportReconnect,
+    /// Serve window above its target, **or `ServeWindow.holes` non-empty** (§4.6).
+    /// Distinct from the Phase 2 four; drives below-anchor `PutBackfillBatch`.
+    ServeWindowHoles,
 }
 
 impl GapTrigger {
-    /// Stable label for logs / metrics.
+    /// Stable label for logs / metrics (five reasons; fifth distinct).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -71,8 +80,18 @@ impl GapTrigger {
             Self::ClockStall => "clock_stall",
             Self::PeerStatusAhead => "peer_status_ahead",
             Self::TransportReconnect => "transport_reconnect",
+            Self::ServeWindowHoles => "serve_window_holes",
         }
     }
+
+    /// All five trigger reasons (seed + tests).
+    pub const ALL: [Self; 5] = [
+        Self::HeadJump,
+        Self::ClockStall,
+        Self::PeerStatusAhead,
+        Self::TransportReconnect,
+        Self::ServeWindowHoles,
+    ];
 }
 
 /// One detected gap range (inclusive endpoints in slot units).
@@ -266,6 +285,41 @@ impl GapDetector {
             to_slot: Slot::new(current_head),
             trigger: GapTrigger::TransportReconnect,
         })
+    }
+
+    /// §4.6 / CC-47a fifth trigger: durable serve-window holes, or the window
+    /// is above its column/block target.
+    ///
+    /// `holes` is a list of half-open `[start, end)` ranges from
+    /// `WatchServeWindow`. When non-empty the planner enters below-anchor mode
+    /// for exactly that range. When empty but `earliest_available_slot > target`,
+    /// the gap is `[target, earliest)`.
+    pub fn on_serve_window(
+        &self,
+        holes: &[(u64, u64)],
+        earliest_available_slot: u64,
+        target_slot: u64,
+    ) -> Option<GapDetected> {
+        // Prefer an explicit durable hole.
+        if let Some(&(start, end)) = holes.first()
+            && end > start
+        {
+            return Some(GapDetected {
+                from_slot: Slot::new(start),
+                // GapDetected uses inclusive end; holes are half-open.
+                to_slot: Slot::new(end.saturating_sub(1)),
+                trigger: GapTrigger::ServeWindowHoles,
+            });
+        }
+        // Window above target (serve obligation not yet met).
+        if earliest_available_slot > target_slot {
+            return Some(GapDetected {
+                from_slot: Slot::new(target_slot),
+                to_slot: Slot::new(earliest_available_slot.saturating_sub(1)),
+                trigger: GapTrigger::ServeWindowHoles,
+            });
+        }
+        None
     }
 }
 
@@ -503,8 +557,10 @@ pub struct RecordedGap {
 
 /// Backfill range planner (control plane).
 pub struct BackfillPlanner {
-    /// Sampled column indices (length 8 at Phase 2 default) — **not** custodied.
+    /// Sampled column indices (length 8 at Phase 2 default) — forward/DA path.
     sampled_columns: Vec<u64>,
+    /// Custodied column indices (length 4 at Phase 2 default) — below-anchor path.
+    custodied_columns: Vec<u64>,
     /// Batches for the active gap (ordered by start slot).
     batches: Vec<BatchState>,
     /// Next contiguous slot expected for import (oldest-first cursor).
@@ -531,6 +587,10 @@ pub struct BackfillPlanner {
     anchor_root: Option<[u8; 32]>,
     /// Anchor slot.
     anchor_slot: Option<u64>,
+    /// Trigger reason of the most recently accepted gap (five labels).
+    last_trigger: Option<GapTrigger>,
+    /// How many times each trigger was accepted (test-visible).
+    trigger_counts: HashMap<GapTrigger, u64>,
 }
 
 impl fmt::Debug for BackfillPlanner {
@@ -548,13 +608,18 @@ impl fmt::Debug for BackfillPlanner {
 
 impl BackfillPlanner {
     /// New planner with the node's **sampled** column set (must be the 8-wide set).
+    ///
+    /// Custodied defaults to the first four of the sampled set (Phase 2 default:
+    /// custody ⊆ sample). Override with [`Self::with_custodied`].
     #[must_use]
     pub fn new(sampled_columns: impl IntoIterator<Item = u64>) -> Self {
         let mut cols: Vec<u64> = sampled_columns.into_iter().collect();
         cols.sort_unstable();
         cols.dedup();
+        let custodied: Vec<u64> = cols.iter().copied().take(4).collect();
         Self {
             sampled_columns: cols,
+            custodied_columns: custodied,
             batches: Vec::new(),
             next_import_slot: None,
             last_contiguous_imported: None,
@@ -568,7 +633,19 @@ impl BackfillPlanner {
             slot_roots: BTreeMap::new(),
             anchor_root: None,
             anchor_slot: None,
+            last_trigger: None,
+            trigger_counts: HashMap::new(),
         }
+    }
+
+    /// Override the custodied set (CC-47a / das-core custody groups).
+    #[must_use]
+    pub fn with_custodied(mut self, custodied: impl IntoIterator<Item = u64>) -> Self {
+        let mut cols: Vec<u64> = custodied.into_iter().collect();
+        cols.sort_unstable();
+        cols.dedup();
+        self.custodied_columns = cols;
+        self
     }
 
     /// Attach metrics.
@@ -578,10 +655,45 @@ impl BackfillPlanner {
         self
     }
 
-    /// Sampled columns this planner will request (CC-26/1: 8, not custodied 4).
+    /// Sampled columns this planner will request on the **forward** path
+    /// (CC-26/1: 8, not custodied 4).
     #[must_use]
     pub fn sampled_columns(&self) -> &[u64] {
         &self.sampled_columns
+    }
+
+    /// Custodied columns requested on the **below-anchor** path (CC-47a: 4).
+    #[must_use]
+    pub fn custodied_columns(&self) -> &[u64] {
+        &self.custodied_columns
+    }
+
+    /// Mode for a planned batch given the current anchor (Architecture §6.1).
+    #[must_use]
+    pub fn mode_for(&self, plan: BatchPlan) -> super::below::BackfillMode {
+        let anchor = self.anchor_slot.unwrap_or(u64::MAX);
+        super::below::mode_for_batch(Slot::new(anchor), plan)
+    }
+
+    /// Columns-by-range for a batch: **custodied** below anchor, **sampled** forward.
+    #[must_use]
+    pub fn columns_request_for_mode(&self, plan: BatchPlan) -> ColumnsByRangeRequest {
+        match self.mode_for(plan) {
+            super::below::BackfillMode::Below => plan.columns_request(&self.custodied_columns),
+            super::below::BackfillMode::Forward => plan.columns_request(&self.sampled_columns),
+        }
+    }
+
+    /// How many times `trigger` has been accepted this run.
+    #[must_use]
+    pub fn trigger_count(&self, trigger: GapTrigger) -> u64 {
+        self.trigger_counts.get(&trigger).copied().unwrap_or(0)
+    }
+
+    /// Most recent accepted trigger.
+    #[must_use]
+    pub const fn last_trigger(&self) -> Option<GapTrigger> {
+        self.last_trigger
     }
 
     /// Seed contiguous import cursor (last known good slot).
@@ -667,19 +779,35 @@ impl BackfillPlanner {
         if gap.from_slot.as_u64() > gap.to_slot.as_u64() {
             return;
         }
-        // Align from_slot with contiguous cursor when known.
-        let from = match self.next_import_slot {
-            Some(n) => Slot::new(n.max(gap.from_slot.as_u64())),
-            None => {
-                self.next_import_slot = Some(gap.from_slot.as_u64());
-                gap.from_slot
+        self.last_trigger = Some(gap.trigger);
+        *self.trigger_counts.entry(gap.trigger).or_insert(0) += 1;
+
+        // Below-anchor / serve-window holes: do **not** force-align to the
+        // forward import cursor — the range is absolute on the store.
+        let below_anchor_gap = matches!(gap.trigger, GapTrigger::ServeWindowHoles)
+            || self.anchor_slot.is_some_and(|a| gap.to_slot.as_u64() <= a);
+
+        let from = if below_anchor_gap {
+            gap.from_slot
+        } else {
+            // Align from_slot with contiguous cursor when known (forward path).
+            match self.next_import_slot {
+                Some(n) => Slot::new(n.max(gap.from_slot.as_u64())),
+                None => {
+                    self.next_import_slot = Some(gap.from_slot.as_u64());
+                    gap.from_slot
+                }
             }
         };
         if from.as_u64() > gap.to_slot.as_u64() {
             return;
         }
 
-        let planned = plan_batches(from, gap.to_slot);
+        let planned = if below_anchor_gap {
+            super::below::plan_batches_descending(from, gap.to_slot)
+        } else {
+            plan_batches(from, gap.to_slot)
+        };
         let existing: HashSet<(u64, u64)> = self
             .batches
             .iter()
@@ -1228,6 +1356,63 @@ mod tests {
         assert!(!d.is_disconnected());
     }
 
+    #[test]
+    fn fifth_trigger_fires_on_serve_window_holes() {
+        let d = GapDetector::new();
+        // Empty holes + window at target → no fire.
+        assert!(d
+            .on_serve_window(&[], /*earliest*/ 1_000, /*target*/ 1_000)
+            .is_none());
+        // Non-empty holes → fifth trigger for exactly that range.
+        let g = d
+            .on_serve_window(&[(500, 564)], 1_000, 100)
+            .expect("holes must fire fifth trigger");
+        assert_eq!(g.trigger, GapTrigger::ServeWindowHoles);
+        assert_eq!(g.trigger.as_str(), "serve_window_holes");
+        assert_eq!(g.from_slot, Slot::new(500));
+        assert_eq!(g.to_slot, Slot::new(563)); // half-open end exclusive → inclusive
+
+        // Window above target with no holes.
+        let g2 = d
+            .on_serve_window(&[], 2_000, 1_000)
+            .expect("above target fires");
+        assert_eq!(g2.trigger, GapTrigger::ServeWindowHoles);
+        assert_eq!(g2.from_slot, Slot::new(1_000));
+        assert_eq!(g2.to_slot, Slot::new(1_999));
+
+        // Five distinct reason labels.
+        let labels: HashSet<&str> = GapTrigger::ALL.iter().map(|t| t.as_str()).collect();
+        assert_eq!(labels.len(), 5);
+        assert!(labels.contains("serve_window_holes"));
+    }
+
+    #[test]
+    fn fifth_trigger_enters_below_anchor_mode_on_planner() {
+        let mut planner = BackfillPlanner::new(sampled_eight()).with_custodied(custodied_four());
+        planner.set_anchor(10_000, root(0));
+        let d = GapDetector::new();
+        let gap = d
+            .on_serve_window(&[(9_000, 9_064)], 10_000, 100)
+            .expect("hole");
+        planner.on_gap(gap);
+        assert_eq!(planner.last_trigger(), Some(GapTrigger::ServeWindowHoles));
+        assert_eq!(planner.trigger_count(GapTrigger::ServeWindowHoles), 1);
+        assert!(!planner.batches().is_empty());
+        // Every planned batch in this hole is below the anchor.
+        for b in planner.batches() {
+            assert_eq!(
+                planner.mode_for(b.plan),
+                crate::backfill::below::BackfillMode::Below
+            );
+            let req = planner.columns_request_for_mode(b.plan);
+            assert_eq!(
+                req.columns, custodied_four(),
+                "below-anchor must request custodied 4, not sampled 8"
+            );
+            assert_ne!(req.columns, sampled_eight());
+        }
+    }
+
     // ── Batch planning ──────────────────────────────────────────────────────
 
     #[test]
@@ -1267,6 +1452,39 @@ mod tests {
         assert_eq!(req.columns, sampled_eight());
         assert_eq!(req.columns.len(), 8);
         assert_ne!(req.columns, custodied_four());
+    }
+
+    #[test]
+    fn below_anchor_requests_custodied_four_not_sampled_eight() {
+        // cgc = 4, sampling_size = 8: planner must request exactly the 4 custodied.
+        let planner = BackfillPlanner::new(sampled_eight())
+            .with_custodied(custodied_four());
+        assert_eq!(planner.sampled_columns().len(), 8);
+        assert_eq!(planner.custodied_columns().len(), 4);
+        planner_assert_anchor_below(&planner);
+    }
+
+    fn planner_assert_anchor_below(planner: &BackfillPlanner) {
+        // Anchor high so the plan is below.
+        let mut p = BackfillPlanner::new(planner.sampled_columns().to_vec())
+            .with_custodied(planner.custodied_columns().to_vec());
+        p.set_anchor(10_000, root(0));
+        let plan = BatchPlan {
+            start_slot: Slot::new(100),
+            count: 64,
+        };
+        assert_eq!(
+            p.mode_for(plan),
+            crate::backfill::below::BackfillMode::Below
+        );
+        let req = p.columns_request_for_mode(plan);
+        assert_eq!(req.columns.len(), 4, "must request exactly 4 custodied");
+        assert_eq!(req.columns, custodied_four());
+        assert_ne!(
+            req.columns.len(),
+            8,
+            "requesting 8 (sampled) fails this criterion"
+        );
     }
 
     // ── Concurrent batches + peer retry / abandon ───────────────────────────

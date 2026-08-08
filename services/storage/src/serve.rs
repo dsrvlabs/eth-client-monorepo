@@ -103,6 +103,10 @@ use crate::history::{
     finalized_checkpoint_history, historical_block_by_root, historical_block_by_slot,
     not_available_status, snapshot_state_at, SnapshotLookup, DEFAULT_STATE_CHUNK_BYTES,
 };
+use crate::backfill::{
+    admit_descending_contiguous, observe_put_backfill_batch, proto_progress_to_store,
+    BackfillBlockRow, BatchAdmitError,
+};
 use crate::metrics::{
     ProtocolLabels, ServeLabels, ServeProtocol, ServeResult, StorageMetrics,
 };
@@ -770,23 +774,46 @@ impl StorageService for StorageServer {
         let req = request.into_inner();
         let engine = self.engine()?;
 
+        // Admit: descending contiguous parent chain (Architecture §6.2).
+        // Single-block / empty batches skip the parent-pair check; multi-block
+        // batches must be strictly descending with higher.parent → lower.root.
+        let rows: Vec<BackfillBlockRow> = req
+            .blocks
+            .iter()
+            .map(|b| {
+                Ok(BackfillBlockRow {
+                    slot: Slot::new(b.slot),
+                    root: parse_root(&b.root)?,
+                    ssz: b.ssz.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, Status>>()?;
+        let ordered = admit_descending_contiguous(&rows).map_err(admit_status)?;
+
+        let progress = match req.progress.as_ref() {
+            Some(p) => Some(proto_to_backfill_progress(p)?),
+            None => None,
+        };
+
         // Stage under a short-lived read txn, then commit as ONE unit.
-        let (batch, blocks_written, columns_written) = {
+        let (batch, blocks_written, columns_written, block_bytes, column_bytes) = {
             let rt = engine.read().map_err(store_status)?;
             let mut batch = engine.batch();
             let mut blocks_written = 0u64;
             let mut columns_written = 0u64;
+            let mut block_bytes = 0u64;
+            let mut column_bytes = 0u64;
 
             // Below-anchor backfill lands in cold (Architecture §6.6).
             let region = BlockRegion::Cold;
 
-            for b in &req.blocks {
-                let root = parse_root(&b.root)?;
-                let slot = Slot::new(b.slot);
-                put_block(&rt, &mut batch, slot, &root, &b.ssz, region, false)
+            // Write in descending order (frontier-adjacent first).
+            for b in &ordered {
+                put_block(&rt, &mut batch, b.slot, &b.root, &b.ssz, region, false)
                     .map_err(store_status)?;
-                put_canonical(&rt, &mut batch, slot, &root).map_err(store_status)?;
+                put_canonical(&rt, &mut batch, b.slot, &b.root).map_err(store_status)?;
                 blocks_written = blocks_written.saturating_add(1);
+                block_bytes = block_bytes.saturating_add(b.ssz.len() as u64);
             }
             for c in &req.columns {
                 let root = parse_root(&c.root)?;
@@ -796,16 +823,22 @@ impl StorageService for StorageServer {
                 put_column(&rt, &mut batch, slot, &root, index, &c.ssz, region)
                     .map_err(store_status)?;
                 columns_written = columns_written.saturating_add(1);
+                column_bytes = column_bytes.saturating_add(c.ssz.len() as u64);
             }
 
             // BackfillProgress in the SAME batch (CC-4F /3 same-transaction rule).
-            if let Some(p) = req.progress.as_ref() {
-                let progress = proto_to_backfill_progress(p)?;
-                let ssz = progress.as_ssz_bytes();
+            if let Some(ref p) = progress {
+                let ssz = p.as_ssz_bytes();
                 batch.put(TABLE_META, KEY_BACKFILL_PROG.as_bytes(), &ssz);
             }
             // `rt` drops before commit.
-            (batch, blocks_written, columns_written)
+            (
+                batch,
+                blocks_written,
+                columns_written,
+                block_bytes,
+                column_bytes,
+            )
         };
         self.observe_read_txn(started);
 
@@ -818,6 +851,14 @@ impl StorageService for StorageServer {
             return Err(Status::aborted("injected commit failure"));
         }
         commit_backfill(engine, self.writer.as_ref(), batch).await?;
+
+        // Metrics only after a successful commit (CC-47 /8).
+        observe_put_backfill_batch(
+            &self.metrics,
+            progress.as_ref(),
+            block_bytes,
+            column_bytes,
+        );
 
         Ok(Response::new(PutBackfillBatchResponse {
             blocks_written,
@@ -1247,15 +1288,27 @@ fn proto_to_backfill_progress(p: &ProtoBackfillProgress) -> Result<BackfillProgr
     } else {
         parse_root(&p.blocks_oldest_parent)?
     };
-    // per_index_oldest is populated by CC-47a callers; empty list is valid SSZ.
-    // Scalars (blocks_oldest / columns_oldest) are what PutBackfillBatch atomicity
-    // tests assert on the meta row's presence.
-    Ok(BackfillProgress {
-        blocks_oldest: Slot::new(p.blocks_oldest),
-        blocks_oldest_parent: parent,
-        columns_oldest: Slot::new(p.columns_oldest),
-        per_index_oldest: Default::default(),
-    })
+    // CC-47a: full per_index_oldest mapping (padded to 128 when non-empty).
+    Ok(proto_progress_to_store(
+        p.blocks_oldest,
+        parent,
+        p.columns_oldest,
+        &p.per_index_oldest,
+    ))
+}
+
+fn admit_status(e: BatchAdmitError) -> Status {
+    match e {
+        BatchAdmitError::NotDescending => {
+            Status::invalid_argument("backfill batch blocks not strictly descending by slot")
+        }
+        BatchAdmitError::ParentBroken { slot } => Status::invalid_argument(format!(
+            "backfill batch parent chain broken at slot {slot} (higher.parent must equal lower.root)"
+        )),
+        BatchAdmitError::FieldMismatch { slot } => Status::invalid_argument(format!(
+            "backfill batch field mismatch at slot {slot} (SSZ peeks disagree with claim)"
+        )),
+    }
 }
 
 /// Commit a staged backfill batch via the single writer when present, else

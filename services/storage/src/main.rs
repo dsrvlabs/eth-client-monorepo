@@ -6,6 +6,7 @@
 //! CC-44b: single writer + write-behind task spawns (append-only here).
 //! CC-4F / CC-4I: ten-RPC `StorageService` serve pool (materialise-and-drop).
 
+mod backfill;
 mod durable_set;
 mod history;
 mod metrics;

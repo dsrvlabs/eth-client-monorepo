@@ -385,7 +385,22 @@ third discharges.
 ### M4.5 hole closed
 
 **Owner:** CC-47a  
-**Status:** empty.
+**Status:** **`NOT_RUN`** — clause 2 is not discharged.
+
+The fifth gap trigger (`GapTrigger::ServeWindowHoles`) and the below-anchor
+`PutBackfillBatch` write path are **implemented and unit-tested** in this tree
+(`services/p2p/src/backfill/`, `services/storage/src/backfill.rs`,
+`crates/store/src/backfill_progress.rs`). A live self-devnet run that:
+
+1. restarts storage with `T >` the ring's wall-clock depth so
+   `CURSOR_TOO_OLD` fires,
+2. fills the hole via **`PutBackfillBatch`** (not re-import through `chain`),
+3. completes the parent-linkage walk so `ServeWindow.holes` shrinks to empty,
+4. records `cc_storage_stream_reconnect_total{reason="cursor_too_old"} == 1`,
+
+was **not** executed in this session. No bar numbers are invented. Until that
+run is recorded here with both run (a) and run (b) rows, clause 2 remains
+**not discharged** (D-14 / ADR P4-11).
 
 ## Clause 3 — compressed-retention plateau (discharging)
 
