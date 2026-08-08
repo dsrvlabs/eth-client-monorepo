@@ -9,6 +9,7 @@
 //! - [`invariants`] — §2.7 eight named checks at open and after passes (CC-4H)
 //! - [`blocks`] — hot/cold block tables, by-root index, state roots (CC-43a)
 //! - [`canonical`] — slot → canonical root via parent-root walk at offset 116 (CC-43a)
+//! - [`columns`] — hot/cold column tables, by-root index, DA status (CC-43b)
 //!
 //! This crate depends only on `cc-types` among workspace members; consensus
 //! containers must not appear here (opaque bytes under typed keys).
@@ -21,6 +22,8 @@ pub mod blocks;
 pub mod buckets;
 /// Canonical chain index maintained by a parent-root walk (CC-43a).
 pub mod canonical;
+/// Column store: hot + 32-epoch cold shards, by-root index, DA status (CC-43b).
+pub mod columns;
 /// Concrete engine seam (CC-40/3: engine crate name only under `engine/`).
 pub mod engine;
 /// §2.7 store invariants (CC-4H).
@@ -43,6 +46,15 @@ pub use blocks::{
 pub use canonical::{
     CanonicalWalkResult, MAX_CANONICAL_WALK_STEPS, TABLE_CANONICAL, get_canonical,
     put_block_and_update_head, rewrite_from_head,
+};
+pub use columns::{
+    BYTES_PER_BLOB_IN_SIDECAR, COLUMN_HEADER_SLOT_SSZ_OFFSET, COLUMN_INDEX_SSZ_OFFSET,
+    ColumnClassStats, ColumnsForBlock, DATA_COLUMN_SIDECAR_FIXED_BYTES, DaStatus,
+    MAX_BLOBS_PER_COLUMN_SIDECAR, MAX_COLUMNS_BY_RANGE_SIDECARS, MAX_COLUMNS_BY_RANGE_SLOTS,
+    MAX_COLUMN_SIDECAR_BYTES, PutColumnOutcome, RangeColumn, TABLE_COLUMNS_HOT,
+    TABLE_COLUMN_SLOT_BY_ROOT, TABLE_DA_STATUS, column_index_at_offset, column_slot_at_offset,
+    columns_by_range, columns_for_block, data_column_sidecar_size, get_column_by_root,
+    get_da_status, measure_column_class_stats, put_column, put_da_status,
 };
 pub use engine::{
     Batch, Durability, Engine, EngineOptions, MAX_BATCH_OPS, MAX_INTERNED_TABLE_NAMES,

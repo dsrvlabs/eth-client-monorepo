@@ -192,6 +192,67 @@ pub fn decode_cold_column_key(key: &[u8]) -> Option<(Slot, u16)> {
     ))
 }
 
+/// `column_slot_by_root` key: `root:32 ‖ idx:u16be` (34 B).
+pub fn encode_column_slot_by_root_key(root: &Root, index: u16) -> [u8; 34] {
+    let mut out = [0u8; 34];
+    out[..32].copy_from_slice(root.as_slice());
+    out[32..].copy_from_slice(&index.to_be_bytes());
+    out
+}
+
+/// Decode `column_slot_by_root` key.
+pub fn decode_column_slot_by_root_key(key: &[u8]) -> Option<(Root, u16)> {
+    if key.len() != 34 {
+        return None;
+    }
+    let mut root_arr = [0u8; 32];
+    root_arr.copy_from_slice(&key[..32]);
+    let mut idx_be = [0u8; 2];
+    idx_be.copy_from_slice(&key[32..34]);
+    Some((Root::from_array(root_arr), u16::from_be_bytes(idx_be)))
+}
+
+/// `column_slot_by_root` value: `slot:u64be` (8 B).
+pub fn encode_column_slot_by_root_value(slot: Slot) -> [u8; 8] {
+    slot.as_u64().to_be_bytes()
+}
+
+/// Decode `column_slot_by_root` value.
+pub fn decode_column_slot_by_root_value(value: &[u8]) -> Option<Slot> {
+    decode_cold_block_key(value)
+}
+
+/// Exclusive upper bound for hot column rows with `slot ≤ max_slot`.
+pub fn hot_column_slot_upper_bound(max_slot_inclusive: Slot) -> [u8; 42] {
+    let next = Slot::new(max_slot_inclusive.as_u64().saturating_add(1));
+    encode_hot_column_key(next, &Root::ZERO, 0)
+}
+
+/// Half-open key range for all hot columns at a single slot (any root, any index).
+pub fn hot_column_slot_range(slot: Slot) -> ([u8; 42], [u8; 42]) {
+    (
+        encode_hot_column_key(slot, &Root::ZERO, 0),
+        hot_column_slot_upper_bound(slot),
+    )
+}
+
+/// Half-open slot range of column shard `id` (32-epoch width).
+pub fn column_shard_slot_range(shard_id: u64) -> (Slot, Slot) {
+    let start = column_shard_start_slot(shard_id);
+    let end = column_shard_start_slot(shard_id.saturating_add(1));
+    (start, end)
+}
+
+/// Column-class shard id for `slot` (AC alias of [`column_shard_id`]).
+pub fn column_shard_of(slot: Slot) -> u64 {
+    column_shard_id(slot)
+}
+
+/// Half-open `[start, end)` slot range for column shard `id` (AC name).
+pub fn column_slots_in(shard_id: u64) -> (Slot, Slot) {
+    column_shard_slot_range(shard_id)
+}
+
 /// Decode canonical key (`slot`, 8 B) and value (`root`, 32 B).
 pub fn decode_canonical_entry(key: &[u8], value: &[u8]) -> Option<(Slot, Root)> {
     let slot = decode_cold_block_key(key)?;
