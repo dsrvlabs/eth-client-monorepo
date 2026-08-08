@@ -6,6 +6,7 @@
 //! CC-44b: single writer + write-behind task spawns (append-only here).
 //! CC-4F / CC-4I: ten-RPC `StorageService` serve pool (materialise-and-drop).
 
+mod durable_set;
 mod history;
 mod metrics;
 mod migrate;
@@ -161,6 +162,15 @@ struct StorageConfig {
     /// Max wait for a permit in milliseconds (default 2000).
     #[serde(default = "default_serve_queue_timeout_ms")]
     serve_queue_timeout_ms: u64,
+    /// Path to the p2p node key file (CC-20b / §1.7 / ADR P4-13).
+    ///
+    /// When set and the file exists, `Store::open` runs **I-node-id** against
+    /// the 32-byte key surface so a store restored beside a different key
+    /// **refuses to start** rather than silently re-backfilling. Same path as
+    /// `p2p.node_key_path` when the identity volume is mounted (or a host path
+    /// for local dev). Override: `CC_STORAGE_NODE_KEY_PATH`.
+    #[serde(default)]
+    node_key_path: Option<PathBuf>,
 }
 
 /// `storage.retention_override` — non-spec retention windows for the discharging
@@ -382,6 +392,9 @@ fn block_serve_floor_from_fixture() -> Option<u64> {
 
 
 /// Open the store under `data_dir` with durability + digest from config.
+///
+/// When [`StorageConfig::node_key_path`] is set and present, loads the expected
+/// NodeId surface for **I-node-id** (§1.7) so a mismatched key refuses open.
 fn open_store(cfg: &StorageConfig) -> anyhow::Result<Store> {
     let durability = Durability::parse(&cfg.durability)
         .map_err(|e| anyhow::anyhow!("durability: {e}"))?;
@@ -391,12 +404,24 @@ fn open_store(cfg: &StorageConfig) -> anyhow::Result<Store> {
     // so a fresh store opens without a YAML fixture dependency.
     let chain = ChainConfig::mainnet_like_for_digest();
     let digest_input = ConfigDigestInput::with_mainnet_scalars(chain, gvr);
+    let expected_node_id = durable_set::load_expected_node_id_from_key_path(
+        cfg.node_key_path.as_deref(),
+    )
+    .map_err(|e| anyhow::anyhow!("node_key_path: {e}"))?;
+    if let Some(id) = expected_node_id {
+        tracing::info!(
+            path = ?cfg.node_key_path,
+            node_id = %id,
+            "I-node-id expected NodeId loaded from node_key_path"
+        );
+    }
     let opts = StoreOpenOptions::from_config(
         EngineOptions::default().with_durability(durability),
         &digest_input,
     )?
     .with_check_invariants(cfg.check_invariants)
-    .with_snapshot_ring(cfg.snapshot_ring.max(1));
+    .with_snapshot_ring(cfg.snapshot_ring.max(1))
+    .with_expected_node_id(expected_node_id);
     Store::open(&cfg.data_dir, opts).map_err(|e| anyhow::anyhow!("store open: {e}"))
 }
 
@@ -823,5 +848,99 @@ mod config_tests {
             "genesis_time must be non-zero so wall_clock_epoch works"
         );
         assert_eq!(prune.genesis_time, 1_742_213_400);
+    }
+
+    /// CC-45a / §1.7: production `open_store` wires `expected_node_id` from
+    /// `node_key_path` so I-node-id runs at start. Mismatched key refuses open
+    /// and the error names both AnchorInfo.node_id and the key-derived id.
+    #[test]
+    fn open_store_mismatched_node_key_refuses() {
+        use cc_store::engine::{Durability, EngineOptions};
+        use cc_store::meta::{AnchorInfo, KEY_ANCHOR_INFO, TABLE_META};
+        use cc_store::{
+            ConfigDigestInput, SszEncode, Store, StoreOpenOptions, compute_config_digest,
+        };
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("cc-storage-open-nodeid-{nanos}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let anchor_id = Root::from_array([0xAAu8; 32]);
+        let key_id = Root::from_array([0xBBu8; 32]);
+        assert_ne!(anchor_id, key_id);
+
+        // Bootstrap store with AnchorInfo.node_id = anchor_id (no invariant check yet).
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/types/tests/fixtures/hoodi-config.yaml");
+        let chain = ChainConfig::from_yaml_file(&fixture).unwrap_or_else(|_| {
+            ChainConfig::from_yaml_str(include_str!(
+                "../../../crates/types/tests/fixtures/hoodi-config.yaml"
+            ))
+            .unwrap()
+        });
+        let digest_input = ConfigDigestInput::with_mainnet_scalars(chain, Root::ZERO);
+        let digest = compute_config_digest(&digest_input).unwrap();
+        let store = Store::open(
+            &dir,
+            StoreOpenOptions::with_digest(
+                EngineOptions::default().with_durability(Durability::None),
+                digest,
+            )
+            .with_check_invariants(false),
+        )
+        .unwrap();
+        let engine = store.into_engine();
+        let anchor = AnchorInfo {
+            anchor_slot: cc_store::Slot::new(10),
+            anchor_root: Root::from_array([0x10; 32]),
+            anchor_state_root: Root::from_array([0x11; 32]),
+            node_id: anchor_id,
+            oldest_block_slot: cc_store::Slot::new(10),
+            oldest_block_parent: Root::from_array([0x09; 32]),
+        };
+        let mut b = engine.batch();
+        b.put(
+            TABLE_META,
+            KEY_ANCHOR_INFO.as_bytes(),
+            &anchor.as_ssz_bytes(),
+        );
+        engine.commit(b).unwrap();
+        drop(engine);
+
+        // Write the mismatched node key and open via the production helper path.
+        let key_path = dir.join("node_key");
+        std::fs::write(&key_path, key_id.as_slice()).unwrap();
+
+        let mut cfg = {
+            let path = storage_toml_path();
+            let _g = env_lock();
+            unsafe {
+                std::env::remove_var("CC_STORAGE_NODE_KEY_PATH");
+            }
+            cc_config::load_from::<StorageConfig>("storage", &path).unwrap()
+        };
+        cfg.data_dir = dir.clone();
+        cfg.node_key_path = Some(key_path);
+        cfg.check_invariants = true;
+        cfg.durability = "immediate".into();
+        // open_store uses Durability::parse which rejects none; use immediate for the
+        // production path (engine still opens an existing db).
+        let err = open_store(&cfg).expect_err("mismatched node key must refuse open");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("node_id") || msg.contains("I-node-id") || msg.contains("invariant"),
+            "error must name I-node-id: {msg}"
+        );
+        assert!(
+            msg.contains(&anchor_id.to_string()) && msg.contains(&key_id.to_string()),
+            "error must name both node ids: {msg}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

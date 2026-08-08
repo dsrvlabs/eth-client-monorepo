@@ -27,6 +27,13 @@ data_dir = "data/storage"
 # Override: CC_STORAGE_CHECK_INVARIANTS=false
 check_invariants = true
 
+# CC-45a / §1.7: path to the p2p node key for I-node-id at open.
+# When set and the file exists, storage refuses to start if AnchorInfo.node_id
+# does not match the key surface (never a silent re-backfill). Same file as
+# p2p.node_key_path when the identity volume is shared or mounted read-only.
+# Override: CC_STORAGE_NODE_KEY_PATH=./data/node_key
+# node_key_path = "./data/node_key"
+
 # ── CC-44b write-behind commit unit (Architecture §4.4) ──────────────────────
 # One commit per slot. A crash loses everything after the last durable commit, so
 # this value IS the loss bound: at 1 slot, a SIGKILL costs at most one slot of
