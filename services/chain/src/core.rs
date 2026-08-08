@@ -26,6 +26,7 @@ use cc_proto::chain::{
 };
 use cc_proto::common::Source;
 use cc_state_transition::helpers::accessors::get_active_validator_indices;
+use cc_state_transition::helpers::misc::compute_start_slot_at_epoch;
 use cc_state_transition::{
     BlockSignatureStrategy, compute_shuffled_active_indices, decision_root_for_epoch,
     get_committee_count_per_slot, get_current_epoch, get_or_compute_shuffling,
@@ -33,7 +34,7 @@ use cc_state_transition::{
 use cc_types::BeaconState;
 use cc_types::config::ChainConfig;
 use cc_types::preset::Preset;
-use cc_types::primitives::{Epoch, Root};
+use cc_types::primitives::{Epoch, Root, Slot};
 use ssz::Encode;
 use tokio::sync::{mpsc, oneshot};
 use tonic::Status;
@@ -124,9 +125,11 @@ pub enum QueryRequest {
     /// `root: None` → node-level [`is_optimistic_node`] (CC-34c both branches).
     /// `root: Some` → per-root [`is_optimistic`]; `known=false` when absent.
     IsOptimistic { root: Option<Root> },
+    /// CC-44a /3: one canonical root per slot in `[start_slot, end_slot]`.
+    CanonicalRoots { start_slot: u64, end_slot: u64 },
 }
 
-/// Reply for the Phase-1 / CC-27a / CC-3B `Query` command.
+/// Reply for the Phase-1 / CC-27a / CC-3B / CC-44a `Query` command.
 #[derive(Debug, Clone)]
 pub enum QueryReply {
     /// Head probe.
@@ -147,6 +150,8 @@ pub enum QueryReply {
     ValidatorRecords { ssz: Vec<Vec<u8>>, slot: u64 },
     /// CC-3B: tri-state optimistic answer (`known=false` ⇒ ignore `is_optimistic`).
     IsOptimistic { is_optimistic: bool, known: bool },
+    /// CC-44a: canonical roots for the requested inclusive slot range.
+    CanonicalRoots { roots: Vec<Root> },
 }
 
 /// Configuration for spawning the core thread.
@@ -747,6 +752,32 @@ fn handle_query<P: Preset>(
                 }),
             },
         },
+        // CC-44a /3: walk the head's parent chain; one root per slot in range.
+        QueryRequest::CanonicalRoots {
+            start_slot,
+            end_slot,
+        } => {
+            let finalized = store.finalized_checkpoint();
+            let finalized_slot = compute_start_slot_at_epoch::<P>(finalized.epoch).as_u64();
+            if start_slot < finalized_slot {
+                return Err(crate::service::status_below_finalized(
+                    start_slot,
+                    finalized_slot,
+                ));
+            }
+            let head = head_root_of(store);
+            let mut roots = Vec::with_capacity(
+                end_slot.saturating_sub(start_slot).saturating_add(1) as usize,
+            );
+            for s in start_slot..=end_slot {
+                let root = store
+                    .proto_array()
+                    .get_ancestor(head, Slot::new(s))
+                    .unwrap_or(head);
+                roots.push(root);
+            }
+            Ok(QueryReply::CanonicalRoots { roots })
+        }
     }
 }
 
@@ -1418,6 +1449,7 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
             ring_capacity: 16,
             subscriber_queue_capacity: 8,
             session_id: Some(1),
+            ring_bytes: usize::MAX,
         });
         let head = HeadSnapshotStore::new();
         let core = spawn_core_thread(
@@ -1437,7 +1469,8 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
             QueryReply::CommitteeShuffling { .. }
             | QueryReply::ValidatorPubkeys { .. }
             | QueryReply::ValidatorRecords { .. }
-            | QueryReply::IsOptimistic { .. } => {
+            | QueryReply::IsOptimistic { .. }
+            | QueryReply::CanonicalRoots { .. } => {
                 unreachable!("Head request must yield Head reply")
             }
         };

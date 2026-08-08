@@ -29,7 +29,7 @@ use bytes::Bytes;
 use cc_fork_choice::{Store, get_head, on_attestation};
 use cc_proto::chain::{
     ApplyAttestationsRequest, ApplyAttestationsResponse, AttestationApplyResult,
-    AttestationApplyVerdict, EventKind,
+    AttestationApplyVerdict,
 };
 use cc_types::operations::IndexedAttestation;
 use cc_types::preset::Preset;
@@ -164,20 +164,34 @@ fn recompute_and_publish_head<P: Preset>(
     );
     metrics.is_optimistic.set(i64::from(optimistic));
 
-    // Non-blocking HEAD event (never stall the core).
-    let _ = event_tx.try_send(EventInput {
-        slot: head_slot.as_u64(),
-        root: Bytes::copy_from_slice(head_root.as_slice()),
-        kind: EventKind::Head,
-        payload: Bytes::new(),
-    });
+    // HEAD / REORG with §4.2 payloads. Core thread uses blocking_send (F1 /
+    // Phase 1 §7.3) so storage-facing events are not silently dropped.
+    if let Err(tokio::sync::mpsc::error::SendError(lost)) = event_tx.blocking_send(EventInput::head(
+        head_slot.as_u64(),
+        Bytes::copy_from_slice(head_root.as_slice()),
+    )) {
+        metrics.inc_event_publish_dropped();
+        tracing::error!(
+            kind = ?lost.kind,
+            "events channel closed; lost HEAD after ApplyAttestations (F1)"
+        );
+    }
     if let Some(reorg) = reorg {
-        let _ = event_tx.try_send(EventInput {
-            slot: reorg.new_head_slot.as_u64(),
-            root: Bytes::copy_from_slice(reorg.new_head.as_slice()),
-            kind: EventKind::ChainReorg,
-            payload: Bytes::new(),
-        });
+        let ancestor = crate::import::common_ancestor_slot(store, reorg.old_head, reorg.new_head);
+        if let Err(tokio::sync::mpsc::error::SendError(lost)) =
+            event_tx.blocking_send(EventInput::chain_reorg(
+                reorg.new_head_slot.as_u64(),
+                Bytes::copy_from_slice(reorg.new_head.as_slice()),
+                Bytes::copy_from_slice(reorg.old_head.as_slice()),
+                ancestor.as_u64(),
+            ))
+        {
+            metrics.inc_event_publish_dropped();
+            tracing::error!(
+                kind = ?lost.kind,
+                "events channel closed; lost CHAIN_REORG after ApplyAttestations (F1)"
+            );
+        }
     }
     Ok(())
 }

@@ -26,19 +26,22 @@ use std::time::Instant;
 
 use bytes::Bytes;
 use cc_fork_choice::{
-    BlockImport, DeferralReason, OnBlockError, Store, get_checkpoint_block, get_head, on_block,
+    BlockImport, ChainReorg, DeferralReason, OnBlockError, Store, get_checkpoint_block, get_head,
+    on_block,
 };
-use cc_proto::chain::{EventKind, ImportBlockRequest, ImportBlockResponse, ImportBlockVerdict};
+use cc_proto::chain::{ImportBlockRequest, ImportBlockResponse, ImportBlockVerdict};
 use cc_state_transition::helpers::misc::compute_start_slot_at_epoch;
 use cc_state_transition::{
     BlockError, BlockSignatureSet, BlockSignatureStrategy, GossipClass, compute_epoch_at_slot,
     push_block_proposer_signature,
 };
 use cc_types::config::ChainConfig;
+use cc_types::containers::Checkpoint;
 use cc_types::preset::Preset;
-use cc_types::primitives::Root;
+use cc_types::primitives::{Root, Slot};
 use cc_types::{ForkName, SignedBeaconBlock};
 use ssz::Encode;
+use ssz_derive::Encode as SszEncode;
 use tonic::Status;
 use tree_hash::TreeHash;
 
@@ -48,6 +51,120 @@ use crate::events::EventInput;
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
 use crate::metrics::{ChainMetrics, ImportResult, ImportStage};
 use crate::pending_engine::{PendingEngine, PendingEngineEntry};
+
+/// First payload byte for `BLOCK_IMPORTED` after a successful import (Architecture §4.2).
+pub const BLOCK_PAYLOAD_VERDICT_IMPORTED: u8 = ImportBlockVerdict::Imported as u8;
+/// First payload byte for `BLOCK_IMPORTED` after `DEFERRED_DA` (same kind, different disc.).
+pub const BLOCK_PAYLOAD_VERDICT_DEFERRED_DA: u8 = ImportBlockVerdict::DeferredDa as u8;
+
+/// SSZ layout matching `cc_store::meta::ForkChoiceScalars` (Architecture §2.5 / §4.2).
+///
+/// Defined here so `cc-chain` does not take a `cc-store` dependency (DAG forbids
+/// `cc-chain → cc-store`). **Must stay field-for-field identical** to
+/// `crates/store/src/meta.rs::ForkChoiceScalars`:
+///
+/// ```text
+/// time: u64
+/// proposer_boost_root: Root          // 32
+/// justified: Checkpoint              // epoch:u64 ‖ root:32
+/// finalized: Checkpoint
+/// unrealized_justified: Checkpoint
+/// unrealized_finalized: Checkpoint
+/// head_root: Root                    // 32
+/// head_slot: Slot                    // u64
+/// ```
+///
+/// Fixed-part length = 8 + 32 + 4×40 + 32 + 8 = **240** bytes. A unit test pins
+/// that length and the field order; storage decodes with the store type.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, SszEncode)]
+pub struct ForkChoiceScalarsPayload {
+    pub time: u64,
+    pub proposer_boost_root: Root,
+    pub justified: Checkpoint,
+    pub finalized: Checkpoint,
+    pub unrealized_justified: Checkpoint,
+    pub unrealized_finalized: Checkpoint,
+    pub head_root: Root,
+    pub head_slot: Slot,
+}
+
+/// Fixed SSZ byte length of [`ForkChoiceScalarsPayload`] / store `ForkChoiceScalars`.
+pub const FORK_CHOICE_SCALARS_SSZ_LEN: usize = 240;
+
+/// Build `BLOCK_IMPORTED` payload: `[verdict_byte] ‖ SignedBeaconBlock SSZ`.
+pub fn block_imported_payload(verdict: u8, block_ssz: &[u8]) -> Bytes {
+    let mut out = Vec::with_capacity(1 + block_ssz.len());
+    out.push(verdict);
+    out.extend_from_slice(block_ssz);
+    Bytes::from(out)
+}
+
+/// Snapshot fork-choice scalars for a `FINALIZED_CHECKPOINT` payload (SSZ).
+pub fn fork_choice_scalars_ssz<P: Preset>(
+    store: &Store<P>,
+    head_root: Root,
+    head_slot: Slot,
+) -> Bytes {
+    let scalars = ForkChoiceScalarsPayload {
+        time: store.time(),
+        proposer_boost_root: store.proposer_boost_root(),
+        justified: store.justified_checkpoint(),
+        finalized: store.finalized_checkpoint(),
+        unrealized_justified: store.unrealized_justified_checkpoint(),
+        unrealized_finalized: store.unrealized_finalized_checkpoint(),
+        head_root,
+        head_slot,
+    };
+    Bytes::from(scalars.as_ssz_bytes())
+}
+
+fn parent_of<P: Preset>(store: &Store<P>, root: Root) -> Option<Root> {
+    if let Some(node) = store.proto_array().get(&root) {
+        if let Some(p_idx) = node.parent {
+            return store.proto_array().nodes().get(p_idx).map(|n| n.root);
+        }
+        return None;
+    }
+    store.blocks().get(&root).map(|h| h.parent_root)
+}
+
+fn slot_of<P: Preset>(store: &Store<P>, root: Root) -> Slot {
+    store
+        .proto_array()
+        .get(&root)
+        .map(|n| n.slot)
+        .or_else(|| store.blocks().get(&root).map(|h| h.slot))
+        .unwrap_or(Slot::new(0))
+}
+
+/// Common-ancestor slot of a reorg (for `CHAIN_REORG` payload; Architecture §4.2).
+pub fn common_ancestor_slot<P: Preset>(store: &Store<P>, old_head: Root, new_head: Root) -> Slot {
+    let bound = store
+        .proto_array()
+        .len()
+        .saturating_add(store.blocks().len())
+        .saturating_add(1);
+    let mut new_chain: std::collections::HashMap<Root, Slot> = std::collections::HashMap::new();
+    let mut cur = new_head;
+    for _ in 0..bound {
+        new_chain.insert(cur, slot_of(store, cur));
+        match parent_of(store, cur) {
+            Some(p) if p != cur && p != Root::ZERO => cur = p,
+            _ => break,
+        }
+    }
+    let mut cur = old_head;
+    for _ in 0..bound {
+        if let Some(&slot) = new_chain.get(&cur) {
+            return slot;
+        }
+        match parent_of(store, cur) {
+            Some(p) if p != cur && p != Root::ZERO => cur = p,
+            _ => break,
+        }
+    }
+    Slot::new(0)
+}
 use crate::residency::Residency;
 
 /// Outcome of a single import attempt (core thread).
@@ -271,16 +388,21 @@ pub fn import_block_with_early<P: Preset>(
             metrics,
             snapshot_sequence,
             &signed,
+            // F2: arrival bytes — byte-identical to what crossed the RPC, not
+            // a re-encode of the decoded container.
+            &request.ssz,
             b.root,
             on_block_secs,
             early_accept,
         ),
         Ok(BlockImport::Deferred(DeferralReason::DataUnavailable)) => {
             // Park for re-drive when DataAvailable lands (CC-24d / §8.3).
+            // Prefer arrival `request.ssz` (F2) for both parking and the event.
+            let arrival_ssz = &request.ssz;
             if let Some(pending) = pending_da {
                 let entry = PendingDaEntry {
                     root: true_root,
-                    ssz: Bytes::from(signed.as_ssz_bytes()),
+                    ssz: Bytes::copy_from_slice(arrival_ssz),
                     fork: request.fork,
                     source: request.source,
                     slot: signed.message.slot.as_u64(),
@@ -295,6 +417,15 @@ pub fn import_block_with_early<P: Preset>(
                 }
                 metrics.set_da_pending_occupancy(pending.len() as u64);
             }
+            // CC-44a / §4.2: same BLOCK_IMPORTED kind with deferred discriminator
+            // so storage can write da_status in the same batch as the block.
+            publish_deferred_block_event(
+                event_tx,
+                metrics,
+                signed.message.slot.as_u64(),
+                true_root,
+                arrival_ssz,
+            );
             metrics.inc_import_result(ImportResult::Deferred);
             // CC-38a: template-sized block-branch trigger for unary FetchBlobs.
             // Never carries cells; core fires engine FetchBlobs when present.
@@ -590,6 +721,8 @@ fn finish_imported<P: Preset>(
     metrics: &ChainMetrics,
     snapshot_sequence: &mut u64,
     signed: &SignedBeaconBlock<P>,
+    // Arrival `ImportBlockRequest.ssz` (F2 — not a re-encode).
+    arrival_ssz: &[u8],
     block_root: Root,
     on_block_secs: f64,
     early_accept: bool,
@@ -637,14 +770,18 @@ fn finish_imported<P: Preset>(
     metrics.set_body_ring_len(residency.body_ring_len() as u64);
 
     // --- 8. snapshot publish BEFORE events (ordering guarantee) ------------
+    // Capture prior finalized *before* overwriting the snapshot so we can emit
+    // FINALIZED_CHECKPOINT only on a real change.
+    let prev_finalized = head_store.load().finalized;
     *snapshot_sequence = snapshot_sequence.saturating_add(1);
     let optimistic = cc_fork_choice::is_optimistic_node(store);
+    let finalized = store.finalized_checkpoint();
     let snapshot = HeadSnapshot {
         head_root,
         head_slot,
         head_state_root,
         justified: store.justified_checkpoint(),
-        finalized: store.finalized_checkpoint(),
+        finalized,
         unrealized_justified: store.unrealized_justified_checkpoint(),
         unrealized_finalized: store.unrealized_finalized_checkpoint(),
         current_epoch_target_root: Root::ZERO,
@@ -654,25 +791,34 @@ fn finish_imported<P: Preset>(
         sequence: *snapshot_sequence,
     };
     head_store.store(snapshot);
-    metrics.set_head(
-        head_slot.as_u64(),
-        0,
-        store.finalized_checkpoint().epoch.as_u64(),
-    );
+    metrics.set_head(head_slot.as_u64(), 0, finalized.epoch.as_u64());
     metrics.is_optimistic.set(i64::from(optimistic));
     metrics
         .optimistic_nodes
         .set(store.proto_array().optimistic_node_count() as i64);
 
-    // --- 9. event publish (non-blocking; never stall the core — SEC-2) -----
-    publish_events_nonblocking(
+    // --- 9. event publish (backpressure; Phase 1 §7.3 / F1) ----------------
+    // Data-carrying events use `blocking_send` so a slow events task applies
+    // backpressure rather than silently dropping BLOCK_IMPORTED / FINALIZED.
+    let finalized_state_root = store
+        .blocks()
+        .get(&finalized.root)
+        .map(|h| h.state_root)
+        .unwrap_or(Root::ZERO);
+    publish_import_events(
         event_tx,
         metrics,
+        store,
         slot,
         block_root,
+        arrival_ssz,
+        BLOCK_PAYLOAD_VERDICT_IMPORTED,
         head_root,
-        head_slot.as_u64(),
+        head_slot,
         reorg,
+        prev_finalized,
+        finalized,
+        finalized_state_root,
     );
     metrics.observe_import_stage(ImportStage::Publish, publish_start.elapsed().as_secs_f64());
 
@@ -690,65 +836,161 @@ fn finish_imported<P: Preset>(
     })
 }
 
-/// Publish import events with `try_send` only — never block the core thread.
-fn publish_events_nonblocking(
+/// Publish import events with **backpressure** (Phase 1 §7.3 / F1).
+///
+/// Data-carrying events (`BLOCK_IMPORTED`, `FINALIZED_CHECKPOINT`) and the
+/// accompanying HEAD/REORG use `blocking_send` on the core thread so a wedged
+/// events task stalls the producer rather than silently dropping payload
+/// bytes that storage needs for the same-transaction write-behind.
+///
+/// Payloads follow Architecture §4.2. `verdict_byte` is the first payload byte
+/// of `BLOCK_IMPORTED` so `DEFERRED_DA` and `IMPORTED` share one kind.
+/// `arrival_ssz` is the wire `ImportBlockRequest.ssz` (F2).
+#[allow(clippy::too_many_arguments)]
+fn publish_import_events<P: Preset>(
     event_tx: &tokio::sync::mpsc::Sender<EventInput>,
     metrics: &ChainMetrics,
+    store: &Store<P>,
     slot: u64,
     block_root: Root,
+    arrival_ssz: &[u8],
+    verdict_byte: u8,
     head_root: Root,
-    head_slot: u64,
-    reorg: Option<cc_fork_choice::ChainReorg>,
+    head_slot: Slot,
+    reorg: Option<ChainReorg>,
+    prev_finalized: Checkpoint,
+    finalized: Checkpoint,
+    finalized_state_root: Root,
 ) {
-    let root_bytes = Bytes::copy_from_slice(block_root.as_slice());
-    try_publish_event(
+    publish_event_blocking(
         event_tx,
         metrics,
-        EventInput {
+        EventInput::block_imported_with_payload(
             slot,
-            root: root_bytes,
-            kind: EventKind::BlockImported,
-            payload: Bytes::new(),
-        },
+            Bytes::copy_from_slice(block_root.as_slice()),
+            block_imported_payload(verdict_byte, arrival_ssz),
+        ),
     );
-    try_publish_event(
+    publish_event_blocking(
         event_tx,
         metrics,
-        EventInput {
-            slot: head_slot,
-            root: Bytes::copy_from_slice(head_root.as_slice()),
-            kind: EventKind::Head,
-            payload: Bytes::new(),
-        },
+        EventInput::head(
+            head_slot.as_u64(),
+            Bytes::copy_from_slice(head_root.as_slice()),
+        ),
     );
     if let Some(reorg) = reorg {
-        try_publish_event(
+        let ancestor_slot = common_ancestor_slot(store, reorg.old_head, reorg.new_head);
+        publish_event_blocking(
             event_tx,
             metrics,
-            EventInput {
-                slot: reorg.new_head_slot.as_u64(),
-                root: Bytes::copy_from_slice(reorg.new_head.as_slice()),
-                kind: EventKind::ChainReorg,
-                payload: Bytes::new(),
-            },
+            EventInput::chain_reorg(
+                reorg.new_head_slot.as_u64(),
+                Bytes::copy_from_slice(reorg.new_head.as_slice()),
+                Bytes::copy_from_slice(reorg.old_head.as_slice()),
+                ancestor_slot.as_u64(),
+            ),
+        );
+    }
+    if finalized != prev_finalized {
+        let scalars = fork_choice_scalars_ssz(store, head_root, head_slot);
+        publish_event_blocking(
+            event_tx,
+            metrics,
+            EventInput::finalized_checkpoint(
+                finalized.epoch.as_u64(),
+                Bytes::copy_from_slice(finalized.root.as_slice()),
+                Bytes::copy_from_slice(finalized_state_root.as_slice()),
+                scalars,
+            ),
         );
     }
 }
 
+/// Publish a standalone `BLOCK_IMPORTED` for a DA-deferred import (same kind,
+/// deferred discriminator — Architecture §4.2 rule 3). Uses backpressure (F1).
+fn publish_deferred_block_event(
+    event_tx: &tokio::sync::mpsc::Sender<EventInput>,
+    metrics: &ChainMetrics,
+    slot: u64,
+    block_root: Root,
+    arrival_ssz: &[u8],
+) {
+    publish_event_blocking(
+        event_tx,
+        metrics,
+        EventInput::block_imported_with_payload(
+            slot,
+            Bytes::copy_from_slice(block_root.as_slice()),
+            block_imported_payload(BLOCK_PAYLOAD_VERDICT_DEFERRED_DA, arrival_ssz),
+        ),
+    );
+}
+
+/// Core-thread publish with backpressure (F1 / Phase 1 §7.3).
+///
+/// - Oversize payload → metric + **error** log; not enqueued (SEC-44a-2).
+/// - Channel full → `blocking_send` waits (backpressure to the core).
+/// - Channel closed → metric + **error** log (loud failure, not a silent drop).
+fn publish_event_blocking(
+    event_tx: &tokio::sync::mpsc::Sender<EventInput>,
+    metrics: &ChainMetrics,
+    input: EventInput,
+) {
+    if !input.payload_within_cap() {
+        metrics.inc_event_payload_rejected();
+        tracing::error!(
+            kind = ?input.kind,
+            payload_len = input.payload.len(),
+            cap = crate::events::MAX_EVENT_PAYLOAD_BYTES,
+            "rejected oversize event payload before ring (SEC-44a-2)"
+        );
+        return;
+    }
+    match event_tx.blocking_send(input) {
+        Ok(()) => {}
+        Err(tokio::sync::mpsc::error::SendError(lost)) => {
+            metrics.inc_event_publish_dropped();
+            tracing::error!(
+                kind = ?lost.kind,
+                slot = lost.slot,
+                payload_len = lost.payload.len(),
+                "events channel closed; lost data-carrying event (F1 loud path)"
+            );
+        }
+    }
+}
+
+/// Test / ordering helper: non-blocking publish (does not apply backpressure).
 fn try_publish_event(
     event_tx: &tokio::sync::mpsc::Sender<EventInput>,
     metrics: &ChainMetrics,
     input: EventInput,
 ) {
+    if !input.payload_within_cap() {
+        metrics.inc_event_payload_rejected();
+        tracing::error!(
+            kind = ?input.kind,
+            payload_len = input.payload.len(),
+            "rejected oversize event payload (SEC-44a-2)"
+        );
+        return;
+    }
     match event_tx.try_send(input) {
         Ok(()) => {}
-        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+        Err(tokio::sync::mpsc::error::TrySendError::Full(lost)) => {
             metrics.inc_event_publish_dropped();
-            tracing::warn!("events channel full; dropped core event (SEC-2 non-blocking)");
+            tracing::error!(
+                kind = ?lost.kind,
+                "events channel full; dropped event (test helper try_send)"
+            );
         }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(lost)) => {
             metrics.inc_event_publish_dropped();
-            tracing::warn!("events channel closed; dropped core event");
+            tracing::error!(
+                kind = ?lost.kind,
+                "events channel closed; dropped event"
+            );
         }
     }
 }
@@ -786,6 +1028,8 @@ pub fn encode_signed_block<P: Preset>(block: &SignedBeaconBlock<P>) -> Vec<u8> {
 /// Publish snapshot then events in core order (unit-testable ordering helper).
 ///
 /// Used by tests to assert snapshot-before-event without a full state transition.
+/// Payload for `BLOCK_IMPORTED` is a minimal `[IMPORTED] ‖ []` so ordering tests
+/// do not need a live store.
 pub fn publish_snapshot_then_events(
     head_store: &HeadSnapshotStore,
     event_tx: &tokio::sync::mpsc::Sender<EventInput>,
@@ -795,10 +1039,25 @@ pub fn publish_snapshot_then_events(
     block_root: Root,
 ) {
     let head_root = snapshot.head_root;
-    let head_slot = snapshot.head_slot.as_u64();
+    let head_slot = snapshot.head_slot;
     head_store.store(snapshot);
-    publish_events_nonblocking(
-        event_tx, metrics, slot, block_root, head_root, head_slot, None,
+    // Ordering-only helper: no store → skip reorg/finalized; payload disc only.
+    try_publish_event(
+        event_tx,
+        metrics,
+        EventInput::block_imported_with_payload(
+            slot,
+            Bytes::copy_from_slice(block_root.as_slice()),
+            block_imported_payload(BLOCK_PAYLOAD_VERDICT_IMPORTED, &[]),
+        ),
+    );
+    try_publish_event(
+        event_tx,
+        metrics,
+        EventInput::head(
+            head_slot.as_u64(),
+            Bytes::copy_from_slice(head_root.as_slice()),
+        ),
     );
 }
 
@@ -847,10 +1106,93 @@ mod tests {
         assert_eq!(head.load().sequence, 3);
         assert_eq!(head.load().head_root, root);
         let ev = rx.recv().await.expect("block_imported");
-        assert_eq!(ev.kind, EventKind::BlockImported);
+        assert_eq!(ev.kind, cc_proto::chain::EventKind::BlockImported);
+        assert_eq!(ev.payload.first().copied(), Some(BLOCK_PAYLOAD_VERDICT_IMPORTED));
         let ev = rx.recv().await.expect("head");
-        assert_eq!(ev.kind, EventKind::Head);
+        assert_eq!(ev.kind, cc_proto::chain::EventKind::Head);
+        assert_eq!(ev.payload.len(), 8);
         assert_eq!(head.load().sequence, 3);
+    }
+
+    /// F3: `ForkChoiceScalarsPayload` layout matches store meta field order/size.
+    ///
+    /// Storage decodes with `cc_store::meta::ForkChoiceScalars` — both must be
+    /// 240-byte fixed containers with identical field order (see type doc).
+    #[test]
+    fn fork_choice_scalars_payload_layout_matches_store_meta() {
+        use cc_types::primitives::Epoch;
+
+        let v = ForkChoiceScalarsPayload {
+            time: 0x0102_0304_0506_0708,
+            proposer_boost_root: Root::from_array([0x11; 32]),
+            justified: Checkpoint {
+                epoch: Epoch::new(3),
+                root: Root::from_array([0x22; 32]),
+            },
+            finalized: Checkpoint {
+                epoch: Epoch::new(2),
+                root: Root::from_array([0x33; 32]),
+            },
+            unrealized_justified: Checkpoint {
+                epoch: Epoch::new(3),
+                root: Root::from_array([0x44; 32]),
+            },
+            unrealized_finalized: Checkpoint {
+                epoch: Epoch::new(1),
+                root: Root::from_array([0x55; 32]),
+            },
+            head_root: Root::from_array([0x66; 32]),
+            head_slot: Slot::new(99),
+        };
+        let bytes = v.as_ssz_bytes();
+        assert_eq!(
+            bytes.len(),
+            FORK_CHOICE_SCALARS_SSZ_LEN,
+            "fixed SSZ length must match store ForkChoiceScalars (240 B)"
+        );
+        // Field order: time | proposer_boost | justified | finalized | …
+        assert_eq!(&bytes[0..8], &0x0102_0304_0506_0708u64.to_le_bytes());
+        assert_eq!(&bytes[8..40], &[0x11u8; 32]);
+        assert_eq!(&bytes[40..48], &3u64.to_le_bytes()); // justified.epoch
+        assert_eq!(&bytes[48..80], &[0x22u8; 32]); // justified.root
+        assert_eq!(&bytes[80..88], &2u64.to_le_bytes()); // finalized.epoch
+        assert_eq!(&bytes[88..120], &[0x33u8; 32]);
+        // head_slot is the last 8 bytes.
+        assert_eq!(&bytes[232..240], &99u64.to_le_bytes());
+        // Default encodes to the same length (store Default path).
+        assert_eq!(
+            ForkChoiceScalarsPayload::default().as_ssz_bytes().len(),
+            FORK_CHOICE_SCALARS_SSZ_LEN
+        );
+    }
+
+    /// SEC-44a-2: oversize payload is rejected with metric, not enqueued.
+    #[test]
+    fn oversize_payload_rejected_before_enqueue() {
+        use crate::events::MAX_EVENT_PAYLOAD_BYTES;
+
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let (tx, mut rx) = mpsc::channel(4);
+        let huge = vec![0u8; MAX_EVENT_PAYLOAD_BYTES + 1];
+        let input = EventInput::block_imported_with_payload(
+            1,
+            Bytes::from(vec![0u8; 32]),
+            Bytes::from(huge),
+        );
+        assert!(!input.payload_within_cap());
+        try_publish_event(&tx, &metrics, input);
+        assert_eq!(metrics.event_payload_rejected_count(), 1);
+        assert!(rx.try_recv().is_err(), "oversize must not enter the channel");
+    }
+
+    /// F2: block_imported_payload preserves arrival bytes after the discriminator.
+    #[test]
+    fn block_imported_payload_preserves_arrival_bytes() {
+        let arrival = b"wire-ssz-bytes-not-reencoded";
+        let payload = block_imported_payload(BLOCK_PAYLOAD_VERDICT_IMPORTED, arrival);
+        assert_eq!(payload[0], BLOCK_PAYLOAD_VERDICT_IMPORTED);
+        assert_eq!(&payload[1..], arrival.as_slice());
     }
 
     /// Exhaustive `OnBlockError` → class (no catch-all) — R-13 / §5.3.

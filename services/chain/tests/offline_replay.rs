@@ -443,6 +443,7 @@ impl Harness {
             ring_capacity: 256,
             subscriber_queue_capacity: 128,
             session_id: Some(18),
+            ring_bytes: usize::MAX,
         });
         let head = HeadSnapshotStore::new();
         let core = spawn_core_thread(

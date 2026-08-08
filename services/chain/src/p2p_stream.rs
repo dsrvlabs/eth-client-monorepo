@@ -14,7 +14,8 @@
 //!   counter (CC-2C/2D/2B Phase-5 seam — no pool in Phase 2).
 //! - `PublishRequest` outward path: topic validation + enqueue onto live sessions
 //!   (§10.5). Unknown topic → structured `INVALID_ARGUMENT` / `UNKNOWN_TOPIC`.
-//! - `ColumnSidecar` has **no producer** (ADR P2-11); inbound is IGNORE.
+//! - `ColumnSidecar` is relayed into the event bus as `DATA_COLUMN` without
+//!   decoding (CC-44a / Architecture §4.2 rule 1; ADR P4-03).
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,6 +35,7 @@ use tonic::{Code, Status};
 
 use crate::core::CoreHandle;
 use crate::epoch_context::EpochContextStore;
+use crate::events::EventInput;
 use crate::head::HeadSnapshotStore;
 use crate::service::ERROR_DOMAIN;
 
@@ -111,6 +113,12 @@ pub struct P2pStreamDeps {
     pub gossip_discarded: Arc<AtomicU64>,
     /// Sync-committee family discards specifically (CC-2D counter).
     pub sync_discarded: Arc<AtomicU64>,
+    /// Producer for `DATA_COLUMN` events (CC-44a). `None` in tests that do not
+    /// care about the bus; production always wires the events task sender.
+    pub event_tx: Option<mpsc::Sender<EventInput>>,
+    /// Test counter: incremented only if chain attempted an SSZ decode of a
+    /// column (must stay zero — Architecture §4.2 rule 1).
+    pub column_decode_attempts: Arc<AtomicU64>,
 }
 
 impl P2pStreamDeps {
@@ -119,6 +127,16 @@ impl P2pStreamDeps {
         head: HeadSnapshotStore,
         epoch: EpochContextStore,
         core: Arc<RwLock<Option<CoreHandle>>>,
+    ) -> Self {
+        Self::with_events(head, epoch, core, None)
+    }
+
+    /// Like [`Self::new`], with an optional event-bus producer for `DATA_COLUMN`.
+    pub fn with_events(
+        head: HeadSnapshotStore,
+        epoch: EpochContextStore,
+        core: Arc<RwLock<Option<CoreHandle>>>,
+        event_tx: Option<mpsc::Sender<EventInput>>,
     ) -> Self {
         let (ticks, _) = broadcast::channel(64);
         let (publish_tx, _) = broadcast::channel(64);
@@ -134,7 +152,15 @@ impl P2pStreamDeps {
             session_count: Arc::new(AtomicU64::new(0)),
             gossip_discarded: Arc::new(AtomicU64::new(0)),
             sync_discarded: Arc::new(AtomicU64::new(0)),
+            event_tx,
+            column_decode_attempts: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Column SSZ-decode attempts (must remain 0; CC-44a acceptance).
+    #[must_use]
+    pub fn column_decode_attempts(&self) -> u64 {
+        self.column_decode_attempts.load(Ordering::Relaxed)
     }
 
     /// Total non-block gossip objects discarded (tests / CC-2D seam).
@@ -587,8 +613,39 @@ where
             Ok(())
         }
         p2p_to_chain::Msg::Column(col) => {
-            // No Phase 2 producer or consumer (§10.3). IGNORE so a miswired
-            // client does not stall the stream.
+            // CC-44a / §4.2 rule 1: relay SSZ bytes into the event bus **without
+            // decoding**. chain forgets the bytes; storage is the consumer.
+            // `column_decode_attempts` stays at zero by construction — we never
+            // call into a sidecar SSZ decoder here.
+            //
+            // F1: async `send().await` applies backpressure; never silent try_send
+            // drop of DATA_COLUMN payload. SEC-44a-2: reject oversize before send.
+            if let Some(tx) = deps.event_tx.as_ref() {
+                let block_root = if col.root.len() == 32 {
+                    bytes::Bytes::copy_from_slice(&col.root)
+                } else {
+                    bytes::Bytes::from(col.root.clone())
+                };
+                // Slot is not on the wire message; 0 is fine for the bus — storage
+                // reads slot at the fixed SSZ offset of the sidecar payload.
+                let input = EventInput::data_column(0, block_root, bytes::Bytes::from(col.ssz));
+                if !input.payload_within_cap() {
+                    tracing::error!(
+                        payload_len = input.payload.len(),
+                        cap = crate::events::MAX_EVENT_PAYLOAD_BYTES,
+                        "rejected oversize DATA_COLUMN payload (SEC-44a-2)"
+                    );
+                } else if let Err(tokio::sync::mpsc::error::SendError(lost)) = tx.send(input).await
+                {
+                    tracing::error!(
+                        kind = ?lost.kind,
+                        payload_len = lost.payload.len(),
+                        "events channel closed; lost DATA_COLUMN (F1 loud path)"
+                    );
+                }
+            }
+            // Still ACK with IGNORE-class verdict so a miswired client does not
+            // stall (stream backpressure contract unchanged).
             let verdict = Verdict {
                 correlation_id: col.root,
                 acceptance: Acceptance::Ignore as i32,
@@ -891,6 +948,8 @@ mod tests {
             session_count: Arc::new(AtomicU64::new(0)),
             gossip_discarded: Arc::new(AtomicU64::new(0)),
             sync_discarded: Arc::new(AtomicU64::new(0)),
+            event_tx: None,
+            column_decode_attempts: Arc::new(AtomicU64::new(0)),
         };
         assert_eq!(deps.sync_discarded_count(), 0);
         assert_eq!(deps.gossip_discarded_count(), 0);

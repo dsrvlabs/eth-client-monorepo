@@ -76,13 +76,15 @@ pub use fcu_driver::{
 };
 pub use epoch_context::{EpochContext, EpochContextStore};
 pub use events::{
-    DEFAULT_RING_CAPACITY, DEFAULT_SUBSCRIBER_QUEUE_CAPACITY, ERROR_DOMAIN, EventInput,
-    EventSubscription, EventsConfig, EventsHandle, Occupancy, REASON_CURSOR_TOO_OLD,
-    REASON_CURSOR_UNKNOWN_SESSION,
+    DEFAULT_RING_BYTES, DEFAULT_RING_CAPACITY, DEFAULT_SUBSCRIBER_QUEUE_CAPACITY, ERROR_DOMAIN,
+    EventInput, EventSubscription, EventsConfig, EventsHandle, MAX_EVENT_PAYLOAD_BYTES, Occupancy,
+    REASON_CURSOR_TOO_OLD, REASON_CURSOR_UNKNOWN_SESSION,
 };
 pub use head::{HeadSnapshot, HeadSnapshotStore};
 pub use import::{
-    ImportCounters, ImportOutcome, decode_signed_block, encode_signed_block,
+    BLOCK_PAYLOAD_VERDICT_DEFERRED_DA, BLOCK_PAYLOAD_VERDICT_IMPORTED, FORK_CHOICE_SCALARS_SSZ_LEN,
+    ForkChoiceScalarsPayload, ImportCounters, ImportOutcome, block_imported_payload,
+    common_ancestor_slot, decode_signed_block, encode_signed_block, fork_choice_scalars_ssz,
     import_block_with_early, late_import_flags, on_block_error_gossip_class, parse_root,
 };
 pub use invalidation::{ExitFn, handle_justified_checkpoint_invalidated, process_exit};
@@ -101,4 +103,7 @@ pub use residency::{
     BodyRingEntry, DEFAULT_BODY_RING_CAPACITY, DEFAULT_MAX_RESIDENT_STATES, Residency,
     ResidencyError, ResidentRole, StateProvider,
 };
-pub use service::{ChainServiceImpl, REASON_NOT_BOOTSTRAPPED};
+pub use service::{
+    ChainServiceImpl, REASON_BELOW_FINALIZED_RETENTION, REASON_NOT_BOOTSTRAPPED,
+    status_below_finalized,
+};

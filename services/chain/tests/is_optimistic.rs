@@ -153,7 +153,8 @@ fn spawn_svc(
         ring_capacity: 64,
         subscriber_queue_capacity: 32,
         session_id: Some(42),
-    });
+            ring_bytes: usize::MAX,
+        });
     let head = HeadSnapshotStore::new();
     let core = spawn_core_thread(
         store,

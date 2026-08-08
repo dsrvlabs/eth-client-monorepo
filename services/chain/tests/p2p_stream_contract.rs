@@ -150,7 +150,8 @@ fn spawn_svc() -> (ChainServiceImpl, cc_chain::CoreThread, EventsHandle) {
         ring_capacity: 32,
         subscriber_queue_capacity: 16,
         session_id: Some(0x27),
-    });
+            ring_bytes: usize::MAX,
+        });
     let head = HeadSnapshotStore::new();
     let epoch = EpochContextStore::new();
     let core = spawn_core_thread_with_epoch(
@@ -813,20 +814,20 @@ async fn publish_unknown_topic_is_structured_error() {
     shutdown(core, events).await;
 }
 
-// ── ColumnSidecar: no producer ──────────────────────────────────────────────
+// ── ColumnSidecar: relay without decode (CC-44a) ────────────────────────────
 
 #[test]
-fn column_sidecar_has_no_construction_site() {
-    // Acceptance: `grep -rn "ColumnSidecar" services/ crates/` shows the
-    // generated type and no construction site. We approximate by ensuring our
-    // chain sources never construct `ColumnSidecar {`.
+fn column_sidecar_has_no_ssz_decode_construction() {
+    // CC-44a: chain relays P2pToChain.column into DATA_COLUMN without decoding
+    // the consensus `DataColumnSidecar` container. Proto field access is fine;
+    // SSZ type construction / decode helpers are not.
     let chain_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/p2p_stream.rs"));
     assert!(
-        !chain_src.contains("ColumnSidecar {"),
-        "p2p_stream must not construct ColumnSidecar"
+        !chain_src.contains("DataColumnSidecar"),
+        "p2p_stream must not name the consensus DataColumnSidecar type"
     );
     assert!(
-        !chain_src.contains("column_sidecar::") && !chain_src.contains("ColumnSidecar::"),
-        "no ColumnSidecar builder"
+        !chain_src.contains("from_ssz_bytes") || !chain_src.contains("Column"),
+        "no SSZ decode of column bytes on the relay path"
     );
 }

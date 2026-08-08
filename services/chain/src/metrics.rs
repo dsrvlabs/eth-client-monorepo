@@ -254,6 +254,10 @@ pub struct ChainMetrics {
     pub import_total: Family<ImportResultLabels, Counter>,
     pub import_queue_depth: Gauge,
     pub event_buffer_occupancy: Family<BufferLabels, Gauge>,
+    /// Accounted ring occupancy in bytes (CC-44a; separate from occupancy labels).
+    pub event_buffer_bytes: Gauge,
+    /// Hard byte ceiling for the event ring (CC-44a).
+    pub event_buffer_bytes_bound: Gauge,
     pub resident_states: Gauge,
     pub subscribers: Gauge,
     pub budget_exceeded: Family<BudgetOpLabels, Counter>,
@@ -263,8 +267,10 @@ pub struct ChainMetrics {
     pub import_rejected_backpressure: Counter,
     /// Bodies retained for shallow-reorg replay (cap 64; CC-18b).
     pub body_ring_len: Gauge,
-    /// Events dropped because the events channel was full/closed (SEC-2).
+    /// Events dropped because the events channel was full/closed (SEC-2 / F1).
     pub event_publish_dropped: Counter,
+    /// Events rejected because payload exceeded [`crate::events::MAX_EVENT_PAYLOAD_BYTES`] (SEC-44a-2).
+    pub event_payload_rejected: Counter,
     /// Checkpoint bootstrap attempts per provider (CC-19a / §8.1).
     pub bootstrap_attempts: Family<BootstrapLabels, Counter>,
     /// Blocks dropped from `pending_da` (timeout or capacity eviction; CC-24d).
@@ -319,6 +325,8 @@ impl ChainMetrics {
         let import_total = Family::<ImportResultLabels, Counter>::default();
         let import_queue_depth = Gauge::default();
         let event_buffer_occupancy = Family::<BufferLabels, Gauge>::default();
+        let event_buffer_bytes = Gauge::default();
+        let event_buffer_bytes_bound = Gauge::default();
         let resident_states = Gauge::default();
         let subscribers = Gauge::default();
         let budget_exceeded = Family::<BudgetOpLabels, Counter>::default();
@@ -326,6 +334,7 @@ impl ChainMetrics {
         let import_rejected_backpressure = Counter::default();
         let body_ring_len = Gauge::default();
         let event_publish_dropped = Counter::default();
+        let event_payload_rejected = Counter::default();
         let bootstrap_attempts = Family::<BootstrapLabels, Counter>::default();
         let da_pending_dropped = Counter::default();
         let da_pending_occupancy = Gauge::default();
@@ -400,6 +409,17 @@ impl ChainMetrics {
             "Event bus occupancy (buffer=ring|subscriber)",
             event_buffer_occupancy.clone(),
         );
+        // CC-44a: bytes are separate gauges — not labels on occupancy (R-13 early warning).
+        registry.register(
+            "cc_chain_event_buffer_bytes",
+            "Event ring accounted occupancy in bytes (CC-44a / §4.3)",
+            event_buffer_bytes.clone(),
+        );
+        registry.register(
+            "cc_chain_event_buffer_bytes_bound",
+            "Event ring hard byte ceiling (chain.event_ring_bytes; CC-44a)",
+            event_buffer_bytes_bound.clone(),
+        );
         registry.register(
             "cc_chain_resident_states",
             "Number of BeaconState values retained in memory",
@@ -433,8 +453,13 @@ impl ChainMetrics {
         );
         registry.register(
             "cc_chain_event_publish_dropped",
-            "Core-thread events dropped when the events channel is full or closed",
+            "Events lost when the events channel is closed (F1 loud path)",
             event_publish_dropped.clone(),
+        );
+        registry.register(
+            "cc_chain_event_payload_rejected",
+            "Events rejected because payload exceeded MAX_EVENT_PAYLOAD_BYTES (SEC-44a-2)",
+            event_payload_rejected.clone(),
         );
         // OpenMetrics appends `_total` for counters — do not include it in the name.
         registry.register(
@@ -525,6 +550,8 @@ impl ChainMetrics {
             import_total,
             import_queue_depth,
             event_buffer_occupancy,
+            event_buffer_bytes,
+            event_buffer_bytes_bound,
             resident_states,
             subscribers,
             budget_exceeded,
@@ -532,6 +559,7 @@ impl ChainMetrics {
             import_rejected_backpressure,
             body_ring_len,
             event_publish_dropped,
+            event_payload_rejected,
             bootstrap_attempts,
             da_pending_dropped,
             da_pending_occupancy,
@@ -598,6 +626,8 @@ impl ChainMetrics {
                 })
                 .set(0);
         }
+        self.event_buffer_bytes.set(0);
+        self.event_buffer_bytes_bound.set(0);
         for op in [BudgetOp::Block, BudgetOp::Epoch] {
             let _ = self
                 .budget_exceeded
@@ -616,6 +646,7 @@ impl ChainMetrics {
         let _ = self.import_root_mismatch.get();
         let _ = self.import_rejected_backpressure.get();
         let _ = self.event_publish_dropped.get();
+        let _ = self.event_payload_rejected.get();
         // Seed one series so HELP/TYPE always appear (provider is runtime-known).
         let _ = self
             .bootstrap_attempts
@@ -928,7 +959,7 @@ impl ChainMetrics {
         self.body_ring_len.get()
     }
 
-    /// Increment dropped-event counter (SEC-2 non-blocking publish).
+    /// Increment dropped-event counter (channel closed / F1 loud path).
     pub fn inc_event_publish_dropped(&self) {
         self.event_publish_dropped.inc();
     }
@@ -936,6 +967,16 @@ impl ChainMetrics {
     /// Read dropped-event counter (tests).
     pub fn event_publish_dropped_count(&self) -> u64 {
         self.event_publish_dropped.get()
+    }
+
+    /// Increment oversize-payload rejection counter (SEC-44a-2).
+    pub fn inc_event_payload_rejected(&self) {
+        self.event_payload_rejected.inc();
+    }
+
+    /// Read oversize-payload rejection counter (tests).
+    pub fn event_payload_rejected_count(&self) -> u64 {
+        self.event_payload_rejected.get()
     }
 
     /// Increment root-mismatch counter (CC-18b).
@@ -972,7 +1013,10 @@ impl ChainMetrics {
         self.subscribers.set(n as i64);
     }
 
-    /// Set event-buffer occupancy gauges from live [`Occupancy`] (CC-18c / CC-1C).
+    /// Set event-buffer occupancy gauges from live [`Occupancy`] (CC-18c / CC-1C / CC-44a).
+    ///
+    /// Occupancy labels stay **counts only** (`ring` / `subscriber`). Bytes use
+    /// dedicated gauges.
     pub fn sync_from_occupancy(&self, occupancy: &Occupancy) {
         self.event_buffer_occupancy
             .get_or_create(&BufferLabels {
@@ -984,7 +1028,15 @@ impl ChainMetrics {
                 buffer: BUFFER_SUBSCRIBER.to_owned(),
             })
             .set(occupancy.deepest_subscriber() as i64);
+        self.event_buffer_bytes.set(occupancy.bytes() as i64);
+        self.event_buffer_bytes_bound
+            .set(occupancy.bytes_bound() as i64);
         self.set_subscribers(occupancy.subscribers() as u64);
+    }
+
+    /// Seed the byte-ceiling gauge at events-task spawn (CC-44a).
+    pub fn set_event_buffer_bytes_bound(&self, n: u64) {
+        self.event_buffer_bytes_bound.set(n as i64);
     }
 
     /// Read `cc_chain_budget_exceeded_total{op}` (tests).

@@ -83,9 +83,13 @@ mod tests {
         }
     }
 
+    fn ring(cap: usize, session: u64) -> EventRing {
+        EventRing::new(cap, usize::MAX, session)
+    }
+
     #[test]
     fn session_mismatch_before_too_old() {
-        let mut ring = EventRing::new(2, 1);
+        let mut ring = ring(2, 1);
         push_n(&mut ring, 4); // front seq = 2
         let err = validate_cursor(
             &ring,
@@ -104,7 +108,7 @@ mod tests {
 
     #[test]
     fn eviction_is_cursor_too_old() {
-        let mut ring = EventRing::new(2, 1);
+        let mut ring = ring(2, 1);
         push_n(&mut ring, 4); // retained seq 2,3
         let err = validate_cursor(
             &ring,
@@ -122,7 +126,7 @@ mod tests {
 
     #[test]
     fn boundary_cursor_just_before_front_is_ok() {
-        let mut ring = EventRing::new(2, 1);
+        let mut ring = ring(2, 1);
         push_n(&mut ring, 4); // front = 2
         // last seen = 1 (evicted); resume from 2 — still valid
         validate_cursor(
@@ -139,7 +143,7 @@ mod tests {
 
     #[test]
     fn slot_root_mismatch_rejected() {
-        let mut ring = EventRing::new(4, 1);
+        let mut ring = ring(4, 1);
         push_n(&mut ring, 2);
         let err = validate_cursor(
             &ring,

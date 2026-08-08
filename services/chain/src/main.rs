@@ -80,6 +80,8 @@ const SUBSCRIBE_EVENTS_METHOD: &str = "/eth.chain.v1.ChainService/SubscribeEvent
 const APPLY_ATTESTATIONS_METHOD: &str = "/eth.chain.v1.ChainService/ApplyAttestations";
 /// CC-3B surface (hook-without-caller); listed so gRPC metrics do not bucket as `"unknown"`.
 const IS_OPTIMISTIC_METHOD: &str = "/eth.chain.v1.ChainService/IsOptimistic";
+/// CC-44a additive unary for storage gap fill.
+const GET_CANONICAL_ROOTS_METHOD: &str = "/eth.chain.v1.ChainService/GetCanonicalRoots";
 
 /// Per-service config: shared [`ServiceConfig`] plus chain-only fields.
 #[derive(Debug, Deserialize)]
@@ -92,9 +94,12 @@ struct ChainConfig {
     /// Body ring capacity for shallow-reorg replay. Default 64.
     #[serde(default = "default_body_ring_capacity")]
     body_ring_capacity: usize,
-    /// Event ring capacity (CC-18c). Default 1024.
-    #[serde(default = "default_event_ring_capacity")]
-    event_ring_capacity: usize,
+    /// Event ring entry capacity (CC-44a / `chain.event_ring_events`). Default 4096.
+    #[serde(default = "default_event_ring_events", alias = "event_ring_capacity")]
+    event_ring_events: usize,
+    /// Event ring hard byte ceiling (CC-44a / `chain.event_ring_bytes`). Default 64 MiB.
+    #[serde(default = "default_event_ring_bytes")]
+    event_ring_bytes: usize,
     /// Per-subscriber queue capacity (CC-18c). Default 256.
     #[serde(default = "default_subscriber_queue_capacity")]
     subscriber_queue_capacity: usize,
@@ -137,8 +142,11 @@ fn default_max_resident_states() -> usize {
 fn default_body_ring_capacity() -> usize {
     cc_chain::residency::DEFAULT_BODY_RING_CAPACITY
 }
-fn default_event_ring_capacity() -> usize {
+fn default_event_ring_events() -> usize {
     cc_chain::events::DEFAULT_RING_CAPACITY
+}
+fn default_event_ring_bytes() -> usize {
+    cc_chain::events::DEFAULT_RING_BYTES
 }
 fn default_subscriber_queue_capacity() -> usize {
     cc_chain::events::DEFAULT_SUBSCRIBER_QUEUE_CAPACITY
@@ -172,6 +180,7 @@ impl ChainConfig {
                 SUBSCRIBE_EVENTS_METHOD.to_owned(),
                 APPLY_ATTESTATIONS_METHOD.to_owned(),
                 IS_OPTIMISTIC_METHOD.to_owned(),
+                GET_CANONICAL_ROOTS_METHOD.to_owned(),
             ],
         }
     }
@@ -188,12 +197,14 @@ async fn main() -> anyhow::Result<()> {
     // CC-1C: register chain metrics into bs.registry between init and serve.
     let chain_metrics = ChainMetrics::register(&mut bs.registry);
 
-    // CC-18c: events task (no fork-choice dependency on the events path).
+    // CC-18c / CC-44a: events task (no fork-choice dependency on the events path).
     let events = EventsHandle::spawn(EventsConfig {
-        ring_capacity: cfg.event_ring_capacity,
+        ring_capacity: cfg.event_ring_events,
+        ring_bytes: cfg.event_ring_bytes,
         subscriber_queue_capacity: cfg.subscriber_queue_capacity,
         session_id: None,
     });
+    chain_metrics.set_event_buffer_bytes_bound(cfg.event_ring_bytes as u64);
 
     let head = HeadSnapshotStore::new();
     // Shared with core at spawn so pre-bootstrap P2pStream sessions keep the

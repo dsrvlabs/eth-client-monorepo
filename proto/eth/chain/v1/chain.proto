@@ -44,6 +44,10 @@ service ChainService {
   // per-root derivation from ProtoNode.execution_status. known=false when the
   // root is absent from the proto-array (Phase 6 must not invent false).
   rpc IsOptimistic(IsOptimisticRequest) returns (IsOptimisticResponse);
+  // CC-44a /3: canonical roots for a contiguous slot range above finalized
+  // retention. Used by storage on CURSOR_TOO_OLD gap fill (§4.6 step 2).
+  // Additive unary on the existing ChainService (not a tenth contract).
+  rpc GetCanonicalRoots(GetCanonicalRootsRequest) returns (GetCanonicalRootsResponse);
 }
 
 message GetInfoRequest {}
@@ -118,9 +122,12 @@ enum EventKind {
   EVENT_KIND_CHAIN_REORG = 2;
   EVENT_KIND_FINALIZED_CHECKPOINT = 3;
   EVENT_KIND_BLOCK_IMPORTED = 4;
+  // CC-44a / Architecture §4.2: DataColumnSidecar SSZ relay (opaque to chain).
+  EVENT_KIND_DATA_COLUMN = 5;
 }
 
 // Consumers must be idempotent; root carries the identity (re-plan §Contracts).
+// payload is kind-specific per Architecture §4.2; opaque to the bus.
 message Event {
   uint64 seq = 1;
   uint64 slot = 2;
@@ -263,4 +270,25 @@ message IsOptimisticResponse {
   bool is_optimistic = 1;
   // false ≜ root not in the proto-array (unknown to this node).
   bool known = 2;
+}
+
+// ── CC-44a /3: GetCanonicalRoots ─────────────────────────────────────────────
+//
+// Contiguous slot → canonical root lookup for a gap bounded by an operator
+// restart (§4.6). Answers only above chain's finalized retention (finalized
+// checkpoint epoch start). Below that → FAILED_PRECONDITION /
+// BELOW_FINALIZED_RETENTION. One root per slot in the inclusive range
+// [start_slot, end_slot]; empty slots carry the latest block root at or before
+// that slot on the head's parent chain.
+
+message GetCanonicalRootsRequest {
+  // Inclusive lower bound (slot).
+  uint64 start_slot = 1;
+  // Inclusive upper bound (slot). Must be >= start_slot.
+  uint64 end_slot = 2;
+}
+
+message GetCanonicalRootsResponse {
+  // One 32-byte root per slot in [start_slot, end_slot], inclusive, in order.
+  repeated bytes roots = 1;
 }

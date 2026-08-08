@@ -7,6 +7,7 @@
 //! - `GetCommitteeShuffling` / `GetValidatorPubkeys` → core [`Query`] (CC-1F)
 //! - `P2pStream` / `GetValidatorRecords` → CC-27a chain-side stream contract
 //! - `IsOptimistic` → core [`Query`] over fork-choice only (CC-3B; no Phase 3 caller)
+//! - `GetCanonicalRoots` → core [`Query`] for storage gap fill (CC-44a /3)
 //!
 //! Before checkpoint bootstrap completes the core slot is empty and RPCs return
 //! `FAILED_PRECONDITION` / `NOT_BOOTSTRAPPED` (§7.4). [`Self::install_core`] is
@@ -21,8 +22,9 @@ use bytes::Bytes;
 use cc_proto::chain::chain_service_server::ChainService;
 use cc_proto::chain::{
     ApplyAttestationsRequest, ApplyAttestationsResponse, Checkpoint as ProtoCheckpoint,
-    GetCommitteeShufflingRequest, GetCommitteeShufflingResponse, GetHeadRequest, GetHeadResponse,
-    GetInfoRequest, GetInfoResponse, GetValidatorPubkeysRequest, GetValidatorPubkeysResponse,
+    GetCanonicalRootsRequest, GetCanonicalRootsResponse, GetCommitteeShufflingRequest,
+    GetCommitteeShufflingResponse, GetHeadRequest, GetHeadResponse, GetInfoRequest,
+    GetInfoResponse, GetValidatorPubkeysRequest, GetValidatorPubkeysResponse,
     GetValidatorRecordsRequest, GetValidatorRecordsResponse, ImportBlockRequest,
     ImportBlockResponse, IsOptimisticRequest, IsOptimisticResponse, SubscribeEventsRequest,
 };
@@ -47,6 +49,9 @@ use crate::p2p_stream::{P2pStreamDeps, serve_p2p_stream};
 
 /// gRPC `ErrorInfo.reason` before checkpoint bootstrap (CC-19; Architecture §7.4).
 pub const REASON_NOT_BOOTSTRAPPED: &str = "NOT_BOOTSTRAPPED";
+
+/// gRPC `ErrorInfo.reason` when `GetCanonicalRoots` starts below finalized retention (CC-44a).
+pub const REASON_BELOW_FINALIZED_RETENTION: &str = "BELOW_FINALIZED_RETENTION";
 
 /// Domain for chain error details.
 pub const ERROR_DOMAIN: &str = "eth.chain.v1";
@@ -98,7 +103,14 @@ impl ChainServiceImpl {
             .map(|c| c.epoch_context().clone())
             .unwrap_or(epoch);
         let core_slot = Arc::new(RwLock::new(core));
-        let stream_deps = P2pStreamDeps::new(head.clone(), epoch, Arc::clone(&core_slot));
+        // CC-44a: wire the events producer so P2pToChain.column can relay
+        // DATA_COLUMN without decoding.
+        let stream_deps = P2pStreamDeps::with_events(
+            head.clone(),
+            epoch,
+            Arc::clone(&core_slot),
+            Some(events.event_sender()),
+        );
         Self {
             core: core_slot,
             head,
@@ -190,6 +202,19 @@ impl ChainServiceImpl {
             ERROR_DOMAIN,
         )
     }
+}
+
+/// `FAILED_PRECONDITION` / `BELOW_FINALIZED_RETENTION` for GetCanonicalRoots (CC-44a).
+pub fn status_below_finalized(start_slot: u64, finalized_slot: u64) -> Status {
+    status_with_error_info(
+        Code::FailedPrecondition,
+        format!(
+            "GetCanonicalRoots start_slot {start_slot} is below chain finalized retention \
+             (finalized epoch start slot {finalized_slot})"
+        ),
+        REASON_BELOW_FINALIZED_RETENTION,
+        ERROR_DOMAIN,
+    )
 }
 
 #[tonic::async_trait]
@@ -437,6 +462,53 @@ impl ChainService for ChainServiceImpl {
             })),
             other => Err(Status::internal(format!(
                 "unexpected query reply for IsOptimistic: {other:?}"
+            ))),
+        }
+    }
+
+    /// CC-44a /3: one root per canonical slot in `[start_slot, end_slot]`.
+    ///
+    /// Below finalized retention → `FAILED_PRECONDITION` /
+    /// [`REASON_BELOW_FINALIZED_RETENTION`].
+    async fn get_canonical_roots(
+        &self,
+        request: Request<GetCanonicalRootsRequest>,
+    ) -> Result<Response<GetCanonicalRootsResponse>, Status> {
+        let Some(core) = self.core_handle() else {
+            return Err(Self::not_bootstrapped(
+                "chain core not bootstrapped; GetCanonicalRoots unavailable until checkpoint sync",
+            ));
+        };
+        let req = request.into_inner();
+        if req.end_slot < req.start_slot {
+            return Err(Status::invalid_argument(format!(
+                "GetCanonicalRoots end_slot ({}) < start_slot ({})",
+                req.end_slot, req.start_slot
+            )));
+        }
+        // Bound the range so a miswired client cannot force a multi-million-slot walk.
+        const MAX_RANGE: u64 = 4096;
+        let span = req.end_slot.saturating_sub(req.start_slot).saturating_add(1);
+        if span > MAX_RANGE {
+            return Err(Status::invalid_argument(format!(
+                "GetCanonicalRoots range {span} exceeds bound of {MAX_RANGE}"
+            )));
+        }
+        let reply = core
+            .query(QueryRequest::CanonicalRoots {
+                start_slot: req.start_slot,
+                end_slot: req.end_slot,
+            })
+            .await?;
+        match reply {
+            QueryReply::CanonicalRoots { roots } => Ok(Response::new(GetCanonicalRootsResponse {
+                roots: roots
+                    .into_iter()
+                    .map(|r| r.as_slice().to_vec())
+                    .collect(),
+            })),
+            other => Err(Status::internal(format!(
+                "unexpected query reply for GetCanonicalRoots: {other:?}"
             ))),
         }
     }

@@ -260,6 +260,8 @@ async fn metrics_exposition_server_lists_section_11_1_families() {
         "cc_chain_import_total",
         "cc_chain_import_queue_depth",
         "cc_chain_event_buffer_occupancy",
+        "cc_chain_event_buffer_bytes",
+        "cc_chain_event_buffer_bytes_bound",
         "cc_chain_resident_states",
         "cc_chain_subscribers",
         "cc_chain_budget_exceeded_total",
@@ -387,7 +389,8 @@ async fn occupancy_syncs_into_event_buffer_gauges() {
         ring_capacity: 8,
         subscriber_queue_capacity: 4,
         session_id: Some(7),
-    });
+            ring_bytes: usize::MAX,
+        });
     let _sub = h.subscribe(None).await.unwrap();
     h.publish(EventInput::block_imported(
         1,

@@ -1,4 +1,5 @@
-//! Resumable event bus: ring buffer, cursor, and per-subscriber fan-out (CC-18c / §7.3).
+//! Resumable event bus: ring buffer, cursor, and per-subscriber fan-out
+//! (CC-18c / §7.3; CC-44a data-bus payloads + byte ceiling).
 //!
 //! # Ownership and atomicity
 //!
@@ -33,11 +34,19 @@
 //! Per-subscriber `mpsc` (default 256), **`try_send` only**. On `Full` the
 //! subscriber is dropped and its stream terminated with `RESOURCE_EXHAUSTED`.
 //!
+//! # Ring bounds (CC-44a / §4.3 — closes `OQ-P1-2`)
+//!
+//! Two bounds and the **byte ceiling binds first**: `chain.event_ring_events`
+//! (default 4 096) and `chain.event_ring_bytes` (default 64 MiB). See
+//! [`ring`] module docs for the 33–55 minute resume-window arithmetic.
+//!
 //! # Metrics
 //!
 //! [`Occupancy`] tracks ring length and the deepest subscriber queue depth for
 //! `cc_chain_event_buffer_occupancy` (CC-1C registers the Prometheus family; this
-//! module only maintains the live values).
+//! module only maintains the live values). Bytes are **separate** gauges
+//! (`cc_chain_event_buffer_bytes` / `_bytes_bound`) — not new label values on
+//! the occupancy family.
 
 mod cursor;
 mod fanout;
@@ -59,11 +68,28 @@ pub use ring::{EventRing, StoredEvent};
 /// gRPC `ErrorInfo.domain` for chain cursor errors.
 pub const ERROR_DOMAIN: &str = "eth.chain.v1";
 
-/// Default event-ring capacity (Architecture §7.3).
-pub const DEFAULT_RING_CAPACITY: usize = 1024;
+/// Default event-ring **count** capacity (`chain.event_ring_events`; Architecture §4.3).
+///
+/// Raised from Phase 1's 1 024 so the **byte ceiling binds first** at every
+/// plausible `cgc` (CC-44a / OQ-P1-2).
+pub const DEFAULT_RING_CAPACITY: usize = 4096;
+
+/// Default hard byte ceiling (`chain.event_ring_bytes` = 64 MiB; Architecture §4.3).
+///
+/// 33–55 minutes of resume window at `cgc = 8` (see [`ring`] module docs).
+pub const DEFAULT_RING_BYTES: usize = 64 * 1024 * 1024;
 
 /// Default per-subscriber live-queue capacity (Architecture §7.3).
 pub const DEFAULT_SUBSCRIBER_QUEUE_CAPACITY: usize = 256;
+
+/// Hard cap on a single event's `payload` length before accept into the ring
+/// (SEC-44a-2).
+///
+/// Matches the p2p req/resp uncompressed chunk ceiling (`MAX_PAYLOAD_SIZE` =
+/// 10 MiB). Blocks already fail closed at 8 MiB on the checkpoint path; column
+/// sidecars are far smaller. Anything larger is rejected **before** ring push
+/// so one hostile frame cannot inflate occupancy by tens of megabytes.
+pub const MAX_EVENT_PAYLOAD_BYTES: usize = 10 * 1024 * 1024;
 
 /// Capacity of the command channel into the events task (subscribe / shutdown).
 const COMMAND_CHANNEL_CAPACITY: usize = 64;
@@ -78,7 +104,16 @@ pub struct EventInput {
 }
 
 impl EventInput {
+    /// Whether `payload` is within [`MAX_EVENT_PAYLOAD_BYTES`] (SEC-44a-2).
+    #[must_use]
+    pub fn payload_within_cap(&self) -> bool {
+        self.payload.len() <= MAX_EVENT_PAYLOAD_BYTES
+    }
+
     /// Convenience constructor with empty payload and `BLOCK_IMPORTED` kind.
+    ///
+    /// Production imports use [`Self::block_imported_with_payload`] so the SSZ
+    /// body and verdict discriminator travel with the event (CC-44a / §4.2).
     pub fn block_imported(slot: u64, root: impl Into<Bytes>) -> Self {
         Self {
             slot,
@@ -87,14 +122,104 @@ impl EventInput {
             payload: Bytes::new(),
         }
     }
+
+    /// `BLOCK_IMPORTED` with payload = `[verdict_byte] ‖ SignedBeaconBlock SSZ`.
+    pub fn block_imported_with_payload(
+        slot: u64,
+        root: impl Into<Bytes>,
+        payload: impl Into<Bytes>,
+    ) -> Self {
+        Self {
+            slot,
+            root: root.into(),
+            kind: EventKind::BlockImported,
+            payload: payload.into(),
+        }
+    }
+
+    /// `HEAD` with payload = head slot as 8-byte little-endian.
+    pub fn head(slot: u64, root: impl Into<Bytes>) -> Self {
+        Self {
+            slot,
+            root: root.into(),
+            kind: EventKind::Head,
+            payload: Bytes::copy_from_slice(&slot.to_le_bytes()),
+        }
+    }
+
+    /// `CHAIN_REORG` with payload = 32 B old head root ‖ 8 B common-ancestor slot LE.
+    pub fn chain_reorg(
+        new_head_slot: u64,
+        new_head_root: impl Into<Bytes>,
+        old_head_root: impl Into<Bytes>,
+        common_ancestor_slot: u64,
+    ) -> Self {
+        let old = old_head_root.into();
+        let mut payload = Vec::with_capacity(40);
+        payload.extend_from_slice(old.as_ref());
+        // Pad/truncate to 32 so the layout is fixed even if a short root is passed.
+        if payload.len() < 32 {
+            payload.resize(32, 0);
+        } else if payload.len() > 32 {
+            payload.truncate(32);
+        }
+        payload.extend_from_slice(&common_ancestor_slot.to_le_bytes());
+        Self {
+            slot: new_head_slot,
+            root: new_head_root.into(),
+            kind: EventKind::ChainReorg,
+            payload: Bytes::from(payload),
+        }
+    }
+
+    /// `FINALIZED_CHECKPOINT` with payload = 8 B epoch LE ‖ 32 B state root ‖ SSZ scalars.
+    pub fn finalized_checkpoint(
+        epoch: u64,
+        finalized_root: impl Into<Bytes>,
+        state_root: impl Into<Bytes>,
+        scalars_ssz: impl Into<Bytes>,
+    ) -> Self {
+        let state = state_root.into();
+        let scalars = scalars_ssz.into();
+        let mut payload = Vec::with_capacity(8 + 32 + scalars.len());
+        payload.extend_from_slice(&epoch.to_le_bytes());
+        let sr = state.as_ref();
+        if sr.len() >= 32 {
+            payload.extend_from_slice(&sr[..32]);
+        } else {
+            payload.extend_from_slice(sr);
+            payload.resize(8 + 32, 0);
+        }
+        payload.extend_from_slice(scalars.as_ref());
+        Self {
+            // Slot is not load-bearing for this kind; use epoch start as a stable tag.
+            slot: epoch.saturating_mul(32),
+            root: finalized_root.into(),
+            kind: EventKind::FinalizedCheckpoint,
+            payload: Bytes::from(payload),
+        }
+    }
+
+    /// `DATA_COLUMN` with payload = `DataColumnSidecar` SSZ, verbatim (no decode).
+    pub fn data_column(slot: u64, block_root: impl Into<Bytes>, sidecar_ssz: impl Into<Bytes>) -> Self {
+        Self {
+            slot,
+            root: block_root.into(),
+            kind: EventKind::DataColumn,
+            payload: sidecar_ssz.into(),
+        }
+    }
 }
 
-/// Tunables for the events task. Both bounds are config values (defaults as stated).
+/// Tunables for the events task. Count + byte bounds are config values.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct EventsConfig {
-    /// Ring buffer capacity. Default **1024**.
+    /// Ring buffer entry capacity (`chain.event_ring_events`). Default **4096**.
     #[serde(default = "default_ring_capacity")]
     pub ring_capacity: usize,
+    /// Hard byte ceiling (`chain.event_ring_bytes`). Default **64 MiB**.
+    #[serde(default = "default_ring_bytes")]
+    pub ring_bytes: usize,
     /// Per-subscriber live queue capacity. Default **256**.
     #[serde(default = "default_subscriber_queue_capacity")]
     pub subscriber_queue_capacity: usize,
@@ -107,6 +232,10 @@ fn default_ring_capacity() -> usize {
     DEFAULT_RING_CAPACITY
 }
 
+fn default_ring_bytes() -> usize {
+    DEFAULT_RING_BYTES
+}
+
 fn default_subscriber_queue_capacity() -> usize {
     DEFAULT_SUBSCRIBER_QUEUE_CAPACITY
 }
@@ -115,13 +244,18 @@ impl Default for EventsConfig {
     fn default() -> Self {
         Self {
             ring_capacity: DEFAULT_RING_CAPACITY,
+            ring_bytes: DEFAULT_RING_BYTES,
             subscriber_queue_capacity: DEFAULT_SUBSCRIBER_QUEUE_CAPACITY,
             session_id: None,
         }
     }
 }
 
-/// Live buffer-occupancy gauges for `cc_chain_event_buffer_occupancy` (CC-1C registers).
+/// Live buffer-occupancy values for metrics (CC-1C / CC-44a).
+///
+/// Count gauges feed `cc_chain_event_buffer_occupancy{buffer=ring|subscriber}`;
+/// byte gauges are **separate** series (`cc_chain_event_buffer_bytes` /
+/// `cc_chain_event_buffer_bytes_bound`) — never labels on the occupancy family.
 #[derive(Debug, Default)]
 pub struct Occupancy {
     /// Current number of events retained in the ring.
@@ -130,6 +264,10 @@ pub struct Occupancy {
     deepest_subscriber: AtomicUsize,
     /// Number of active subscribers (`cc_chain_subscribers`).
     subscribers: AtomicUsize,
+    /// Accounted ring occupancy in bytes.
+    bytes: AtomicUsize,
+    /// Hard byte ceiling (constant after spawn).
+    bytes_bound: AtomicUsize,
 }
 
 impl Occupancy {
@@ -145,6 +283,14 @@ impl Occupancy {
         self.subscribers.load(Ordering::Relaxed)
     }
 
+    pub fn bytes(&self) -> usize {
+        self.bytes.load(Ordering::Relaxed)
+    }
+
+    pub fn bytes_bound(&self) -> usize {
+        self.bytes_bound.load(Ordering::Relaxed)
+    }
+
     fn set_ring(&self, n: usize) {
         self.ring.store(n, Ordering::Relaxed);
     }
@@ -156,6 +302,14 @@ impl Occupancy {
     fn set_subscribers(&self, n: usize) {
         self.subscribers.store(n, Ordering::Relaxed);
     }
+
+    fn set_bytes(&self, n: usize) {
+        self.bytes.store(n, Ordering::Relaxed);
+    }
+
+    fn set_bytes_bound(&self, n: usize) {
+        self.bytes_bound.store(n, Ordering::Relaxed);
+    }
 }
 
 /// Handle to a running events task: publish synthetic/core events and subscribe.
@@ -166,6 +320,7 @@ pub struct EventsHandle {
     occupancy: Arc<Occupancy>,
     session_id: u64,
     ring_capacity: usize,
+    ring_bytes: usize,
     subscriber_queue_capacity: usize,
 }
 
@@ -231,18 +386,20 @@ impl EventsHandle {
     /// Spawn the single-threaded events task on the current tokio runtime.
     pub fn spawn(config: EventsConfig) -> Self {
         let ring_capacity = config.ring_capacity.max(1);
+        let ring_bytes = config.ring_bytes.max(1);
         let subscriber_queue_capacity = config.subscriber_queue_capacity.max(1);
         let session_id = config.session_id.unwrap_or_else(random_session_id);
         let occupancy = Arc::new(Occupancy::default());
+        occupancy.set_bytes_bound(ring_bytes);
 
         let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
-        // Inbound producer channel matches the ring default (Architecture §7.3 mpsc(1024)).
+        // Inbound producer channel sized to the ring count bound (Architecture §7.3).
         let (event_tx, event_rx) = mpsc::channel(ring_capacity);
 
         let occupancy_task = Arc::clone(&occupancy);
         tokio::spawn(async move {
             run_events_task(
-                EventRing::new(ring_capacity, session_id),
+                EventRing::new(ring_capacity, ring_bytes, session_id),
                 FanOut::new(subscriber_queue_capacity),
                 cmd_rx,
                 event_rx,
@@ -257,6 +414,7 @@ impl EventsHandle {
             occupancy,
             session_id,
             ring_capacity,
+            ring_bytes,
             subscriber_queue_capacity,
         }
     }
@@ -271,6 +429,10 @@ impl EventsHandle {
 
     pub fn ring_capacity(&self) -> usize {
         self.ring_capacity
+    }
+
+    pub fn ring_bytes(&self) -> usize {
+        self.ring_bytes
     }
 
     pub fn subscriber_queue_capacity(&self) -> usize {
@@ -340,6 +502,7 @@ async fn run_events_task(
                         let result = handle_subscribe(&mut ring, &mut fanout, cursor);
                         occupancy.set_subscribers(fanout.len());
                         occupancy.set_ring(ring.len());
+                        occupancy.set_bytes(ring.bytes());
                         occupancy.set_deepest_subscriber(fanout.deepest_depth());
                         let _ = reply.send(result);
                     }
@@ -360,8 +523,20 @@ async fn run_events_task(
             event = event_rx.recv(), if producer_open => {
                 match event {
                     Some(input) => {
+                        // SEC-44a-2: refuse oversize payloads at the ring edge
+                        // even if a producer skipped the check.
+                        if !input.payload_within_cap() {
+                            tracing::error!(
+                                kind = ?input.kind,
+                                payload_len = input.payload.len(),
+                                cap = MAX_EVENT_PAYLOAD_BYTES,
+                                "rejected oversize event payload at ring (SEC-44a-2)"
+                            );
+                            continue;
+                        }
                         let stored = ring.push(input);
                         occupancy.set_ring(ring.len());
+                        occupancy.set_bytes(ring.bytes());
                         fanout.broadcast(&stored.to_event());
                         occupancy.set_subscribers(fanout.len());
                         occupancy.set_deepest_subscriber(fanout.deepest_depth());
@@ -433,6 +608,7 @@ mod tests {
             ring_capacity: 8,
             subscriber_queue_capacity: 8,
             session_id: Some(1),
+            ring_bytes: usize::MAX,
         });
         let mut sub = h.subscribe(None).await.unwrap();
         h.publish(EventInput::block_imported(
@@ -454,6 +630,7 @@ mod tests {
             ring_capacity: 4,
             subscriber_queue_capacity: 4,
             session_id: Some(42),
+            ring_bytes: usize::MAX,
         });
         h.publish(EventInput::block_imported(1, Bytes::from_static(b"r")))
             .await
