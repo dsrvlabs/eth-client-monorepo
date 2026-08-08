@@ -38,6 +38,13 @@ commit_max_events = 64
 # Flush after this many milliseconds without a flush (default 4000 = 4 s).
 commit_max_latency_ms = 4000
 
+# ── CC-41 hot/cold migration (Architecture §3.2) ─────────────────────────────
+# FINALIZED_CHECKPOINT advances the split every N epochs (Lighthouse
+# `--epochs-per-migration` default **1**). One batch moves one cadence of
+# canonical hot rows into cold and deletes unfinalized siblings (step 2).
+# Override: CC_STORAGE_EPOCHS_PER_MIGRATION=4
+epochs_per_migration = 1
+
 # ── CC-44b single-writer channel bounds (Architecture §1.5) ──────────────────
 # P0 write-behind → writer: 32 slots' commit units; on full **block** (never drop).
 writer_p0_bound = 32

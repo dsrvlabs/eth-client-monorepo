@@ -1259,6 +1259,7 @@ dependencies = [
  "cc-types",
  "ethereum_ssz",
  "ethereum_ssz_derive",
+ "parking_lot",
  "proptest",
  "redb",
  "serde",

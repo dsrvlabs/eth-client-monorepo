@@ -5,7 +5,7 @@
 
 mod redb;
 
-pub use redb::{Batch, Engine, RangeIter, ReadTxn};
+pub use redb::{Batch, BatchPutsDeletes, Engine, RangeIter, ReadTxn};
 
 use std::fmt;
 use std::path::PathBuf;

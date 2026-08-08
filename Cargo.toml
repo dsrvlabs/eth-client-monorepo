@@ -171,6 +171,9 @@ cc-store = { path = "crates/store" }
 # CC-40b engine seam (Architecture §1.1 / §8); V-4: crates.io max 4.x minor as of adoption.
 redb = "4.1.0"
 
+# CC-41 split lock (read_recursive) — Architecture §3.1
+parking_lot = "0.12.5"
+
 [profile.release]
 opt-level = 3
 debug = 1

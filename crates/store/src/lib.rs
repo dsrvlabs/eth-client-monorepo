@@ -10,6 +10,7 @@
 //! - [`blocks`] — hot/cold block tables, by-root index, state roots (CC-43a)
 //! - [`canonical`] — slot → canonical root via parent-root walk at offset 116 (CC-43a)
 //! - [`columns`] — hot/cold column tables, by-root index, DA status (CC-43b)
+//! - [`split`] — hot/cold split record, lock order, migration staging (CC-41)
 //!
 //! This crate depends only on `cc-types` among workspace members; consensus
 //! containers must not appear here (opaque bytes under typed keys).
@@ -34,6 +35,8 @@ pub mod keys;
 pub mod meta;
 /// Schema version, config digest, table registry, [`schema::Store::open`].
 pub mod schema;
+/// Hot/cold split, lock order, migration staging (CC-41 / Architecture §3.1–3.2).
+pub mod split;
 /// Computed block serve-window floor and vestigial-field cross-check (CC-4A).
 pub mod window;
 
@@ -71,10 +74,18 @@ pub use schema::{
     SCHEMA_VERSION, Store, StoreOpenOptions, compute_config_digest, is_registered_table,
     parse_shard_table,
 };
+pub use split::{
+    DEFAULT_EPOCHS_PER_MIGRATION, MAX_MIGRATION_SLOTS_PER_BATCH, MigrationPlan, MigrationStats,
+    SPLIT_KEY, SLOTS_PER_EPOCH as SPLIT_SLOTS_PER_EPOCH, SplitLock, epoch_of_slot, epoch_start_slot,
+    load_split, migrate, migrate_with_commit_fault, migration_needed, migration_window_end,
+    plan_migration, put_split, should_migrate_on_finalization, stage_migration,
+};
 pub use window::{
     BlockServeWindowCfg, WindowConfigError, check_min_epochs_for_block_requests,
     compute_min_epochs_for_block_requests,
 };
+// Re-export the SSZ Split record under the split module's natural name.
+pub use meta::Split;
 
 // Re-export key primitives so `bin/store-bench` (DAG: cc-store only) can build keys.
 pub use cc_types::{Epoch, Root, Slot};

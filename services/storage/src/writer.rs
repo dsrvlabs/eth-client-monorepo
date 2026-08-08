@@ -117,12 +117,29 @@ impl CommitUnit {
     }
 }
 
-/// P1 meta update that must ride a commit (opaque put list).
+/// P1 meta update that must ride a commit (opaque put/delete list).
+///
+/// CC-41 migration submits hot→cold re-keys + Split write as one P1 unit
+/// (Architecture §3.2: P1, not P2 — must not be drop-newest preempted).
 #[derive(Debug)]
 pub(crate) struct MetaUpdate {
     /// `(table, key, value)` puts applied after any reads in the writer.
     pub puts: Vec<(String, Vec<u8>, Vec<u8>)>,
+    /// `(table, key)` deletes (migration step 1 re-key + step 2 unfinalized).
+    pub deletes: Vec<(String, Vec<u8>)>,
     pub done: Option<oneshot::Sender<Result<(), WriterError>>>,
+}
+
+impl MetaUpdate {
+    /// Empty update shell (tests / construction).
+    #[must_use]
+    pub(crate) fn empty() -> Self {
+        Self {
+            puts: Vec::new(),
+            deletes: Vec::new(),
+            done: None,
+        }
+    }
 }
 
 /// P2 background chunk (prune / backfill / snapshot piece).
@@ -187,6 +204,37 @@ impl WriterHandle {
             .send(update)
             .await
             .map_err(|_| WriterError::ShutDown)
+    }
+
+    /// Blocking P1 submit (non-async producers / tests).
+    pub(crate) fn blocking_submit_p1(&self, update: MetaUpdate) -> Result<(), WriterError> {
+        self.p1.blocking_send(update).map_err(|_| WriterError::ShutDown)
+    }
+
+    /// Submit P1 and wait for the writer to **commit** (or fail).
+    ///
+    /// CC-41: migration advances the in-memory split only after this returns `Ok`.
+    pub(crate) async fn submit_p1_committed(
+        &self,
+        mut update: MetaUpdate,
+    ) -> Result<(), WriterError> {
+        let (done_tx, done_rx) = oneshot::channel();
+        update.done = Some(done_tx);
+        self.submit_p1(update).await?;
+        done_rx.await.map_err(|_| WriterError::ShutDown)?
+    }
+
+    /// Blocking P1 commit wait (tests / sync migrator paths).
+    pub(crate) fn blocking_submit_p1_committed(
+        &self,
+        mut update: MetaUpdate,
+    ) -> Result<(), WriterError> {
+        let (done_tx, done_rx) = oneshot::channel();
+        update.done = Some(done_tx);
+        self.blocking_submit_p1(update)?;
+        done_rx
+            .blocking_recv()
+            .map_err(|_| WriterError::ShutDown)?
     }
 
     /// Submit a P2 background chunk. On full: **drop newest** and count.
@@ -614,17 +662,24 @@ fn commit_meta(
     let mut bytes = 0u64;
     for (table, key, value) in &update.puts {
         // Idempotent put: drop identical; fatal on different bytes for content tables.
+        // Index / meta overwrites (block_slot_by_root region, Split) are allowed.
         let rt = engine.read()?;
         match rt.get(table, key)? {
-            Some(existing) if existing.as_slice() == value.as_slice() => continue,
+            Some(existing) if existing.as_slice() == value.as_slice() => {
+                drop(rt);
+                continue;
+            }
             Some(_) if is_content_table(table) => {
                 return fatal_key_collision(metrics, table, value);
             }
             _ => {}
         }
+        drop(rt);
         batch.put(table, key, value);
         bytes = bytes.saturating_add(value.len() as u64);
-        drop(rt);
+    }
+    for (table, key) in &update.deletes {
+        batch.delete(table, key);
     }
     engine.commit(batch)?;
     metrics

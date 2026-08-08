@@ -27,6 +27,7 @@ use cc_proto::error_info_from_status;
 use cc_store::columns::{COLUMN_INDEX_SSZ_OFFSET, column_index_at_offset};
 use cc_store::meta::WriteCursor;
 use cc_store::{DaStatus, Root, Slot};
+// Root used by FINALIZED_CHECKPOINT → migration (CC-41).
 use futures::StreamExt;
 use tokio::sync::watch;
 use tokio::time::{MissedTickBehavior, interval};
@@ -35,6 +36,9 @@ use tonic::{Code, Status};
 use tracing::{debug, error, info, warn};
 
 use crate::metrics::{ReconnectReason, StorageMetrics};
+use crate::migrate::{
+    Migrator, maybe_migrate_on_finalized, parse_finalized_payload, root_from_event,
+};
 use crate::writer::{
     CommitUnit, StagedBlock, StagedColumn, StagedForkChoiceScalars, WriterError, WriterHandle,
     observe_reconnect,
@@ -155,18 +159,30 @@ impl Accumulator {
 ///
 /// Returns `(join, respawn_count)`. Production ignores the counter; tests assert
 /// it increments when the inner task panics.
+///
+/// `migrator` is the CC-41 hot/cold split driver; `None` disables migration
+/// (tests that only exercise the stream).
 pub(crate) fn spawn_write_behind(
     cfg: WriteBehindConfig,
     writer: WriterHandle,
     metrics: StorageMetrics,
     initial_cursor: Option<WriteCursor>,
     shutdown: watch::Receiver<bool>,
+    migrator: Option<Arc<Migrator>>,
 ) -> (tokio::task::JoinHandle<()>, Arc<AtomicU64>) {
     let respawns = Arc::new(AtomicU64::new(0));
     let respawns_task = Arc::clone(&respawns);
     let join = tokio::spawn(async move {
-        supervise_write_behind(cfg, writer, metrics, initial_cursor, shutdown, respawns_task)
-            .await;
+        supervise_write_behind(
+            cfg,
+            writer,
+            metrics,
+            initial_cursor,
+            shutdown,
+            respawns_task,
+            migrator,
+        )
+        .await;
     });
     (join, respawns)
 }
@@ -178,6 +194,7 @@ async fn supervise_write_behind(
     initial_cursor: Option<WriteCursor>,
     mut shutdown: watch::Receiver<bool>,
     respawns: Arc<AtomicU64>,
+    migrator: Option<Arc<Migrator>>,
 ) {
     let mut backoff = cfg.backoff_initial;
     loop {
@@ -189,8 +206,10 @@ async fn supervise_write_behind(
         let metrics_i = metrics.clone();
         let cursor_i = initial_cursor;
         let shutdown_i = shutdown.clone();
+        let migrator_i = migrator.clone();
         let inner = tokio::spawn(async move {
-            run_write_behind(cfg_i, writer_i, metrics_i, cursor_i, shutdown_i).await;
+            run_write_behind(cfg_i, writer_i, metrics_i, cursor_i, shutdown_i, migrator_i)
+                .await;
         });
         match inner.await {
             Ok(()) => break, // clean shutdown from run_write_behind
@@ -225,6 +244,7 @@ pub(crate) async fn run_write_behind(
     metrics: StorageMetrics,
     mut durable_cursor: Option<WriteCursor>,
     mut shutdown: watch::Receiver<bool>,
+    migrator: Option<Arc<Migrator>>,
 ) {
     let mut backoff = cfg.backoff_initial;
     info!(
@@ -243,6 +263,7 @@ pub(crate) async fn run_write_behind(
             &metrics,
             durable_cursor.as_ref(),
             &mut shutdown,
+            migrator.as_deref(),
         )
         .await
         {
@@ -446,6 +467,7 @@ async fn run_session(
     metrics: &StorageMetrics,
     durable_cursor: Option<&WriteCursor>,
     shutdown: &mut watch::Receiver<bool>,
+    migrator: Option<&Migrator>,
 ) -> SessionEnd {
     let channel = match dial(&cfg.chain_uri, cfg.connect_timeout).await {
         Ok(c) => c,
@@ -601,6 +623,44 @@ async fn run_session(
                             }
                             Err(e) => {
                                 warn!(error = %e, seq = ev.seq, "skip event");
+                            }
+                        }
+
+                        // CC-41: FINALIZED_CHECKPOINT drives hot/cold migration
+                        // (Architecture §3.2). Flush any open P0 unit first so no
+                        // uncommitted hot rows for slots ≤ new split land after
+                        // the split advances (I-split-fin write-side).
+                        if ev.kind() == EventKind::FinalizedCheckpoint
+                            && let Some(mig) = migrator
+                        {
+                            if let Some(unit) = take_flush(&mut acc, session_id)
+                                && let Err(e) =
+                                    flush_committed(writer, unit, &mut last_flushed).await
+                            {
+                                error!(
+                                    error = %e,
+                                    "P0 flush before migration failed"
+                                );
+                            }
+                            let finalized_root = root_from_event(&ev.root);
+                            if let Some((epoch, state_root)) = parse_finalized_payload(&ev.payload)
+                            {
+                                maybe_migrate_on_finalized(
+                                    mig,
+                                    epoch,
+                                    finalized_root,
+                                    state_root,
+                                )
+                                .await;
+                            } else {
+                                let epoch = ev.slot / 32;
+                                maybe_migrate_on_finalized(
+                                    mig,
+                                    epoch,
+                                    finalized_root,
+                                    Root::default(),
+                                )
+                                .await;
                             }
                         }
 

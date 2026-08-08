@@ -28,6 +28,8 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 # Post-pass invariant logging (CC-4H); no workspace crate edge.
 tracing = { workspace = true }
+# CC-41 split lock — parking_lot::RwLock::read_recursive (Architecture §3.1).
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

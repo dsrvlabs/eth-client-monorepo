@@ -113,6 +113,42 @@ impl Batch {
     pub fn overflowed(&self) -> bool {
         self.overflowed
     }
+
+    /// Drain put/delete ops for submission through the single writer (CC-41).
+    ///
+    /// `DeleteRange` is expanded only if present — migration stages discrete deletes.
+    /// Returns [`StoreError::Limit`] if the batch overflowed [`MAX_BATCH_OPS`].
+    pub fn into_puts_and_deletes(self) -> Result<BatchPutsDeletes, StoreError> {
+        if self.overflowed {
+            return Err(StoreError::limit(format!(
+                "batch exceeds MAX_BATCH_OPS ({MAX_BATCH_OPS})"
+            )));
+        }
+        let mut puts = Vec::new();
+        let mut deletes = Vec::new();
+        for op in self.ops {
+            match op {
+                Op::Put { table, key, value } => puts.push((table, key, value)),
+                Op::Delete { table, key } => deletes.push((table, key)),
+                Op::DeleteRange { table, lo, hi } => {
+                    return Err(StoreError::Config(format!(
+                        "into_puts_and_deletes does not expand DeleteRange on {table} [{lo:?},{hi:?}); \
+                         stage discrete deletes for writer submission"
+                    )));
+                }
+            }
+        }
+        Ok(BatchPutsDeletes { puts, deletes })
+    }
+}
+
+/// Put/delete lists drained from a [`Batch`] for writer submission (CC-41).
+#[derive(Debug, Default)]
+pub struct BatchPutsDeletes {
+    /// `(table, key, value)` puts.
+    pub puts: Vec<(String, Vec<u8>, Vec<u8>)>,
+    /// `(table, key)` deletes.
+    pub deletes: Vec<(String, Vec<u8>)>,
 }
 
 /// Concrete engine. Single writer (§1.5); reads are MVCC snapshots.

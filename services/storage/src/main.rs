@@ -7,6 +7,7 @@
 //! CC-44b: single writer + write-behind task spawns (append-only here).
 
 mod metrics;
+mod migrate;
 mod write_behind;
 mod writer;
 
@@ -27,8 +28,10 @@ use serde::Deserialize;
 use tokio::sync::watch;
 use tonic::service::Routes;
 use tonic::{Request, Response, Status};
+use migrate::{MigrationConfig, Migrator};
 use write_behind::{WriteBehindConfig, spawn_write_behind};
 use writer::{WriterBounds, WriterFaults, load_write_cursor, spawn_writer};
+use cc_store::SplitLock;
 
 /// Process name and config slug (`config/storage.toml`, `CC_STORAGE_*`).
 const SERVICE: &str = "storage";
@@ -91,6 +94,9 @@ struct StorageConfig {
     /// (Phase 0 compose without a data volume). Default **true**.
     #[serde(default = "default_enable_write_path")]
     enable_write_path: bool,
+    /// CC-41: hot/cold migration cadence in epochs (default **1**).
+    #[serde(default = "default_epochs_per_migration")]
+    epochs_per_migration: u64,
 }
 
 /// `storage.retention_override` — non-spec retention windows for the discharging
@@ -141,6 +147,9 @@ fn default_writer_p2_bound() -> usize {
 }
 fn default_enable_write_path() -> bool {
     true
+}
+fn default_epochs_per_migration() -> u64 {
+    migrate::DEFAULT_EPOCHS_PER_MIGRATION
 }
 
 impl StorageConfig {
@@ -196,6 +205,12 @@ impl StorageConfig {
             commit_max_events: self.commit_max_events.max(1),
             commit_max_latency: Duration::from_millis(self.commit_max_latency_ms.max(1)),
             ..WriteBehindConfig::default()
+        }
+    }
+
+    fn migration_config(&self) -> MigrationConfig {
+        MigrationConfig {
+            epochs_per_migration: self.epochs_per_migration.max(1),
         }
     }
 }
@@ -305,6 +320,24 @@ mod config_tests {
             text.contains("this value IS the loss bound"),
             "storage.toml must carry the §4.4 loss-bound comment verbatim-ish"
         );
+    }
+
+    /// CC-41: `epochs_per_migration = 1` default in storage.toml.
+    #[test]
+    fn epochs_per_migration_default_is_one() {
+        let _g = env_lock();
+        unsafe {
+            std::env::remove_var("CC_STORAGE_EPOCHS_PER_MIGRATION");
+        }
+        let path = storage_toml_path();
+        let cfg = cc_config::load_from::<StorageConfig>("storage", &path)
+            .unwrap_or_else(|e| panic!("load {}: {e}", path.display()));
+        assert_eq!(
+            cfg.epochs_per_migration, 1,
+            "Lighthouse --epochs-per-migration default"
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("epochs_per_migration"));
     }
 }
 
@@ -441,6 +474,20 @@ async fn main() -> anyhow::Result<()> {
                     shutdown_rx.clone(),
                     true, // process-fatal on panic (§1.5); write-behind is not
                 );
+                // CC-41: split lock + migrator (FINALIZED_CHECKPOINT cadence).
+                let split = Arc::new(
+                    SplitLock::load(&engine).unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "split load failed; defaulting to zero");
+                        SplitLock::new(cc_store::Split::default())
+                    }),
+                );
+                let migrator = Arc::new(Migrator::new(
+                    Arc::clone(&split),
+                    Arc::clone(&engine),
+                    writer.clone(),
+                    cfg.migration_config(),
+                    storage_metrics.clone(),
+                ));
                 // Write-behind: respawn-on-panic with backoff (counter-example to writer).
                 let (_wb, _wb_respawns) = spawn_write_behind(
                     cfg.write_behind_config(),
@@ -448,14 +495,17 @@ async fn main() -> anyhow::Result<()> {
                     storage_metrics.clone(),
                     initial_cursor,
                     shutdown_rx,
+                    Some(migrator),
                 );
                 tracing::info!(
                     data_dir = %cfg.data_dir.display(),
                     commit_slots = cfg.commit_slots,
-                    "writer + write-behind spawned"
+                    epochs_per_migration = cfg.epochs_per_migration,
+                    "writer + write-behind + migrator spawned"
                 );
-                // Hold engine for process lifetime (writer holds Arc).
+                // Hold engine / split for process lifetime (writer holds Arc).
                 std::mem::forget(engine);
+                std::mem::forget(split);
             }
             Err(e) => {
                 // Fail closed on open errors when write path is enabled.
