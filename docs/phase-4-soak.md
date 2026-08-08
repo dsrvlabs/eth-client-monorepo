@@ -578,15 +578,162 @@ PASS. No fake discharge.
 ## Clause 3 — Hoodi confirmation (non-discharging)
 
 **Owner:** CC-4Cd  
-**Status:** empty skeleton (Amendment 5 / CC-4Cb). Row marked
-`confirmation, non-discharging`. Must not be merged with the compressed-retention
-discharging row.
+**Date:** 2026-08-08  
+**Venue:** `hoodi`  
+**Profile:** production retention (no `retention_override`; columns floor
+`MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` = **4 096** epochs ≈ **18.2 d**;
+blocks floor computed / vestigial `MIN_EPOCHS_FOR_BLOCK_REQUESTS` = **33 024**
+epochs ≈ **146.8 d** — see `docs/serve-windows.md`)  
+**Instrument:** `bash scripts/storage-plateau.sh` + metric scrapes over ≥ 7 days +
+`bash scripts/soak-report.sh --phase 4`  
+**Covers:** proof clause 3 — **confirmation, non-discharging** only; §10.4 Hoodi
+half; **D-10**, **D-11**
+
+### Status
+
+**`NOT_RUN` — clause 3 Hoodi confirmation is not recorded as a live week.**
+
+A ≥ 7-day exclusive Hoodi stack run was **not** executed in this session. No bar
+numbers are invented. This row is **`confirmation, non-discharging`**: it must
+**not** be merged with `## Clause 3 — compressed-retention plateau (discharging)`
+(`CC-4Cc`, venue `self-devnet-compressed`). Clause 3 already has a discharging
+path at the compressed venue; **a failure on this Hoodi confirmation row is still
+a blocker** when the week is eventually run — confirmation debt is not optional
+window-dressing.
+
+**Statement in words (correct outcome at real retention):** over a seven-day
+Hoodi window the production horizons (columns ≈ **18.2 d**, blocks ≈ **146.8 d**)
+are far longer than the run. **A pruner deleting almost nothing over seven days
+is the correct outcome** at real retention. Plateau slope and prune≈ingest bars
+are expected to look quiet; that is not a pass-by-inactivity on the compressed
+discharging row — it is the confirmation that production retention does not
+mis-prune under real data volumes.
+
+### Tree facts recorded at open (not a run)
+
+| Field | Value | Source |
+|---|---|---|
+| **Git SHA (tree at record)** | `1f5f648401a92524964b14ebb77935c856d5d818` | `git rev-parse HEAD` on `feature/cc-4cd-hoodi-week-and-probes` @ 2026-08-08 |
+| **Engine** | redb **4.1.0** | `Cargo.lock` `name = "redb"` / `version = "4.1.0"`; `docs/storage-engine.md` |
+| **Durability (production default)** | **`immediate`** (1PC+C) | `config/storage.toml` → `durability = "immediate"` |
+| **Retention** | production floors (no override) | columns ≈ 18.2 d; blocks ≈ 146.8 d (`docs/serve-windows.md`) |
+| **Docker compose** | **empty** — no exclusive Hoodi stack | `docker compose ps` @ 2026-08-08 |
+
+### Entry checks (offline / residual)
+
+#### V-2 — fork / BPO boundary (recorded offline 2026-08-08)
+
+| Check | Result |
+|---|---|
+| **Date (UTC)** | 2026-08-08 |
+| **Sources** | (1) live `https://raw.githubusercontent.com/eth-clients/hoodi/main/metadata/config.yaml`; (2) in-tree `crates/types/tests/fixtures/hoodi-config.yaml` |
+| **`GLOAS_FORK_EPOCH`** | **absent** on both sources — no Gloas fork scheduled in Hoodi metadata as of this read |
+| **Scheduled forks present** | `ELECTRA_FORK_EPOCH=2048`, `FULU_FORK_EPOCH=50688` (both long past relative to ~epoch 114 555 on 2026-08-08) |
+| **`BLOB_SCHEDULE` BPO steps** | `EPOCH: 52480 → MAX_BLOBS_PER_BLOCK 15`; `EPOCH: 54016 → MAX_BLOBS_PER_BLOCK 21` (both **already past**, ~2025-11; not inside a would-be run window started today) |
+| **Would-be ≥ 7-day window if started today** | **No fork and no BPO boundary falls inside** a 7-day window opened on 2026-08-08 given the sources above |
+| **Operator duty** | **Re-check V-2 at real entry** on the exclusive machine the day the week opens — metadata can change; this offline read does not freeze the network |
+
+#### V-5 — Hoodi block-size / blob-density sample vs 13.039 blobs/slot
+
+| Check | Result |
+|---|---|
+| **Status** | **`V-5: NOT_RUN`** |
+| **Planning reference density** | **13.039 blobs/slot** (architecture / disk-budget planning figure — **not** re-measured here) |
+| **Live sample** | **none** — no exclusive Hoodi stack; no live beacon RPC / blob-density scrape from this agent session |
+| **Residual** | Operator must sample live density at real entry. **If density moved materially from 13.039**, state the disk-budget consequence in this section at fill-in. **Do not invent a density number.** |
+
+### Procedure checklist (for the live ≥ 7-day Hoodi week)
+
+Operator checklist. Every box must be true for a confirmation write-up; this
+session left them unchecked.
+
+- [ ] **Exclusive machine (D-11):** Phase 4 Hoodi stack only — no second stack, no
+      builds, **no `bin/store-bench`**, no sleep / reboot / OS update for the week.
+- [ ] **V-2 re-read same day** the week opens; paste fork / BPO table; confirm no
+      boundary inside the planned window (or land CC-2A / move window).
+- [ ] **V-5 live density sample** vs 13.039; record measured blobs/slot and any
+      disk-budget delta.
+- [ ] **Production retention** only — **never** `retention_override` / never overlay
+      `devnet/retention-compressed.toml` on Hoodi (CC-4D guard).
+- [ ] **≥ 7 continuous days** with head-following stack; no void conditions
+      (writer panic, divergence/key_collision, code redeploy, `down -v`).
+- [ ] **Four bars sampled** (same expressions as compressed row, at real volumes):
+      plateau slope, prune≈ingest, deadline exceeded rate, hot-path p99 delta —
+      **expect near-zero prune** (correct at 18.2 d / 146.8 d horizons).
+- [ ] **Report row:** `bash scripts/soak-report.sh --phase 4` emits venue
+      **`hoodi`**, clause 3 confirmation row with measured numbers and verdict
+      **`confirmation, non-discharging`** (never merged with compressed row).
+- [ ] **Docs-only confirmation commit:** touches **only** `docs/phase-4-soak.md`
+      (`git show --stat`). A code change in that commit voids the week.
+
+### Four bars (required — empty until measured)
+
+| Bar | Metric / expression | Threshold (confirmation) | Measured | Verdict |
+|---|---|---|---|---|
+| **1** Plateau / slope over week | `storage-plateau.sh` / `cc_storage_bytes_total` slope | recorded; quiet growth expected at real horizons | **NOT_RUN** | **NOT_RUN** |
+| **2** Prune vs ingest | pruned ÷ written over window | recorded; **near-zero prune is correct** | **NOT_RUN** | **NOT_RUN** |
+| **3** Prune deadlines | `cc_storage_prune_deadline_exceeded_total` / pass count | **&lt; 1 %** (or justified quiet) | **NOT_RUN** | **NOT_RUN** |
+| **4** Hot path | p99 ImportBlock→persisted during any prune vs baseline | within **10 %** | **NOT_RUN** | **NOT_RUN** |
+
+**Clause 3 (Hoodi confirmation) overall:** **`NOT_RUN` — confirmation, non-discharging; not live-recorded.**
+
+### Horizon / window fields (fill after live week)
+
+| Field | Value |
+|---|---|
+| Run start (UTC) | **NOT_RUN** |
+| Run end (UTC) | **NOT_RUN** |
+| Continuous days | **NOT_RUN** (bar ≥ 7) |
+| Column horizon (production ≈ 18.2 d) | **not crossed in a 7-day week** (expected) |
+| Block horizon (production ≈ 146.8 d) | **not crossed in a 7-day week** (expected) |
+| Machine exclusive attestation | **NOT_RUN** |
+| Live durability used | **NOT_RUN** (tree default `immediate`; re-record from live config) |
+| Live git SHA of binaries | **NOT_RUN** (record above is tree-at-open only) |
+
+### Explicit non-discharge / non-confirmation
+
+**This Hoodi confirmation row is not live-recorded.** It does **not** discharge
+clause 3 (discharge is **CC-4Cc** at `self-devnet-compressed`). It also does
+**not** yet confirm production retention under real Hoodi volumes. When the week
+is run, a failing confirmation bar is a **blocker** even though the compressed
+discharging path exists. This section currently holds **tree facts + offline V-2
++ V-5 residual + procedure only**. No PASS. No fake week.
+
+### Residual blockers (named; do not invent PASS)
+
+| Residual | Detail |
+|---|---|
+| **No exclusive Hoodi stack** | `docker compose ps` empty in this agent session; D-11 exclusive machine not available for ≥ 7 days |
+| **No live metric series** | no `cc_storage_bytes_total` / prune / commit series spanning a week |
+| **V-5 density** | no live beacon sample vs 13.039 blobs/slot |
+| **Week wall-clock** | ≥ 7 continuous days not started |
 
 ## Clauses 4, 5, 6, 7 — Hoodi
 
 **Owner:** CC-4Cd  
-**Status:** empty skeleton (Amendment 5 / CC-4Cb). Full-window serve-probe
-(blocks + columns), negative side, and advertisement=served.
+**Date:** 2026-08-08  
+**Venue:** `hoodi` (clause 6 also has a self-devnet early-falsification half owned
+by **CC-4F**; clause 7 restart half owned by **CC-45c**)  
+**Instrument:** `bin/serve-probe` (`cc-serve-probe`) + metric scrapes +
+`bash scripts/soak-report.sh --phase 4`  
+**Covers:** proof clauses 4 (full-window blocks), 5 (full-window columns), 6
+(negative side), 7 (advertisement = served)
+
+### Status (session)
+
+**All four live Hoodi halves are `NOT_RUN`.** This session has no exclusive Hoodi
+stack, no dialable peer multiaddrs for full-window serve-probe, and no week-long
+eas scrape series. Tree mechanisms and unit paths exist; **no PASS is invented.**
+
+### Tree facts recorded at open (not a run)
+
+| Field | Value | Source |
+|---|---|---|
+| **Git SHA (tree at record)** | `1f5f648401a92524964b14ebb77935c856d5d818` | `git rev-parse HEAD` on `feature/cc-4cd-hoodi-week-and-probes` @ 2026-08-08 |
+| **Engine** | redb **4.1.0** | `Cargo.lock` |
+| **Durability default** | **`immediate`** | `config/storage.toml` |
+| **serve-probe binary** | **ready** (`bin/serve-probe`, CC-4B) — own codec; dials given multiaddr | package `cc-serve-probe` |
+| **Docker compose** | **empty** | `docker compose ps` |
 
 ### CC-47b — block backfill mechanism + run (g) residual
 
@@ -618,6 +765,131 @@ run is recorded here (machine exclusive / D-11, git SHA, durability), clause 4
 remains **not discharged**. The clause is rescheduled never weakened if V-9 > 24 h
 (`M4.5b`).
 
+### Clause 4 — full-window block serve (Hoodi)
+
+**Status:** **`NOT_RUN` — not discharged.**
+
+| Field | Value |
+|---|---|
+| Bar | `serve-probe` positive **blocks** over full window: zero `ResourceUnavailable`; `eas ≤ start_slot(current_epoch − 33024)` (computed floor) |
+| Mechanism residual | CC-47b unit path above — ready; live backfill + probe not run |
+| Live peer / stack | **none** |
+| Verdict | **NOT_RUN** |
+
+**Explicit non-discharge:** clause 4 is not discharged until an exclusive Hoodi
+run completes full-window block serve-probe with the bars above and the report
+row shows measured numbers (not `NOT_RUN`).
+
+### Clause 5 — full-window column serve (Hoodi)
+
+**Status:** **`NOT_RUN` — not discharged.**
+
+| Field | Value |
+|---|---|
+| Bar | `serve-probe` positive **columns** for 1000 slots (or `--full-window`): full requested ∩ held set per block; zero `ResourceUnavailable` |
+| Instrument readiness | **`bin/serve-probe` ready from CC-4B** (`--slots 1000` / `--full-window`, `--columns …`, `--json`) |
+| Live peer / stack | **none** — no exclusive Hoodi stack; no dialable multiaddr list in this session (see also `## OQ-1`) |
+| Verdict | **NOT_RUN** |
+
+**Explicit non-discharge:** clause 5 is not discharged until live full-window
+column serve-probe JSON is recorded and `soak-report.sh` emits measured PASS
+cells. Binary readiness alone does not discharge.
+
+### Clause 6 — negative side (Hoodi half)
+
+**Status:** **`NOT_RUN` — Hoodi half not discharged.**
+
+| Field | Value |
+|---|---|
+| Bar | below `eas`: **100 slots**; every response code **3 `ResourceUnavailable`**; **zero empty successes**; blocks + columns × by-range + by-root |
+| Hoodi half | **NOT_RUN** — no live peer / stack |
+| Self-devnet half | residual stays **CC-4F** (`clause6.self_devnet` early falsification at M4.3) — see soak-report row |
+| Local substitute | CC-4B `negative_stub` test names empty-success-below-window (codec criterion only — not Hoodi discharge) |
+| Verdict | **NOT_RUN** |
+
+**Explicit non-discharge:** clause 6 Hoodi half is not discharged until live
+serve-probe negative results against a real Hoodi peer are pasted here. The
+self-devnet early-falsification half is **not** claimed by this issue.
+
+### Clause 7 — advertisement equals served
+
+**Status:** **`NOT_RUN` — not discharged.**
+
+| Field | Value |
+|---|---|
+| Continuous two-series bar | `cc_storage_earliest_available_slot == cc_p2p_earliest_available_slot` at **every** scrape over the Hoodi week; scrape count recorded; **mismatch count 0** |
+| Restart half | **CC-45c residual** — clause 7(b)/(c) across the 20/20 SIGKILL set (`## Clause 1 — restart trials`) |
+| Live scrape series | **none** |
+| Verdict | **NOT_RUN** |
+
+**Explicit non-discharge:** clause 7 is not discharged until (a) week-long
+two-series agreement is recorded with scrape count / mismatch 0, and (b) the
+restart half either lands under CC-45c or is explicitly cross-linked with its
+own measured series. Neither half was run here.
+
+### Procedure checklist (operator fill-in)
+
+- [ ] Exclusive Hoodi stack up; head-following; production retention; D-11 clean.
+- [ ] V-2 / V-5 re-recorded at entry (see Clause 3 Hoodi section).
+- [ ] Clause 4/5: full-window (or 1000-slot) serve-probe against live peer(s);
+      JSON under `.data/` or `/tmp`; zero ResourceUnavailable on positive side.
+- [ ] Clause 6: `--below 100` (or equivalent); every code 3; zero empty success.
+- [ ] Clause 7: scrape both eas gauges on a fixed cadence for the whole week;
+      mismatch counter 0; paste scrape count.
+- [ ] `bash scripts/soak-report.sh --phase 4 --serve-probe-json …` (and harness
+      if used) pastes measured rows into `## Clause table`.
+- [ ] Docs-only discharge/confirmation commit touches only this file.
+
+### Command shapes for operator fill-in
+
+```text
+# Positive full-window / 1000-slot (clauses 4 + 5)
+cc-serve-probe \
+  --peer '/ip4/<host>/tcp/<port>/p2p/<peer_id>' \
+  --fork-digest 0x<4-byte-hex> \
+  --slots 1000 \
+  --columns 0,1,2,3 \
+  --json /tmp/serve-probe-hoodi-positive.json
+
+# Or ceiling sample across [eas, head]:
+cc-serve-probe \
+  --peer '/ip4/<host>/tcp/<port>/p2p/<peer_id>' \
+  --fork-digest 0x<4-byte-hex> \
+  --full-window \
+  --columns 0,1,2,3 \
+  --json /tmp/serve-probe-hoodi-full-window.json
+
+# Negative side (clause 6) — 100 slots below eas
+cc-serve-probe \
+  --peer '/ip4/<host>/tcp/<port>/p2p/<peer_id>' \
+  --fork-digest 0x<4-byte-hex> \
+  --slots 1000 \
+  --below 100 \
+  --columns 0,1,2,3 \
+  --json /tmp/serve-probe-hoodi-negative.json
+
+# Report (paste into ## Clause table)
+bash scripts/soak-report.sh --phase 4 \
+  --serve-probe-json /tmp/serve-probe-hoodi-positive.json \
+  --out /tmp/phase4-clause-table.md
+```
+
+`--fork-digest` is required and never derived. Record `agent_version`, advertised
+`earliest_available_slot`, and block/column results just above it (same discipline
+as OQ-1).
+
+### Residual blockers (named; do not invent PASS)
+
+| Residual | Detail | Owner |
+|---|---|---|
+| **No exclusive Hoodi stack** | empty `docker compose ps`; D-11 not satisfied | CC-4Cd live |
+| **No dialable multiaddrs** | OQ-1 still NOT_RUN; serve-probe has no discv5 path | CC-4B / operator |
+| **Clause 4 live backfill + probe** | mechanism unit-ready; live run absent | CC-47b residual + CC-4Cd |
+| **Clause 5 live columns probe** | binary ready; live absent | CC-4Cd |
+| **Clause 6 Hoodi half** | live absent; self-devnet half CC-4F | CC-4Cd / CC-4F |
+| **Clause 7 week series** | no scrapes; restart half CC-45c | CC-4Cd / CC-45c |
+| **Week ≥ 7 days** | not started | CC-4Cd |
+
 ## CC-4G — cgc rehearsal
 
 **Owner:** CC-4G  
@@ -626,31 +898,110 @@ remains **not discharged**. The clause is rescheduled never weakened if V-9 > 24
 ## Machine and environment
 
 **Owner:** CC-4Cd  
-**Status:** empty skeleton (Amendment 5 / CC-4Cb). Machine spec + V-6 `df -h`.
+**Date:** 2026-08-08  
+**Status:** tree-time host facts recorded; **no exclusive Hoodi stack**; **no
+second machine**.
+
+### Host at record (this agent / dev machine)
+
+| Field | Value | Source |
+|---|---|---|
+| **Date (UTC)** | 2026-08-08T15:24:28Z | `date -u` |
+| **Arch** | **arm64** (Apple Silicon) | `uname -m` |
+| **CPU** | Apple M4 Pro | `sysctl machdep.cpu.brand_string` |
+| **ncpu** | 14 | `sysctl hw.ncpu` |
+| **memsize** | **24 GB** (`25769803776` bytes) | `sysctl hw.memsize` |
+| **Workspace volume (`df -h`)** | `/dev/disk3s5` **926 Gi** total, **659 Gi** used, **230 Gi** avail, **75 %** — mounted `/System/Volumes/Data` | `df -h` on worktree (V-6) |
+| **Docker compose** | **empty** (header only; no services) | `docker compose ps` |
+| **Exclusive Hoodi stack** | **no** | same |
+| **Second machine existed? (A-P4-7)** | **no** — single agent/dev machine; **M4.6 waits for exclusive second machine or after week** | operator / issue A-P4-7 |
+
+### §10.6 additional rows (pointers + machine facts)
+
+Nine named items, each traceable. This issue records what it can measure and
+**points** at sibling sections for the rest — it does **not** re-measure them.
+
+| # | §10.6 item | Status / pointer |
+|---|---|---|
+| 1 | **Machine spec** | **this section** — Apple M4 Pro, arm64, 14 ncpu, 24 GB RAM @ 2026-08-08 |
+| 2 | **V-6 `df -h`** | **this section** — 926 Gi / 659 Gi used / 230 Gi avail (75 %) on workspace volume |
+| 3 | **Three snapshot terms** | pointer → `## Snapshot terms` (**CC-42**) — replay / serialize+write / load measured |
+| 4 | **Validator-set size** | pointer → `## Snapshot terms` — **1 455 439** validators; BeaconState **205 205 311** bytes @ slot 3649472 |
+| 5 | **Both falsifier layouts** | pointer → `## Engine falsifier — both layouts` (**CC-40b** skeleton / residual) |
+| 6 | **OQ-1 results** | pointer → `## OQ-1 — foreign-peer probe` (**NOT_RUN**) |
+| 7 | **Durability per crash-resume** | pointer → `## Clause 1 — restart trials` (**NOT_RUN**; both `immediate` and `paranoid` required on live set) |
+| 8 | **Measured BeaconState byte count** | pointer → `## Snapshot terms` — **205 205 311** bytes uncompressed SSZ |
+| 9 | **Second machine (A-P4-7)** | **this section** — **no**; M4.6 waits for exclusive second machine or after week |
 
 ## Run record
 
 **Owner:** CC-4Cb skeleton; numbers **CC-4Cd**  
-**Status:** skeleton only — it measures the runs; it is not a run (D-10).
+**Status:** **`NOT_RUN` for live numbers** — instrument path recorded; owners
+named. It measures the runs; it is not a run (D-10).
 
 | Field | Value |
 |---|---|
 | Phase | 4 |
 | Instrument | `bash scripts/soak-report.sh --phase 4` |
-| Plateau run | **CC-4Cc** (not this issue) |
-| Hoodi week | **CC-4Cd** (not this issue) |
-| Restart trials | **CC-45c** (not this issue) |
-| Git SHA | _TBD at fill-in_ |
-| Start / end | _TBD_ |
-| Venue(s) | closed set per clause row |
+| Plateau run (discharging clause 3) | **CC-4Cc** — `## Clause 3 — compressed-retention plateau` — **NOT_RUN** |
+| Hoodi week (confirmation clause 3 + probes) | **CC-4Cd** — this section's owners — **NOT_RUN** |
+| Restart trials (clause 1 + 7 restart half) | **CC-45c** — `## Clause 1` — **NOT_RUN** |
+| serve-probe / OQ-1 | **CC-4B** binary; OQ-1 **NOT_RUN**; full-window probes **CC-4Cd NOT_RUN** |
+| **Git SHA (tree at record)** | `1f5f648401a92524964b14ebb77935c856d5d818` |
+| **Start (UTC)** | **NOT_RUN** |
+| **End (UTC)** | **NOT_RUN** |
+| Continuous days | **NOT_RUN** (bar ≥ 7 for Hoodi week) |
+| Venue(s) | closed set per clause row: `hoodi`, `self-devnet`, `self-devnet-compressed`, `in-process-double`, `dev-machine` |
+| **Engine crate** | redb **4.1.0** (`Cargo.lock`) |
+| **Durability (tree default)** | **`immediate`** (`config/storage.toml`) |
+| Live durability used | **NOT_RUN** (re-record from live config / `CC_STORAGE_DURABILITY`) |
+| Machine exclusive | **no** this session — see `## Machine and environment` |
+| Second machine | **no** (A-P4-7) |
+
+### Instrument smoke (not a week)
+
+```text
+$ bash scripts/soak-report.sh --phase 4 --out /tmp/phase4-clause-table-4cd.md
+# → wrote clause table; every live cell NOT_RUN; clause 3 Hoodi row
+#   verdict **confirmation, non-discharging** (correct without harness)
+```
+
+**Do not treat instrument smoke as a discharged week or probe PASS.**
 
 ## Clause table
 
-**Owner:** CC-4Cb (script) / CC-4Cd (numbers)  
-**Generated by:** `bash scripts/soak-report.sh --phase 4`  
-**Status:** skeleton — paste script output here after a live or harness-backed
-run. Columns: `clause | venue | measured | threshold | verdict`.
+**Owner:** CC-4Cb (script) / CC-4Cd (numbers)
+**Generated by:** `scripts/soak-report.sh --phase 4`
+**Storage metrics URL / file:** `http://127.0.0.1:9106/metrics`
+**Plateau samples:** `(none)`
+**Serve-probe JSON:** `(none)`
+**Harness JSON:** `(none)`
+**Venue filter:** (none — all venues)
+**Clause filter:** (none — all clauses)
+**Status at CC-4Cd record (2026-08-08):** verbatim instrument output with no live
+harness — every discharge cell **NOT_RUN**; clause 3 Hoodi row
+**`confirmation, non-discharging`**.
 
 | Clause | Venue | Measured | Threshold | Verdict |
 |---|---|---|---|---|
-| _TBD_ | _TBD_ | **NOT_RUN** | — | **NOT_RUN** |
+| 1 · kill -9 resumes | hoodi | NOT_RUN (no clause1 harness and no cc_storage_restart_seconds / cc_storage_following_head on scrape — live discharge is CC-45c) | 20/20 ≤ 60 s; following_head=1; identical GetHead roots (branch A) or `partial — no EL in the restart set` (branch B, not discharged) | **NOT_RUN** |
+| 2 · cursor fallback · attribution | in-process-double | NOT_RUN (stage=attribution; no harness + no cc_storage_stream_reconnect_total — CC-44b) | exactly 1 of each reason on cc_storage_stream_reconnect_total; stage only (D-14) | **NOT_RUN** |
+| 2 · cursor fallback · hole recorded | self-devnet | NOT_RUN (stage=hole recorded; no harness + no cc_storage_window_hole_slots — CC-48/CC-45b) | run (b) hole durably in ServeWindow.holes; parent-linkage walk; stage only (D-14) | **NOT_RUN** |
+| 2 · cursor fallback · hole closed | self-devnet | NOT_RUN (stage=hole closed; harness clause2.hole_closed absent — CC-47a; clause discharged only when this stage is present — D-14) | store has no gap after parent-linkage walk; discharges clause 2 only when present (D-14) | **NOT_RUN** |
+| 3 · disk bounded (compressed-retention, discharging) | self-devnet-compressed | NOT_RUN (no plateau samples / clause3.compressed harness — live discharge is CC-4Cc via storage-plateau.sh) | 24 h slope < 1% of plateau; prune/written within 5%; deadline exceeded ≤ 1% of passes; commit p99 delta ≤ 10% | **NOT_RUN** |
+| 3 · disk bounded (Hoodi confirmation) | hoodi | NOT_RUN (clause3.hoodi / confirmation harness absent — live is CC-4Cd ≥ 7-day Hoodi week) | same four bars at real data volumes; ≥ 7 days; confirmation, non-discharging | **confirmation, non-discharging** |
+| 4 · full-window block serve | hoodi | NOT_RUN (no serve-probe --full-window --json / clause4 harness — CC-4Cd) | serve-probe positive blocks: zero ResourceUnavailable; eas ≤ start_slot(current_epoch − 33024) | **NOT_RUN** |
+| 5 · full-window column serve | hoodi | NOT_RUN (no clause5 harness / serve-probe columns result — CC-4Cd) | serve-probe positive columns: full requested∩held set per block; zero ResourceUnavailable | **NOT_RUN** |
+| 6 · negative side (Hoodi) | hoodi | NOT_RUN (no clause6 / serve-probe.negative — CC-4Cd Hoodi half) | below eas: every response ResourceUnavailable (3); never empty success; blocks+columns × by-range+by-root | **NOT_RUN** |
+| 6 · negative side (self-devnet early falsification) | self-devnet | NOT_RUN (clause6.self_devnet absent — early falsification at M4.3 / CC-4F) | below eas: ResourceUnavailable never empty success (early falsification) | **NOT_RUN** |
+| 7 · advertisement equals served | self-devnet | NOT_RUN (no clause7 harness and no eas gauges — CC-49 / CC-45c / CC-4Cd) | cc_storage_earliest_available_slot == cc_p2p_earliest_available_slot at every scrape; migration step assertions hold | **NOT_RUN** |
+
+### Method notes
+
+- **Venue is machine-checked (closed set):** `hoodi`, `self-devnet`, `self-devnet-compressed`, `in-process-double`, `dev-machine`. `--venue` refuses non-matching clause rows — a clause at the wrong venue does not discharge.
+- **Clause 1** emits branch A (EL in restart set → may discharge) or branch B carrying the literal string `partial — no EL in the restart set` with verdict **not discharged**.
+- **Clause 2** emits three stages (`attribution` / `hole recorded` / `hole closed`); the clause is **discharged only when the third is present** (D-14).
+- **Clause 3** has two rows that must not be merged: compressed-retention at `self-devnet-compressed` (discharging) and Hoodi marked **`confirmation, non-discharging`**.
+- **§10.6 expressions:** restart histogram + following_head + GetHead roots; `cc_storage_stream_reconnect_total{reason}`; `storage-plateau.sh` + `cc_storage_prune_deadline_exceeded_total` + commit-latency delta; `serve-probe --full-window --json` + eas floor; negative side; storage eas vs p2p eas.
+- Every measured cell is a **number or an explicit NOT_RUN** — no blank, no guess. A clause read by eye off a Grafana panel does not discharge it.
+- **It measures the run; it is not the run** (D-10). Plateau run is CC-4Cc; Hoodi week is CC-4Cd; 20 restart trials are CC-45c.
