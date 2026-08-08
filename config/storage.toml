@@ -74,6 +74,27 @@ serve_permits = 4
 # Override: CC_STORAGE_SERVE_QUEUE_TIMEOUT_MS=2000
 serve_queue_timeout_ms = 2000
 
+# ── CC-46a five prune passes / watermarks (Architecture §7.0 / §7.4) ──────────
+# Cadence: column pass every N epochs (shares snapshot tick; = column shard width).
+# Override: CC_STORAGE_PRUNE_COLUMNS_EPOCHS=32
+prune_columns_epochs = 32
+# Cadence: block (+ state_roots) pass every N epochs (= block shard width).
+# Override: CC_STORAGE_PRUNE_BLOCKS_EPOCHS=256
+prune_blocks_epochs = 256
+# One-epoch serve-side margin baked into both watermarks (§7.1).
+# Override: CC_STORAGE_PRUNE_MARGIN_EPOCHS=1
+prune_margin_epochs = 1
+# Disk watermark: **alarm only, never a trigger** (§7.4 / §9.3).
+# 75 % of the 128 GiB provision = 96 GiB. Operator acts on the alarm.
+# Override: CC_STORAGE_DISK_ALARM_BYTES=...
+disk_alarm_bytes = 103079215104
+# Wall-clock genesis for prune epoch ticks (spec delta 9).
+# Hoodi = MIN_GENESIS_TIME(1742212800) + GENESIS_DELAY(600) = 1742213400.
+# When unset, resolved from the network fixture, then from a store snapshot's
+# BeaconState.genesis_time. Override: CC_STORAGE_GENESIS_TIME=...
+genesis_time = 1742213400
+
+
 # CC-4D / Architecture §10.4 — dangerous knobs (config, not env).
 # Uncomment only on the self-devnet; startup refuses unless
 # genesis_validators_root is neither Hoodi's nor mainnet's.

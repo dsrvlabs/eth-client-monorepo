@@ -161,6 +161,9 @@ pub(crate) struct ReplayDriver {
     pub in_flight: AtomicBool,
     /// Divergence exit policy.
     pub on_divergence: DivergenceExit,
+    /// Optional prune driver — snapshot-ring pass fires on each successful write
+    /// (CC-46a §7.0: ring pass trigger is "on each snapshot write").
+    pruner: std::sync::Mutex<Option<Arc<crate::prune::Pruner>>>,
 }
 
 /// RAII clear of [`ReplayDriver::in_flight`].
@@ -209,6 +212,7 @@ impl ReplayDriver {
             finalizations_seen: AtomicU64::new(0),
             in_flight: AtomicBool::new(false),
             on_divergence: DivergenceExit::Os,
+            pruner: std::sync::Mutex::new(None),
         }
     }
 
@@ -222,6 +226,11 @@ impl ReplayDriver {
     pub(crate) fn with_chain_config(mut self, cfg: ChainConfig) -> Self {
         self.chain_config = Arc::new(cfg);
         self
+    }
+
+    /// Attach the CC-46a pruner so the snapshot-ring pass runs on each write.
+    pub(crate) fn set_pruner(&self, pruner: Arc<crate::prune::Pruner>) {
+        *self.pruner.lock().unwrap_or_else(|e| e.into_inner()) = Some(pruner);
     }
 
     fn last_epoch(&self) -> Option<u64> {
@@ -311,6 +320,35 @@ impl ReplayDriver {
         self.commit_snapshot_p2(&prepared.plan).await?;
         let write_secs = write_started.elapsed().as_secs_f64();
         observe_phase(&self.metrics, SnapshotPhase::Write, write_secs);
+
+        // CC-46a: snapshot-ring prune pass fires on each successful snapshot write
+        // (§7.0 table). plan_snapshot_put already stages ring eviction; this pass
+        // re-asserts depth ≤ ring and records prune metrics / invocation counters.
+        let pruner = self
+            .pruner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(pruner) = pruner {
+            match pruner.run_snapshot_ring_pass().await {
+                crate::prune::PassOutcome::Ran { rows, bytes, .. } => {
+                    info!(
+                        target: "cc_storage::replay",
+                        rows,
+                        bytes,
+                        "snapshot-ring prune pass after write"
+                    );
+                }
+                crate::prune::PassOutcome::AlreadyAtMark => {}
+                other => {
+                    warn!(
+                        target: "cc_storage::replay",
+                        ?other,
+                        "snapshot-ring prune pass skipped/failed (non-fatal)"
+                    );
+                }
+            }
+        }
 
         // Term (c): reload from store, deserialize + tree-hash-cache rebuild.
         let load_secs = measure_load_from_store(&self.engine, prepared.plan.slot)?;

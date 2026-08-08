@@ -8,6 +8,7 @@
 
 mod metrics;
 mod migrate;
+mod prune;
 mod replay;
 mod serve;
 mod write_behind;
@@ -28,11 +29,18 @@ use serde::Deserialize;
 use tokio::sync::watch;
 use tonic::service::Routes;
 use migrate::{MigrationConfig, Migrator};
+use prune::{
+    columns::DEFAULT_COLUMNS_RETENTION_EPOCHS, genesis_time_from_fixture, spawn_prune_task,
+    PruneConfig, Pruner, DEFAULT_DISK_ALARM_BYTES, DEFAULT_PRUNE_BLOCKS_EPOCHS,
+    DEFAULT_PRUNE_COLUMNS_EPOCHS, DEFAULT_PRUNE_MARGIN_EPOCHS,
+};
 use replay::{ReplayConfig, ReplayDriver, spawn_replay_task};
 use serve::{ServeConfig, StorageServer};
 use write_behind::{WriteBehindConfig, spawn_write_behind};
 use writer::{WriterBounds, WriterFaults, WriterHandle, load_write_cursor, spawn_writer};
-use cc_store::SplitLock;
+use cc_store::{
+    BlockServeWindowCfg, SplitLock, compute_min_epochs_for_block_requests,
+};
 
 /// Process name and config slug (`config/storage.toml`, `CC_STORAGE_*`).
 const SERVICE: &str = "storage";
@@ -82,6 +90,26 @@ struct StorageConfig {
     /// Fault-injection knobs (CC-4D / Architecture §2.5). Config, not env.
     #[serde(default)]
     debug: StorageDebug,
+    // ── CC-46a prune ────────────────────────────────────────────────────────
+    /// Column prune cadence in epochs (default **32**).
+    #[serde(default = "default_prune_columns_epochs")]
+    prune_columns_epochs: u64,
+    /// Block (+ state_roots) prune cadence in epochs (default **256**).
+    #[serde(default = "default_prune_blocks_epochs")]
+    prune_blocks_epochs: u64,
+    /// Margin epochs baked into both watermarks (default **1**).
+    #[serde(default = "default_prune_margin_epochs")]
+    prune_margin_epochs: u64,
+    /// Disk alarm threshold in bytes (default **96 GiB**). Alarm only, never a trigger.
+    #[serde(default = "default_disk_alarm_bytes")]
+    disk_alarm_bytes: u64,
+    /// Wall-clock genesis unix seconds for prune epoch ticks (CC-46a).
+    ///
+    /// Hoodi = `MIN_GENESIS_TIME + GENESIS_DELAY` (1742213400). When absent,
+    /// resolved from the network fixture, then from a store snapshot's
+    /// `BeaconState.genesis_time`. Override: `CC_STORAGE_GENESIS_TIME`.
+    #[serde(default)]
+    genesis_time: Option<u64>,
     // ── CC-44b write-behind / writer ────────────────────────────────────────
     /// One commit per N slots — **the loss bound** (§4.4). Default 1.
     #[serde(default = "default_commit_slots")]
@@ -130,9 +158,9 @@ struct StorageConfig {
 /// prune venue (columns 64 / blocks 256 on the compressed profile).
 #[derive(Debug, Clone, Deserialize)]
 struct RetentionOverride {
-    #[allow(dead_code)] // consumed by prune path when CC-46a lands
+    /// Column retention depth in epochs (overrides the 4096-epoch Fulu default).
     columns_epochs: u64,
-    #[allow(dead_code)] // consumed by prune path when CC-46a lands
+    /// Block retention depth in epochs (overrides the CC-4A computed floor).
     blocks_epochs: u64,
 }
 
@@ -192,6 +220,18 @@ fn default_serve_permits() -> usize {
 }
 fn default_serve_queue_timeout_ms() -> u64 {
     serve::DEFAULT_SERVE_QUEUE_TIMEOUT.as_millis() as u64
+}
+fn default_prune_columns_epochs() -> u64 {
+    DEFAULT_PRUNE_COLUMNS_EPOCHS
+}
+fn default_prune_blocks_epochs() -> u64 {
+    DEFAULT_PRUNE_BLOCKS_EPOCHS
+}
+fn default_prune_margin_epochs() -> u64 {
+    DEFAULT_PRUNE_MARGIN_EPOCHS
+}
+fn default_disk_alarm_bytes() -> u64 {
+    DEFAULT_DISK_ALARM_BYTES
 }
 
 impl StorageConfig {
@@ -270,6 +310,53 @@ impl StorageConfig {
             snapshot_ring: self.snapshot_ring.max(1),
         }
     }
+
+    /// Build prune config: cadence/margin/alarm from toml; retention from
+    /// CC-4A computed floor (or `retention_override` on the self-devnet).
+    fn prune_config(&self, chain: &ChainConfig) -> anyhow::Result<PruneConfig> {
+        // CC-4A: compute from the two live scalars. ChainConfig does not yet
+        // surface withdrawability/churn; load from the same Hoodi fixture used
+        // for the config digest, falling back to mainnet-shaped defaults.
+        let computed_floor = block_serve_floor_from_fixture().unwrap_or_else(|| {
+            compute_min_epochs_for_block_requests(&BlockServeWindowCfg::new(256, 65_536))
+                .unwrap_or(0)
+        });
+
+        let (columns_retention, blocks_retention) = match &self.retention_override {
+            Some(ro) => (ro.columns_epochs.max(1), ro.blocks_epochs.max(1)),
+            None => (DEFAULT_COLUMNS_RETENTION_EPOCHS, computed_floor),
+        };
+
+        // genesis_time: explicit config → network fixture (MIN_GENESIS_TIME+GENESIS_DELAY).
+        // Store-snapshot fallback is applied inside Pruner::new / effective_genesis_time.
+        let genesis_time = self
+            .genesis_time
+            .filter(|t| *t > 0)
+            .or_else(genesis_time_from_fixture)
+            .unwrap_or(0);
+
+        Ok(PruneConfig {
+            prune_columns_epochs: self.prune_columns_epochs.max(1),
+            prune_blocks_epochs: self.prune_blocks_epochs.max(1),
+            prune_margin_epochs: self.prune_margin_epochs,
+            disk_alarm_bytes: self.disk_alarm_bytes.max(1),
+            columns_retention_epochs: columns_retention,
+            blocks_retention_epochs: blocks_retention,
+            fulu_fork_epoch: chain.fulu_fork_epoch.as_u64(),
+            snapshot_ring: self.snapshot_ring.max(1),
+            genesis_time,
+            seconds_per_slot: chain.seconds_per_slot.max(1),
+            slots_per_epoch: 32,
+        })
+    }
+}
+
+/// Load CC-4A floor from the committed Hoodi fixture (same path as digest).
+fn block_serve_floor_from_fixture() -> Option<u64> {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/types/tests/fixtures/hoodi-config.yaml");
+    let cfg = BlockServeWindowCfg::from_yaml_file(&fixture).ok()?;
+    compute_min_epochs_for_block_requests(&cfg).ok()
 }
 
 
@@ -372,8 +459,9 @@ async fn main() -> anyhow::Result<()> {
 
     let mut serve_engine: Option<Arc<cc_store::engine::Engine>> = None;
     let mut serve_writer: Option<WriterHandle> = None;
-    // Keep split alive for process lifetime when write path is on.
+    // Keep split / pruner alive for process lifetime when write path is on.
     let mut _split_keep: Option<Arc<SplitLock>> = None;
+    let mut _pruner_keep: Option<Arc<Pruner>> = None;
 
     if cfg.enable_write_path {
         match open_store(&cfg) {
@@ -416,6 +504,22 @@ async fn main() -> anyhow::Result<()> {
                     cfg.replay_config(),
                 ));
                 let _replay_join = spawn_replay_task(Arc::clone(&replayer), shutdown_rx.clone());
+                // CC-46a: five prune passes (wall-clock epoch ticks; P2 chunks).
+                let chain_for_prune = ChainConfig::mainnet_like_for_digest();
+                let prune_cfg = cfg.prune_config(&chain_for_prune)?;
+                tracing::info!(
+                    genesis_time = prune_cfg.genesis_time,
+                    "prune config genesis_time (0 → resolve from store snapshot later)"
+                );
+                let pruner = Arc::new(Pruner::new(
+                    Arc::clone(&engine),
+                    writer.clone(),
+                    prune_cfg,
+                    storage_metrics.clone(),
+                ));
+                // Snapshot-ring pass trigger: on each successful snapshot write (§7.0).
+                replayer.set_pruner(Arc::clone(&pruner));
+                let _prune_join = spawn_prune_task(Arc::clone(&pruner), shutdown_rx.clone());
                 // Write-behind: respawn-on-panic with backoff (counter-example to writer).
                 let (_wb, _wb_respawns) = spawn_write_behind(
                     cfg.write_behind_config(),
@@ -432,13 +536,18 @@ async fn main() -> anyhow::Result<()> {
                     epochs_per_migration = cfg.epochs_per_migration,
                     snapshot_epochs = cfg.snapshot_epochs,
                     snapshot_ring = cfg.snapshot_ring,
+                    prune_columns_epochs = cfg.prune_columns_epochs,
+                    prune_blocks_epochs = cfg.prune_blocks_epochs,
+                    prune_margin_epochs = cfg.prune_margin_epochs,
+                    disk_alarm_bytes = cfg.disk_alarm_bytes,
                     serve_buffer_bytes = cfg.serve_buffer_bytes,
                     serve_permits = cfg.serve_permits,
-                    "writer + write-behind + migrator + replay + serve pool ready"
+                    "writer + write-behind + migrator + replay + prune + serve pool ready"
                 );
                 serve_engine = Some(engine);
                 serve_writer = Some(writer);
                 _split_keep = Some(split);
+                _pruner_keep = Some(pruner);
             }
             Err(e) => {
                 // Fail closed on open errors when write path is enabled.
@@ -630,5 +739,56 @@ mod config_tests {
         assert!(text.contains("serve_buffer_bytes"));
         assert!(text.contains("serve_permits"));
         assert!(text.contains("serve_queue_timeout_ms"));
+    }
+
+    /// CC-46a: prune cadence / margin / disk alarm defaults in storage.toml.
+    #[test]
+    fn prune_knobs_defaults() {
+        let _g = env_lock();
+        unsafe {
+            std::env::remove_var("CC_STORAGE_PRUNE_COLUMNS_EPOCHS");
+            std::env::remove_var("CC_STORAGE_PRUNE_BLOCKS_EPOCHS");
+            std::env::remove_var("CC_STORAGE_PRUNE_MARGIN_EPOCHS");
+            std::env::remove_var("CC_STORAGE_DISK_ALARM_BYTES");
+            std::env::remove_var("CC_STORAGE_GENESIS_TIME");
+        }
+        let path = storage_toml_path();
+        let cfg = cc_config::load_from::<StorageConfig>("storage", &path)
+            .unwrap_or_else(|e| panic!("load {}: {e}", path.display()));
+        assert_eq!(cfg.prune_columns_epochs, 32);
+        assert_eq!(cfg.prune_blocks_epochs, 256);
+        assert_eq!(cfg.prune_margin_epochs, 1);
+        assert_eq!(cfg.disk_alarm_bytes, 96 * 1024 * 1024 * 1024);
+        // Hoodi wall-clock genesis (MIN_GENESIS_TIME + GENESIS_DELAY).
+        assert_eq!(cfg.genesis_time, Some(1_742_213_400));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("prune_columns_epochs"));
+        assert!(text.contains("prune_blocks_epochs"));
+        assert!(text.contains("prune_margin_epochs"));
+        assert!(text.contains("disk_alarm_bytes"));
+        assert!(text.contains("genesis_time"));
+        assert!(
+            text.contains("alarm only") || text.contains("never a trigger"),
+            "disk alarm comment must state alarm-only semantics"
+        );
+    }
+
+    /// CC-46a: prune_config resolves genesis_time (config or fixture).
+    #[test]
+    fn prune_config_resolves_genesis_time() {
+        let _g = env_lock();
+        unsafe {
+            std::env::remove_var("CC_STORAGE_GENESIS_TIME");
+        }
+        let path = storage_toml_path();
+        let cfg = cc_config::load_from::<StorageConfig>("storage", &path)
+            .unwrap_or_else(|e| panic!("load {}: {e}", path.display()));
+        let chain = ChainConfig::mainnet_like_for_digest();
+        let prune = cfg.prune_config(&chain).expect("prune_config");
+        assert!(
+            prune.genesis_time > 0,
+            "genesis_time must be non-zero so wall_clock_epoch works"
+        );
+        assert_eq!(prune.genesis_time, 1_742_213_400);
     }
 }

@@ -190,3 +190,23 @@ storage.snapshot_ring   = 4
 **D-12 inversion (stated):** Phase 1's **Clause 3 gates CC-42** (and CC-46); Phase 1's **Clause 2** (24 h soak) **does not**. A snapshot cadence chosen against an unmeasured baseline is a guess; a 24 h soak that a restart would void is circular with Phase 4's purpose.
 
 **What was used instead of a fresh Clause 3 NOT_RUN:** the committed mid-gate table in `docs/phase-1-soak.md` (max wall 774.81 ms) plus this issue's term-(c) measurement closing OQ-P4-4. If a later operator re-runs the mid-gate and sees a regression above 1000 ms, re-derive term 4 of §3.4 and re-check the 60 s restart bar margin.
+
+## V-10 / Clause 3 (M4.3 entry — CC-46a)
+
+**Owner:** CC-46a  
+**Date:** 2026-08-08  
+
+### V-10 re-read
+
+| Field | Value |
+|---|---|
+| Command | `cargo test -p cc-chain --test offline_replay cc1h_mid_gate_with_fork_choice_clone -- --nocapture` |
+| Recorded in | `docs/phase-1-soak.md` (mid-gate section); re-affirmed from M4.2 entry above |
+| Result | **PASS** — max epoch wall **774.81 ms** &lt; 1000 ms bar |
+| **CC-1H promoted?** | **No** |
+| Phase 1 Clause 3 number | **774.81 ms** max epoch wall (mid-gate stand-in for p95) |
+| Status | **PASS** — not `NOT_RUN` |
+
+### D-12 gating decision (CC-46a)
+
+Phase 1's **Clause 3 is a hard gate on CC-46** (PRD / issue **D-12**). The recorded mid-gate number is **below** the 1000 ms bar, so **CC-46a proceeds**. Phase 1's **Clause 2** (24 h Hoodi soak) **does not** gate this issue. No fresh Clause 3 histogram was re-run in this agent session; the committed phase-1-soak mid-gate table is the authority.
