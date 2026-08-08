@@ -230,6 +230,8 @@ async fn supervise_write_behind(
         match inner.await {
             Ok(()) => break, // clean shutdown from run_write_behind
             Err(e) if e.is_panic() => {
+                // Not following while the inner task is down (CC-45c gauge).
+                metrics.set_following_head(false);
                 let n = respawns.fetch_add(1, Ordering::SeqCst).saturating_add(1);
                 warn!(
                     target: "cc_storage::write_behind",
@@ -242,6 +244,7 @@ async fn supervise_write_behind(
                 backoff = next_backoff(backoff, cfg.backoff_cap);
             }
             Err(e) => {
+                metrics.set_following_head(false);
                 warn!(
                     target: "cc_storage::write_behind",
                     error = %e,
@@ -251,6 +254,7 @@ async fn supervise_write_behind(
             }
         }
     }
+    metrics.set_following_head(false);
 }
 
 /// Drive write-behind until shutdown.
@@ -264,6 +268,8 @@ pub(crate) async fn run_write_behind(
     replayer: Option<Arc<ReplayDriver>>,
 ) {
     let mut backoff = cfg.backoff_initial;
+    // Start not-following; flipped to 1 only after SubscribeEvents succeeds.
+    metrics.set_following_head(false);
     info!(
         target: "cc_storage::write_behind",
         chain = %cfg.chain_uri,
@@ -288,10 +294,14 @@ pub(crate) async fn run_write_behind(
             SessionEnd::Shutdown => break,
             SessionEnd::SetCursor(c) => {
                 // `None` = live-from-tip after rejection (discard durable cursor).
+                // Not currently on a live session until the next subscribe.
+                metrics.set_following_head(false);
                 durable_cursor = c;
                 backoff = cfg.backoff_initial;
             }
             SessionEnd::Reconnect { reason, cursor } => {
+                // Stream lost — not following until the next successful subscribe.
+                metrics.set_following_head(false);
                 if let Some(c) = cursor {
                     durable_cursor = Some(c);
                 }
@@ -305,6 +315,7 @@ pub(crate) async fn run_write_behind(
             }
         }
     }
+    metrics.set_following_head(false);
     info!(target: "cc_storage::write_behind", "write-behind task stopped");
 }
 
@@ -491,6 +502,7 @@ async fn run_session(
     let channel = match dial(&cfg.chain_uri, cfg.connect_timeout).await {
         Ok(c) => c,
         Err(e) => {
+            metrics.set_following_head(false);
             warn!(
                 target: "cc_storage::write_behind",
                 error = %e,
@@ -515,6 +527,7 @@ async fn run_session(
     {
         Ok(resp) => resp,
         Err(status) => {
+            metrics.set_following_head(false);
             return handle_subscribe_error(
                 status,
                 client,
@@ -526,6 +539,14 @@ async fn run_session(
             .await;
         }
     };
+
+    // Live event-bus session established → following head for the CC-45c bar.
+    // Cleared on stream loss / reconnect / stop (run_write_behind outer loop).
+    metrics.set_following_head(true);
+    info!(
+        target: "cc_storage::write_behind",
+        "SubscribeEvents established; cc_storage_following_head=1"
+    );
 
     // Live session_id from response metadata (chain CC-44b seam). Fallback:
     // durable resume cursor's session, else 0 (= not resume-valid).

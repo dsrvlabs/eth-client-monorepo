@@ -137,9 +137,10 @@ check (deliberately outside the warm-CI ten-minute budget). It runs on push to
 
 Phase 0 services are **ephemeral**: there is no durable volume for chain state,
 attestations, or storage. `services/storage` stores nothing yet. A
-`docker compose down` (or a host reboot) loses process state; the stack is
-**not restartable across restarts** in any meaningful consensus sense until
-Phase 4 persistence work. Treat every `up` as a fresh hello-world topology.
+`docker compose down` (or a host reboot) loses process state; consensus
+resume across process death arrives only with Phase 4 named volumes
+(`cc-store-data`, `cc-p2p-identity` — see **Phase 4 durable surface** below).
+Treat every Phase 0 `up` as a fresh hello-world topology.
 
 ### Chain restart and checkpoint sync (Phase 1)
 
@@ -265,7 +266,7 @@ bash scripts/soak-sampler.sh \
 
 | Event | Verdict | Note |
 |---|---|---|
-| `chain` panics, OOMs, or exits | **Void.** Restart from zero after a fix. | Clause 2/1; Phases 0–2 are not restartable by design. |
+| `chain` panics, OOMs, or exits | **Void.** Restart from zero after a fix. | Clause 2/1; Phases 0–2 have no durable consensus surface — a restart voids the soak by design. |
 | Any code change, rebuild, or redeploy | **Void.** | Run record pins a git SHA; a binary swap means the 24 h was not one binary's 24 h. |
 | Machine sleep, reboot, thermal throttle, OS update | **Void.** | Disable sleep and automatic updates before starting. Throttling corrupts Clause 3 silently. |
 | Any build or heavy process on the soak machine | **Clause 3 void, Clause 2 intact.** | Treat as a void — a report you cannot defend is worth nothing. R-1's load guard refuses the report. |
@@ -334,15 +335,14 @@ grep -c driver docker-compose.yml                   # must print 0
 bash scripts/check-no-http-import-path.sh           # no HTTP on ImportBlock path; p2p tree clean
 ```
 
-### Standing limitation (read before a soak)
+### Phase 2 soak and process lifetime (historical)
 
-**The node is not restartable until Phase 4; a restart re-checkpoint-syncs and empties the backfill cache.**
-
-A restart voids a 24 h run **by design, not by accident**. There is no durable
-chain state and no backfill-cache resume in Phase 2; process death returns the
-node to a cold checkpoint bootstrap. The restart-policy table in the Phase 2
-plan is the long form of the same sentence. Treat every `docker compose up` as a
-fresh process lifetime for soak purposes.
+Phase 2 had **no** durable consensus surface: a process death re-checkpoint-synced
+and emptied the backfill cache, so a restart voided a 24 h run **by design**.
+That limitation is retired by Phase 4 named volumes and the kill-9 resume path
+(`CC-45c`). For **Phase 2-era** soaks still run against an ephemeral stack, treat
+every `docker compose up` as a fresh process lifetime. For Phase 4 operators,
+see **Phase 4 durable surface** and **Restart trials (CC-45c)** below.
 
 ### Phase 2 Hoodi soak (CC-29c — clauses 1, 2, 3)
 
@@ -432,18 +432,22 @@ metrics / Prometheus text), **30303** (devp2p).
 
 ### Persistence asymmetry (read before restarting)
 
-**From Phase 3 onward the EL's datadir survives a restart while ours does not.**
+**Phase 3:** the EL's datadir survives a restart; consensus services were still
+ephemeral. **Phase 4** mounts consensus state on `cc-store-data` +
+`cc-p2p-identity` (see **Phase 4 durable surface** below) so a `SIGKILL`+`up`
+path can resume without cold checkpoint bootstrap.
 
 | Side | Volume | After `docker compose down` (default) | After `down -v` / volume rm |
 |---|---|---|---|
 | `el` | named volume `elstore` → `/data` | **Persists** | Lost — full snap/snapshot restore again |
-| Our six services | none (ephemeral) | Process state gone; next `up` **re-checkpoint-syncs** | same |
+| Consensus (Phase 4) | `cc-store-data`, `cc-p2p-identity` | **Persists** (containers recreated) | Lost — voids the durable proof |
+| Consensus (Phase ≤ 3) | none (ephemeral) | Process state gone; next `up` re-checkpoint-syncs | same |
 
-There is **no durable consensus storage until Phase 4**. Operators who treat
-`docker compose down` as "reset everything" will be surprised that geth still has
-chain data (and that deleting `elstore` costs a large re-download). Snapshot
-restore procedure is CC-39b; until then, protect `elstore` deliberately.
-Full auth-trap and `-38002` lookup: `docs/el-runbook.md`.
+Operators who treat `docker compose down` as "reset everything" will be surprised
+that geth (and, from Phase 4, the consensus store) still has data — and that
+`down -v` costs a large re-download / voids restart trials. Snapshot restore
+procedure is CC-39b; protect `elstore` deliberately. Full auth-trap and
+`-38002` lookup: `docs/el-runbook.md`.
 
 ### Phase 3 run record (CC-3Ac)
 
@@ -558,6 +562,36 @@ bash devnet/faults.sh restart storage
 ```
 
 `CC-4D` later appends `clock-jump` and `restart --hold` on top of this
-SIGKILL+up base. Removing the Phase 2 *"not restartable until Phase 4"* soak
-caveat is **CC-45c**, once the durable set is proven end to end.
+SIGKILL+up base.
+
+### Restart trials (CC-45c)
+
+Phase 4 operators resume across `SIGKILL` from the durable surface (not a cold
+checkpoint bootstrap). The proof set is **20 mid-slot kills**, one set (CC-45 /6
+and /7 are the same 20 runs):
+
+```bash
+# Instrument self-check (no live stack):
+bash scripts/restart-trials.sh --self-test
+
+# Branch detect (A = EL in compose + real optimistic path; B = partial):
+bash scripts/restart-trials.sh --detect-branch
+
+# Live 20/20 on an exclusive machine (D-11) — never down -v:
+bash scripts/restart-trials.sh --trials 20
+# → kill -s SIGKILL at random offset ∈ [4 s, 8 s) into a slot
+# → up -d; poll cc_storage_following_head == 1 within ≤ 60 s
+# → assert identical GetHead roots, eas ≤ pre-crash, zero bootstrap Δ
+# → both durability settings (≥ 5 immediate + ≥ 5 paranoid)
+# → harness: .data/restart-trials.json
+
+bash scripts/soak-report.sh --phase 4 --clause 1 \
+  --harness-json .data/restart-trials.json
+# paste into docs/phase-4-soak.md ## Clause 1 — restart trials
+```
+
+**Never** `docker compose down -v` during the set — that deletes `cc-store-data`
+and `cc-p2p-identity` and voids the proof. A 19/20 does not discharge; the
+failing run names its `cc_storage_restart_seconds{phase}` term and the full set
+is re-run after the fix.
 

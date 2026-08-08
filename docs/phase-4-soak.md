@@ -235,9 +235,136 @@ Phase 1's **Clause 2** was **not** required at either entry.
 ## Clause 1 — restart trials
 
 **Owner:** CC-45c  
-**Status:** empty skeleton (Amendment 5 / CC-4Cb). Numbers land in this section
-only. Branch A (Hoodi stack with Phase 3's EL) discharges; branch B records the
-literal string `partial — no EL in the restart set` and does **not** discharge.
+**Date:** 2026-08-08  
+**Instrument:** `bash scripts/restart-trials.sh` + `bash scripts/soak-report.sh --phase 4 --clause 1`  
+**Covers:** proof clause 1 + clause 7(b); CC-45 /6 + /7; §3.4; D-11, D-12; R-1  
+**Bar:** kill → `cc_storage_following_head == 1` in **≤ 60 s** (CC-42 left
+`storage.snapshot_epochs = 32`; term (c) ≤ 5.0 s — bar **not** re-derived)
+
+### Status
+
+**`NOT_RUN` — clause 1 is not discharged.**
+
+A full exclusive **20/20** mid-slot `SIGKILL` set was **not** executed in this
+session. No PASS row is invented. Until 20/20 pass on the correct branch with
+per-term `cc_storage_restart_seconds{phase}` rows, identical pre/post `GetHead`
+roots, window ≤ pre-crash, zero checkpoint-bootstrap delta, and both durability
+settings (≥ 5 each), the clause remains **not discharged**. A 19/20 does not
+discharge either — the failing run names its term and the full set is re-run.
+
+### Branch detection (tree at record)
+
+| Check | Result | Source |
+|---|---|---|
+| EL service in compose | **yes** (`el` present) | `docker compose config --services` / `docker-compose.yml` |
+| Real optimistic-sync state machine in `services/chain` | **yes** (`is_optimistic_node` + Phase 3 engine path) | `services/chain/src/{core,invalidation,engine_client}.rs` |
+| **Branch** | **A** (tree would allow discharge after 20/20) | both checks true |
+
+Branch A means a later exclusive live set **may** discharge. It does **not**
+mean this session discharged. Branch B would record the literal string
+`partial — no EL in the restart set` and **not** discharge; re-run at Phase 3
+exit. Only one branch is recorded; this row is **A / NOT_RUN**, not B.
+
+### Tree facts recorded at open (not a run)
+
+| Field | Value | Source |
+|---|---|---|
+| **Git SHA (tree at record)** | `c8ab6c30d595fad37c4c02dbb381b07548d81924` | `git rev-parse HEAD` on `feature/cc-45c-twenty-restart-trials` @ 2026-08-08 |
+| **Engine** | redb **4.1.0** | `Cargo.lock` / `docs/storage-engine.md` |
+| **Durability defaults** | production default **`immediate`**; trials must also exercise **`paranoid`** (≥ 5 each) | `config/storage.toml`; `CC_STORAGE_DURABILITY` |
+| **Restart phases** | `open \| schema_check \| snapshot_load \| restore_send \| chain_replay \| forkchoice_rebuild \| resubscribe` | `cc_storage_restart_seconds{phase}` / CC-45b |
+| **Mid-slot window** | random offset in **[4 s, 8 s)** of a 12 s slot | issue CC-45c |
+| **Kill path** | `docker compose kill -s SIGKILL` then `up -d` — **never** `down`, **never** `down -v` | `scripts/restart-trials.sh`, `devnet/faults.sh`, `docs/running.md` |
+| **Checkpoint fallback** | must be unreachable; assert **zero** Δ `cc_chain_bootstrap_attempts*` per trial | demoted CC-19 path; CC-45c |
+
+### Procedure checklist (for the live 20/20 set)
+
+Operator checklist. Every box must be true for a discharge write-up; this
+session left them unchecked.
+
+- [ ] **Exclusive machine (D-11):** Phase 4 stack only — no second stack, no
+      builds, **no `bin/store-bench`**, no sleep / reboot / OS update for the set.
+- [ ] **Branch re-confirmed** from live `docker compose config --services` paste
+      into this section (not only the tree facts above).
+- [ ] **Checkpoint host unreachable** for the whole set (empty providers and/or
+      DNS-blackhole); per-trial bootstrap attempt delta **0** (count, not a claim).
+- [ ] **20 trials**, each: mid-slot SIGKILL ∈ [4, 8); following_head==1 in ≤ 60 s;
+      head advances within 2 slots; pre/post GetHead root identical; advertised
+      `earliest_available_slot` ≤ pre-crash.
+- [ ] **Both durability settings** ≥ 5 runs each; p50/p99 restart wall per setting
+      recorded (`OQ-P4-3` measured).
+- [ ] **Per-term breakdown** for all 20 rows (`cc_storage_restart_seconds{phase}`);
+      a run over the bar **names its term**; phase sum ≉ wall is itself a finding.
+- [ ] **Clause 7(b):** advertised window only moved downward across the whole set;
+      7(c) `cc_storage_earliest_available_slot == cc_p2p_earliest_available_slot`
+      at every scrape.
+- [ ] **Deterministic repeat** on self-devnet recorded as its own venue row.
+- [ ] **Harness + report:** `bash scripts/restart-trials.sh` →
+      `.data/restart-trials.json`; `bash scripts/soak-report.sh --phase 4 --clause 1
+      --harness-json .data/restart-trials.json` pasted below.
+- [ ] **Docs-only discharge commit** touches only this section (and report paste).
+      A code change in that commit voids the set.
+
+### Trial table (schema; empty while NOT_RUN)
+
+| # | Durability | Mid-slot offset (s) | Resume wall (s) | following_head | GetHead identical | eas ≤ pre | Bootstrap Δ | Phases (open…resubscribe) | Verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| — | — | — | — | — | — | — | — | — | **NOT_RUN** |
+
+### Durability p50 / p99 (empty until measured)
+
+| Durability | n | p50 wall (s) | p99 wall (s) | max wall (s) |
+|---|---|---|---|---|
+| `immediate` | **NOT_RUN** | **NOT_RUN** | **NOT_RUN** | **NOT_RUN** |
+| `paranoid` | **NOT_RUN** | **NOT_RUN** | **NOT_RUN** | **NOT_RUN** |
+
+### soak-report clause-1 row (instrument smoke; not a discharge)
+
+```text
+$ bash scripts/restart-trials.sh --self-test
+# → self-test PASS (evaluate math, branch detect, never down -v, harness shape)
+
+$ bash scripts/restart-trials.sh --emit-not-run --reason 'no exclusive live stack'
+# → writes .data/restart-trials.json with overall_status NOT_RUN (exit 5)
+
+$ bash scripts/soak-report.sh --phase 4 --clause 1 \
+    --harness-json .data/restart-trials.json
+| Clause | Venue | Measured | Threshold | Verdict |
+| 1 · kill -9 resumes … | hoodi | NOT_RUN (…) | 20/20 ≤ 60 s; following_head=1; identical GetHead roots | **NOT_RUN** |
+```
+
+**Do not treat instrument smoke as 20/20 PASS.**
+
+### Explicit non-discharge
+
+**Clause 1 is not discharged** until branch A completes 20/20 on an exclusive
+machine with the assertions above, or until a later Phase 3 exit re-run closes
+a branch-B debt. This section currently holds **tree facts + procedure +
+instrument smoke only**. No PASS. No fake 20/20.
+
+### Residual blockers (named; do not invent PASS)
+
+| Residual | Detail |
+|---|---|
+| **No exclusive live stack** | Agent session has empty `docker compose ps`; D-11 exclusive machine + Hoodi head-following stack not available for 20 kill cycles |
+| **`cc_storage_following_head` producer** | **Wired** (this pass): write-behind sets **1** after successful `SubscribeEvents`, **0** on start / stream loss / panic-respawn / stop (`StorageMetrics::set_following_head`). Unit-tested. Still **not** a 20/20 discharge — needs live exclusive set |
+| **No 20-row phase series** | Per-trial `cc_storage_restart_seconds{phase}` rows require a live set |
+| **Self-devnet deterministic repeat** | Not run; venue row empty |
+| **Clause 7(b)/(c) series** | Need live scrapes across the set |
+
+Instrument only (this session):
+
+```text
+bash scripts/restart-trials.sh --self-test          # PASS
+bash scripts/restart-trials.sh --detect-branch      # branch A
+bash scripts/restart-trials.sh --emit-not-run \
+  --reason 'no exclusive live stack in agent session'
+bash scripts/soak-report.sh --phase 4 --clause 1 \
+  --harness-json .data/restart-trials.json
+# → branch A · NOT_RUN (clause1 harness present but empty) — not discharged
+shellcheck scripts/restart-trials.sh                # clean
+grep -c "not restartable" docs/running.md           # 0
+```
 
 ## Clause 2 — cursor fallback
 

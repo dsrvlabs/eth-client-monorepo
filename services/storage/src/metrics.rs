@@ -895,6 +895,22 @@ impl StorageMetrics {
             .set(cc_store::hole_slots_total(window.holes.as_ref()) as i64);
     }
 
+    /// Set `cc_storage_following_head` (0/1) — CC-45c restart bar endpoint.
+    ///
+    /// Production: write-behind sets **1** after a successful `SubscribeEvents`
+    /// session is established (following the chain event bus / head), and **0**
+    /// on start, stream loss, reconnect, panic-respawn, and clean stop.
+    /// Seeded to 0 at register time.
+    pub(crate) fn set_following_head(&self, following: bool) {
+        self.following_head.set(i64::from(following));
+    }
+
+    /// Current `cc_storage_following_head` gauge value (tests / diagnostics).
+    #[cfg(test)]
+    pub(crate) fn following_head_get(&self) -> i64 {
+        self.following_head.get()
+    }
+
     /// Increment `cc_storage_invariant_violation_total{invariant}` (CC-4H post-pass).
     ///
     /// Label must be one of [`Invariant::ALL`] (closed domain). Callers map
@@ -1122,6 +1138,35 @@ mod tests {
                 l.contains("cc_storage_restart_seconds_bucket{") && l.contains("le=\"60.0\"")
             }),
             "restart_seconds must expose le=\"60.0\":\n{buf}"
+        );
+    }
+
+    #[test]
+    fn following_head_defaults_zero_and_toggles() {
+        // CC-45c: gauge is the kill→resume bar endpoint; seed 0, then production
+        // write-behind flips it via set_following_head.
+        let mut registry = Registry::default();
+        let m = StorageMetrics::register(&mut registry);
+        assert_eq!(m.following_head_get(), 0, "seed must be 0");
+        m.set_following_head(true);
+        assert_eq!(m.following_head_get(), 1);
+        m.set_following_head(false);
+        assert_eq!(m.following_head_get(), 0);
+
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        assert!(
+            buf.lines()
+                .any(|l| l.starts_with("cc_storage_following_head ") && l.ends_with(" 0")),
+            "exposition must show following_head 0 after clear:\n{buf}"
+        );
+        m.set_following_head(true);
+        let mut buf2 = String::new();
+        encode(&mut buf2, &registry).unwrap();
+        assert!(
+            buf2.lines()
+                .any(|l| l.starts_with("cc_storage_following_head ") && l.ends_with(" 1")),
+            "exposition must show following_head 1 when set:\n{buf2}"
         );
     }
 
