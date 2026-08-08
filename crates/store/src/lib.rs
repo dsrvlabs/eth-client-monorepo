@@ -5,11 +5,8 @@
 //! - [`buckets`] — histogram boundaries shared with metrics and `bin/store-bench` (CC-4Ca)
 //! - [`meta`] — ten SSZ singleton records (§2.5 / CC-40a)
 //! - [`schema`] — schema version, config digest, table registry, open-or-refuse (CC-40a)
-<<<<<<< Updated upstream
 //! - [`window`] — computed block serve-window floor (CC-4A / Architecture §5.1)
-=======
 //! - [`invariants`] — §2.7 eight named checks at open and after passes (CC-4H)
->>>>>>> Stashed changes
 //!
 //! This crate depends only on `cc-types` among workspace members; consensus
 //! containers must not appear here (opaque bytes under typed keys).
