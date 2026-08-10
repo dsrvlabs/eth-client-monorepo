@@ -3,16 +3,24 @@
 retries = 0
 failure-output = "immediate-final"
 
-# Wall-clock gates are load-sensitive. `num-cpus` reserves the full thread
-# pool so nothing else runs in parallel (max-threads=1 alone only serializes
-# within the group — other tests still contend for CPU).
+# Wall-clock gates are load-sensitive. Exclusivity comes from `threads-required`
+# on the overrides below, NOT from this group: a group's `max-threads` only
+# bounds concurrency *among its own members* — every test outside it keeps
+# running and keeps contending for CPU. The group is kept as belt-and-braces so
+# two gates can never co-schedule even if an override is edited.
 [test-groups]
 exclusive-perf-gates = { max-threads = "num-cpus" }
 
+# `threads-required = num-test-threads` reserves every slot in the global job
+# pool, so each gate runs with the machine to itself. Without it the two
+# commit-latency gates (a ~200 µs p99 against a 10 % / +2 ms budget) measured
+# 4–18 ms under peer-process load and failed ~2 runs in 3.
 [[profile.ci.overrides]]
-filter = 'test(cc1h_mid_gate_with_fork_choice_clone)'
+filter = 'test(cc1h_mid_gate_with_fork_choice_clone) or test(commit_latency_during_snapshot_within_10_percent) or test(write_behind_p99_during_block_backfill_within_10_percent)'
 test-group = 'exclusive-perf-gates'
+threads-required = 'num-test-threads'
 
 [[profile.default.overrides]]
-filter = 'test(cc1h_mid_gate_with_fork_choice_clone)'
+filter = 'test(cc1h_mid_gate_with_fork_choice_clone) or test(commit_latency_during_snapshot_within_10_percent) or test(write_behind_p99_during_block_backfill_within_10_percent)'
 test-group = 'exclusive-perf-gates'
+threads-required = 'num-test-threads'
