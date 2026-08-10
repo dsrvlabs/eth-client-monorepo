@@ -247,7 +247,6 @@ mod tests {
     use cc_store::engine::{Durability, EngineOptions};
     use cc_store::keys::{encode_cold_column_key, columns_shard_table};
     use prometheus_client::registry::Registry;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn metrics() -> StorageMetrics {
         let mut reg = Registry::default();
@@ -255,10 +254,7 @@ mod tests {
     }
 
     fn tmp_engine() -> Engine {
-        static N: AtomicU64 = AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("cc-storage-prune-shards-{n}"));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_tmpdir::unique_temp_dir("cc-storage-prune-shards");
         std::fs::create_dir_all(&dir).unwrap();
         Engine::open(
             &dir,

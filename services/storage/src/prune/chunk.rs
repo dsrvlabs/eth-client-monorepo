@@ -156,7 +156,6 @@ mod tests {
     use cc_store::engine::{Durability, Engine, EngineOptions};
     use cc_store::meta::TABLE_META;
     use prometheus_client::registry::Registry;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use tokio::sync::watch;
 
@@ -166,10 +165,7 @@ mod tests {
     }
 
     fn tmp_engine() -> Engine {
-        static N: AtomicU64 = AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("cc-storage-prune-chunk-{n}"));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_tmpdir::unique_temp_dir("cc-storage-prune-chunk");
         std::fs::create_dir_all(&dir).unwrap();
         let eng = Engine::open(
             &dir,

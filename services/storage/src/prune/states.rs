@@ -90,13 +90,9 @@ mod tests {
     use super::*;
     use cc_store::engine::{Durability, EngineOptions};
     use cc_store::{plan_snapshot_put, Engine};
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn tmp_engine() -> Engine {
-        static N: AtomicU64 = AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("cc-storage-prune-states-{n}"));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_tmpdir::unique_temp_dir("cc-storage-prune-states");
         std::fs::create_dir_all(&dir).unwrap();
         Engine::open(
             &dir,

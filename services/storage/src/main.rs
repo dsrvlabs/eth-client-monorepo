@@ -16,6 +16,8 @@ mod replay;
 mod restore_client;
 mod resume;
 mod serve;
+#[cfg(test)]
+mod test_tmpdir;
 mod write_behind;
 mod writer;
 

@@ -1197,17 +1197,13 @@ mod tests {
         BlockServeWindowCfg, compute_min_epochs_for_block_requests,
     };
     use prometheus_client::registry::Registry;
-    use std::sync::atomic::AtomicU64;
 
     fn hoodi_floor() -> u64 {
         compute_min_epochs_for_block_requests(&BlockServeWindowCfg::new(256, 65_536)).unwrap()
     }
 
     fn tmp_engine() -> Engine {
-        static N: AtomicU64 = AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("cc-storage-prune-mod-{n}"));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_tmpdir::unique_temp_dir("cc-storage-prune-mod");
         std::fs::create_dir_all(&dir).unwrap();
         let eng = Engine::open(
             &dir,
