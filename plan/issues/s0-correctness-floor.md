@@ -957,6 +957,8 @@ Read from a build-machine fixture path with a silent hardcoded fallback and `unw
 **Acceptance** — the floor comes from config; a missing/unreadable source is a **startup error**, not
 a silent 0. A 0 floor is maximally destructive for retention (cf. P2-E row 21, triaged in `S0-B-17`).
 
+- [x] Floor comes from `network_config`; missing/unreadable/zero is a startup error.
+
 ### `S0-B-12` · P1-B/1 — `observe_lag` on the already-reset accumulator
 **Est** 0.25–0.75 pd / **1 pt** (≈) · **Touch** `services/storage/src/write_behind.rs:599`
 `write_behind_lag_slots` **never records**. (This is also P2-D/20's "a lag metric that never emits".)

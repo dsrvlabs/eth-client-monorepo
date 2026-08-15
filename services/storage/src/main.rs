@@ -31,7 +31,7 @@ use cc_bootstrap::{
 use cc_config::ServiceConfig;
 use cc_proto::storage::storage_service_server::StorageServiceServer;
 use cc_store::engine::{Durability, EngineOptions};
-use cc_store::{BlockServeWindowCfg, SplitLock, compute_min_epochs_for_block_requests};
+use cc_store::{BlockServeWindowCfg, SplitLock, check_min_epochs_for_block_requests};
 use cc_store::{ConfigDigestInput, Store, StoreOpenOptions};
 use cc_types::{ChainConfig, Root};
 use metrics::StorageMetrics;
@@ -126,6 +126,16 @@ struct StorageConfig {
     /// `BeaconState.genesis_time`. Override: `CC_STORAGE_GENESIS_TIME`.
     #[serde(default)]
     genesis_time: Option<u64>,
+    /// Consensus-specs network YAML supplying the CC-4A live scalars
+    /// (`MIN_VALIDATOR_WITHDRAWABILITY_DELAY`, `CHURN_LIMIT_QUOTIENT`, and
+    /// optional vestigial `MIN_EPOCHS_FOR_BLOCK_REQUESTS`).
+    ///
+    /// Required to compute the block retention floor when
+    /// [`Self::retention_override`] is unset. A missing or unreadable path is a
+    /// startup error — a silent 0 floor is maximally destructive for retention
+    /// (P1-A/5). Override: `CC_STORAGE_NETWORK_CONFIG`.
+    #[serde(default)]
+    network_config: Option<PathBuf>,
     // ── CC-44b write-behind / writer ────────────────────────────────────────
     /// One commit per N slots — **the loss bound** (§4.4). Default 1.
     #[serde(default = "default_commit_slots")]
@@ -349,19 +359,12 @@ impl StorageConfig {
     }
 
     /// Build prune config: cadence/margin/alarm from toml; retention from
-    /// CC-4A computed floor (or `retention_override` on the self-devnet).
+    /// the CC-4A floor computed off `network_config` (or `retention_override`
+    /// on the self-devnet).
     fn prune_config(&self, chain: &ChainConfig) -> anyhow::Result<PruneConfig> {
-        // CC-4A: compute from the two live scalars. ChainConfig does not yet
-        // surface withdrawability/churn; load from the same Hoodi fixture used
-        // for the config digest, falling back to mainnet-shaped defaults.
-        let computed_floor = block_serve_floor_from_fixture().unwrap_or_else(|| {
-            compute_min_epochs_for_block_requests(&BlockServeWindowCfg::new(256, 65_536))
-                .unwrap_or(0)
-        });
-
         let (columns_retention, blocks_retention) = match &self.retention_override {
             Some(ro) => (ro.columns_epochs.max(1), ro.blocks_epochs.max(1)),
-            None => (DEFAULT_COLUMNS_RETENTION_EPOCHS, computed_floor),
+            None => (DEFAULT_COLUMNS_RETENTION_EPOCHS, self.block_serve_floor()?),
         };
 
         // genesis_time: explicit config → network fixture (MIN_GENESIS_TIME+GENESIS_DELAY).
@@ -388,14 +391,36 @@ impl StorageConfig {
             slots_per_epoch: 32,
         })
     }
-}
 
-/// Load CC-4A floor from the committed Hoodi fixture (same path as digest).
-fn block_serve_floor_from_fixture() -> Option<u64> {
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/types/tests/fixtures/hoodi-config.yaml");
-    let cfg = BlockServeWindowCfg::from_yaml_file(&fixture).ok()?;
-    compute_min_epochs_for_block_requests(&cfg).ok()
+    /// CC-4A: compute the block retention floor from the configured network YAML.
+    ///
+    /// Missing / unreadable / mismatched / overflowing sources fail closed.
+    /// A 0 result is refused — it would prune the entire history.
+    fn block_serve_floor(&self) -> anyhow::Result<u64> {
+        let path = self.network_config.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "storage.network_config is required to compute the CC-4A block floor \
+                 (a missing source must not become a 0 retention floor)"
+            )
+        })?;
+        let window = BlockServeWindowCfg::from_yaml_file(path).map_err(|e| {
+            anyhow::anyhow!(
+                "storage.network_config {}: {e} \
+                 (unreadable source is a startup error; a 0 floor is maximally destructive)",
+                path.display()
+            )
+        })?;
+        let floor = check_min_epochs_for_block_requests(&window)
+            .map_err(|e| anyhow::anyhow!("CC-4A block floor from {}: {e}", path.display()))?;
+        if floor == 0 {
+            anyhow::bail!(
+                "CC-4A block floor from {} computed to 0 \
+                 (maximally destructive for retention)",
+                path.display()
+            );
+        }
+        Ok(floor)
+    }
 }
 
 /// Open the store under `data_dir` with durability + digest from config.
@@ -627,6 +652,7 @@ async fn main() -> anyhow::Result<()> {
                 let prune_cfg = cfg.prune_config(&chain_for_prune)?;
                 tracing::info!(
                     genesis_time = prune_cfg.genesis_time,
+                    blocks_retention_epochs = prune_cfg.blocks_retention_epochs,
                     "prune config genesis_time (0 → resolve from store snapshot later)"
                 );
                 let pruner = Arc::new(Pruner::new(
@@ -770,6 +796,24 @@ mod config_tests {
     fn storage_toml_path() -> std::path::PathBuf {
         // services/storage → repo root `config/storage.toml` (CWD-independent).
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/storage.toml")
+    }
+
+    fn hoodi_network_config() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/types/tests/fixtures/hoodi-config.yaml")
+    }
+
+    fn load_storage_toml() -> StorageConfig {
+        let path = storage_toml_path();
+        cc_config::load_from::<StorageConfig>("storage", &path)
+            .unwrap_or_else(|e| panic!("load {}: {e}", path.display()))
+    }
+
+    fn load_storage_toml_for_prune() -> StorageConfig {
+        let mut cfg = load_storage_toml();
+        // cargo test CWD is the package root, not the repo root.
+        cfg.network_config = Some(hoodi_network_config());
+        cfg
     }
 
     #[test]
@@ -964,10 +1008,9 @@ mod config_tests {
         let _g = env_lock();
         unsafe {
             std::env::remove_var("CC_STORAGE_GENESIS_TIME");
+            std::env::remove_var("CC_STORAGE_NETWORK_CONFIG");
         }
-        let path = storage_toml_path();
-        let cfg = cc_config::load_from::<StorageConfig>("storage", &path)
-            .unwrap_or_else(|e| panic!("load {}: {e}", path.display()));
+        let cfg = load_storage_toml_for_prune();
         let chain = ChainConfig::mainnet_like_for_digest();
         let prune = cfg.prune_config(&chain).expect("prune_config");
         assert!(
@@ -975,6 +1018,182 @@ mod config_tests {
             "genesis_time must be non-zero so wall_clock_epoch works"
         );
         assert_eq!(prune.genesis_time, 1_742_213_400);
+    }
+
+    /// P1-A/5: committed storage.toml names a network YAML; the floor is
+    /// computed from its two live scalars (Hoodi = 33_024).
+    #[test]
+    fn prune_config_floor_comes_from_network_config() {
+        let _g = env_lock();
+        unsafe {
+            std::env::remove_var("CC_STORAGE_NETWORK_CONFIG");
+        }
+        let path = storage_toml_path();
+        let loaded = load_storage_toml();
+        assert_eq!(
+            loaded.network_config.as_deref(),
+            Some(Path::new("crates/types/tests/fixtures/hoodi-config.yaml")),
+            "storage.toml must configure network_config (not a CARGO_MANIFEST_DIR fixture)"
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("network_config"),
+            "storage.toml must carry the CC-4A network_config key"
+        );
+
+        let cfg = load_storage_toml_for_prune();
+        let chain = ChainConfig::mainnet_like_for_digest();
+        let prune = cfg.prune_config(&chain).expect("prune_config");
+        assert_eq!(
+            prune.blocks_retention_epochs, 33_024,
+            "Hoodi MIN_VALIDATOR_WITHDRAWABILITY_DELAY + CHURN_LIMIT_QUOTIENT / 2"
+        );
+        assert_eq!(
+            prune.columns_retention_epochs,
+            DEFAULT_COLUMNS_RETENTION_EPOCHS
+        );
+    }
+
+    /// P1-A/5: a missing source is a startup error, not a silent 0 floor.
+    #[test]
+    fn prune_config_missing_network_config_is_startup_error() {
+        let _g = env_lock();
+        unsafe {
+            std::env::remove_var("CC_STORAGE_NETWORK_CONFIG");
+        }
+        let mut cfg = load_storage_toml();
+        cfg.network_config = None;
+        cfg.retention_override = None;
+        let chain = ChainConfig::mainnet_like_for_digest();
+        let err = cfg
+            .prune_config(&chain)
+            .expect_err("missing network_config must refuse to start");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("network_config") && msg.contains("must not become a 0"),
+            "error must name the missing source and refuse a 0 floor: {msg}"
+        );
+    }
+
+    /// P1-A/5: an unreadable configured path is a startup error, not unwrap_or(0).
+    #[test]
+    fn prune_config_unreadable_network_config_is_startup_error() {
+        let _g = env_lock();
+        unsafe {
+            std::env::remove_var("CC_STORAGE_NETWORK_CONFIG");
+        }
+        let mut cfg = load_storage_toml();
+        cfg.network_config = Some(PathBuf::from(
+            "/no/such/cc-storage-network-config-p1a5.yaml",
+        ));
+        cfg.retention_override = None;
+        let chain = ChainConfig::mainnet_like_for_digest();
+        let err = cfg
+            .prune_config(&chain)
+            .expect_err("unreadable network_config must refuse to start");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("network_config") && msg.contains("cc-storage-network-config-p1a5"),
+            "error must name the unreadable path: {msg}"
+        );
+    }
+
+    /// P1-A/5 / CC-4A /2: vestigial MIN_EPOCHS_FOR_BLOCK_REQUESTS mismatch refuses.
+    #[test]
+    fn prune_config_vestigial_mismatch_is_startup_error() {
+        let _g = env_lock();
+        unsafe {
+            std::env::remove_var("CC_STORAGE_NETWORK_CONFIG");
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "cc-storage-floor-mismatch-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let yaml = dir.join("bad.yaml");
+        std::fs::write(
+            &yaml,
+            "MIN_VALIDATOR_WITHDRAWABILITY_DELAY: 256\n\
+             CHURN_LIMIT_QUOTIENT: 65536\n\
+             MIN_EPOCHS_FOR_BLOCK_REQUESTS: 33023\n",
+        )
+        .unwrap();
+
+        let mut cfg = load_storage_toml();
+        cfg.network_config = Some(yaml);
+        cfg.retention_override = None;
+        let chain = ChainConfig::mainnet_like_for_digest();
+        let err = cfg
+            .prune_config(&chain)
+            .expect_err("vestigial mismatch must refuse to start");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("33023") && msg.contains("33024"),
+            "error must name both numbers: {msg}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1-A/5: a computed 0 floor is refused (maximally destructive retention).
+    #[test]
+    fn prune_config_zero_floor_is_startup_error() {
+        let _g = env_lock();
+        unsafe {
+            std::env::remove_var("CC_STORAGE_NETWORK_CONFIG");
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "cc-storage-floor-zero-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let yaml = dir.join("zero.yaml");
+        std::fs::write(
+            &yaml,
+            "MIN_VALIDATOR_WITHDRAWABILITY_DELAY: 0\n\
+             CHURN_LIMIT_QUOTIENT: 0\n",
+        )
+        .unwrap();
+
+        let mut cfg = load_storage_toml();
+        cfg.network_config = Some(yaml);
+        cfg.retention_override = None;
+        let chain = ChainConfig::mainnet_like_for_digest();
+        let err = cfg
+            .prune_config(&chain)
+            .expect_err("0 floor must refuse to start");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("0") && msg.contains("destructive"),
+            "error must name the 0-floor hazard: {msg}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CC-4D override still wins and does not require a readable network YAML.
+    #[test]
+    fn prune_config_retention_override_skips_network_config() {
+        let _g = env_lock();
+        unsafe {
+            std::env::remove_var("CC_STORAGE_NETWORK_CONFIG");
+        }
+        let mut cfg = load_storage_toml();
+        cfg.network_config = None;
+        cfg.retention_override = Some(RetentionOverride {
+            columns_epochs: 64,
+            blocks_epochs: 256,
+        });
+        let chain = ChainConfig::mainnet_like_for_digest();
+        let prune = cfg
+            .prune_config(&chain)
+            .expect("retention_override must not require network_config");
+        assert_eq!(prune.columns_retention_epochs, 64);
+        assert_eq!(prune.blocks_retention_epochs, 256);
     }
 
     /// CC-45a / §1.7: production `open_store` wires `expected_node_id` from

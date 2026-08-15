@@ -102,6 +102,11 @@ disk_alarm_bytes = 103079215104
 # When unset, resolved from the network fixture, then from a store snapshot's
 # BeaconState.genesis_time. Override: CC_STORAGE_GENESIS_TIME=...
 genesis_time = 1742213400
+# CC-4A / P1-A/5: network YAML is the sole source of the two live scalars
+# (MIN_VALIDATOR_WITHDRAWABILITY_DELAY + CHURN_LIMIT_QUOTIENT). The floor is
+# computed; a missing or unreadable path is a startup error, never a silent 0.
+# Override: CC_STORAGE_NETWORK_CONFIG=...
+network_config = "crates/types/tests/fixtures/hoodi-config.yaml"
 
 # ── CC-46b chunk / deadline (Architecture §7.3 / §7.4) ───────────────────────
 # Keys per P2 prune chunk. 512 → ~16 chunks for an 8 200-key column pass in the
