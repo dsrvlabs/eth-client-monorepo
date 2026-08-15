@@ -577,6 +577,9 @@ head state's epoch (first block after a long gap; a lagging fork branch).
 prefer the parent state where available. A test with a block 3 epochs past the head state yields no
 Reject and no descore.
 
+- [x] Outside the Fulu window the cheap-path lookup returns `None`; parent state is preferred.
+- [x] A block 3 epochs past the head is not Rejected or descored.
+
 ---
 
 ### `S0-A-27` · P0-15 — hard deadlines on every chain→engine RPC

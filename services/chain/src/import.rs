@@ -575,7 +575,7 @@ fn cheap_gossip_terminal<P: Preset>(
     store: &mut Store<P>,
     residency: &mut Residency<P>,
     config: &ChainConfig,
-    epoch_ctx: Option<&EpochContext>,
+    _epoch_ctx: Option<&EpochContext>,
     signed: &SignedBeaconBlock<P>,
     verify: BlockSignatureStrategy,
     gossip_path: bool,
@@ -646,8 +646,10 @@ fn cheap_gossip_terminal<P: Preset>(
         }));
     }
 
-    // Proposer index against lookahead (EpochContext or parent-state window).
-    if let Some(expected) = expected_proposer_index::<P>(store, epoch_ctx, block.slot.as_u64())
+    // Proposer index against the parent-state Fulu window only.
+    // Head EpochContext is not consulted: it is the head schedule and would
+    // cheap-Reject a valid parent-lineage proposer (H1).
+    if let Some(expected) = expected_proposer_index::<P>(store, block.slot.as_u64(), parent_root)
         && expected != block.proposer_index.as_u64()
     {
         metrics.inc_import_result(ImportResult::Invalid);
@@ -699,29 +701,29 @@ fn cheap_gossip_terminal<P: Preset>(
     Ok(None)
 }
 
-/// Look up expected proposer for `slot` from epoch context or parent-state lookahead.
+/// Look up expected proposer for `slot` from the **parent** post-state lookahead.
+///
+/// Outside the Fulu window, or if the parent state is not resident, this
+/// returns `None` (unknown) so `on_block` is the authority. Never wrap to
+/// `slot % SPE`, and never invent a proposer from head `EpochContext` or
+/// `last_head_root` (those are the other fork's schedule).
 fn expected_proposer_index<P: Preset>(
     store: &Store<P>,
-    epoch_ctx: Option<&EpochContext>,
+    slot: u64,
+    parent_root: Root,
+) -> Option<u64> {
+    let state = store.block_state(&parent_root)?;
+    proposer_from_state_lookahead(state, slot)
+}
+
+/// Index into `state.proposer_lookahead` for `slot`, if in the Fulu window
+/// `[epoch_start, epoch_start + lookahead_len)`.
+fn proposer_from_state_lookahead<P: Preset>(
+    state: &cc_types::BeaconState<P>,
     slot: u64,
 ) -> Option<u64> {
-    if let Some(ctx) = epoch_ctx
-        && !ctx.proposer_lookahead.is_empty()
-    {
-        let ctx_spe = ctx.slots_per_epoch.max(1);
-        let start_slot = ctx.epoch.as_u64().saturating_mul(ctx_spe);
-        if slot >= start_slot {
-            let offset = (slot - start_slot) as usize;
-            if let Some(p) = ctx.proposer_lookahead.get(offset) {
-                return Some(*p);
-            }
-        }
-    }
-
-    // Fallback: head state's Fulu proposer_lookahead window.
-    let head_root = store.last_head_root()?;
-    let state = store.block_state(&head_root)?;
-    if state.proposer_lookahead_len() == 0 {
+    let len = state.proposer_lookahead_len();
+    if len == 0 {
         return None;
     }
     let epoch = compute_epoch_at_slot::<P>(state.slot());
@@ -730,10 +732,8 @@ fn expected_proposer_index<P: Preset>(
         return None;
     }
     let offset = (slot - start_slot) as usize;
-    if offset >= state.proposer_lookahead_len() {
-        // Same-epoch slot-relative index used by get_beacon_proposer_index.
-        let idx = (slot % P::SLOTS_PER_EPOCH.max(1)) as usize;
-        return state.proposer_lookahead_get(idx).map(|v| v.as_u64());
+    if offset >= len {
+        return None;
     }
     state.proposer_lookahead_get(offset).map(|v| v.as_u64())
 }
@@ -1111,7 +1111,7 @@ mod tests {
 
     use super::*;
     use cc_fork_choice::{
-        ExecutionStatus, HarnessAvailability, ProtoNodeBlock, get_forkchoice_store,
+        ExecutionStatus, HarnessAvailability, ProtoNodeBlock, get_forkchoice_store, get_head,
     };
     use cc_types::containers::BeaconBlockHeader;
     use cc_types::preset::Minimal;
@@ -1120,6 +1120,30 @@ mod tests {
     use prometheus_client::registry::Registry;
     use tokio::sync::mpsc;
     use tree_hash::TreeHash;
+
+    /// Private always-Valid engine (same shape as the crate's other import tests).
+    #[derive(Debug, Default, Clone, Copy)]
+    struct AcceptEngine;
+
+    impl<P: Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+        fn verify_and_notify_new_payload(
+            &self,
+            _request: cc_state_transition::NewPayloadRequest<'_, P>,
+        ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+            Ok(cc_state_transition::PayloadStatus::Valid)
+        }
+    }
+
+    fn wrap_marker_state(marker: u64) -> BeaconState<Minimal> {
+        let mut state = BeaconState::<Minimal>::default();
+        state.set_slot(Slot::new(0));
+        for i in 0..state.proposer_lookahead_len() {
+            state
+                .proposer_lookahead_set(i, ValidatorIndex::new(marker))
+                .unwrap();
+        }
+        state
+    }
 
     #[test]
     fn parse_root_rejects_wrong_length() {
@@ -1469,18 +1493,6 @@ mod tests {
         );
     }
 
-    #[derive(Debug, Default, Clone, Copy)]
-    struct AcceptEngine;
-
-    impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
-        fn verify_and_notify_new_payload(
-            &self,
-            _request: cc_state_transition::NewPayloadRequest<'_, P>,
-        ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
-            Ok(cc_state_transition::PayloadStatus::Valid)
-        }
-    }
-
     fn test_root(b: u8) -> Root {
         let mut a = [0u8; 32];
         a[0] = b;
@@ -1640,5 +1652,154 @@ mod tests {
         assert_eq!(drain_finalized(&mut rx), 1);
         assert!(store.proto_array().contains(&d));
         assert!(!store.proto_array().contains(&b));
+    }
+
+    /// S0-A-26 / P0-11: a slot past the Fulu window is unknown, not `slot % SPE`.
+    #[test]
+    fn proposer_from_state_lookahead_none_three_epochs_past() {
+        let state = wrap_marker_state(99);
+        assert_eq!(
+            proposer_from_state_lookahead::<Minimal>(&state, 0),
+            Some(99)
+        );
+        let last_in_window = (state.proposer_lookahead_len() as u64).saturating_sub(1);
+        assert_eq!(
+            proposer_from_state_lookahead::<Minimal>(&state, last_in_window),
+            Some(99)
+        );
+        let gap_slot = 3 * Minimal::SLOTS_PER_EPOCH;
+        assert!(
+            (gap_slot as usize) >= state.proposer_lookahead_len(),
+            "fixture must sit outside the Fulu window"
+        );
+        assert_eq!(
+            proposer_from_state_lookahead::<Minimal>(&state, gap_slot),
+            None,
+            "must not wrap to the current-epoch row"
+        );
+    }
+
+    /// S0-A-26: lookup reads the parent state's window, not the head's.
+    #[test]
+    fn expected_proposer_index_prefers_parent_state() {
+        let head_state = wrap_marker_state(1);
+        let anchor = BeaconBlock {
+            slot: Slot::new(0),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: Root::ZERO,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        let mut store = get_forkchoice_store(
+            head_state,
+            &anchor,
+            Arc::new(AcceptEngine),
+            Arc::new(HarnessAvailability),
+            6,
+        )
+        .unwrap();
+        let head_root = Root::from_hash256(TreeHash::tree_hash_root(&anchor));
+        let _ = get_head(&mut store).unwrap();
+
+        let parent_root = Root::from_array([0xAB; 32]);
+        let parent_state = wrap_marker_state(2);
+        store.insert_block(
+            parent_root,
+            BeaconBlockHeader {
+                slot: Slot::new(0),
+                proposer_index: ValidatorIndex::new(0),
+                parent_root: Root::ZERO,
+                state_root: Root::ZERO,
+                body_root: Root::ZERO,
+            },
+            parent_state,
+        );
+
+        assert_eq!(
+            expected_proposer_index::<Minimal>(&store, 0, parent_root),
+            Some(2),
+            "parent lookahead must win over the head state's row"
+        );
+        assert_eq!(
+            expected_proposer_index::<Minimal>(&store, 0, head_root),
+            Some(1)
+        );
+        assert_eq!(
+            expected_proposer_index::<Minimal>(&store, 3 * Minimal::SLOTS_PER_EPOCH, parent_root),
+            None
+        );
+    }
+
+    /// H1: an in-window head EpochContext must not override a parent miss.
+    #[test]
+    fn expected_proposer_index_ignores_head_epoch_context() {
+        let head_state = wrap_marker_state(1);
+        let anchor = BeaconBlock {
+            slot: Slot::new(0),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: Root::ZERO,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        let mut store = get_forkchoice_store(
+            head_state,
+            &anchor,
+            Arc::new(AcceptEngine),
+            Arc::new(HarnessAvailability),
+            6,
+        )
+        .unwrap();
+        let parent_root = Root::from_array([0xAB; 32]);
+        store.insert_block(
+            parent_root,
+            BeaconBlockHeader {
+                slot: Slot::new(0),
+                proposer_index: ValidatorIndex::new(0),
+                parent_root: Root::ZERO,
+                state_root: Root::ZERO,
+                body_root: Root::ZERO,
+            },
+            wrap_marker_state(2),
+        );
+
+        // Slot 24 is outside the slot-0 parent window (len=16) but inside an
+        // epoch-3 head context. Parent miss must stay None — not Some(head).
+        let gap_slot = 3 * Minimal::SLOTS_PER_EPOCH;
+        assert_eq!(
+            expected_proposer_index::<Minimal>(&store, gap_slot, parent_root),
+            None
+        );
+        assert_eq!(
+            expected_proposer_index::<Minimal>(&store, 0, parent_root),
+            Some(2)
+        );
+    }
+
+    /// L1: missing parent state is unknown — do not invent from last_head_root.
+    #[test]
+    fn expected_proposer_index_none_when_parent_state_missing() {
+        let head_state = wrap_marker_state(1);
+        let anchor = BeaconBlock {
+            slot: Slot::new(0),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: Root::ZERO,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        let mut store = get_forkchoice_store(
+            head_state,
+            &anchor,
+            Arc::new(AcceptEngine),
+            Arc::new(HarnessAvailability),
+            6,
+        )
+        .unwrap();
+        let _ = get_head(&mut store).unwrap();
+        let missing = Root::from_array([0xCD; 32]);
+        assert_eq!(
+            expected_proposer_index::<Minimal>(&store, 0, missing),
+            None,
+            "must not fall back to the head state's in-window row"
+        );
     }
 }

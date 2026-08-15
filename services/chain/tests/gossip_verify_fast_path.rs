@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use cc_chain::core::{CoreConfig, spawn_core_thread_with_epoch};
-use cc_chain::epoch_context::EpochContextStore;
+use cc_chain::epoch_context::{EpochContext, EpochContextStore};
 use cc_chain::events::{EventsConfig, EventsHandle};
 use cc_chain::head::HeadSnapshotStore;
 use cc_chain::import::{
@@ -20,25 +20,33 @@ use cc_chain::import::{
 use cc_chain::metrics::ChainMetrics;
 use cc_chain::residency::Residency;
 use cc_chain::service::ChainServiceImpl;
-use cc_crypto::{DOMAIN_BEACON_PROPOSER, SecretKey, compute_signing_root, get_domain};
+use cc_crypto::{
+    DOMAIN_BEACON_PROPOSER, INFINITY_SIGNATURE, SecretKey, compute_signing_root, get_domain,
+};
 use cc_fork_choice::{
-    DataAvailability, HarnessAvailability, OnBlockError, get_forkchoice_store, on_tick,
+    DataAvailability, HarnessAvailability, OnBlockError, get_forkchoice_store, get_head, on_tick,
 };
 use cc_proto::p2p::{
     Acceptance, GossipObject, ImportResult, ObjectKind, P2pToChain, Reason, StreamHello,
     chain_to_p2p, p2p_to_chain,
 };
 use cc_state_transition::helpers::constants::{FAR_FUTURE_EPOCH, MAX_EFFECTIVE_BALANCE};
-use cc_state_transition::{BlockError, EngineError, GossipClass, SignatureKind};
+use cc_state_transition::{
+    BlockError, EngineError, GossipClass, SignatureKind, TransitionContext, compute_time_at_slot,
+    get_beacon_proposer_index, get_current_epoch, get_expected_withdrawals, get_randao_mix,
+    process_block, process_slots,
+};
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
-use cc_types::containers::{BeaconBlockHeader, Validator};
+use cc_types::containers::{BeaconBlockHeader, SyncAggregate, Validator};
+use cc_types::execution::ExecutionPayload;
 use cc_types::preset::{Minimal, Preset};
 use cc_types::primitives::{
     BlsPublicKey, BlsSignature, Epoch, ExecutionAddress, ForkVersion, Root, Slot, ValidatorIndex,
 };
-use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
+use cc_types::{BeaconBlock, BeaconBlockBody, BeaconState, SignedBeaconBlock};
 use futures::StreamExt;
 use prometheus_client::registry::Registry;
+use ssz_types::VariableList;
 use tokio::sync::oneshot;
 use tree_hash::TreeHash;
 
@@ -342,6 +350,7 @@ fn unary_path_verifies_proposer_signature_under_default_config() {
         None,
         None,
         None,
+        None,
     )
     .expect("outcome");
 
@@ -399,6 +408,7 @@ fn unary_default_config_verifies_body_signatures_in_state_transition() {
         &mut snap_seq,
         request,
         CoreConfig::default().verify,
+        None,
         None,
         None,
         None,
@@ -813,5 +823,239 @@ fn no_spawn_in_import_rs() {
     assert!(
         !src.contains("spawn_blocking") && !src.contains("tokio::spawn"),
         "import.rs must not move work off the core thread"
+    );
+}
+
+// ── S0-A-26 / P0-11: gap past Fulu lookahead is unknown, not a cheap Reject ─
+
+/// Distinctive current-epoch row used so `slot % SPE` would never match a real proposer.
+const LOOKAHEAD_WRAP_MARKER: u64 = 99;
+
+fn seeded_store_for_gap() -> (
+    cc_fork_choice::Store<Minimal>,
+    Root,
+    ChainConfig,
+    Vec<SecretKey>,
+) {
+    let config = minimal_config();
+    let mut keys = Vec::with_capacity(8);
+    let mut state = BeaconState::<Minimal>::default();
+    state.set_genesis_time(0);
+    state.set_slot(Slot::new(0));
+    state.set_genesis_validators_root(Root::from_array([0x11; 32]));
+    state.set_deposit_requests_start_index(u64::MAX);
+    let mut fork = state.fork();
+    fork.current_version = config.fulu_fork_version;
+    fork.previous_version = config.fulu_fork_version;
+    fork.epoch = Epoch::new(0);
+    state.set_fork(fork);
+
+    for i in 0..8u64 {
+        let ski = if i == 0 {
+            proposer_sk()
+        } else {
+            SecretKey::from_seed_index(&[9u8; 32], i).unwrap()
+        };
+        let pki = BlsPublicKey::from_array(ski.public_key().serialize());
+        state
+            .validators_push(active_validator_with_pk(&pki))
+            .unwrap();
+        state.balances_push(MAX_EFFECTIVE_BALANCE).unwrap();
+        state.previous_epoch_participation_push(0).unwrap();
+        state.current_epoch_participation_push(0).unwrap();
+        state.inactivity_scores_push(0).unwrap();
+        state
+            .caches_mut()
+            .pubkeys
+            .insert(pki, ValidatorIndex::new(i));
+        keys.push(ski);
+    }
+    // Default sync committee is all-zero pubkeys; map them so process_sync_aggregate
+    // can resolve committee indices without CachePoisoned.
+    state
+        .caches_mut()
+        .pubkeys
+        .insert(BlsPublicKey::default(), ValidatorIndex::new(0));
+
+    for i in 0..state.proposer_lookahead_len() {
+        state
+            .proposer_lookahead_set(i, ValidatorIndex::new(LOOKAHEAD_WRAP_MARKER))
+            .unwrap();
+    }
+
+    // Genesis header carries a zero state_root so `process_slot` can fill it
+    // with `hash(state)` — the same value we stamp on the anchor block, so
+    // `hash(filled header) == hash(anchor)` and the child's parent_root hits
+    // the store key.
+    let mut anchor_block = BeaconBlock {
+        slot: Slot::new(0),
+        proposer_index: ValidatorIndex::new(0),
+        parent_root: Root::ZERO,
+        state_root: Root::ZERO,
+        body: Default::default(),
+    };
+    let body_root = Root::from_hash256(TreeHash::tree_hash_root(&anchor_block.body));
+    state.set_latest_block_header(BeaconBlockHeader {
+        slot: anchor_block.slot,
+        proposer_index: anchor_block.proposer_index,
+        parent_root: anchor_block.parent_root,
+        state_root: Root::ZERO,
+        body_root,
+    });
+    anchor_block.state_root = state.canonical_root();
+
+    let mut store = get_forkchoice_store(
+        state,
+        &anchor_block,
+        Arc::new(AcceptEngine),
+        Arc::new(HarnessAvailability),
+        config.seconds_per_slot,
+    )
+    .unwrap();
+    let gap_slot = 3 * Minimal::SLOTS_PER_EPOCH;
+    on_tick(&mut store, config.seconds_per_slot * gap_slot).unwrap();
+    let _ = get_head(&mut store).unwrap();
+    let anchor_root = Root::from_hash256(TreeHash::tree_hash_root(&anchor_block));
+    (store, anchor_root, config, keys)
+}
+
+fn valid_signed_gap_block(
+    store: &cc_fork_choice::Store<Minimal>,
+    parent: Root,
+    keys: &[SecretKey],
+    config: &ChainConfig,
+    slot: u64,
+) -> SignedBeaconBlock<Minimal> {
+    let parent_state = store.block_state(&parent).expect("parent state").clone();
+    let mut st = parent_state.clone();
+    let target = Slot::new(slot);
+    let pre_root = process_slots(&mut st, target).expect("process_slots across gap");
+    let proposer = get_beacon_proposer_index(&st).expect("proposer after process_slots");
+    assert_ne!(
+        proposer.as_u64(),
+        LOOKAHEAD_WRAP_MARKER,
+        "real proposer must differ from the wrap-around marker so the old fallback would Reject"
+    );
+    let (withdrawals, _) = get_expected_withdrawals(&st).expect("withdrawals");
+    let epoch = get_current_epoch(&st);
+    let prev_randao = get_randao_mix(&st, epoch).expect("randao");
+    let timestamp = compute_time_at_slot(st.genesis_time(), target, config.seconds_per_slot);
+    let parent_hash = st.latest_execution_payload_header().block_hash;
+    let payload = ExecutionPayload::<Minimal> {
+        parent_hash,
+        prev_randao,
+        timestamp,
+        block_number: st.latest_execution_payload_header().block_number + 1,
+        gas_limit: st.latest_execution_payload_header().gas_limit,
+        withdrawals: VariableList::new(withdrawals).expect("withdrawals list"),
+        ..Default::default()
+    };
+    let body = BeaconBlockBody::<Minimal> {
+        execution_payload: payload,
+        eth1_data: st.eth1_data(),
+        sync_aggregate: SyncAggregate {
+            sync_committee_bits: Default::default(),
+            sync_committee_signature: BlsSignature::from_array(INFINITY_SIGNATURE),
+        },
+        ..Default::default()
+    };
+    let mut message = BeaconBlock {
+        slot: target,
+        proposer_index: proposer,
+        parent_root: parent,
+        state_root: Root::ZERO,
+        body,
+    };
+    let engine = AcceptEngine;
+    let ctx = TransitionContext::new(config, &engine);
+    process_block(&mut st, &message, &ctx, pre_root).expect("process_block for post-state root");
+    message.state_root = st.canonical_root();
+    let sk = keys
+        .get(proposer.as_u64() as usize)
+        .expect("proposer key in fixture");
+    sign_block(&parent_state, sk, message)
+}
+
+/// A valid block 3 epochs past the head state must not cheap-Reject (and must
+/// not descore) — outside the Fulu window the proposer is unknown and `on_block`
+/// is the authority.
+#[test]
+fn block_three_epochs_past_head_is_not_proposer_reject() {
+    let (mut store, anchor, config, keys) = seeded_store_for_gap();
+    let gap_slot = 3 * Minimal::SLOTS_PER_EPOCH;
+    let block = valid_signed_gap_block(&store, anchor, &keys, &config, gap_slot);
+    assert_ne!(block.message.proposer_index.as_u64(), LOOKAHEAD_WRAP_MARKER);
+    let true_root = Root::from_hash256(TreeHash::tree_hash_root(&block.message));
+    let request = cc_proto::chain::ImportBlockRequest {
+        ssz: encode_signed_block(&block),
+        fork: 0,
+        root: true_root.as_slice().to_vec(),
+        source: 0,
+    };
+
+    let mut registry = Registry::default();
+    let metrics = ChainMetrics::register(&mut registry);
+    let head = HeadSnapshotStore::new();
+    let (event_tx, _) = tokio::sync::mpsc::channel(8);
+    let counters = ImportCounters::default();
+    let mut residency = Residency::<Minimal>::new(64, 32);
+    let mut snap_seq = 0u64;
+    let (early_tx, early_rx) = oneshot::channel();
+
+    // Stale epoch-0 context with the wrap marker — same shape as a head that
+    // has not advanced. Slot 24 is outside this 16-entry window.
+    let epoch_ctx = EpochContext {
+        epoch: Epoch::new(0),
+        proposer_lookahead: vec![LOOKAHEAD_WRAP_MARKER; Minimal::PROPOSER_LOOKAHEAD_LEN as usize],
+        slots_per_epoch: Minimal::SLOTS_PER_EPOCH,
+        seconds_per_slot: config.seconds_per_slot,
+        ..EpochContext::default()
+    };
+
+    let outcome = import_block_with_early(
+        &mut store,
+        &mut residency,
+        &config,
+        &head,
+        &event_tx,
+        &metrics,
+        &counters,
+        &mut snap_seq,
+        request,
+        cc_state_transition::BlockSignatureStrategy::NoVerification,
+        Some(&epoch_ctx),
+        Some(early_tx),
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("outcome");
+
+    assert!(
+        !outcome.response.reason.contains("proposer mismatch"),
+        "cheap path must not wrap the current-epoch row; reason={}",
+        outcome.response.reason
+    );
+    assert!(
+        outcome.early_accept,
+        "outside the window the cheap path must ACCEPT-and-continue; reason={}",
+        outcome.response.reason
+    );
+    early_rx.blocking_recv().expect("early ACCEPT");
+    assert!(
+        outcome.transition_invoked,
+        "on_block must validate the gap block"
+    );
+    assert!(
+        !outcome.late_import_reject,
+        "valid gap block must not descore; verdict={} reason={}",
+        outcome.response.verdict, outcome.response.reason
+    );
+    assert_eq!(
+        outcome.response.verdict,
+        cc_proto::chain::ImportBlockVerdict::Imported as i32,
+        "on_block must accept the valid gap block; reason={}",
+        outcome.response.reason
     );
 }
