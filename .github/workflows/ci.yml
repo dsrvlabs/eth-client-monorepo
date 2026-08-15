@@ -191,6 +191,23 @@ jobs:
           # CC-03/3: local history for push-path ref=HEAD~1 breaking baseline.
           fetch-depth: 2
 
+      # S0a-B-05: branch comes from the push target / PR base, not a hardcoded
+      # `develop`. Fixtures under .github/fixtures/proto-breaking/ dry-run this.
+      - name: Check proto breaking baseline fixtures
+        run: bash scripts/proto-breaking-against.sh --self-test
+
+      - name: Resolve proto breaking baseline
+        id: against
+        run: |
+          set -euo pipefail
+          url="$(bash scripts/proto-breaking-against.sh)"
+          echo "breaking_against=${url}"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${url}" != *"#branch=${GITHUB_REF_NAME},"* ]]; then
+            echo "error: push baseline must use branch=${GITHUB_REF_NAME}: ${url}" >&2
+            exit 1
+          fi
+          echo "url=${url}" >> "${GITHUB_OUTPUT}"
+
       - uses: bufbuild/buf-action@v1
         with:
           input: proto
@@ -203,9 +220,9 @@ jobs:
           push: false
           # Workflow permissions are contents: read only.
           pr_comment: false
-          # Push: parent of this push on the integration branch (develop).
-          # PR: tip of the PR base branch (usually develop), same subdir.
-          breaking_against: ${{ github.event_name == 'push' && format('https://github.com/dsrvlabs/eth-client-monorepo.git#branch=develop,ref={0},subdir=proto', github.event.before) || format('https://github.com/dsrvlabs/eth-client-monorepo.git#branch={0},subdir=proto', github.base_ref) }}
+          # Push: parent of this push on the push-target branch (main or develop).
+          # PR: tip of the PR base branch, same subdir.
+          breaking_against: ${{ steps.against.outputs.url }}
 
       # CC-02/4 — consensus containers must not reappear as proto messages.
       - name: check no consensus re-modelling

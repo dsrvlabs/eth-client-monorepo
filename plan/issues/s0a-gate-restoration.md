@@ -130,7 +130,7 @@ a `make ci` that drifts from `ci.yml` is exactly the class of gate this phase ex
 
 **Touch points** — `.github/workflows/ci.yml:208`
 
-**Acceptance** — the baseline branch is derived from the push target, so a push to `main` is compared
+**Acceptance** — [x] the baseline branch is derived from the push target, so a push to `main` is compared
 against `main`; asserted by a workflow-level fixture or a dry-run, not by reading the YAML.
 
 ---

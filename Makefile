@@ -178,8 +178,12 @@ proto-fmt-check: ## Check proto formatting
 proto-breaking: ## FILE-category breaking vs origin/develop (needs fetch)
 	buf breaking $(PROTO) --against '.git#branch=origin/develop,subdir=proto'
 
+.PHONY: proto-breaking-against
+proto-breaking-against: ## Dry-run proto breaking_against from workflow event fixtures
+	bash $(SCRIPTS)/proto-breaking-against.sh --self-test
+
 .PHONY: proto
-proto: proto-lint proto-fmt-check check-remodelling ## Local proto suite (lint + format + remodelling)
+proto: proto-lint proto-fmt-check proto-breaking-against check-remodelling ## Local proto suite (lint + format + baseline + remodelling)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Supply chain (required CI: deps job)

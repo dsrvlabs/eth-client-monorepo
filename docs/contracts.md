@@ -28,8 +28,10 @@ On every PR and every push to `main` / `develop`, the `proto` job runs:
 
 | Event | Baseline |
 |---|---|
-| **push** | `https://github.com/dsrvlabs/eth-client-monorepo.git#branch=develop,ref=<github.event.before>,subdir=proto` — parent of the push on the integration branch |
+| **push** | `https://github.com/dsrvlabs/eth-client-monorepo.git#branch=<push target>,ref=<github.event.before>,subdir=proto` — parent of the push on the branch that received it (`main` or `develop`) |
 | **pull_request** | `https://github.com/dsrvlabs/eth-client-monorepo.git#branch=<github.base_ref>,subdir=proto` — tip of the PR base (usually `develop`) |
+
+The URL is resolved by `scripts/proto-breaking-against.sh` from the GitHub event (not a hardcoded `develop`). Workflow event fixtures under `.github/fixtures/proto-breaking/` dry-run a push to `main` against `main`.
 
 Checkout uses `fetch-depth: 2` so a local `HEAD~1` baseline remains available if needed.
 Push and PR baselines both pin **`subdir=proto`** so the comparison root matches the buf workspace.
