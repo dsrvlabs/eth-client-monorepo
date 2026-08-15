@@ -454,6 +454,12 @@ promoting it gains nothing and risks starving imports (`[q1]` §2.3). `query_p0`
 #### `S0-A-16` — `query_p1` + `attestation` lanes · 1–2 pd / 3 pts
 `attestation` is **LIFO**, sized from active validators, evict-oldest.
 
+- [x] `query_p1` FIFO-64 serving-read lane; `attestation` LIFO evict-oldest.
+- [x] Dropping the attestation receiver fails in-flight waiters.
+
+- [x] query_p1 lane (FIFO 64) serves CommitteeShuffling / ValidatorPubkeys / ValidatorRecords / CanonicalRoots.
+- [x] attestation lane is LIFO, sized from active validators, evict-oldest.
+
 #### `S0-A-17` — **cutover** · 1.5–2.5 pd / 3 pts
 Delete the single 64-deep command channel and route every producer through the manager.
 

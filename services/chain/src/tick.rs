@@ -24,7 +24,7 @@ pub const DEFAULT_MAXIMUM_GOSSIP_CLOCK_DISPARITY: Duration = Duration::from_mill
 pub enum TickWork {
     /// Per-slot fcU floor + pending_* expiry + wall-clock `on_tick`.
     SlotTick,
-    /// Process exit. Never-shed so SIGTERM is not stuck behind import/`query_p0`.
+    /// Process exit. Never-shed so SIGTERM is not stuck behind import / query / attestation.
     Shutdown { done: oneshot::Sender<()> },
 }
 

@@ -1,7 +1,8 @@
 //! Loop B lane registry and work-type labels ([ARCH] §3.2).
 //!
-//! [`LOOP_B_LANES`] is the first-match-wins selection chain. Later issues map
-//! `CoreCommand` variants onto [`ChainWork`]; this issue does not wire them.
+//! [`LOOP_B_LANES`] is the first-match-wins selection chain. Core producers
+//! for tick / import / query_p0 / attestation / query_p1 are wired in
+//! `cc-chain`; mixed leftovers stay until S0-A-17.
 
 use crate::config::{
     Depth, IMPORT_LANE_DEPTH, LaneKey, LaneSpec, QUERY_P0_LANE_DEPTH, QUERY_P1_LANE_DEPTH,

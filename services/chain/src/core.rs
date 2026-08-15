@@ -2,29 +2,33 @@
 //!
 //! Communication: dedicated Loop B lanes plus the leftover mixed
 //! `tokio::sync::mpsc` (capacity 64). The core thread first-match-wins across
-//! tick → import → query_p0 → mixed, then parks until a producer notifies.
-//! `oneshot` replies. `ImportBlock` uses `send_timeout(2 s)` →
-//! `RESOURCE_EXHAUSTED` on backpressure (policy A).
+//! tick → import → query_p0 → attestation → query_p1 → mixed, then parks
+//! until a producer notifies. `oneshot` replies. `ImportBlock` uses
+//! `send_timeout(2 s)` → `RESOURCE_EXHAUSTED` on backpressure (policy A).
 //!
 //! Wired lanes ([ARCH] §3.2):
 //! - `tick` — never-shed `SlotTick` + `Shutdown` ([S0-A-14] / S0-A-15)
 //! - `import` — `ImportBlock` / `ImportBlockGossip` / `DataAvailable` (FIFO 64)
 //! - `query_p0` — `Query{Head, IsOptimistic}` + head probes (FIFO 64)
+//! - `attestation` — `ApplyAttestations` (LIFO, sized from active validators,
+//!   evict-oldest)
+//! - `query_p1` — `Query{CommitteeShuffling, ValidatorPubkeys,
+//!   ValidatorRecords, CanonicalRoots}` (FIFO 64)
 //!
-//! The mixed channel stays for commands not yet moved (S0-A-16 / deleted at
-//! S0-A-17). First-match-wins: tick → import → query_p0 → mixed.
+//! The mixed channel stays for leftovers (test `BlockFor`, droppable
+//! `SlotTick` wakeup) until S0-A-17. First-match-wins:
+//! tick → import → query_p0 → attestation → query_p1 → mixed.
 //!
 //! ```text
 //! loop { recv(); handle(); /* snapshot + events inside import */ }
 //! ```
 //!
 //! CC-1F state-requiring reads (`GetCommitteeShuffling`, `GetValidatorPubkeys`)
-//! and CC-27a `GetValidatorRecords` stay on the mixed
-//! [`CoreCommand::Query`] path until S0-A-16 — no second copy of the head
-//! state is held on the gRPC side. Epoch-scoped data for `ChainView` is
+//! and CC-27a `GetValidatorRecords` ride `query_p1` — no second copy of the
+//! head state is held on the gRPC side. Epoch-scoped data for `ChainView` is
 //! published via [`EpochContextStore`] (second `ArcSwap`, Architecture §16/4).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -35,8 +39,8 @@ use cc_proto::chain::{
 };
 use cc_proto::common::Source;
 use cc_scheduler::{
-    ChainLane, Enqueue, IMPORT_LANE_DEPTH, Manager, QUERY_P0_LANE_DEPTH, QueueSizes,
-    TICK_LANE_DEPTH,
+    ChainLane, Enqueue, IMPORT_LANE_DEPTH, LifoQueue, Manager, QUERY_P0_LANE_DEPTH,
+    QUERY_P1_LANE_DEPTH, QueueSizes, TICK_LANE_DEPTH, sized_from_validators,
 };
 use cc_state_transition::helpers::accessors::get_active_validator_indices;
 use cc_state_transition::helpers::misc::compute_start_slot_at_epoch;
@@ -103,9 +107,8 @@ pub enum CoreCommand {
         request: ApplyAttestationsRequest,
         reply: oneshot::Sender<Result<ApplyAttestationsResponse, Status>>,
     },
-    /// State-requiring read. `query_p0` variants
-    /// ([`QueryRequest::is_query_p0`]) ride their own lane; the rest stay on
-    /// this mixed channel until S0-A-16.
+    /// State-requiring read. `query_p0` / `query_p1` variants ride their own
+    /// lanes; leftover mixed Query is only for tests until S0-A-17.
     ///
     /// Used by CC-1F (`GetCommitteeShuffling`, `GetValidatorPubkeys`) and head probes.
     Query {
@@ -169,8 +172,8 @@ impl From<ImportWork> for CoreCommand {
 
 /// Work that rides the `query_p0` lane (Lighthouse `ApiRequestP0`).
 ///
-/// FIFO depth [`QUERY_P0_LANE_DEPTH`]. Head probes must not wait behind a
-/// mixed-channel attestation flood or a `query_p1` read.
+/// FIFO depth [`QUERY_P0_LANE_DEPTH`]. Head probes must not wait behind an
+/// attestation flood or a `query_p1` read.
 #[derive(Debug)]
 pub enum QueryP0Work {
     Query {
@@ -187,11 +190,56 @@ impl From<QueryP0Work> for CoreCommand {
     }
 }
 
+/// Work that rides the `query_p1` lane (Lighthouse `ApiRequestP1`).
+///
+/// FIFO depth [`QUERY_P1_LANE_DEPTH`]. Serving reads must not be evicted;
+/// drop new under load rather than flush a request. Lower priority than
+/// `attestation`.
+#[derive(Debug)]
+pub enum QueryP1Work {
+    Query {
+        request: QueryRequest,
+        reply: oneshot::Sender<Result<QueryReply, Status>>,
+    },
+}
+
+impl From<QueryP1Work> for CoreCommand {
+    fn from(work: QueryP1Work) -> Self {
+        match work {
+            QueryP1Work::Query { request, reply } => Self::Query { request, reply },
+        }
+    }
+}
+
+/// Work that rides the `attestation` lane ([ARCH] §3.2 / S0-A-16).
+///
+/// LIFO, depth [`sized_from_validators`]. A later batch is strictly better
+/// information; overflow evicts the oldest.
+#[derive(Debug)]
+pub enum AttestationWork {
+    ApplyAttestations {
+        request: ApplyAttestationsRequest,
+        reply: oneshot::Sender<Result<ApplyAttestationsResponse, Status>>,
+    },
+}
+
+impl From<AttestationWork> for CoreCommand {
+    fn from(work: AttestationWork) -> Self {
+        match work {
+            AttestationWork::ApplyAttestations { request, reply } => {
+                Self::ApplyAttestations { request, reply }
+            }
+        }
+    }
+}
+
 /// First-match-wins inbound from the wired lanes plus the leftover mixed channel.
 enum Incoming {
     Tick(TickWork),
     Import(ImportWork),
     QueryP0(QueryP0Work),
+    Attestation(AttestationWork),
+    QueryP1(QueryP1Work),
     Mixed(CoreCommand),
 }
 
@@ -271,6 +319,181 @@ impl<T> Drop for WakingSender<T> {
     }
 }
 
+/// Outcome of [`AttestationSender::try_push`].
+#[derive(Debug)]
+#[must_use]
+pub enum AttestationEnqueue {
+    Accepted,
+    /// Lane was full; the oldest item was evicted so this one could be kept.
+    EvictedOldest(AttestationWork),
+    /// Consumer is gone (core thread exited); the item was not taken.
+    Closed(AttestationWork),
+}
+
+/// LIFO attestation lane ([ARCH] §3.2 / S0-A-16).
+///
+/// tokio `mpsc` is FIFO and cannot evict-oldest, so this is a mutex-protected
+/// [`LifoQueue`] plus the same park/unpark wake as the FIFO lanes.
+#[derive(Debug)]
+struct AttestationLaneInner {
+    queue: Mutex<LifoQueue<AttestationWork>>,
+    senders: AtomicUsize,
+    closed: AtomicBool,
+    wake: Arc<LaneWake>,
+}
+
+impl AttestationLaneInner {
+    fn lock_queue(&self) -> std::sync::MutexGuard<'_, LifoQueue<AttestationWork>> {
+        self.queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Producer handle for the attestation LIFO.
+///
+/// Last-sender drop marks the lane closed so the core can exit (mpsc
+/// last-sender). Consumer drop is what fails in-flight waiters.
+#[derive(Debug)]
+pub struct AttestationSender {
+    inner: Arc<AttestationLaneInner>,
+}
+
+impl AttestationSender {
+    /// Push newest-first. Full: evict oldest and return it.
+    ///
+    /// Closed is checked under the queue lock so a concurrent receiver-drop
+    /// cannot accept work into a dead lane.
+    pub fn try_push(&self, work: AttestationWork) -> AttestationEnqueue {
+        let evicted = {
+            let mut q = self.inner.lock_queue();
+            if self.inner.closed.load(Ordering::SeqCst) {
+                return AttestationEnqueue::Closed(work);
+            }
+            q.push(work)
+        };
+        self.inner.wake.notify();
+        match evicted {
+            None => AttestationEnqueue::Accepted,
+            Some(oldest) => AttestationEnqueue::EvictedOldest(oldest),
+        }
+    }
+
+    #[must_use]
+    pub fn max_capacity(&self) -> usize {
+        self.inner.lock_queue().max_length()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.lock_queue().len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.lock_queue().is_empty()
+    }
+}
+
+impl Clone for AttestationSender {
+    fn clone(&self) -> Self {
+        self.inner.senders.fetch_add(1, Ordering::SeqCst);
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl Drop for AttestationSender {
+    fn drop(&mut self) {
+        if self.inner.senders.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.inner.closed.store(true, Ordering::SeqCst);
+        }
+        self.inner.wake.notify();
+    }
+}
+
+/// Core-thread half of the attestation LIFO.
+#[derive(Debug)]
+struct AttestationReceiver {
+    inner: Arc<AttestationLaneInner>,
+}
+
+impl AttestationReceiver {
+    fn try_pop(&self) -> Option<AttestationWork> {
+        self.inner.lock_queue().pop()
+    }
+
+    fn is_closed(&self) -> bool {
+        self.inner.closed.load(Ordering::SeqCst)
+    }
+
+    fn set_max_length(&self, depth: usize) {
+        self.inner.lock_queue().set_max_length(depth);
+    }
+
+    /// Mark the consumer gone, drain queued work, fail each oneshot.
+    ///
+    /// Same contract as dropping a tokio `mpsc` receiver: in-flight
+    /// `apply_attestations` waiters must not sit until drain timeout.
+    fn close_and_reject(&self) {
+        let pending = {
+            let mut q = self.inner.lock_queue();
+            self.inner.closed.store(true, Ordering::SeqCst);
+            let mut pending = Vec::with_capacity(q.len());
+            while let Some(work) = q.pop() {
+                pending.push(work);
+            }
+            pending
+        };
+        for work in pending {
+            reject_attestation_work(work, Status::unavailable("chain core thread is shut down"));
+        }
+        self.inner.wake.notify();
+    }
+}
+
+impl Drop for AttestationReceiver {
+    fn drop(&mut self) {
+        self.close_and_reject();
+    }
+}
+
+fn new_attestation_lane(
+    depth: usize,
+    wake: Arc<LaneWake>,
+) -> (AttestationSender, AttestationReceiver) {
+    let inner = Arc::new(AttestationLaneInner {
+        queue: Mutex::new(LifoQueue::new(depth)),
+        senders: AtomicUsize::new(1),
+        closed: AtomicBool::new(false),
+        wake,
+    });
+    (
+        AttestationSender {
+            inner: Arc::clone(&inner),
+        },
+        AttestationReceiver { inner },
+    )
+}
+
+fn reject_attestation_work(work: AttestationWork, status: Status) {
+    match work {
+        AttestationWork::ApplyAttestations { reply, .. } => {
+            let _ = reply.send(Err(status));
+        }
+    }
+}
+
+fn attestation_depth_from_epoch(epoch: &EpochContextStore) -> usize {
+    let snap = epoch.load();
+    sized_from_validators(snap.active_validator_count, snap.slots_per_epoch)
+}
+
+fn resize_attestation_lane(epoch: &EpochContextStore, lane: &AttestationReceiver) {
+    lane.set_max_length(attestation_depth_from_epoch(epoch));
+}
+
 /// Request variants for [`CoreCommand::Query`].
 #[derive(Debug, Clone)]
 pub enum QueryRequest {
@@ -295,13 +518,23 @@ pub enum QueryRequest {
 
 impl QueryRequest {
     /// `query_p0` / Lighthouse `ApiRequestP0`: head, optimistic status, clock.
-    ///
-    /// `query_p1` variants stay on the mixed channel until S0-A-16.
     #[must_use]
     pub const fn is_query_p0(&self) -> bool {
         matches!(
             self,
             Self::Head | Self::IsOptimistic { .. } | Self::StoreClock
+        )
+    }
+
+    /// `query_p1` / Lighthouse `ApiRequestP1`: state-requiring serving reads.
+    #[must_use]
+    pub const fn is_query_p1(&self) -> bool {
+        matches!(
+            self,
+            Self::CommitteeShuffling { .. }
+                | Self::ValidatorPubkeys { .. }
+                | Self::ValidatorRecords { .. }
+                | Self::CanonicalRoots { .. }
         )
     }
 }
@@ -393,6 +626,10 @@ pub struct CoreHandle {
     import_tx: mpsc::Sender<ImportWork>,
     /// `query_p0` lane ([ARCH] §3.2). Depth [`QUERY_P0_LANE_DEPTH`].
     query_p0_tx: mpsc::Sender<QueryP0Work>,
+    /// `attestation` lane ([ARCH] §3.2). LIFO, sized from active validators.
+    attestation_tx: AttestationSender,
+    /// `query_p1` lane ([ARCH] §3.2). Depth [`QUERY_P1_LANE_DEPTH`].
+    query_p1_tx: mpsc::Sender<QueryP1Work>,
     /// After the senders so last-handle drop closes channels, then unparks.
     _close_wake: NotifyOnDrop,
     lane_wake: Arc<LaneWake>,
@@ -441,6 +678,16 @@ impl CoreHandle {
     /// Clone of the `query_p0` sender (tests that fill the lane).
     pub fn query_p0_sender(&self) -> WakingSender<QueryP0Work> {
         WakingSender::new(self.query_p0_tx.clone(), Arc::clone(&self.lane_wake))
+    }
+
+    /// Clone of the LIFO attestation sender (tests that fill / overflow the lane).
+    pub fn attestation_sender(&self) -> AttestationSender {
+        self.attestation_tx.clone()
+    }
+
+    /// Clone of the `query_p1` sender (tests that fill the lane).
+    pub fn query_p1_sender(&self) -> WakingSender<QueryP1Work> {
+        WakingSender::new(self.query_p1_tx.clone(), Arc::clone(&self.lane_wake))
     }
 
     /// `try_send` a [`TickWork::SlotTick`]. `false` if the lane is full or closed.
@@ -523,31 +770,33 @@ impl CoreHandle {
 
     /// Apply a batch of free-floating attestations (CC-1E).
     ///
-    /// Uses the same 2 s send timeout as [`Self::import_block`] so a stalled
-    /// core does not hang gRPC workers indefinitely.
+    /// LIFO evict-oldest: a full lane keeps this batch and fails the oldest
+    /// waiter with `RESOURCE_EXHAUSTED`. No 2 s send wait — later is better.
     pub async fn apply_attestations(
         &self,
         request: ApplyAttestationsRequest,
     ) -> Result<ApplyAttestationsResponse, Status> {
         let (reply, rx) = oneshot::channel();
-        let cmd = CoreCommand::ApplyAttestations { request, reply };
-        match self.cmd_tx.send_timeout(cmd, IMPORT_SEND_TIMEOUT).await {
-            Ok(()) => {}
-            Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
-                return Err(Status::resource_exhausted(
-                    "apply_attestations command channel full after 2s send_timeout",
-                ));
+        let work = AttestationWork::ApplyAttestations { request, reply };
+        match self.attestation_tx.try_push(work) {
+            AttestationEnqueue::Accepted => {}
+            AttestationEnqueue::EvictedOldest(oldest) => {
+                reject_attestation_work(
+                    oldest,
+                    Status::resource_exhausted(
+                        "apply_attestations evicted (oldest) from LIFO lane",
+                    ),
+                );
             }
-            Err(mpsc::error::SendTimeoutError::Closed(_)) => {
+            AttestationEnqueue::Closed(_) => {
                 return Err(Status::unavailable("chain core thread is shut down"));
             }
         }
-        self.lane_wake.notify();
         rx.await
             .map_err(|_| Status::unavailable("core thread dropped apply_attestations reply"))?
     }
 
-    /// `Query` command. P0 variants go to `query_p0`; the rest stay mixed.
+    /// `Query` command. P0 / P1 ride their own lanes; anything else stays mixed.
     ///
     /// Uses the same 2 s send timeout as [`Self::import_block`] so a stalled
     /// core does not hang gRPC workers on state reads (CC-1F / CC-27a).
@@ -557,6 +806,23 @@ impl CoreHandle {
             let cmd = QueryP0Work::Query { request, reply };
             match self
                 .query_p0_tx
+                .send_timeout(cmd, IMPORT_SEND_TIMEOUT)
+                .await
+            {
+                Ok(()) => {}
+                Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
+                    return Err(Status::resource_exhausted(
+                        "query command channel full after 2s send_timeout",
+                    ));
+                }
+                Err(mpsc::error::SendTimeoutError::Closed(_)) => {
+                    return Err(Status::unavailable("chain core thread is shut down"));
+                }
+            }
+        } else if request.is_query_p1() {
+            let cmd = QueryP1Work::Query { request, reply };
+            match self
+                .query_p1_tx
                 .send_timeout(cmd, IMPORT_SEND_TIMEOUT)
                 .await
             {
@@ -625,7 +891,8 @@ impl CoreHandle {
     /// Enqueue [`TickWork::Shutdown`] on the never-shed tick lane.
     ///
     /// Does not share the mixed or import FIFOs, so SIGTERM pre-drain cannot
-    /// wait behind a busy import / `query_p0` lane. Prefer
+    /// wait behind a busy import / `query_p0` / attestation / `query_p1` lane.
+    /// Prefer
     /// [`CoreThread::shutdown_and_join`] for production teardown so the
     /// oneshot wait and OS join share a **single** [`SHUTDOWN_JOIN_TIMEOUT`].
     pub async fn begin_shutdown(&self) -> Option<oneshot::Receiver<()>> {
@@ -758,6 +1025,7 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
     let (tick_tx, tick_rx) = mpsc::channel(TICK_LANE_DEPTH);
     let (import_tx, import_rx) = mpsc::channel(IMPORT_LANE_DEPTH);
     let (query_p0_tx, query_p0_rx) = mpsc::channel(QUERY_P0_LANE_DEPTH);
+    let (query_p1_tx, query_p1_rx) = mpsc::channel(QUERY_P1_LANE_DEPTH);
     let lane_wake = Arc::new(LaneWake::new());
     let counters = Arc::new(ImportCounters::default());
     let counters_thread = Arc::clone(&counters);
@@ -769,6 +1037,8 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
     // work immediately after spawn (tests / post-bootstrap).
     publish_initial_snapshot(&store, &head);
     publish_epoch_context_from_store(&store, &config, &epoch, 0);
+    let (attestation_tx, attestation_rx) =
+        new_attestation_lane(attestation_depth_from_epoch(&epoch), Arc::clone(&lane_wake));
 
     // Genesis-aligned never-shed ticker (P0-12 / S0-A-14). `blocking_send` on
     // the tick lane; a droppable `SlotTick` on the mixed channel is only a
@@ -807,6 +1077,8 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
                 tick_rx,
                 import_rx,
                 query_p0_rx,
+                attestation_rx,
+                query_p1_rx,
                 lane_wake_thread,
                 rt_handle,
             );
@@ -823,6 +1095,8 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
             tick_tx,
             import_tx,
             query_p0_tx,
+            attestation_tx,
+            query_p1_tx,
             _close_wake: NotifyOnDrop(Arc::clone(&lane_wake)),
             lane_wake,
             head,
@@ -1142,6 +1416,8 @@ fn core_loop<P: Preset>(
     mut tick_rx: mpsc::Receiver<TickWork>,
     mut import_rx: mpsc::Receiver<ImportWork>,
     mut query_p0_rx: mpsc::Receiver<QueryP0Work>,
+    attestation_rx: AttestationReceiver,
+    mut query_p1_rx: mpsc::Receiver<QueryP1Work>,
     lane_wake: Arc<LaneWake>,
     rt_handle: Option<tokio::runtime::Handle>,
 ) {
@@ -1196,6 +1472,7 @@ fn core_loop<P: Preset>(
         };
 
     loop {
+        resize_attestation_lane(&epoch, &attestation_rx);
         if let Some(done) = drain_tick_lane(
             &mut tick_mgr,
             &mut tick_rx,
@@ -1225,22 +1502,29 @@ fn core_loop<P: Preset>(
         if let Some(ref da) = peer_das {
             metrics.set_da_available_occupancy(da.len() as u64);
         }
-        let incoming =
-            match try_recv_first_match(&mut tick_rx, &mut import_rx, &mut query_p0_rx, &mut cmd_rx)
+        let incoming = match try_recv_first_match(
+            &mut tick_rx,
+            &mut import_rx,
+            &mut query_p0_rx,
+            &attestation_rx,
+            &mut query_p1_rx,
+            &mut cmd_rx,
+        ) {
+            Some(w) => w,
+            None if tick_rx.is_closed()
+                && import_rx.is_closed()
+                && query_p0_rx.is_closed()
+                && attestation_rx.is_closed()
+                && query_p1_rx.is_closed()
+                && cmd_rx.is_closed() =>
             {
-                Some(w) => w,
-                None if tick_rx.is_closed()
-                    && import_rx.is_closed()
-                    && query_p0_rx.is_closed()
-                    && cmd_rx.is_closed() =>
-                {
-                    break;
-                }
-                None => {
-                    lane_wake.park_current();
-                    continue;
-                }
-            };
+                break;
+            }
+            None => {
+                lane_wake.park_current();
+                continue;
+            }
+        };
         metrics.set_import_queue_depth(import_rx.len() as u64);
         let cmd = match incoming {
             Incoming::Tick(TickWork::Shutdown { done }) => {
@@ -1260,6 +1544,8 @@ fn core_loop<P: Preset>(
             }
             Incoming::Import(work) => CoreCommand::from(work),
             Incoming::QueryP0(work) => CoreCommand::from(work),
+            Incoming::Attestation(work) => CoreCommand::from(work),
+            Incoming::QueryP1(work) => CoreCommand::from(work),
             Incoming::Mixed(cmd) => cmd,
         };
         match cmd {
@@ -1498,11 +1784,14 @@ fn spawn_slot_tick_driver(
         })
 }
 
-/// First-match-wins across tick → import → query_p0 → mixed ([ARCH] §3.2).
+/// First-match-wins across tick → import → query_p0 → attestation → query_p1
+/// → mixed ([ARCH] §3.2).
 fn try_recv_first_match(
     tick_rx: &mut mpsc::Receiver<TickWork>,
     import_rx: &mut mpsc::Receiver<ImportWork>,
     query_p0_rx: &mut mpsc::Receiver<QueryP0Work>,
+    attestation_rx: &AttestationReceiver,
+    query_p1_rx: &mut mpsc::Receiver<QueryP1Work>,
     cmd_rx: &mut mpsc::Receiver<CoreCommand>,
 ) -> Option<Incoming> {
     if let Ok(work) = tick_rx.try_recv() {
@@ -1513,6 +1802,12 @@ fn try_recv_first_match(
     }
     if let Ok(work) = query_p0_rx.try_recv() {
         return Some(Incoming::QueryP0(work));
+    }
+    if let Some(work) = attestation_rx.try_pop() {
+        return Some(Incoming::Attestation(work));
+    }
+    if let Ok(work) = query_p1_rx.try_recv() {
+        return Some(Incoming::QueryP1(work));
     }
     match cmd_rx.try_recv() {
         Ok(cmd) => Some(Incoming::Mixed(cmd)),
@@ -1900,8 +2195,11 @@ mod tests {
     use std::sync::Arc;
 
     use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
-    use cc_proto::chain::ImportBlockRequest;
-    use cc_scheduler::{IMPORT_LANE_DEPTH, QUERY_P0_LANE_DEPTH, TICK_LANE_DEPTH};
+    use cc_proto::chain::{ApplyAttestationsRequest, ImportBlockRequest};
+    use cc_scheduler::{
+        IMPORT_LANE_DEPTH, MIN_QUEUE_LEN, QUERY_P0_LANE_DEPTH, QUERY_P1_LANE_DEPTH,
+        TICK_LANE_DEPTH, sized_from_validators,
+    };
     use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
     use cc_types::preset::Minimal;
     use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Slot, ValidatorIndex};
@@ -2324,8 +2622,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn query_p1_variants_are_serving_reads() {
+        assert!(QueryRequest::CommitteeShuffling { epoch: 0 }.is_query_p1());
+        assert!(QueryRequest::ValidatorPubkeys { indices: vec![] }.is_query_p1());
+        assert!(QueryRequest::ValidatorRecords { indices: vec![] }.is_query_p1());
+        assert!(
+            QueryRequest::CanonicalRoots {
+                start_slot: 0,
+                end_slot: 0
+            }
+            .is_query_p1()
+        );
+        assert!(!QueryRequest::Head.is_query_p1());
+        assert!(!QueryRequest::IsOptimistic { root: None }.is_query_p1());
+        assert!(!QueryRequest::StoreClock.is_query_p1());
+    }
+
+    fn empty_attestations() -> ApplyAttestationsRequest {
+        ApplyAttestationsRequest {
+            attestations_ssz: vec![],
+        }
+    }
+
     #[tokio::test]
-    async fn query_p0_head_is_served_before_mixed_p1() {
+    async fn query_p0_head_is_served_before_query_p1() {
         let (store, _anchor, config) = seeded_store();
         let mut registry = Registry::default();
         let metrics = ChainMetrics::register(&mut registry);
@@ -2346,17 +2667,16 @@ mod tests {
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let mixed = core.handle.command_sender();
+        let p1 = core.handle.query_p1_sender();
         let mut p1_rxs = Vec::new();
         for _ in 0..3 {
             let (reply, rx) = oneshot::channel();
             p1_rxs.push(rx);
-            mixed
-                .try_send(CoreCommand::Query {
-                    request: QueryRequest::CommitteeShuffling { epoch: 0 },
-                    reply,
-                })
-                .expect("mixed channel must accept query_p1");
+            p1.try_send(QueryP1Work::Query {
+                request: QueryRequest::CommitteeShuffling { epoch: 0 },
+                reply,
+            })
+            .expect("query_p1 must accept");
         }
 
         let (head_reply, head_rx) = oneshot::channel();
@@ -2366,7 +2686,7 @@ mod tests {
                 request: QueryRequest::Head,
                 reply: head_reply,
             })
-            .expect("query_p0 must accept Head while mixed holds p1");
+            .expect("query_p0 must accept Head while query_p1 is queued");
 
         let (order_tx, mut order_rx) = mpsc::channel(4);
         let order_head = order_tx.clone();
@@ -2385,10 +2705,7 @@ mod tests {
             .await
             .expect("lane reply timed out")
             .expect("order channel closed");
-        assert_eq!(
-            first, "head",
-            "query_p0 must not wait behind mixed query_p1"
-        );
+        assert_eq!(first, "head", "query_p0 must not wait behind query_p1");
 
         drop(p1_rxs);
         core.handle.shutdown().await;
@@ -2537,6 +2854,18 @@ mod tests {
             core.handle.query_p0_sender().max_capacity(),
             QUERY_P0_LANE_DEPTH
         );
+        let (reply, _rx) = oneshot::channel();
+        core.handle
+            .query_p1_sender()
+            .try_send(QueryP1Work::Query {
+                request: QueryRequest::CommitteeShuffling { epoch: 0 },
+                reply,
+            })
+            .expect("query_p1 stays independent of a full import lane");
+        assert_eq!(
+            core.handle.query_p1_sender().max_capacity(),
+            QUERY_P1_LANE_DEPTH
+        );
 
         drop(held);
         let _ = blocker.await;
@@ -2628,6 +2957,369 @@ mod tests {
         .expect("core stayed parked after last sender drop")
         .expect("join task")
         .expect("core thread panicked");
+        events.shutdown().await;
+    }
+
+    /// Core Shutdown drops the LIFO receiver; queued `ApplyAttestations`
+    /// oneshots must fail immediately even while another handle stays alive
+    /// (the gRPC service keeps one through drain).
+    #[tokio::test]
+    async fn shutdown_fails_pending_attestation_waiters() {
+        let (store, _anchor, config) = seeded_store();
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig::default());
+        let head = HeadSnapshotStore::new();
+        let core = spawn_core_thread(
+            store,
+            config,
+            head,
+            events.event_sender(),
+            metrics,
+            CoreConfig::default(),
+        );
+        let keeper = core.handle.clone();
+
+        let h = core.handle.clone();
+        let blocker = tokio::spawn(async move {
+            h.block_for(Duration::from_millis(200)).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let h = core.handle.clone();
+        let waiter = tokio::spawn(async move { h.apply_attestations(empty_attestations()).await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let sent_at = std::time::Instant::now();
+        core.handle.shutdown().await;
+        let result = tokio::time::timeout(Duration::from_millis(500), waiter)
+            .await
+            .expect("attestation waiter hung after core Shutdown (receiver must close)")
+            .expect("waiter task");
+        let err = result.expect_err("pending ApplyAttestations must fail when the core exits");
+        assert_eq!(err.code(), tonic::Code::Unavailable);
+        assert!(
+            sent_at.elapsed() < Duration::from_secs(1),
+            "waiter must not sit until drain timeout ({:?})",
+            sent_at.elapsed()
+        );
+
+        match keeper
+            .attestation_sender()
+            .try_push(AttestationWork::ApplyAttestations {
+                request: empty_attestations(),
+                reply: oneshot::channel().0,
+            }) {
+            AttestationEnqueue::Closed(_) => {}
+            other => panic!("post-shutdown try_push must be Closed, got {other:?}"),
+        }
+
+        let _ = blocker.await;
+        drop(keeper);
+        core.join();
+        events.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn query_p0_head_is_served_before_attestation() {
+        let (store, _anchor, config) = seeded_store();
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig::default());
+        let head = HeadSnapshotStore::new();
+        let core = spawn_core_thread(
+            store,
+            config,
+            head,
+            events.event_sender(),
+            metrics,
+            CoreConfig::default(),
+        );
+
+        let h = core.handle.clone();
+        let blocker = tokio::spawn(async move {
+            h.block_for(Duration::from_millis(200)).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let att = core.handle.attestation_sender();
+        let mut att_rxs = Vec::new();
+        for _ in 0..3 {
+            let (reply, rx) = oneshot::channel();
+            att_rxs.push(rx);
+            assert!(matches!(
+                att.try_push(AttestationWork::ApplyAttestations {
+                    request: empty_attestations(),
+                    reply,
+                }),
+                AttestationEnqueue::Accepted
+            ));
+        }
+
+        let (head_reply, head_rx) = oneshot::channel();
+        core.handle
+            .query_p0_sender()
+            .try_send(QueryP0Work::Query {
+                request: QueryRequest::Head,
+                reply: head_reply,
+            })
+            .expect("query_p0 must accept Head while attestation is queued");
+
+        let (order_tx, mut order_rx) = mpsc::channel(4);
+        let order_head = order_tx.clone();
+        tokio::spawn(async move {
+            let _ = head_rx.await;
+            let _ = order_head.send("head").await;
+        });
+        let att_first = att_rxs.remove(0);
+        tokio::spawn(async move {
+            let _ = att_first.await;
+            let _ = order_tx.send("att").await;
+        });
+
+        let _ = blocker.await;
+        let first = tokio::time::timeout(Duration::from_secs(2), order_rx.recv())
+            .await
+            .expect("lane reply timed out")
+            .expect("order channel closed");
+        assert_eq!(
+            first, "head",
+            "query_p0 must not wait behind an attestation flood"
+        );
+
+        drop(att_rxs);
+        core.handle.shutdown().await;
+        core.join();
+        events.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn attestation_is_served_before_query_p1() {
+        let (store, _anchor, config) = seeded_store();
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig::default());
+        let head = HeadSnapshotStore::new();
+        let core = spawn_core_thread(
+            store,
+            config,
+            head,
+            events.event_sender(),
+            metrics,
+            CoreConfig::default(),
+        );
+
+        let h = core.handle.clone();
+        let blocker = tokio::spawn(async move {
+            h.block_for(Duration::from_millis(200)).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let p1 = core.handle.query_p1_sender();
+        let mut p1_rxs = Vec::new();
+        for _ in 0..3 {
+            let (reply, rx) = oneshot::channel();
+            p1_rxs.push(rx);
+            p1.try_send(QueryP1Work::Query {
+                request: QueryRequest::CommitteeShuffling { epoch: 0 },
+                reply,
+            })
+            .expect("query_p1 must accept");
+        }
+
+        let (att_reply, att_rx) = oneshot::channel();
+        assert!(matches!(
+            core.handle
+                .attestation_sender()
+                .try_push(AttestationWork::ApplyAttestations {
+                    request: empty_attestations(),
+                    reply: att_reply,
+                }),
+            AttestationEnqueue::Accepted
+        ));
+
+        let (order_tx, mut order_rx) = mpsc::channel(4);
+        let order_att = order_tx.clone();
+        tokio::spawn(async move {
+            let _ = att_rx.await;
+            let _ = order_att.send("att").await;
+        });
+        let p1_first = p1_rxs.remove(0);
+        tokio::spawn(async move {
+            let _ = p1_first.await;
+            let _ = order_tx.send("p1").await;
+        });
+
+        let _ = blocker.await;
+        let first = tokio::time::timeout(Duration::from_secs(2), order_rx.recv())
+            .await
+            .expect("lane reply timed out")
+            .expect("order channel closed");
+        assert_eq!(first, "att", "attestation must outrank query_p1");
+
+        drop(p1_rxs);
+        core.handle.shutdown().await;
+        core.join();
+        events.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn attestation_lifo_evicts_oldest_and_serves_newest() {
+        let (store, _anchor, config) = seeded_store();
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig::default());
+        let head = HeadSnapshotStore::new();
+        let core = spawn_core_thread(
+            store,
+            config,
+            head,
+            events.event_sender(),
+            metrics,
+            CoreConfig::default(),
+        );
+
+        let depth = core.handle.attestation_sender().max_capacity();
+        assert!(
+            depth >= MIN_QUEUE_LEN,
+            "attestation depth {depth} must be sized_from_validators (floor {MIN_QUEUE_LEN})"
+        );
+        assert_eq!(
+            depth,
+            sized_from_validators(
+                core.handle.epoch_context().load().active_validator_count,
+                core.handle.epoch_context().load().slots_per_epoch,
+            )
+        );
+
+        let h = core.handle.clone();
+        let blocker = tokio::spawn(async move {
+            h.block_for(Duration::from_millis(300)).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let att = core.handle.attestation_sender();
+        let mut held = Vec::new();
+        for _ in 0..depth {
+            let (reply, rx) = oneshot::channel();
+            held.push(rx);
+            assert!(matches!(
+                att.try_push(AttestationWork::ApplyAttestations {
+                    request: empty_attestations(),
+                    reply,
+                }),
+                AttestationEnqueue::Accepted
+            ));
+        }
+
+        let (fresh_reply, fresh_rx) = oneshot::channel();
+        match att.try_push(AttestationWork::ApplyAttestations {
+            request: empty_attestations(),
+            reply: fresh_reply,
+        }) {
+            AttestationEnqueue::EvictedOldest(AttestationWork::ApplyAttestations {
+                reply, ..
+            }) => {
+                let _ = reply.send(Err(Status::resource_exhausted("evicted oldest")));
+            }
+            other => panic!("expected EvictedOldest, got {other:?}"),
+        }
+        assert_eq!(att.len(), depth);
+
+        let oldest = held.remove(0);
+        let oldest_err = oldest
+            .await
+            .expect("evicted oneshot dropped")
+            .expect_err("oldest must be rejected");
+        assert_eq!(oldest_err.code(), tonic::Code::ResourceExhausted);
+
+        let (order_tx, mut order_rx) = mpsc::channel(4);
+        let order_fresh = order_tx.clone();
+        tokio::spawn(async move {
+            let _ = fresh_rx.await;
+            let _ = order_fresh.send("fresh").await;
+        });
+        let previous_newest = held.pop().expect("filled lane has a previous newest");
+        tokio::spawn(async move {
+            let _ = previous_newest.await;
+            let _ = order_tx.send("old").await;
+        });
+
+        drop(held);
+        let _ = blocker.await;
+        let first = tokio::time::timeout(Duration::from_secs(2), order_rx.recv())
+            .await
+            .expect("lane reply timed out")
+            .expect("order channel closed");
+        assert_eq!(
+            first, "fresh",
+            "LIFO must serve the newest attestation first"
+        );
+
+        core.handle.shutdown().await;
+        core.join();
+        events.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn query_p1_fifo_drops_new_and_is_independent_of_mixed() {
+        let (store, _anchor, config) = seeded_store();
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig::default());
+        let head = HeadSnapshotStore::new();
+        let core = spawn_core_thread(
+            store,
+            config,
+            head,
+            events.event_sender(),
+            metrics,
+            CoreConfig::default(),
+        );
+
+        let h = core.handle.clone();
+        let blocker = tokio::spawn(async move {
+            h.block_for(Duration::from_millis(300)).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let p1 = core.handle.query_p1_sender();
+        let mut held = Vec::new();
+        for _ in 0..QUERY_P1_LANE_DEPTH {
+            let (reply, rx) = oneshot::channel();
+            held.push(rx);
+            p1.try_send(QueryP1Work::Query {
+                request: QueryRequest::ValidatorRecords { indices: vec![] },
+                reply,
+            })
+            .expect("query_p1 has room");
+        }
+        let (reply, _rx) = oneshot::channel();
+        assert!(
+            matches!(
+                p1.try_send(QueryP1Work::Query {
+                    request: QueryRequest::ValidatorPubkeys { indices: vec![] },
+                    reply,
+                }),
+                Err(mpsc::error::TrySendError::Full(_))
+            ),
+            "query_p1 FIFO must drop new when full"
+        );
+        assert_eq!(p1.max_capacity(), QUERY_P1_LANE_DEPTH);
+
+        let mixed = core.handle.command_sender();
+        let (reply, _rx) = oneshot::channel();
+        mixed
+            .try_send(CoreCommand::Query {
+                request: QueryRequest::Head,
+                reply,
+            })
+            .expect("mixed leftovers stay independent of a full query_p1 lane");
+
+        drop(held);
+        let _ = blocker.await;
+        core.handle.shutdown().await;
+        core.join();
         events.shutdown().await;
     }
 }
