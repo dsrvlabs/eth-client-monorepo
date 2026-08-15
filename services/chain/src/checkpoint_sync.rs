@@ -1132,7 +1132,10 @@ pub fn spawn_core_from_checkpoint_with_epoch<P: Preset + 'static>(
     let mut store: Store<P> = get_forkchoice_store(
         fetched.state,
         &fetched.signed_block.message,
-        Arc::new(crate::engine_client::EngineApiClient::new(core_cfg.engine_uri.clone()).map_err(|e| CheckpointError::Store(e.to_string()))?),
+        Arc::new(
+            crate::engine_client::EngineApiClient::new(core_cfg.engine_uri.clone())
+                .map_err(|e| CheckpointError::Store(e.to_string()))?,
+        ),
         da_for_store,
         chain_config.seconds_per_slot,
     )

@@ -1,10 +1,10 @@
 //! Spec mutators (`increase_balance` / `decrease_balance` / exit / slash).
 
 use cc_crypto::INFINITY_SIGNATURE;
+use cc_types::BeaconState;
 use cc_types::operations::PendingDeposit;
 use cc_types::preset::Preset;
 use cc_types::primitives::{BlsSignature, Epoch, Gwei, Slot, ValidatorIndex};
-use cc_types::BeaconState;
 
 use crate::epoch_cache::note_registry_or_effective_balance_change;
 use crate::error::BlockError;
@@ -66,7 +66,8 @@ pub fn compute_exit_epoch_and_update_churn<P: Preset>(
         .max(compute_activation_exit_epoch::<P>(current_epoch).as_u64());
     let per_epoch_churn = get_activation_exit_churn_limit(state)?;
 
-    let mut exit_balance_to_consume = if state.earliest_exit_epoch().as_u64() < earliest_exit_epoch {
+    let mut exit_balance_to_consume = if state.earliest_exit_epoch().as_u64() < earliest_exit_epoch
+    {
         per_epoch_churn.as_u64()
     } else {
         state.exit_balance_to_consume().as_u64()
@@ -149,9 +150,10 @@ pub fn compute_consolidation_epoch_and_update_churn<P: Preset>(
     let consolidation_balance = consolidation_balance.as_u64();
     if consolidation_balance > consolidation_balance_to_consume {
         let balance_to_process = consolidation_balance - consolidation_balance_to_consume;
-        let additional_epochs = (balance_to_process.saturating_sub(1) / per_epoch_churn.as_u64())
-            .saturating_add(1);
-        earliest_consolidation_epoch = earliest_consolidation_epoch.saturating_add(additional_epochs);
+        let additional_epochs =
+            (balance_to_process.saturating_sub(1) / per_epoch_churn.as_u64()).saturating_add(1);
+        earliest_consolidation_epoch =
+            earliest_consolidation_epoch.saturating_add(additional_epochs);
         consolidation_balance_to_consume = consolidation_balance_to_consume
             .saturating_add(additional_epochs.saturating_mul(per_epoch_churn.as_u64()));
     }
@@ -243,19 +245,16 @@ pub fn slash_validator<P: Preset>(
         .ok_or(BlockError::ArithmeticOverflow)?;
     state.slashings_set(slashings_i, new_slashings)?;
 
-    let slashing_penalty = Gwei::new(
-        effective_balance.as_u64() / MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA,
-    );
+    let slashing_penalty =
+        Gwei::new(effective_balance.as_u64() / MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA);
     decrease_balance(state, slashed_index, slashing_penalty)?;
 
     let proposer_index = get_beacon_proposer_index(state)?;
     let whistleblower = whistleblower_index.unwrap_or(proposer_index);
-    let whistleblower_reward = Gwei::new(
-        effective_balance.as_u64() / WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA,
-    );
-    let proposer_reward = Gwei::new(
-        whistleblower_reward.as_u64() * PROPOSER_WEIGHT / WEIGHT_DENOMINATOR,
-    );
+    let whistleblower_reward =
+        Gwei::new(effective_balance.as_u64() / WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA);
+    let proposer_reward =
+        Gwei::new(whistleblower_reward.as_u64() * PROPOSER_WEIGHT / WEIGHT_DENOMINATOR);
     increase_balance(state, proposer_index, proposer_reward)?;
     increase_balance(
         state,

@@ -1,11 +1,11 @@
 //! Spec `process_deposit` / `apply_deposit` (Electra).
 
-use cc_crypto::{compute_signing_root, verify, DOMAIN_DEPOSIT};
+use cc_crypto::{DOMAIN_DEPOSIT, compute_signing_root, verify};
+use cc_types::BeaconState;
 use cc_types::containers::{DepositMessage, Validator};
 use cc_types::operations::{Deposit, PendingDeposit};
 use cc_types::preset::Preset;
 use cc_types::primitives::{Gwei, Root, Slot, ValidatorIndex};
-use cc_types::BeaconState;
 use tree_hash::TreeHash;
 
 use crate::epoch_cache::note_registry_or_effective_balance_change;
@@ -126,12 +126,7 @@ pub fn apply_deposit<P: Preset>(
 
     if existing.is_none() {
         // Proof-of-possession; invalid signature → silently drop (spec).
-        if is_valid_deposit_signature::<P>(
-            &pubkey,
-            &withdrawal_credentials,
-            amount,
-            &signature,
-        )? {
+        if is_valid_deposit_signature::<P>(&pubkey, &withdrawal_credentials, amount, &signature)? {
             // New validator with balance 0; pending deposit carries amount.
             add_validator_to_registry(state, pubkey, withdrawal_credentials, Gwei::new(0))?;
         } else {
@@ -184,5 +179,3 @@ pub fn process_deposit<P: Preset>(
         deposit.data.signature,
     )
 }
-
-

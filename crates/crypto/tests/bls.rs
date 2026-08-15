@@ -11,10 +11,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use cc_crypto::{
-    aggregate_signatures, aggregate_verify, compute_domain, compute_signing_root,
-    eth_fast_aggregate_verify, fast_aggregate_verify, get_domain, verify, AggregateSignature,
-    PublicKey, Signature, SignatureSet, DOMAIN_BEACON_PROPOSER, DOMAIN_RANDAO,
-    DOMAIN_SYNC_COMMITTEE, INFINITY_SIGNATURE,
+    AggregateSignature, DOMAIN_BEACON_PROPOSER, DOMAIN_RANDAO, DOMAIN_SYNC_COMMITTEE,
+    INFINITY_SIGNATURE, PublicKey, Signature, SignatureSet, aggregate_signatures, aggregate_verify,
+    compute_domain, compute_signing_root, eth_fast_aggregate_verify, fast_aggregate_verify,
+    get_domain, verify,
 };
 use cc_types::{DomainType, Epoch, Fork, ForkVersion, Root};
 use sha2::{Digest, Sha256};
@@ -29,8 +29,7 @@ const DEFAULT_CACHE_DIR: &str = "cc-hoodi-fixtures";
 
 fn manifests_dir() -> PathBuf {
     // hoodi-anchor.toml lives in cc-types fixtures (committed expected digests).
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../types/tests/fixtures")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../types/tests/fixtures")
 }
 
 fn load_anchor_field(key: &str) -> String {
@@ -146,8 +145,8 @@ impl HoodiBlsFixtures {
             return Err(format!("unexpected message offset {msg_off}"));
         }
         let sig_bytes: [u8; 96] = block[4..100].try_into().unwrap();
-        let block_signature = Signature::deserialize(&sig_bytes)
-            .map_err(|e| format!("block signature: {e}"))?;
+        let block_signature =
+            Signature::deserialize(&sig_bytes).map_err(|e| format!("block signature: {e}"))?;
 
         let msg = &block[msg_off..];
         if msg.len() < 84 {
@@ -170,8 +169,8 @@ impl HoodiBlsFixtures {
         // signature from the committed block is fragile. Instead parse body
         // offsets for Fulu BeaconBlockBody variable fields and fixed tails.
         let (sync_bits, sync_sig_bytes) = extract_sync_aggregate(body)?;
-        let sync_signature = Signature::deserialize(&sync_sig_bytes)
-            .map_err(|e| format!("sync sig: {e}"))?;
+        let sync_signature =
+            Signature::deserialize(&sync_sig_bytes).map_err(|e| format!("sync sig: {e}"))?;
 
         let state_view = AnchorStateView::parse(&state)?;
         if state_view.slot != slot {
@@ -282,14 +281,8 @@ impl AnchorStateView {
             ("slot", Field::Fixed(8)),
             ("fork", Field::Fixed(16)),
             ("latest_block_header", Field::Fixed(112)),
-            (
-                "block_roots",
-                Field::Fixed(SLOTS_PER_HISTORICAL_ROOT * 32),
-            ),
-            (
-                "state_roots",
-                Field::Fixed(SLOTS_PER_HISTORICAL_ROOT * 32),
-            ),
+            ("block_roots", Field::Fixed(SLOTS_PER_HISTORICAL_ROOT * 32)),
+            ("state_roots", Field::Fixed(SLOTS_PER_HISTORICAL_ROOT * 32)),
             ("historical_roots", Field::Var),
             ("eth1_data", Field::Fixed(72)),
             ("eth1_data_votes", Field::Var),
@@ -300,10 +293,7 @@ impl AnchorStateView {
                 "randao_mixes",
                 Field::Fixed(EPOCHS_PER_HISTORICAL_VECTOR * 32),
             ),
-            (
-                "slashings",
-                Field::Fixed(EPOCHS_PER_SLASHINGS_VECTOR * 8),
-            ),
+            ("slashings", Field::Fixed(EPOCHS_PER_SLASHINGS_VECTOR * 8)),
             ("previous_epoch_participation", Field::Var),
             ("current_epoch_participation", Field::Var),
             ("justification_bits", Field::Fixed(1)),
@@ -359,7 +349,9 @@ impl AnchorStateView {
             }
         }
         let fixed_size = pos;
-        let first_var = *var_off.get("historical_roots").ok_or("no historical_roots")?;
+        let first_var = *var_off
+            .get("historical_roots")
+            .ok_or("no historical_roots")?;
         if first_var != fixed_size {
             return Err(format!(
                 "SSZ fixed size mismatch: expected first var at {fixed_size}, got {first_var}"
@@ -414,9 +406,7 @@ impl AnchorStateView {
             return Err(format!("validator index {index} out of range {n}"));
         }
         let start = index * VALIDATOR_SIZE;
-        let pk_bytes: [u8; 48] = self.validators_bytes[start..start + 48]
-            .try_into()
-            .unwrap();
+        let pk_bytes: [u8; 48] = self.validators_bytes[start..start + 48].try_into().unwrap();
         PublicKey::deserialize(&pk_bytes).map_err(|e| e.to_string())
     }
 }
@@ -462,9 +452,7 @@ fn extract_sync_aggregate(body: &[u8]) -> Result<(Vec<u8>, [u8; 96]), String> {
         ));
     }
     let bits = body[SYNC_OFF..SYNC_OFF + 64].to_vec();
-    let sig: [u8; 96] = body[SYNC_OFF + 64..SYNC_OFF + 160]
-        .try_into()
-        .unwrap();
+    let sig: [u8; 96] = body[SYNC_OFF + 64..SYNC_OFF + 160].try_into().unwrap();
     Ok((bits, sig))
 }
 
@@ -585,11 +573,7 @@ fn hoodi_sync_aggregate_fast_aggregate_verify() {
 fn hoodi_batch_verification_over_anchor_block() {
     let f = require_hoodi!();
     let mut set = SignatureSet::new();
-    set.push(
-        f.proposer_pubkey,
-        f.block_signing_root(),
-        f.block_signature,
-    );
+    set.push(f.proposer_pubkey, f.block_signing_root(), f.block_signature);
     set.push(f.proposer_pubkey, f.randao_signing_root(), f.randao_reveal);
     set.push_aggregate(
         f.participant_pubkeys(),
@@ -649,11 +633,7 @@ fn synthetic_aggregate_verify_and_batch() {
         let sk = BlstSk::key_gen(&[ikm; 32], &[]).unwrap();
         let pk = PublicKey::deserialize(&sk.sk_to_pk().compress()).unwrap();
         let sign = move |msg: [u8; 32]| {
-            let sig = sk.sign(
-                &msg,
-                cc_crypto::BLS_SIGNATURE_DST,
-                &[],
-            );
+            let sig = sk.sign(&msg, cc_crypto::BLS_SIGNATURE_DST, &[]);
             Signature::deserialize(&sig.compress()).unwrap()
         };
         (pk, sign)

@@ -57,9 +57,9 @@ use cc_state_transition::helpers::accessors::{
     compute_time_at_slot, get_beacon_proposer_index, get_current_epoch, get_randao_mix,
 };
 use cc_state_transition::{
-    BlockSignatureStrategy, TransitionContext, get_expected_withdrawals,
-    process_block, process_justification_and_finalization, process_slots,
-    take_canonical_root_call_count, take_canonical_root_elapsed_ns,
+    BlockSignatureStrategy, TransitionContext, get_expected_withdrawals, process_block,
+    process_justification_and_finalization, process_slots, take_canonical_root_call_count,
+    take_canonical_root_elapsed_ns,
 };
 use cc_types::config::ChainConfig;
 use cc_types::containers::SyncAggregate;
@@ -86,7 +86,6 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
         Ok(cc_state_transition::PayloadStatus::Valid)
     }
 }
-
 
 const FETCH_HINT: &str = "run scripts/fetch-hoodi-fixtures.sh";
 const ANCHOR_SLOT: u64 = 3_649_472;

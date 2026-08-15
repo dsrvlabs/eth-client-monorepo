@@ -15,23 +15,21 @@ pub mod rate;
 pub mod window;
 
 pub use below::{
-    check_parent_chain, may_commit_descending, mode_for_batch, one_domain_for_window,
-    plan_batches_descending, verify_below_batch, BackfillMode, BelowBatchOutcome, BelowBlock,
-    VerifyCounters,
+    BackfillMode, BelowBatchOutcome, BelowBlock, VerifyCounters, check_parent_chain,
+    may_commit_descending, mode_for_batch, one_domain_for_window, plan_batches_descending,
+    verify_below_batch,
 };
 pub use cache::{
-    BackfillCache, InsertOutcome, CACHE_BLOCK_COUNT_BOUND, CACHE_BOUND_BYTES,
-    CACHE_COLUMN_COUNT_BOUND, CACHE_EMPTY_SLOT_BOUND, CACHE_WINDOW_WALK_DEPTH, MAX_SAMPLED,
+    BackfillCache, CACHE_BLOCK_COUNT_BOUND, CACHE_BOUND_BYTES, CACHE_COLUMN_COUNT_BOUND,
+    CACHE_EMPTY_SLOT_BOUND, CACHE_WINDOW_WALK_DEPTH, InsertOutcome, MAX_SAMPLED,
 };
 pub use planner::{
-    batch_timeout, da_deferred_count, eligible_peers, expected_chunks, feed_backfill_to_sampling,
-    parent_linkage_walk, plan_batches, BackfillDaResult, BackfillPeer, BackfillPlanner, BatchFetch,
-    BatchPlan, BatchState, BatchStatus, CompletionStatus, FetchedBlock, FetchedColumn, GapDetected,
-    GapDetector, GapTrigger, ImportReady, RecordedGap, BATCH_MAX_PEER_ATTEMPTS, BATCH_SLOT_LIMIT,
-    BATCH_TIMEOUT_CAP, CLOCK_STALL_THRESHOLD, HEAD_JUMP_THRESHOLD, MAX_CONCURRENT_BATCHES,
-    PEER_STATUS_GAP_THRESHOLD,
+    BATCH_MAX_PEER_ATTEMPTS, BATCH_SLOT_LIMIT, BATCH_TIMEOUT_CAP, BackfillDaResult, BackfillPeer,
+    BackfillPlanner, BatchFetch, BatchPlan, BatchState, BatchStatus, CLOCK_STALL_THRESHOLD,
+    CompletionStatus, FetchedBlock, FetchedColumn, GapDetected, GapDetector, GapTrigger,
+    HEAD_JUMP_THRESHOLD, ImportReady, MAX_CONCURRENT_BATCHES, PEER_STATUS_GAP_THRESHOLD,
+    RecordedGap, batch_timeout, da_deferred_count, eligible_peers, expected_chunks,
+    feed_backfill_to_sampling, parent_linkage_walk, plan_batches,
 };
-pub use rate::{
-    OutboundBlockBudget, OUTBOUND_BLOCKS_CAPACITY, OUTBOUND_BLOCKS_WINDOW,
-};
-pub use window::{compute_earliest_available_slot, ServeWindow, EMPTY_WINDOW_SLOT};
+pub use rate::{OUTBOUND_BLOCKS_CAPACITY, OUTBOUND_BLOCKS_WINDOW, OutboundBlockBudget};
+pub use window::{EMPTY_WINDOW_SLOT, ServeWindow, compute_earliest_available_slot};

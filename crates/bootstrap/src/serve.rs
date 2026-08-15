@@ -123,8 +123,14 @@ impl LocalReadyHandle {
 /// 4. Drain in-flight requests under a **3 s** timeout; warn and proceed if it fires.
 /// 5. Stop prober, flush stdout, return `Ok(())`.
 pub async fn serve(bs: Bootstrap, spec: ServiceSpec, routes: Routes) -> Result<(), Error> {
-    serve_with_options(bs, spec, routes, ServeOptions::default(), SignalTrigger::UnixSignals)
-        .await
+    serve_with_options(
+        bs,
+        spec,
+        routes,
+        ServeOptions::default(),
+        SignalTrigger::UnixSignals,
+    )
+    .await
 }
 
 /// Like [`serve`], but completes the shutdown sequence when `trigger` resolves.
@@ -224,11 +230,8 @@ async fn serve_with_options_inner(
     // Local-ready gate: when required, start not-ready so aggregate stays
     // NOT_SERVING through bootstrap (CC-19b).
     let initial_local_ready = !options.require_local_ready;
-    let peer_state = PeerHealthState::new(
-        &spec.peers,
-        health_reporter.clone(),
-        initial_local_ready,
-    );
+    let peer_state =
+        PeerHealthState::new(&spec.peers, health_reporter.clone(), initial_local_ready);
 
     // Aggregate: SERVING only when every required peer is up **and** local-ready.
     let initial_aggregate = if initial_local_ready && spec.peers.is_empty() {

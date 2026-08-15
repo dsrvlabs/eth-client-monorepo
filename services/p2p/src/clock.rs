@@ -165,7 +165,8 @@ impl SlotClock {
         cc_bootstrap::spawn("epoch-ticks", async move {
             let mut last = clock.current_epoch();
             // Poll on a sub-slot cadence so epoch edges are not delayed by a full slot.
-            let period = Duration::from_secs(clock.seconds_per_slot.max(1)).max(Duration::from_millis(50));
+            let period =
+                Duration::from_secs(clock.seconds_per_slot.max(1)).max(Duration::from_millis(50));
             let mut ticker = tokio::time::interval_at(Instant::now() + period, period);
             ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
             loop {

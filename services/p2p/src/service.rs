@@ -20,8 +20,8 @@ use std::time::Duration;
 use cc_bootstrap::{
     Bootstrap, PeerSpec, ServeOptions, ServiceSpec, SignalTrigger, serve_with_options,
 };
-use cc_libp2p::reexport::{Multiaddr, Protocol};
 use cc_libp2p::PeerId;
+use cc_libp2p::reexport::{Multiaddr, Protocol};
 use cc_proto::common::BuildInfo;
 use cc_proto::p2p::p2p_service_server::P2pService;
 use cc_proto::p2p::{
@@ -42,8 +42,6 @@ use crate::chain_stream::{
 };
 use crate::channels::{self, ChannelMap, SwarmCommand, stub_consumer};
 use crate::clock::{ClockConfig, SlotClock};
-use cc_types::ChainConfig;
-use std::sync::Arc;
 use crate::discovery::cgc_hook::CgcHookError;
 use crate::discovery::{
     DIAL_QUEUE_BOUND, DiscoveryConfig, DiscoveryPeerView, DiscoveryTask, build_enr_manager,
@@ -51,17 +49,19 @@ use crate::discovery::{
 };
 use crate::engine_stream::EngineStreamService;
 use crate::fork_digest::ForkContext;
-use crate::host::{build_host_swarm, run_swarm_task, HandshakeRuntime, SwarmTask};
-use crate::reqresp::{CgcPolicy, HandshakeDeps};
+use crate::host::{HandshakeRuntime, SwarmTask, build_host_swarm, run_swarm_task};
 use crate::identity::{self, IdentityError};
 use crate::metrics::{P2pMetrics, QueueName};
 use crate::peer_manager::{PeerManager, PeerManagerConfig, run_peer_manager};
+use crate::reqresp::{CgcPolicy, HandshakeDeps};
 use crate::storage_client::{
-    spawn_watch_serve_window_with_metrics, StorageClient, StorageClientConfig, StorageClientHandle,
+    StorageClient, StorageClientConfig, StorageClientHandle, spawn_watch_serve_window_with_metrics,
 };
 use crate::supervisor::{
     SupervisedTask, SupervisorOutcome, TaskPolicy, factory_from_future, run_supervisor,
 };
+use cc_types::ChainConfig;
+use std::sync::Arc;
 
 /// Process name / config slug.
 pub const SERVICE: &str = "p2p";
@@ -359,10 +359,8 @@ pub async fn serve(
         assert_eq!(snapshot.peer_id, *swarm.local_peer_id());
         // CC-23b handshake: ChainView from stream client, serve window seed empty,
         // local MetaData at CUSTODY_REQUIREMENT, cgc policy from config.
-        let mut handshake_deps = HandshakeDeps::new(
-            cc_types::Slot::new(0),
-            cc_types::CUSTODY_REQUIREMENT,
-        );
+        let mut handshake_deps =
+            HandshakeDeps::new(cc_types::Slot::new(0), cc_types::CUSTODY_REQUIREMENT);
         handshake_deps.view = chain_stream_handle.view.clone();
         handshake_deps.cgc_policy = if cfg.reject_low_cgc_peers {
             CgcPolicy::reject_low_cgc()
@@ -460,15 +458,8 @@ pub async fn serve(
                 .take();
             let mut shutdown = peer_shutdown.clone();
             async move {
-                if let Some((
-                    conn_rx,
-                    cmd_tx,
-                    config,
-                    metrics,
-                    dial_rx,
-                    peer_view_tx,
-                    penalty_rx,
-                )) = taken
+                if let Some((conn_rx, cmd_tx, config, metrics, dial_rx, peer_view_tx, penalty_rx)) =
+                    taken
                 {
                     let manager = PeerManager::new(config, cmd_tx, metrics);
                     run_peer_manager(
@@ -749,12 +740,7 @@ fn spawn_edge_workers(
     let m = metrics.clone();
     cc_bootstrap::spawn(
         "stub-reqresp",
-        stub_consumer(
-            "reqresp_in",
-            reqresp_in_rx,
-            m,
-            Some(QueueName::ReqrespIn),
-        ),
+        stub_consumer("reqresp_in", reqresp_in_rx, m, Some(QueueName::ReqrespIn)),
     );
     // CC-24b: dedicated OS-thread KZG verify pool (ADR P2-02).
     let kzg_backend: std::sync::Arc<dyn cc_crypto::CellKzg> =
@@ -920,14 +906,7 @@ pub async fn run_process(
     }
 
     let mut grpc = cc_bootstrap::spawn("grpc-serve", async move {
-        serve_with_options(
-            bs,
-            spec,
-            routes,
-            ServeOptions::default(),
-            combined_signal,
-        )
-        .await
+        serve_with_options(bs, spec, routes, ServeOptions::default(), combined_signal).await
     });
     let mut runtime = runtime;
 
@@ -989,10 +968,7 @@ fn map_runtime_join(
 
 /// Combine the production/test shutdown trigger with a fatal oneshot so a
 /// swarm panic can complete gRPC drain (NOT_SERVING) without SIGTERM.
-fn signal_or_fatal(
-    signal: SignalTrigger,
-    fatal_rx: oneshot::Receiver<()>,
-) -> SignalTrigger {
+fn signal_or_fatal(signal: SignalTrigger, fatal_rx: oneshot::Receiver<()>) -> SignalTrigger {
     SignalTrigger::External(Box::pin(async move {
         match signal {
             SignalTrigger::UnixSignals => {
@@ -1060,10 +1036,7 @@ pub fn service_spec(
 }
 
 /// Fill a bounded cmd sender to capacity and publish the depth gauge (tests).
-pub fn fill_cmd_queue_for_test(
-    cmd_tx: &mpsc::Sender<SwarmCommand>,
-    metrics: &P2pMetrics,
-) -> usize {
+pub fn fill_cmd_queue_for_test(cmd_tx: &mpsc::Sender<SwarmCommand>, metrics: &P2pMetrics) -> usize {
     let mut n = 0;
     while cmd_tx.try_send(SwarmCommand::Noop).is_ok() {
         n += 1;
@@ -1224,9 +1197,9 @@ impl P2pService for P2pGrpcService {
             Err(CgcHookError::NotAttached) => Err(Status::failed_precondition(
                 "set_custody_group_count: cgc hook not attached (Phase 2 — no production caller)",
             )),
-            Err(CgcHookError::CgcOutOfRange { got }) => Err(Status::invalid_argument(format!(
-                "cgc {got} out of range"
-            ))),
+            Err(CgcHookError::CgcOutOfRange { got }) => {
+                Err(Status::invalid_argument(format!("cgc {got} out of range")))
+            }
             Err(CgcHookError::Registry(e)) => {
                 Err(Status::internal(format!("cgc hook registry: {e}")))
             }

@@ -62,32 +62,28 @@ pub(crate) mod columns;
 pub(crate) mod shards;
 pub(crate) mod states;
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cc_store::engine::Engine;
 use cc_store::keys::{blocks_shard_table, columns_shard_table};
-use cc_store::meta::{
-    KEY_PRUNE_MARKS, PruneMarks, TABLE_META,
-};
+use cc_store::meta::{KEY_PRUNE_MARKS, PruneMarks, TABLE_META};
 use cc_store::{
-    epoch_of_slot, epoch_start_slot, newest_snapshot, Slot, SszDecode, SszEncode, StoreError,
+    Slot, SszDecode, SszEncode, StoreError, epoch_of_slot, epoch_start_slot, newest_snapshot,
 };
 use tokio::sync::{oneshot, watch};
 use tracing::{error, info, warn};
 
-use crate::metrics::{
-    ClassLabels, PassLabels, PrunePass, StorageClass, StorageMetrics,
-};
+use crate::metrics::{ClassLabels, PassLabels, PrunePass, StorageClass, StorageMetrics};
 use crate::writer::{BackgroundChunk, WriterError, WriterHandle};
 
-use blocks::{blocks_prune_mark, i2_check, plan_block_deletes, record_i2_refusal, I2Decision};
+use blocks::{I2Decision, blocks_prune_mark, i2_check, plan_block_deletes, record_i2_refusal};
 use chunk::{
-    submit_deletes_chunked, ChunkSubmitArgs, ChunkSubmitStats, DEFAULT_PRUNE_CHUNK_KEYS,
-    DEFAULT_PRUNE_DEADLINE,
+    ChunkSubmitArgs, ChunkSubmitStats, DEFAULT_PRUNE_CHUNK_KEYS, DEFAULT_PRUNE_DEADLINE,
+    submit_deletes_chunked,
 };
-use columns::{columns_prune_mark, plan_column_deletes, DEFAULT_COLUMNS_RETENTION_EPOCHS};
+use columns::{DEFAULT_COLUMNS_RETENTION_EPOCHS, columns_prune_mark, plan_column_deletes};
 use shards::{
     next_retirable_block_shard, next_retirable_column_shard, retire_one_block_shard,
     retire_one_column_shard,
@@ -228,7 +224,10 @@ pub(crate) enum PassOutcome {
 pub(crate) enum DiskAlarm {
     Ok,
     /// `disk_bytes` at or above the configured threshold.
-    Alarm { disk_bytes: u64, threshold: u64 },
+    Alarm {
+        disk_bytes: u64,
+        threshold: u64,
+    },
 }
 
 // ── pruner ──────────────────────────────────────────────────────────────────
@@ -575,11 +574,7 @@ impl Pruner {
         );
 
         // I2 — refuse, do not clamp.
-        match i2_check(
-            proposed,
-            current_epoch,
-            self.cfg.blocks_retention_epochs,
-        ) {
+        match i2_check(proposed, current_epoch, self.cfg.blocks_retention_epochs) {
             I2Decision::Allow => {}
             I2Decision::Refuse { proposed, floor } => {
                 record_i2_refusal(&self.metrics, proposed, floor, current_epoch);
@@ -725,11 +720,7 @@ impl Pruner {
         proposed: Slot,
     ) -> PassOutcome {
         let started = Instant::now();
-        match i2_check(
-            proposed,
-            current_epoch,
-            self.cfg.blocks_retention_epochs,
-        ) {
+        match i2_check(proposed, current_epoch, self.cfg.blocks_retention_epochs) {
             I2Decision::Allow => {}
             I2Decision::Refuse { proposed, floor } => {
                 record_i2_refusal(&self.metrics, proposed, floor, current_epoch);
@@ -1146,10 +1137,7 @@ pub(crate) fn genesis_time_from_fixture() -> Option<u64> {
 
 /// Pure watermark pair for tests (no store).
 #[must_use]
-pub(crate) fn watermarks_at(
-    current_epoch: u64,
-    cfg: &PruneConfig,
-) -> (Slot, Slot) {
+pub(crate) fn watermarks_at(current_epoch: u64, cfg: &PruneConfig) -> (Slot, Slot) {
     let c = columns_prune_mark(
         current_epoch,
         cfg.columns_retention_epochs,
@@ -1193,9 +1181,7 @@ mod tests {
     use crate::prune::blocks::block_serve_floor_slot;
     use crate::writer::{WriterBounds, WriterFaults, spawn_writer};
     use cc_store::engine::{Durability, EngineOptions};
-    use cc_store::{
-        BlockServeWindowCfg, compute_min_epochs_for_block_requests,
-    };
+    use cc_store::{BlockServeWindowCfg, compute_min_epochs_for_block_requests};
     use prometheus_client::registry::Registry;
 
     fn hoodi_floor() -> u64 {
@@ -1260,7 +1246,9 @@ mod tests {
         let e0 = 300u64;
         let outcomes0 = p.on_epoch_tick(e0).await;
         assert!(
-            outcomes0.iter().any(|(_, o)| matches!(o, PassOutcome::Ran { .. })),
+            outcomes0
+                .iter()
+                .any(|(_, o)| matches!(o, PassOutcome::Ran { .. })),
             "first tick must run passes: {outcomes0:?}"
         );
         let m0 = p.marks_snapshot();
@@ -1296,18 +1284,16 @@ mod tests {
         // Columns.
         let c_mark = columns_prune_mark(current, 4_096, 0, margin);
         let c_newest = c_mark.as_u64() - 1;
-        let c_expected = epoch_start_slot(current - 4_096).as_u64()
-            - margin * DEFAULT_SLOTS_PER_EPOCH
-            - 1;
+        let c_expected =
+            epoch_start_slot(current - 4_096).as_u64() - margin * DEFAULT_SLOTS_PER_EPOCH - 1;
         assert_eq!(c_newest, c_expected);
         assert_eq!(c_mark.as_u64(), c_expected + 1);
 
         // Blocks against computed 33_024.
         let b_mark = blocks_prune_mark(current, floor, margin);
         let b_newest = b_mark.as_u64() - 1;
-        let b_expected = epoch_start_slot(current - floor).as_u64()
-            - margin * DEFAULT_SLOTS_PER_EPOCH
-            - 1;
+        let b_expected =
+            epoch_start_slot(current - floor).as_u64() - margin * DEFAULT_SLOTS_PER_EPOCH - 1;
         assert_eq!(b_newest, b_expected);
         assert_eq!(b_mark.as_u64(), b_expected + 1);
     }
@@ -1389,10 +1375,7 @@ mod tests {
         let outcome = p.run_blocks_pass_with_mark(current, proposed).await;
         assert_eq!(outcome, PassOutcome::RefusedI2);
         assert_eq!(p.i2_refusals.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            p.metrics.window_increase_rejected.get(),
-            before_metric + 1
-        );
+        assert_eq!(p.metrics.window_increase_rejected.get(), before_metric + 1);
         let after = p.marks_snapshot();
         assert_eq!(
             after.blocks_up_to, before_marks.blocks_up_to,
@@ -1870,10 +1853,7 @@ MIN_GENESIS_TIME: 1742212800
 GENESIS_DELAY: 600
 SECONDS_PER_SLOT: 12
 ";
-        assert_eq!(
-            genesis_time_from_network_yaml(text),
-            Some(1_742_213_400)
-        );
+        assert_eq!(genesis_time_from_network_yaml(text), Some(1_742_213_400));
         // Fixture path used by production prune_config.
         let from_fixture = genesis_time_from_fixture();
         assert_eq!(from_fixture, Some(1_742_213_400));

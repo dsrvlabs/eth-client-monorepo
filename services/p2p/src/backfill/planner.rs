@@ -25,13 +25,13 @@ use tracing::{debug, warn};
 use crate::backfill::rate::OutboundBlockBudget;
 use crate::das::sampling::SamplingTracker;
 use crate::metrics::{ColumnSource, DaOutcome, P2pMetrics};
+use crate::reqresp::Protocol;
 use crate::reqresp::blocks::BlocksByRangeRequest;
 use crate::reqresp::client::{
-    PeerView, Priority, RequestPayload, RequestScheduler, RequestSpec, DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_MAX_ATTEMPTS, PeerView, Priority, RequestPayload, RequestScheduler, RequestSpec,
 };
 use crate::reqresp::codec::{RESP_TIMEOUT, TTFB_TIMEOUT};
 use crate::reqresp::columns::ColumnsByRangeRequest;
-use crate::reqresp::Protocol;
 
 // ── Bounds (Architecture §9.2) ──────────────────────────────────────────────
 
@@ -226,11 +226,7 @@ impl GapDetector {
     /// §9.1 trigger 3: peer Status head far ahead (eclipse without disconnect).
     ///
     /// Threshold: `peer.head_slot − our.head_slot > PEER_STATUS_GAP_THRESHOLD`.
-    pub fn on_peer_status(
-        &self,
-        our_head_slot: u64,
-        peer_head_slot: u64,
-    ) -> Option<GapDetected> {
+    pub fn on_peer_status(&self, our_head_slot: u64, peer_head_slot: u64) -> Option<GapDetected> {
         if peer_head_slot <= our_head_slot {
             return None;
         }
@@ -430,7 +426,10 @@ impl BackfillPeer {
 /// Peers eligible for `batch_from`, for scheduler predicates / tests.
 #[must_use]
 pub fn eligible_peers(peers: &[BackfillPeer], batch_from: Slot) -> Vec<&BackfillPeer> {
-    peers.iter().filter(|p| p.eligible_for(batch_from)).collect()
+    peers
+        .iter()
+        .filter(|p| p.eligible_for(batch_from))
+        .collect()
 }
 
 // ── Fetched material ────────────────────────────────────────────────────────
@@ -959,9 +958,7 @@ impl BackfillPlanner {
 
             let candidates: Vec<PeerView> = peers
                 .iter()
-                .filter(|p| {
-                    with_budget.contains(&p.peer_id) && !peers_in_use.contains(&p.peer_id)
-                })
+                .filter(|p| with_budget.contains(&p.peer_id) && !peers_in_use.contains(&p.peer_id))
                 .map(|p| PeerView {
                     peer_id: p.peer_id,
                     app_score: p.app_score,
@@ -997,10 +994,7 @@ impl BackfillPlanner {
             };
 
             // Debit budget; if a race emptied it, try another peer next loop.
-            if !self
-                .outbound_blocks
-                .try_reserve(choice.peer, count, now)
-            {
+            if !self.outbound_blocks.try_reserve(choice.peer, count, now) {
                 break;
             }
 
@@ -1171,11 +1165,7 @@ impl BackfillPlanner {
 
     /// Evaluate §9.4 completion criteria.
     #[must_use]
-    pub fn completion(
-        &self,
-        head_slot: u64,
-        parent_walk_clean: bool,
-    ) -> CompletionStatus {
+    pub fn completion(&self, head_slot: u64, parent_walk_clean: bool) -> CompletionStatus {
         let outstanding = self.batches.iter().any(|b| {
             matches!(
                 b.status,
@@ -1251,20 +1241,12 @@ pub fn feed_backfill_to_sampling(
     tracker.on_block(item.root, item.slot.as_u64(), item.commitment_count);
     if item.commitment_count == 0 {
         // Zero-blob: on_block completes immediately when no samples held.
-        if tracker
-            .get(&item.root)
-            .is_some_and(|t| t.is_complete())
-        {
+        if tracker.get(&item.root).is_some_and(|t| t.is_complete()) {
             return BackfillDaResult::ZeroBlob;
         }
     }
     for &col in &item.columns {
-        tracker.on_column(
-            item.root,
-            item.slot.as_u64(),
-            col,
-            ColumnSource::ByRange,
-        );
+        tracker.on_column(item.root, item.slot.as_u64(), col, ColumnSource::ByRange);
     }
     match tracker.get(&item.root) {
         Some(t) if t.is_complete() => BackfillDaResult::Available,
@@ -1306,11 +1288,7 @@ mod tests {
     }
 
     fn parent_of(n: u8) -> [u8; 32] {
-        if n == 0 {
-            [0u8; 32]
-        } else {
-            root(n - 1)
-        }
+        if n == 0 { [0u8; 32] } else { root(n - 1) }
     }
 
     fn sampled_eight() -> Vec<u64> {
@@ -1414,9 +1392,10 @@ mod tests {
     fn fifth_trigger_fires_on_serve_window_holes() {
         let d = GapDetector::new();
         // Empty holes + window at target → no fire.
-        assert!(d
-            .on_serve_window(&[], /*earliest*/ 1_000, /*target*/ 1_000)
-            .is_none());
+        assert!(
+            d.on_serve_window(&[], /*earliest*/ 1_000, /*target*/ 1_000)
+                .is_none()
+        );
         // Non-empty holes → fifth trigger for exactly that range.
         let g = d
             .on_serve_window(&[(500, 564)], 1_000, 100)
@@ -1460,7 +1439,8 @@ mod tests {
             );
             let req = planner.columns_request_for_mode(b.plan);
             assert_eq!(
-                req.columns, custodied_four(),
+                req.columns,
+                custodied_four(),
                 "below-anchor must request custodied 4, not sampled 8"
             );
             assert_ne!(req.columns, sampled_eight());
@@ -1511,8 +1491,7 @@ mod tests {
     #[test]
     fn below_anchor_requests_custodied_four_not_sampled_eight() {
         // cgc = 4, sampling_size = 8: planner must request exactly the 4 custodied.
-        let planner = BackfillPlanner::new(sampled_eight())
-            .with_custodied(custodied_four());
+        let planner = BackfillPlanner::new(sampled_eight()).with_custodied(custodied_four());
         assert_eq!(planner.sampled_columns().len(), 8);
         assert_eq!(planner.custodied_columns().len(), 4);
         planner_assert_anchor_below(&planner);
@@ -1602,7 +1581,10 @@ mod tests {
             trigger: GapTrigger::HeadJump,
         });
         assert!(
-            planner.batches().iter().any(|b| b.status == BatchStatus::Pending),
+            planner
+                .batches()
+                .iter()
+                .any(|b| b.status == BatchStatus::Pending),
             "planner keeps running after abandon"
         );
     }
@@ -1663,7 +1645,8 @@ mod tests {
         let mut prev = root(0);
         for item in &imported {
             assert_eq!(
-                item.parent_root, prev,
+                item.parent_root,
+                prev,
                 "UNKNOWN_PARENT at slot {}",
                 item.slot.as_u64()
             );
@@ -1715,7 +1698,10 @@ mod tests {
         );
         // Dual-path stream-once.
         assert!(planner.try_stream_once(root(1)));
-        assert!(!planner.try_stream_once(root(1)), "second path must not re-send");
+        assert!(
+            !planner.try_stream_once(root(1)),
+            "second path must not re-send"
+        );
         // Simulate metric: only first send counts.
         if planner.try_stream_once(root(2)) {
             m.inc_chain_objects_sent();
@@ -1844,11 +1830,7 @@ mod tests {
         planner.on_batch_success(
             id,
             BatchFetch {
-                blocks: vec![
-                    make_block(1, 1),
-                    make_block(2, 2),
-                    make_block(3, 3),
-                ],
+                blocks: vec![make_block(1, 1), make_block(2, 2), make_block(3, 3)],
                 columns: Vec::new(),
             },
         );
@@ -1859,9 +1841,9 @@ mod tests {
     #[test]
     fn peer_eligibility_requires_digest_and_earliest() {
         let peers = vec![
-            bf_peer(1, 100, true),  // earliest too high for batch@50
-            bf_peer(2, 0, false),   // digest mismatch
-            bf_peer(3, 0, true),    // ok
+            bf_peer(1, 100, true), // earliest too high for batch@50
+            bf_peer(2, 0, false),  // digest mismatch
+            bf_peer(3, 0, true),   // ok
         ];
         let ok = eligible_peers(&peers, Slot::new(50));
         assert_eq!(ok.len(), 1);
@@ -1907,7 +1889,9 @@ mod tests {
         assert!(a2.is_empty(), "budget exhausted at t0");
         assert!(planner.outbound_block_budget().within_bound());
         assert_eq!(
-            planner.outbound_block_budget().total_requested(peer_from_byte(1)),
+            planner
+                .outbound_block_budget()
+                .total_requested(peer_from_byte(1)),
             total
         );
     }
@@ -1926,7 +1910,10 @@ mod tests {
         let t0 = Instant::now();
         let assigns = planner.schedule_at(&peers, &mut sched, t0);
         // Four concurrent batches on four peers = 256 slots, each peer ≤ 64.
-        assert_eq!(assigns.len(), MAX_CONCURRENT_BATCHES.min(planner.batches().len()));
+        assert_eq!(
+            assigns.len(),
+            MAX_CONCURRENT_BATCHES.min(planner.batches().len())
+        );
         assert!(planner.outbound_block_budget().within_bound());
         let totals = planner.outbound_block_budget().per_peer_totals();
         // Distribution is recorded so concentration is visible.

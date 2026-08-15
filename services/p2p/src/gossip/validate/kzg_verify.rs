@@ -118,9 +118,7 @@ pub fn production_kzg_verify() -> Arc<dyn KzgVerify> {
     match load_default_backend() {
         Some(backend) => Arc::new(CellKzgVerifier::new(backend)),
         None => {
-            error!(
-                "KZG trusted setup unavailable; column step-12 is fail-closed (REJECT all KZG)"
-            );
+            error!("KZG trusted setup unavailable; column step-12 is fail-closed (REJECT all KZG)");
             Arc::new(FailClosedKzg)
         }
     }

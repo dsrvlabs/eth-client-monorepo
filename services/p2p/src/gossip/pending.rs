@@ -194,8 +194,7 @@ impl PendingQueues {
 
     /// Redrive sidecars whose parent is now known.
     pub fn redrive_sidecars_for_parent(&mut self, parent_root: &[u8; 32]) -> Vec<PendingSidecar> {
-        self.sidecars
-            .drain_if(|s| s.parent_root == *parent_root)
+        self.sidecars.drain_if(|s| s.parent_root == *parent_root)
     }
 
     /// Redrive sidecars parked for unknown proposer (caller re-checks lookahead).

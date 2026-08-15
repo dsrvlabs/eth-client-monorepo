@@ -262,11 +262,7 @@ impl ReplayDriver {
         seed_state_ssz: Option<&[u8]>,
     ) -> Result<Option<SnapshotTimings>, ReplayError> {
         self.finalizations_seen.fetch_add(1, Ordering::SeqCst);
-        if !snapshot_due(
-            self.last_epoch(),
-            finalized_epoch,
-            self.cfg.snapshot_epochs,
-        ) {
+        if !snapshot_due(self.last_epoch(), finalized_epoch, self.cfg.snapshot_epochs) {
             return Ok(None);
         }
         let Some(_flight) = self.try_begin_flight() else {
@@ -397,10 +393,7 @@ impl ReplayDriver {
         Ok(timings)
     }
 
-    async fn commit_snapshot_p2(
-        &self,
-        plan: &cc_store::SnapshotPlan,
-    ) -> Result<(), ReplayError> {
+    async fn commit_snapshot_p2(&self, plan: &cc_store::SnapshotPlan) -> Result<(), ReplayError> {
         let (done_tx, done_rx) = oneshot::channel();
         let chunk = BackgroundChunk {
             class: StorageClass::Snapshots,
@@ -498,8 +491,7 @@ fn prepare_snapshot(
     observe_phase(metrics, SnapshotPhase::Serialize, serialize_secs);
 
     let rt = engine.read().map_err(ReplayError::Store)?;
-    let plan =
-        plan_snapshot_put(&rt, snap_slot, &ssz, ring).map_err(ReplayError::Store)?;
+    let plan = plan_snapshot_put(&rt, snap_slot, &ssz, ring).map_err(ReplayError::Store)?;
 
     Ok(PreparedSnapshot {
         plan,
@@ -551,10 +543,7 @@ fn replay_state_to_slot(
             match block_ssz {
                 Some(ssz) => blocks.push((slot, ssz)),
                 None => {
-                    return Err(ReplayError::MissingBlock {
-                        slot: slot_u,
-                        root,
-                    });
+                    return Err(ReplayError::MissingBlock { slot: slot_u, root });
                 }
             }
         }
@@ -569,16 +558,12 @@ fn replay_state_to_slot(
                 slot.as_u64()
             )));
         }
-        state_transition(
-            state,
-            &signed,
-            &ctx,
-            BlockSignatureStrategy::NoVerification,
-        )
-        .map_err(|e| ReplayError::Transition {
-            slot: slot.as_u64(),
-            detail: e.to_string(),
-        })?;
+        state_transition(state, &signed, &ctx, BlockSignatureStrategy::NoVerification).map_err(
+            |e| ReplayError::Transition {
+                slot: slot.as_u64(),
+                detail: e.to_string(),
+            },
+        )?;
     }
 
     // Empty slots after the last applied block (or entire range if no blocks).
@@ -592,9 +577,8 @@ fn replay_state_to_slot(
 }
 
 fn decode_signed_block(ssz: &[u8]) -> Result<SignedBeaconBlock<Mainnet>, ReplayError> {
-    SignedBeaconBlock::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, ssz).map_err(|e| {
-        ReplayError::Ssz(format!("SignedBeaconBlock decode failed: {e:?}"))
-    })
+    SignedBeaconBlock::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, ssz)
+        .map_err(|e| ReplayError::Ssz(format!("SignedBeaconBlock decode failed: {e:?}")))
 }
 
 /// Load chain config for ST (bundled Hoodi fixture, same as storage open path).
@@ -617,11 +601,7 @@ fn load_chain_config() -> ChainConfig {
     }
 }
 
-fn resolve_expected_root(
-    engine: &Engine,
-    slot: Slot,
-    fallback: Root,
-) -> Result<Root, ReplayError> {
+fn resolve_expected_root(engine: &Engine, slot: Slot, fallback: Root) -> Result<Root, ReplayError> {
     let rt = engine.read().map_err(ReplayError::Store)?;
     if let Some(sr) = get_state_root(&rt, slot).map_err(ReplayError::Store)? {
         return Ok(sr);
@@ -637,13 +617,14 @@ fn resolve_expected_root(
     if fallback != Root::ZERO {
         return Ok(fallback);
     }
-    Err(ReplayError::MissingExpectedRoot { slot: slot.as_u64() })
+    Err(ReplayError::MissingExpectedRoot {
+        slot: slot.as_u64(),
+    })
 }
 
 fn decode_mainnet_state(ssz: &[u8]) -> Result<BeaconState<Mainnet>, ReplayError> {
-    BeaconState::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, ssz).map_err(|e| {
-        ReplayError::Ssz(format!("BeaconState decode failed: {e:?}"))
-    })
+    BeaconState::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, ssz)
+        .map_err(|e| ReplayError::Ssz(format!("BeaconState decode failed: {e:?}")))
 }
 
 fn observe_phase(metrics: &StorageMetrics, phase: SnapshotPhase, secs: f64) {
@@ -660,7 +641,9 @@ pub(crate) fn measure_load_from_store(engine: &Engine, slot: Slot) -> Result<f64
     let rt = engine.read().map_err(ReplayError::Store)?;
     let ssz = cc_store::get_snapshot(&rt, slot)
         .map_err(ReplayError::Store)?
-        .ok_or(ReplayError::MissingSnapshot { slot: slot.as_u64() })?;
+        .ok_or(ReplayError::MissingSnapshot {
+            slot: slot.as_u64(),
+        })?;
     drop(rt);
     let started = Instant::now();
     let mut state = decode_mainnet_state(&ssz)?;
@@ -805,9 +788,7 @@ pub(crate) enum ReplayError {
     Transition { slot: u64, detail: String },
     #[error("state slot {state_slot} is past target {target}")]
     StatePastTarget { state_slot: u64, target: u64 },
-    #[error(
-        "replay divergence at slot {slot}: replayed={replayed} expected={expected}"
-    )]
+    #[error("replay divergence at slot {slot}: replayed={replayed} expected={expected}")]
     Divergence {
         replayed: Root,
         expected: Root,
@@ -859,11 +840,11 @@ mod tests {
     use super::*;
     use crate::metrics::StorageMetrics;
     use crate::writer::{WriterBounds, WriterFaults, spawn_writer};
+    use cc_state_transition::process_slots;
     use cc_store::blocks::put_state_root;
     use cc_store::engine::{Durability, EngineOptions};
     use cc_store::meta::WriteCursor as StoreCursor;
     use cc_store::{Split, plan_snapshot_put, put_snapshot};
-    use cc_state_transition::process_slots;
     use prometheus_client::registry::Registry;
     use std::sync::atomic::AtomicU64;
 

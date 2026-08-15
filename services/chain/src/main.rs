@@ -385,8 +385,7 @@ async fn main() -> anyhow::Result<()> {
                         "restore complete; installing core (primary path, CC-45b)"
                     );
                     let orphan = {
-                        let mut guard =
-                            core_owner_boot.lock().unwrap_or_else(|p| p.into_inner());
+                        let mut guard = core_owner_boot.lock().unwrap_or_else(|p| p.into_inner());
                         guard.try_install(&svc_boot, install.core)
                     };
                     if let Some(core) = orphan {
@@ -398,7 +397,9 @@ async fn main() -> anyhow::Result<()> {
                     }
                     // Already marked ready at AwaitingRestore entry (idempotent).
                     let _ = local_ready;
-                    tracing::info!("restore lifecycle complete (core installed; health already SERVING)");
+                    tracing::info!(
+                        "restore lifecycle complete (core installed; health already SERVING)"
+                    );
                 }
                 empty_or_timeout @ (RestoreGateOutcome::Empty | RestoreGateOutcome::TimedOut) => {
                     let reason = match empty_or_timeout {

@@ -1,11 +1,11 @@
 //! Spec `process_slashings` (Electra correlation penalty).
 
+use cc_types::BeaconState;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Gwei, ValidatorIndex};
-use cc_types::BeaconState;
 
-use crate::error::EpochError;
 use crate::epoch_cache::total_active_balance_cached;
+use crate::error::EpochError;
 use crate::helpers::accessors::get_current_epoch;
 use crate::helpers::constants::{
     EFFECTIVE_BALANCE_INCREMENT, PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX,
@@ -43,7 +43,8 @@ pub fn process_slashings<P: Preset>(state: &mut BeaconState<P>) -> Result<(), Ep
     if total_increments == 0 {
         return Err(EpochError::ArithmeticOverflow);
     }
-    let penalty_per_effective_balance_increment = adjusted_total_slashing_balance / total_increments;
+    let penalty_per_effective_balance_increment =
+        adjusted_total_slashing_balance / total_increments;
 
     let n = state.validators_len();
     let half_vector = P::EPOCHS_PER_SLASHINGS_VECTOR / 2;

@@ -22,7 +22,7 @@ use super::{
     BACKOFF_CAP, BACKOFF_INITIAL, DEFAULT_VERDICT_LATE_AFTER, DEFAULT_VERDICT_TIMEOUT,
     OUTSTANDING_CAP, STALL_HEARTBEAT_FRACTION,
 };
-use crate::channels::{ChainInbound, ChainOutbound, VerdictResolution, CHAIN_OUT_BOUND};
+use crate::channels::{CHAIN_OUT_BOUND, ChainInbound, ChainOutbound, VerdictResolution};
 use crate::metrics::{P2pMetrics, QueueName};
 
 /// Correlation id for outstanding entries (`GossipObject.root` / `Verdict.correlation_id`).
@@ -102,7 +102,11 @@ impl OutstandingMap {
     }
 
     /// Iterate entries older than `timeout` since **first** send (for local IGNORE).
-    pub fn drain_timed_out(&mut self, timeout: Duration, now: Instant) -> Vec<(CorrelationId, OutstandingEntry)> {
+    pub fn drain_timed_out(
+        &mut self,
+        timeout: Duration,
+        now: Instant,
+    ) -> Vec<(CorrelationId, OutstandingEntry)> {
         let mut out = Vec::new();
         let keys: Vec<_> = self
             .map
@@ -197,8 +201,7 @@ pub fn new_session_id() -> u64 {
     getrandom::u64().unwrap_or_else(|_| {
         // Fall back to a time-derived id if the CSPRNG is unavailable (should not
         // happen on supported platforms).
-        Instant::now().elapsed().as_nanos() as u64
-            ^ std::process::id() as u64
+        Instant::now().elapsed().as_nanos() as u64 ^ std::process::id() as u64
     })
 }
 
@@ -487,15 +490,9 @@ async fn connect_and_run_session(
     // Flush objects buffered while disconnected.
     let buffered = std::mem::take(pending_out);
     for item in buffered {
-        if send_object(
-            item,
-            &mut out_seq,
-            &out_tx,
-            outstanding,
-            metrics,
-        )
-        .await
-        .is_err()
+        if send_object(item, &mut out_seq, &out_tx, outstanding, metrics)
+            .await
+            .is_err()
         {
             return SessionEnd::Disconnected;
         }

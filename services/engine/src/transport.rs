@@ -186,8 +186,14 @@ impl EngineTransport {
         rpc_method: &str,
         params: Value,
     ) -> Result<Value, EngineError> {
-        self.call_with(lane, method, rpc_method, params, RequestOverrides::default())
-            .await
+        self.call_with(
+            lane,
+            method,
+            rpc_method,
+            params,
+            RequestOverrides::default(),
+        )
+        .await
     }
 
     /// Acquire the ordered-lane mutex (held across admit + fcU HTTP, CC-33 F1).
@@ -210,13 +216,8 @@ impl EngineTransport {
         rpc_method: &str,
         params: Value,
     ) -> Result<Value, EngineError> {
-        self.call_inner(
-            method,
-            rpc_method,
-            params,
-            RequestOverrides::default(),
-        )
-        .await
+        self.call_inner(method, rpc_method, params, RequestOverrides::default())
+            .await
     }
 
     /// Like [`Self::call`], with explicit JWT `iat` and/or `Host` overrides.

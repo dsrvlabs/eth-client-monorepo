@@ -25,10 +25,10 @@ pub use cache::resolve_cache_root;
 pub use case::{Case, Vectors};
 pub use coverage::assert_handler_coverage;
 pub use error::{Error, FETCH_HINT};
-pub use lockfile::{Lockfile, ARTIFACTS, LOCKFILE_SRC};
+pub use lockfile::{ARTIFACTS, LOCKFILE_SRC, Lockfile};
 pub use meta::{BlsSetting, Meta};
 pub use skiplist::{SkipEntry, SkipList};
-pub use snappy::{decompress_block, MAX_DECOMPRESSED_BYTES};
+pub use snappy::{MAX_DECOMPRESSED_BYTES, decompress_block};
 pub use steps::{load_steps, load_steps_values};
 
 // Frame helper is crate-private (test / format proof only).
@@ -50,17 +50,14 @@ mod integration {
     }
 
     fn open_real() -> Vectors {
-        Vectors::open_in(real_cache_root()).expect(
-            "real vector cache must be present; run scripts/fetch-spec-vectors.sh",
-        )
+        Vectors::open_in(real_cache_root())
+            .expect("real vector cache must be present; run scripts/fetch-spec-vectors.sh")
     }
 
     #[test]
     fn open_empty_cache_contains_fetch_hint() {
-        let dir = std::env::temp_dir().join(format!(
-            "cc-spec-tests-open-empty-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("cc-spec-tests-open-empty-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("mkdir");
         let err = Vectors::open_in(&dir).expect_err("empty cache");
@@ -103,10 +100,8 @@ mod integration {
     #[test]
     fn corrupt_marker_reports_artifact_and_digests() {
         let lock = Lockfile::parse(LOCKFILE_SRC).expect("lock");
-        let dir = std::env::temp_dir().join(format!(
-            "cc-spec-tests-corrupt-int-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("cc-spec-tests-corrupt-int-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let tag_dir = dir.join(&lock.tag);
         fs::create_dir_all(tag_dir.join("tests")).expect("mkdir");
@@ -139,9 +134,7 @@ mod integration {
             .expect("cases");
         assert!(!cases.is_empty(), "Fork ssz_static cases");
         let case = &cases[0];
-        let bytes = case
-            .ssz_bytes("serialized.ssz_snappy")
-            .expect("decompress");
+        let bytes = case.ssz_bytes("serialized.ssz_snappy").expect("decompress");
         // Fork SSZ is 16 bytes (four uint64 / version fields depending on layout).
         assert!(
             !bytes.is_empty(),
@@ -209,7 +202,10 @@ mod integration {
             .find(|c| c.path.join("steps.yaml").is_file())
             .expect("on_block has steps.yaml cases");
         let steps = case.steps_values().expect("steps");
-        assert!(!steps.is_empty(), "steps.yaml should be a non-empty sequence");
+        assert!(
+            !steps.is_empty(),
+            "steps.yaml should be a non-empty sequence"
+        );
     }
 
     #[test]
@@ -221,5 +217,4 @@ mod integration {
         assert!(msg.contains("missing"), "{msg}");
         assert!(msg.contains("extra"), "{msg}");
     }
-
 }

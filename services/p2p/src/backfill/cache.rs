@@ -16,16 +16,16 @@
 //! process RSS); realistic inserts must pass true payload sizes.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cc_types::primitives::{Root, Slot};
 use cc_types::sidecar::DataColumnSidecar;
-use cc_types::{Mainnet, Preset, SignedBeaconBlock, SAMPLES_PER_SLOT};
+use cc_types::{Mainnet, Preset, SAMPLES_PER_SLOT, SignedBeaconBlock};
 use smallvec::SmallVec;
 use ssz::Encode;
 
-use super::window::{compute_earliest_available_slot, ServeWindow, EMPTY_WINDOW_SLOT};
+use super::window::{EMPTY_WINDOW_SLOT, ServeWindow, compute_earliest_available_slot};
 use crate::metrics::P2pMetrics;
 
 /// Hard byte ceiling across blocks **and** columns (**1 GiB**).
@@ -365,10 +365,7 @@ impl<P: Preset> BackfillCache<P> {
     /// Used by `beacon_blocks_by_range` serve (CC-23c). Returns
     /// `(root, arc, accounted_bytes)`.
     #[must_use]
-    pub fn block_at_slot(
-        &self,
-        slot: Slot,
-    ) -> Option<(Root, Arc<SignedBeaconBlock<P>>, usize)> {
+    pub fn block_at_slot(&self, slot: Slot) -> Option<(Root, Arc<SignedBeaconBlock<P>>, usize)> {
         self.blocks
             .get(&slot)
             .and_then(|v| v.first())
@@ -380,10 +377,7 @@ impl<P: Preset> BackfillCache<P> {
     /// Used by `beacon_blocks_by_root` / `by_head` serve (CC-23c). Cache depth
     /// is ≤ [`CACHE_BLOCK_COUNT_BOUND`], so a scan is acceptable.
     #[must_use]
-    pub fn block_by_root(
-        &self,
-        root: &Root,
-    ) -> Option<(Slot, Arc<SignedBeaconBlock<P>>, usize)> {
+    pub fn block_by_root(&self, root: &Root) -> Option<(Slot, Arc<SignedBeaconBlock<P>>, usize)> {
         for (slot, entries) in &self.blocks {
             for (r, block, bytes) in entries {
                 if r == root {
@@ -441,23 +435,14 @@ impl<P: Preset> BackfillCache<P> {
 
     /// SSZ-encode the column at `(slot, root, index)` if present.
     #[must_use]
-    pub fn column_ssz_at(
-        &self,
-        slot: Slot,
-        root: &Root,
-        column_index: u64,
-    ) -> Option<Vec<u8>> {
+    pub fn column_ssz_at(&self, slot: Slot, root: &Root, column_index: u64) -> Option<Vec<u8>> {
         let (col, _) = self.column_at(slot, root, column_index)?;
         Some(col.as_ssz_bytes())
     }
 
     /// SSZ-encode the column identified by `root` + `column_index` if present.
     #[must_use]
-    pub fn column_ssz_by_root(
-        &self,
-        root: &Root,
-        column_index: u64,
-    ) -> Option<(Slot, Vec<u8>)> {
+    pub fn column_ssz_by_root(&self, root: &Root, column_index: u64) -> Option<(Slot, Vec<u8>)> {
         let (slot, col, _) = self.column_by_root(root, column_index)?;
         Some((slot, col.as_ssz_bytes()))
     }
@@ -714,8 +699,7 @@ impl<P: Preset> BackfillCache<P> {
 
         self.floor_recompute_invocations
             .fetch_add(1, Ordering::Relaxed);
-        self.cache_floor
-            .store(floor.as_u64(), Ordering::Release);
+        self.cache_floor.store(floor.as_u64(), Ordering::Release);
     }
 
     fn export_occupancy(&self) {
@@ -773,8 +757,7 @@ mod tests {
             "block slot {slot}: {o:?}"
         );
         for col in 0u64..4 {
-            let o =
-                cache.insert_column_accounted(s, r, col, dummy_column(col), bytes_each);
+            let o = cache.insert_column_accounted(s, r, col, dummy_column(col), bytes_each);
             assert!(
                 matches!(o, InsertOutcome::Inserted { .. }),
                 "col {col} slot {slot}: {o:?}"
@@ -1098,13 +1081,7 @@ mod tests {
     #[test]
     fn unknown_column_rejected() {
         let mut cache = test_cache(1_000);
-        let o = cache.insert_column_accounted(
-            Slot::new(1),
-            root_for(1),
-            99,
-            dummy_column(99),
-            10,
-        );
+        let o = cache.insert_column_accounted(Slot::new(1), root_for(1), 99, dummy_column(99), 10);
         assert_eq!(o, InsertOutcome::RejectedUnknownColumn);
     }
 

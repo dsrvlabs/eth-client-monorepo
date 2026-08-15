@@ -269,9 +269,7 @@ impl PeerTable {
 
     /// Ensure a row exists; return mutable ref.
     pub fn entry_mut(&mut self, id: PeerId) -> &mut PeerRecord {
-        self.peers
-            .entry(id)
-            .or_insert_with(|| PeerRecord::new(id))
+        self.peers.entry(id).or_insert_with(|| PeerRecord::new(id))
     }
 
     /// Mark dialing.
@@ -285,12 +283,7 @@ impl PeerTable {
     }
 
     /// Mark connected.
-    pub fn insert_connected(
-        &mut self,
-        id: PeerId,
-        direction: ConnectionDirection,
-        now: Instant,
-    ) {
+    pub fn insert_connected(&mut self, id: PeerId, direction: ConnectionDirection, now: Instant) {
         let rec = self.entry_mut(id);
         rec.state = ConnectionState::Connected;
         rec.direction = Some(direction);
@@ -471,9 +464,7 @@ impl PeerManager {
     pub async fn handle_conn_event(&mut self, event: ConnEvent, now: Instant) {
         match event {
             ConnEvent::ConnectionEstablished {
-                peer_id,
-                direction,
-                ..
+                peer_id, direction, ..
             } => {
                 self.on_connected(peer_id, direction, now).await;
             }
@@ -814,8 +805,10 @@ impl PeerManager {
     }
 
     fn sync_peer_metrics(&self) {
-        self.metrics
-            .set_peers(MetricDirection::Inbound, self.table.connected_inbound() as i64);
+        self.metrics.set_peers(
+            MetricDirection::Inbound,
+            self.table.connected_inbound() as i64,
+        );
         self.metrics.set_peers(
             MetricDirection::Outbound,
             self.table.connected_outbound() as i64,
@@ -829,8 +822,7 @@ impl PeerManager {
             .iter()
             .filter(|p| p.state == ConnectionState::Connected && p.custody_usefulness > 0)
             .count();
-        self.metrics
-            .set_peers_custody_compatible(compatible as i64);
+        self.metrics.set_peers_custody_compatible(compatible as i64);
     }
 
     fn better_static_candidate(&self, now: Instant) -> Option<PeerId> {
@@ -858,7 +850,11 @@ impl PeerManager {
     }
 
     fn is_better_than(&self, candidate: &PeerId, victim: &PeerId) -> bool {
-        let c_score = self.table.get(candidate).map(|r| r.app_score).unwrap_or(0.0);
+        let c_score = self
+            .table
+            .get(candidate)
+            .map(|r| r.app_score)
+            .unwrap_or(0.0);
         let v_score = self.table.get(victim).map(|r| r.app_score).unwrap_or(0.0);
         let c_c = self
             .table
@@ -1115,7 +1111,11 @@ mod tests {
             !dials.is_empty(),
             "dialling must resume below target; cmds={cmds:?}"
         );
-        assert!(dials.len() <= 8, "concurrent dials ≤ 8, got {}", dials.len());
+        assert!(
+            dials.len() <= 8,
+            "concurrent dials ≤ 8, got {}",
+            dials.len()
+        );
     }
 
     #[tokio::test]
@@ -1220,19 +1220,35 @@ mod tests {
         let mesh = pid();
         let young = pid();
 
-        table.insert_connected(low, ConnectionDirection::Inbound, now - Duration::from_secs(100));
+        table.insert_connected(
+            low,
+            ConnectionDirection::Inbound,
+            now - Duration::from_secs(100),
+        );
         table.get_mut(&low).unwrap().app_score = -10.0;
         table.get_mut(&low).unwrap().custody_usefulness = 5;
 
-        table.insert_connected(mid, ConnectionDirection::Inbound, now - Duration::from_secs(100));
+        table.insert_connected(
+            mid,
+            ConnectionDirection::Inbound,
+            now - Duration::from_secs(100),
+        );
         table.get_mut(&mid).unwrap().app_score = 0.0;
         table.get_mut(&mid).unwrap().custody_usefulness = 0;
 
-        table.insert_connected(high, ConnectionDirection::Outbound, now - Duration::from_secs(100));
+        table.insert_connected(
+            high,
+            ConnectionDirection::Outbound,
+            now - Duration::from_secs(100),
+        );
         table.get_mut(&high).unwrap().app_score = 10.0;
 
         // Mesh-protected with high score — must not be chosen while others exist.
-        table.insert_connected(mesh, ConnectionDirection::Outbound, now - Duration::from_secs(50));
+        table.insert_connected(
+            mesh,
+            ConnectionDirection::Outbound,
+            now - Duration::from_secs(50),
+        );
         table.get_mut(&mesh).unwrap().app_score = -15.0; // worse score but protected
         table.get_mut(&mesh).unwrap().in_mesh = true;
         table.get_mut(&mesh).unwrap().gossip_score = 0.0; // above GossipThreshold
@@ -1270,8 +1286,16 @@ mod tests {
         let now = Instant::now();
         let a = pid();
         let b = pid();
-        table.insert_connected(a, ConnectionDirection::Outbound, now - Duration::from_secs(10));
-        table.insert_connected(b, ConnectionDirection::Outbound, now - Duration::from_secs(10));
+        table.insert_connected(
+            a,
+            ConnectionDirection::Outbound,
+            now - Duration::from_secs(10),
+        );
+        table.insert_connected(
+            b,
+            ConnectionDirection::Outbound,
+            now - Duration::from_secs(10),
+        );
         table.get_mut(&a).unwrap().app_score = 1.0;
         table.get_mut(&b).unwrap().app_score = 1.0;
         table.get_mut(&a).unwrap().custody_usefulness = 0;
@@ -1364,7 +1388,9 @@ mod tests {
         mgr.set_app_score(id, -20.0, now).await;
         let cmds = drain(&mut cap);
         assert!(
-            !cmds.iter().any(|c| matches!(c, SwarmCommand::Disconnect { .. })),
+            !cmds
+                .iter()
+                .any(|c| matches!(c, SwarmCommand::Disconnect { .. })),
             "at -20 must stay: {cmds:?}"
         );
 
@@ -1376,7 +1402,8 @@ mod tests {
                 .any(|c| matches!(c, SwarmCommand::Disconnect { .. }))
         );
         assert!(
-            !cmds.iter()
+            !cmds
+                .iter()
                 .any(|c| matches!(c, SwarmCommand::BlockPeer { .. }))
         );
         assert!(!mgr.bans.is_banned(&id));
@@ -1430,7 +1457,9 @@ mod tests {
         assert_eq!(app, 0.0, "NaN sanitized to 0");
         let cmds = drain(&mut cap);
         assert!(
-            !cmds.iter().any(|c| matches!(c, SwarmCommand::Disconnect { .. })),
+            !cmds
+                .iter()
+                .any(|c| matches!(c, SwarmCommand::Disconnect { .. })),
             "sanitized 0 must not disconnect: {cmds:?}"
         );
 

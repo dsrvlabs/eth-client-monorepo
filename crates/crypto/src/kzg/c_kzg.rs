@@ -1,9 +1,9 @@
 //! `c-kzg` 2.1.8 backend (Architecture §4.3, CC-11b backend A).
 
-use super::setup::{load_c_kzg_settings, DEFAULT_PRECOMPUTE};
+use super::setup::{DEFAULT_PRECOMPUTE, load_c_kzg_settings};
 use super::{Blob, CellKzg, CellProofs, Cells, CellsAndProofs, KzgError};
-use cc_types::{Cell, KzgCommitment, KzgProof, CELLS_PER_EXT_BLOB};
 use c_kzg::{Bytes48, Cell as CkzgCell, KzgSettings};
+use cc_types::{CELLS_PER_EXT_BLOB, Cell, KzgCommitment, KzgProof};
 
 /// `c-kzg` cell-KZG backend loaded from the committed trusted setup.
 pub struct CKzgBackend {
@@ -122,8 +122,7 @@ impl CellKzg for CKzgBackend {
                 cells.len()
             )));
         }
-        let ckzg_cells: Result<Vec<CkzgCell>, KzgError> =
-            cells.iter().map(to_ckzg_cell).collect();
+        let ckzg_cells: Result<Vec<CkzgCell>, KzgError> = cells.iter().map(to_ckzg_cell).collect();
         let ckzg_cells = ckzg_cells?;
         let (recovered_cells, recovered_proofs) = self
             .settings
@@ -171,18 +170,12 @@ impl CellKzg for CKzgBackend {
             .iter()
             .map(|p| to_ckzg_bytes48(p.as_array()))
             .collect();
-        let ckzg_cells: Result<Vec<CkzgCell>, KzgError> =
-            cells.iter().map(to_ckzg_cell).collect();
+        let ckzg_cells: Result<Vec<CkzgCell>, KzgError> = cells.iter().map(to_ckzg_cell).collect();
         let ckzg_cells = ckzg_cells?;
 
         // c-kzg already returns Result<bool, Error> with Ok(false) = invalid.
         self.settings
-            .verify_cell_kzg_proof_batch(
-                &ckzg_commitments,
-                cell_indices,
-                &ckzg_cells,
-                &ckzg_proofs,
-            )
+            .verify_cell_kzg_proof_batch(&ckzg_commitments, cell_indices, &ckzg_cells, &ckzg_proofs)
             .map_err(map_err)
     }
 }

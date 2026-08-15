@@ -20,14 +20,10 @@ use crate::backfill::ServeWindow;
 use crate::chain_stream::ChainViewStore;
 use crate::channels::GoodbyeReason;
 use crate::fork_digest::ForkContext;
-use crate::reqresp::metadata::{
-    evaluate_peer_cgc, CgcEval, CgcPolicy, LocalMetaData, MetaDataV3,
-};
-use crate::reqresp::ping::{seq_mismatch, Ping};
-use crate::reqresp::status::{
-    build_local_status, evaluate_peer_status, StatusEval, StatusV2,
-};
 use crate::reqresp::Protocol;
+use crate::reqresp::metadata::{CgcEval, CgcPolicy, LocalMetaData, MetaDataV3, evaluate_peer_cgc};
+use crate::reqresp::ping::{Ping, seq_mismatch};
+use crate::reqresp::status::{StatusEval, StatusV2, build_local_status, evaluate_peer_status};
 
 /// Outbound work the swarm / peer manager should perform.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,8 +185,7 @@ impl HandshakeBook {
     ) -> Vec<OutboundAction> {
         let status = deps.local_status(fork_ctx);
         let state = self.peers.entry(peer_id).or_default();
-        state.status_exchanges_initiated =
-            state.status_exchanges_initiated.saturating_add(1);
+        state.status_exchanges_initiated = state.status_exchanges_initiated.saturating_add(1);
         state.last_status_epoch = Some(fork_ctx.current_epoch().as_u64());
         vec![OutboundAction::SendRequest {
             peer_id,
@@ -267,11 +262,7 @@ impl HandshakeBook {
     }
 
     /// Initiate a Ping to `peer_id` with our current seq.
-    pub fn initiate_ping(
-        &mut self,
-        peer_id: PeerId,
-        deps: &HandshakeDeps,
-    ) -> Vec<OutboundAction> {
+    pub fn initiate_ping(&mut self, peer_id: PeerId, deps: &HandshakeDeps) -> Vec<OutboundAction> {
         let _ = self.peers.entry(peer_id).or_default();
         let ping = deps.local_ping();
         vec![OutboundAction::SendRequest {
@@ -314,9 +305,9 @@ pub fn decode_goodbye_ssz(ssz: &[u8]) -> Result<u64, std::io::Error> {
             format!("Goodbye SSZ length {} != 8", ssz.len()),
         ));
     }
-    let arr: [u8; 8] = ssz.try_into().map_err(|_| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "goodbye reason")
-    })?;
+    let arr: [u8; 8] = ssz
+        .try_into()
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "goodbye reason"))?;
     Ok(u64::from_le_bytes(arr))
 }
 
@@ -338,9 +329,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use cc_proto::p2p::ChainView;
-    use cc_types::{ChainConfig, Root, CUSTODY_REQUIREMENT};
     use crate::reqresp::metadata::CgcPolicy;
+    use cc_proto::p2p::ChainView;
+    use cc_types::{CUSTODY_REQUIREMENT, ChainConfig, Root};
 
     fn fork_ctx_at(epoch: u64) -> ForkContext {
         const YAML: &str =
@@ -414,12 +405,7 @@ mod tests {
         let mut peer_status = deps.local_status(&fork);
         peer_status.fork_digest = ForkDigest::from_array([0xDE, 0xAD, 0xBE, 0xEF]);
 
-        let result = book.on_inbound_status(
-            peer_id,
-            peer_status,
-            fork.current_digest(),
-            &deps,
-        );
+        let result = book.on_inbound_status(peer_id, peer_status, fork.current_digest(), &deps);
         assert!(!result.accept);
         match result.disconnect {
             Some(OutboundAction::Disconnect { reason, .. }) => {
@@ -452,8 +438,7 @@ mod tests {
         let fork = fork_ctx_at(0);
         let peer_id = peer(4);
         let peer_status = deps.local_status(&fork);
-        let result =
-            book.on_inbound_status(peer_id, peer_status, fork.current_digest(), &deps);
+        let result = book.on_inbound_status(peer_id, peer_status, fork.current_digest(), &deps);
         assert!(result.accept);
         assert!(result.disconnect.is_none());
     }

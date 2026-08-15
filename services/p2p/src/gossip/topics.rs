@@ -21,8 +21,8 @@
 
 use sha2::{Digest, Sha256};
 
-use cc_libp2p::reexport::gossipsub::{Message, MessageId};
 use cc_libp2p::BehaviourConfig;
+use cc_libp2p::reexport::gossipsub::{Message, MessageId};
 use cc_types::ForkDigest;
 
 // ── Message-id domains (§14/1 scaffold read from specs/phase0/p2p-interface.md
@@ -74,11 +74,7 @@ pub fn compute_message_id(topic: &str, payload: &[u8], domain: [u8; 4]) -> [u8; 
 /// `payload` must already be the **decompressed** SSZ bytes.
 #[must_use]
 pub fn message_id_valid_snappy(topic: &str, decompressed_payload: &[u8]) -> [u8; MESSAGE_ID_SIZE] {
-    compute_message_id(
-        topic,
-        decompressed_payload,
-        MESSAGE_DOMAIN_VALID_SNAPPY,
-    )
+    compute_message_id(topic, decompressed_payload, MESSAGE_DOMAIN_VALID_SNAPPY)
 }
 
 /// Message-id for a payload that failed snappy decompression (hostile / raw).

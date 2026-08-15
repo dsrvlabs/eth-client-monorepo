@@ -11,11 +11,12 @@
 //! `storage.retention_override.columns_epochs` (CC-4D).
 
 use cc_store::keys::{
-    cold_column_slot_range, column_shard_id, columns_shard_table, decode_column_slot_by_root_value,
-    decode_hot_column_key, encode_column_slot_by_root_key, encode_hot_column_key, SLOTS_PER_EPOCH,
+    SLOTS_PER_EPOCH, cold_column_slot_range, column_shard_id, columns_shard_table,
+    decode_column_slot_by_root_value, decode_hot_column_key, encode_column_slot_by_root_key,
+    encode_hot_column_key,
 };
 use cc_store::{
-    epoch_start_slot, Engine, Root, Slot, StoreError, TABLE_COLUMNS_HOT, TABLE_COLUMN_SLOT_BY_ROOT,
+    Engine, Root, Slot, StoreError, TABLE_COLUMN_SLOT_BY_ROOT, TABLE_COLUMNS_HOT, epoch_start_slot,
 };
 
 use super::PrunePlan;
@@ -36,9 +37,7 @@ pub(crate) fn columns_prune_mark(
     margin_epochs: u64,
 ) -> Slot {
     let retention = columns_retention_epochs.max(1);
-    let floor_epoch = current_epoch
-        .saturating_sub(retention)
-        .max(fulu_fork_epoch);
+    let floor_epoch = current_epoch.saturating_sub(retention).max(fulu_fork_epoch);
     let floor_slot = epoch_start_slot(floor_epoch);
     let margin_slots = margin_epochs.saturating_mul(SLOTS_PER_EPOCH);
     floor_slot.saturating_sub(margin_slots)
@@ -77,7 +76,9 @@ pub(crate) fn plan_column_deletes(
         };
         for item in iter {
             let (key, value) = item?;
-            plan.bytes = plan.bytes.saturating_add(key.len() as u64 + value.len() as u64);
+            plan.bytes = plan
+                .bytes
+                .saturating_add(key.len() as u64 + value.len() as u64);
             plan.rows = plan.rows.saturating_add(1);
             plan.deletes.push((table.clone(), key));
         }
@@ -89,7 +90,9 @@ pub(crate) fn plan_column_deletes(
     if let Ok(iter) = rt.range(TABLE_COLUMNS_HOT, &lo, &hi) {
         for item in iter {
             let (key, value) = item?;
-            plan.bytes = plan.bytes.saturating_add(key.len() as u64 + value.len() as u64);
+            plan.bytes = plan
+                .bytes
+                .saturating_add(key.len() as u64 + value.len() as u64);
             plan.rows = plan.rows.saturating_add(1);
             if let Some((_slot, root, index)) = decode_hot_column_key(&key) {
                 let idx_key = encode_column_slot_by_root_key(&root, index);

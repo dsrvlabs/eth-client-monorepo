@@ -24,7 +24,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cc_store::blocks::{TABLE_BLOCKS_HOT, TABLE_BLOCK_SLOT_BY_ROOT, get_block_by_root};
+use cc_store::blocks::{TABLE_BLOCK_SLOT_BY_ROOT, TABLE_BLOCKS_HOT, get_block_by_root};
 use cc_store::columns::{TABLE_DA_STATUS, get_da_status};
 use cc_store::engine::{Engine, StoreError};
 use cc_store::invariants::{
@@ -124,9 +124,10 @@ impl DurableItem {
             | Self::SchemaAndDigest
             | Self::Split
             | Self::NodeIdPairing => MissingBehaviour::NamedFailure,
-            Self::LatestSnapshot | Self::WriteCursor | Self::EnrSequence | Self::BackfillProgress => {
-                MissingBehaviour::Degradation
-            }
+            Self::LatestSnapshot
+            | Self::WriteCursor
+            | Self::EnrSequence
+            | Self::BackfillProgress => MissingBehaviour::Degradation,
         }
     }
 }
@@ -377,7 +378,10 @@ fn assess_anchor(engine: &Engine) -> Result<ItemAssessment, StoreError> {
     let rt = engine.read()?;
     let has_body = get_block_by_root(&rt, &anchor.anchor_root)?.is_some();
     let has_index = rt
-        .get(TABLE_BLOCK_SLOT_BY_ROOT, &encode_root_key(&anchor.anchor_root))?
+        .get(
+            TABLE_BLOCK_SLOT_BY_ROOT,
+            &encode_root_key(&anchor.anchor_root),
+        )?
         .is_some();
     if !has_body && !has_index {
         return Ok(named_fail(
@@ -872,12 +876,8 @@ pub(crate) fn load_expected_node_id_from_key_path(
         // Key not yet materialised (first boot before p2p creates it) — skip.
         return Ok(None);
     }
-    let bytes = std::fs::read(path).map_err(|e| {
-        format!(
-            "node key read failed at {}: {e}",
-            path.display()
-        )
-    })?;
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("node key read failed at {}: {e}", path.display()))?;
     if bytes.len() != 32 {
         return Err(format!(
             "node key at {} has length {}, expected 32",
@@ -914,12 +914,8 @@ mod tests {
     use cc_store::keys::{encode_block_slot_by_root_value, encode_cold_block_key};
     use cc_store::meta::{KEY_PRUNE_MARKS, PruneMarks};
     use cc_store::snapshots::TABLE_SNAPSHOTS;
-    use cc_store::{
-        ConfigDigestInput, Store, StoreOpenOptions, SszEncode, compute_config_digest,
-    };
-    use cc_types::{
-        BlobParameters, BlobSchedule, ChainConfig, Checkpoint, Epoch, PresetName,
-    };
+    use cc_store::{ConfigDigestInput, SszEncode, Store, StoreOpenOptions, compute_config_digest};
+    use cc_types::{BlobParameters, BlobSchedule, ChainConfig, Checkpoint, Epoch, PresetName};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn tmp_dir(label: &str) -> PathBuf {
@@ -1141,11 +1137,7 @@ mod tests {
             for (slot, r) in [(10u64, r10), (11, r11), (12, r12)] {
                 let s = Slot::new(slot);
                 b.put(TABLE_CANONICAL, &encode_cold_block_key(s), r.as_slice());
-                b.put(
-                    TABLE_BLOCKS_HOT,
-                    &encode_hot_block_key(s, &r),
-                    b"block-ssz",
-                );
+                b.put(TABLE_BLOCKS_HOT, &encode_hot_block_key(s, &r), b"block-ssz");
                 b.put(
                     TABLE_BLOCK_SLOT_BY_ROOT,
                     &encode_root_key(&r),
@@ -1319,10 +1311,7 @@ mod tests {
         let f = Fixture::new("del-sibling");
         let s11 = Slot::new(11);
         // Delete body only; leave block_slot_by_root so the gap is visible.
-        f.delete_row(
-            TABLE_BLOCKS_HOT,
-            &encode_hot_block_key(s11, &f.sibling),
-        );
+        f.delete_row(TABLE_BLOCKS_HOT, &encode_hot_block_key(s11, &f.sibling));
         let a = assess_item(f.engine(), DurableItem::BlocksToHead, &f.ctx()).unwrap();
         assert!(
             a.is_named_failure_for(DurableItem::BlocksToHead),
@@ -1431,7 +1420,9 @@ mod tests {
         );
         if let ItemAssessment::NamedFailure { detail, .. } = &a {
             assert!(
-                detail.contains("re-gate") || detail.contains("licence") || detail.contains("license"),
+                detail.contains("re-gate")
+                    || detail.contains("licence")
+                    || detail.contains("license"),
                 "{detail}"
             );
         }

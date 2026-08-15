@@ -293,10 +293,7 @@ impl<G: GossipsubControl> TopicRegistry<G> {
         match self.phase {
             SubscriptionPhase::Steady => self.current,
             SubscriptionPhase::Overlap => {
-                if self
-                    .boundary
-                    .is_some_and(|b| epoch.as_u64() >= b.as_u64())
-                {
+                if self.boundary.is_some_and(|b| epoch.as_u64() >= b.as_u64()) {
                     self.next_digest.unwrap_or(self.current)
                 } else {
                     self.current
@@ -420,16 +417,12 @@ impl<G: GossipsubControl> TopicRegistry<G> {
         desired: &BTreeSet<SubnetId>,
         params: TopicParams,
     ) -> Result<(), RegistryError> {
-        self.resync_subnet_family(
-            digest,
-            desired,
-            params,
-            TopicName::SyncCommittee,
-            |name| match name {
+        self.resync_subnet_family(digest, desired, params, TopicName::SyncCommittee, |name| {
+            match name {
                 TopicName::SyncCommittee(id) => Some(id),
                 _ => None,
-            },
-        )
+            }
+        })
     }
 
     /// Resync `beacon_attestation_{subnet_id}` subscriptions for `digest`.
@@ -759,7 +752,10 @@ mod tests {
         );
         let key = TopicKey::new(ctx.current_digest(), TopicName::BeaconBlock);
         let err = reg.subscribe(key, TopicParams::default()).unwrap_err();
-        assert!(matches!(err, RegistryError::NoValidator(TopicName::BeaconBlock)));
+        assert!(matches!(
+            err,
+            RegistryError::NoValidator(TopicName::BeaconBlock)
+        ));
         assert!(reg.gossip().calls.is_empty());
     }
 
@@ -783,10 +779,7 @@ mod tests {
         let calls = &reg.gossip().calls;
         assert_eq!(calls.len(), 2, "exactly params then subscribe: {calls:?}");
         match &calls[0] {
-            GossipCall::SetTopicParams {
-                topic,
-                params: p,
-            } => {
+            GossipCall::SetTopicParams { topic, params: p } => {
                 assert_eq!(topic, &key.topic_string());
                 assert_eq!(p, &params);
             }
@@ -854,7 +847,11 @@ mod tests {
         ctx.on_epoch(e_drain);
         reg.advance_to(e_drain, &ctx).unwrap();
         assert_eq!(reg.phase(), SubscriptionPhase::Drain);
-        assert_eq!(reg.live_digests(), HashSet::from([d_next]), "Drain live set");
+        assert_eq!(
+            reg.live_digests(),
+            HashSet::from([d_next]),
+            "Drain live set"
+        );
         assert!(
             !reg.subscribed_keys()
                 .contains(&TopicKey::new(d_current, TopicName::BeaconBlock)),
@@ -901,15 +898,14 @@ mod tests {
         ctx.on_epoch(e);
         reg.advance_to(e, &ctx).unwrap();
 
-        let next_topic =
-            format_topic_string(&d_next, TopicName::BeaconBlock);
+        let next_topic = format_topic_string(&d_next, TopicName::BeaconBlock);
         let calls = &reg.gossip().calls;
-        let set_idx = calls.iter().position(|c| {
-            matches!(c, GossipCall::SetTopicParams { topic, .. } if topic == &next_topic)
-        });
-        let sub_idx = calls.iter().position(|c| {
-            matches!(c, GossipCall::Subscribe { topic } if topic == &next_topic)
-        });
+        let set_idx = calls.iter().position(
+            |c| matches!(c, GossipCall::SetTopicParams { topic, .. } if topic == &next_topic),
+        );
+        let sub_idx = calls
+            .iter()
+            .position(|c| matches!(c, GossipCall::Subscribe { topic } if topic == &next_topic));
         let (si, su) = (
             set_idx.expect("set_topic_params for next"),
             sub_idx.expect("subscribe for next"),

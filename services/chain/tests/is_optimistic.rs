@@ -153,8 +153,8 @@ fn spawn_svc(
         ring_capacity: 64,
         subscriber_queue_capacity: 32,
         session_id: Some(42),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
     let head = HeadSnapshotStore::new();
     let core = spawn_core_thread(
         store,
@@ -168,10 +168,7 @@ fn spawn_svc(
     (svc, core, events)
 }
 
-async fn is_optimistic_rpc(
-    svc: &ChainServiceImpl,
-    root: Option<Root>,
-) -> IsOptimisticResponse {
+async fn is_optimistic_rpc(svc: &ChainServiceImpl, root: Option<Root>) -> IsOptimisticResponse {
     let req = IsOptimisticRequest {
         root: root.map(|r| r.as_slice().to_vec()),
     };
@@ -206,8 +203,7 @@ async fn is_optimistic_unknown_root() {
 #[tokio::test]
 async fn is_optimistic_synthetic_head() {
     let optimistic = root_tag(0xA1);
-    let (store_opt, anchor, config) =
-        seeded_store(Some((optimistic, ExecutionStatus::Optimistic)));
+    let (store_opt, anchor, config) = seeded_store(Some((optimistic, ExecutionStatus::Optimistic)));
     let (svc, core, _events) = spawn_svc(store_opt, config.clone());
 
     let opt_resp = is_optimistic_rpc(&svc, Some(optimistic)).await;
@@ -344,8 +340,7 @@ async fn el_offline_false_while_optimistic_true() {
         .connect()
         .await
         .unwrap();
-    let mut engine =
-        cc_proto::engine::engine_service_client::EngineServiceClient::new(channel);
+    let mut engine = cc_proto::engine::engine_service_client::EngineServiceClient::new(channel);
     let engine_state = engine
         .get_engine_state(Request::new(GetEngineStateRequest {}))
         .await

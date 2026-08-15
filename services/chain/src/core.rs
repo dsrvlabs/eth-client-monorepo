@@ -18,9 +18,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use cc_fork_choice::{
-    PeerDasAvailability, Store, is_optimistic, is_optimistic_node, on_tick,
-};
+use cc_fork_choice::{PeerDasAvailability, Store, is_optimistic, is_optimistic_node, on_tick};
 use cc_proto::chain::{
     ApplyAttestationsRequest, ApplyAttestationsResponse, ImportBlockRequest, ImportBlockResponse,
 };
@@ -766,9 +764,8 @@ fn handle_query<P: Preset>(
                 ));
             }
             let head = head_root_of(store);
-            let mut roots = Vec::with_capacity(
-                end_slot.saturating_sub(start_slot).saturating_add(1) as usize,
-            );
+            let mut roots =
+                Vec::with_capacity(end_slot.saturating_sub(start_slot).saturating_add(1) as usize);
             for s in start_slot..=end_slot {
                 let root = store
                     .proto_array()
@@ -1078,12 +1075,7 @@ fn core_loop<P: Preset>(
                     tracing::debug!(error = %e, now, "on_tick on SlotTick skipped");
                 }
                 let current_slot = store.get_current_slot().as_u64();
-                expire_pending_da(
-                    &mut pending_da,
-                    current_slot,
-                    da_timeout_slots,
-                    &metrics,
-                );
+                expire_pending_da(&mut pending_da, current_slot, da_timeout_slots, &metrics);
                 expire_pending_engine(
                     &mut pending_engine,
                     current_slot,
@@ -1326,13 +1318,7 @@ fn redrive_pending_engine<P: Preset>(
         metrics.set_da_pending_occupancy(pending_da.len() as u64);
         metrics.set_pending_engine_occupancy(pending_engine.len() as u64);
         if outcome.is_ok() {
-            maybe_publish_epoch_context(
-                store,
-                config,
-                epoch,
-                epoch_sequence,
-                last_published_epoch,
-            );
+            maybe_publish_epoch_context(store, config, epoch, epoch_sequence, last_published_epoch);
         }
     }
 }
@@ -1362,18 +1348,18 @@ fn maybe_publish_epoch_context<P: Preset>(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
-#[derive(Debug, Default, Clone, Copy)]
-struct AcceptEngine;
+    /// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+    #[derive(Debug, Default, Clone, Copy)]
+    struct AcceptEngine;
 
-impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
-    fn verify_and_notify_new_payload(
-        &self,
-        _request: cc_state_transition::NewPayloadRequest<'_, P>,
-    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
-        Ok(cc_state_transition::PayloadStatus::Valid)
+    impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+        fn verify_and_notify_new_payload(
+            &self,
+            _request: cc_state_transition::NewPayloadRequest<'_, P>,
+        ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+            Ok(cc_state_transition::PayloadStatus::Valid)
+        }
     }
-}
 
     use super::*;
     use std::sync::Arc;

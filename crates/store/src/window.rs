@@ -52,9 +52,7 @@ use tracing::{error, warn};
 use cc_types::{Root, Slot};
 
 use crate::engine::{Batch, Engine, StoreError};
-use crate::meta::{
-    AnchorInfo, ColumnInfo, KEY_SERVE_WINDOW, ServeWindow, SlotRange, TABLE_META,
-};
+use crate::meta::{AnchorInfo, ColumnInfo, KEY_SERVE_WINDOW, ServeWindow, SlotRange, TABLE_META};
 use crate::split::SLOTS_PER_EPOCH;
 
 /// Config scalars that enter the block serve-window floor.
@@ -77,10 +75,7 @@ pub struct BlockServeWindowCfg {
 impl BlockServeWindowCfg {
     /// Construct from the two required scalars with no vestigial field.
     #[must_use]
-    pub const fn new(
-        min_validator_withdrawability_delay: u64,
-        churn_limit_quotient: u64,
-    ) -> Self {
+    pub const fn new(min_validator_withdrawability_delay: u64, churn_limit_quotient: u64) -> Self {
         Self {
             min_validator_withdrawability_delay,
             churn_limit_quotient,
@@ -140,14 +135,14 @@ impl BlockServeWindowCfg {
 pub fn compute_min_epochs_for_block_requests(
     cfg: &BlockServeWindowCfg,
 ) -> Result<u64, WindowConfigError> {
-    let half = cfg
-        .churn_limit_quotient
-        .checked_div(2)
-        .ok_or(WindowConfigError::ArithmeticOverflow {
-            op: "CHURN_LIMIT_QUOTIENT / 2",
-            min_validator_withdrawability_delay: cfg.min_validator_withdrawability_delay,
-            churn_limit_quotient: cfg.churn_limit_quotient,
-        })?;
+    let half =
+        cfg.churn_limit_quotient
+            .checked_div(2)
+            .ok_or(WindowConfigError::ArithmeticOverflow {
+                op: "CHURN_LIMIT_QUOTIENT / 2",
+                min_validator_withdrawability_delay: cfg.min_validator_withdrawability_delay,
+                churn_limit_quotient: cfg.churn_limit_quotient,
+            })?;
     cfg.min_validator_withdrawability_delay
         .checked_add(half)
         .ok_or(WindowConfigError::ArithmeticOverflow {
@@ -295,19 +290,12 @@ pub fn sidecar_retention_floor(current_slot: Slot) -> Slot {
 ///
 /// No wall-clock / timer input — only floors and `current_slot`.
 #[must_use]
-pub fn earliest_available_slot(
-    b: Slot,
-    c: Slot,
-    current_slot: Slot,
-) -> (Slot, WindowBranch) {
+pub fn earliest_available_slot(b: Slot, c: Slot, current_slot: Slot) -> (Slot, WindowBranch) {
     let r = sidecar_retention_floor(current_slot);
     if c.as_u64() <= r.as_u64() {
         (b, WindowBranch::One)
     } else {
-        (
-            Slot::new(b.as_u64().max(c.as_u64())),
-            WindowBranch::Two,
-        )
+        (Slot::new(b.as_u64().max(c.as_u64())), WindowBranch::Two)
     }
 }
 
@@ -369,9 +357,7 @@ pub fn raise_for_holes(base: Slot, holes: &[SlotRange]) -> Slot {
 pub enum ServeWindowError {
     /// Caller passed more than [`MAX_SERVE_WINDOW_HOLES`] — refuse, never truncate
     /// (a truncated hole list would free-ride on unrecorded gaps).
-    #[error(
-        "ServeWindow.holes cap is {cap}; got {got} (refuse 65th — never truncate free-ride)"
-    )]
+    #[error("ServeWindow.holes cap is {cap}; got {got} (refuse 65th — never truncate free-ride)")]
     HoleCapExceeded {
         /// Number of holes supplied.
         got: usize,
@@ -499,7 +485,10 @@ pub fn append_hole(holes: &mut Vec<SlotRange>, hole: SlotRange) -> HoleAppendRes
         // Degenerate — treat as no-op duplicate rather than pollute the list.
         return HoleAppendResult::Duplicate;
     }
-    if holes.iter().any(|h| h.start == hole.start && h.end == hole.end) {
+    if holes
+        .iter()
+        .any(|h| h.start == hole.start && h.end == hole.end)
+    {
         return HoleAppendResult::Duplicate;
     }
     if holes.len() >= MAX_SERVE_WINDOW_HOLES {
@@ -585,10 +574,8 @@ pub fn write_derived_serve_window(
     current_slot: Slot,
     fail_commit: bool,
 ) -> Result<ServeWindow, StoreError> {
-    let window =
-        derive_serve_window(block_floor, column_floor, cgc, holes, current_slot).map_err(|e| {
-            StoreError::Codec(e.to_string())
-        })?;
+    let window = derive_serve_window(block_floor, column_floor, cgc, holes, current_slot)
+        .map_err(|e| StoreError::Codec(e.to_string()))?;
     let mut batch = engine.batch();
     put_serve_window(&mut batch, &window);
     if fail_commit {
@@ -652,7 +639,10 @@ mod tests {
     fn compute_hoodi_fixture_is_33024() {
         let cfg = BlockServeWindowCfg::from_yaml_file(types_fixture("hoodi-config.yaml"))
             .expect("parse hoodi-config.yaml serve-window fields");
-        assert_eq!(cfg.min_validator_withdrawability_delay, HOODI_WITHDRAWABILITY);
+        assert_eq!(
+            cfg.min_validator_withdrawability_delay,
+            HOODI_WITHDRAWABILITY
+        );
         assert_eq!(cfg.churn_limit_quotient, HOODI_CHURN);
         assert_eq!(
             compute_min_epochs_for_block_requests(&cfg).expect("hoodi must compute"),
@@ -746,10 +736,12 @@ mod tests {
         let cfg = BlockServeWindowCfg::from_yaml_file(types_fixture("mainnet-config.yaml"))
             .expect("parse mainnet-config.yaml serve-window fields");
         assert_eq!(cfg.min_epochs_for_block_requests, None);
-        assert_eq!(cfg.min_validator_withdrawability_delay, HOODI_WITHDRAWABILITY);
+        assert_eq!(
+            cfg.min_validator_withdrawability_delay,
+            HOODI_WITHDRAWABILITY
+        );
         assert_eq!(cfg.churn_limit_quotient, HOODI_CHURN);
-        let floor =
-            check_min_epochs_for_block_requests(&cfg).expect("absent field must start");
+        let floor = check_min_epochs_for_block_requests(&cfg).expect("absent field must start");
         assert_eq!(floor, HOODI_FLOOR);
     }
 
@@ -897,16 +889,9 @@ mod tests {
         ));
         // Persist path also refuses — nothing lands.
         let (_dir, eng) = temp_engine("hole-cap");
-        let write_err = write_derived_serve_window(
-            &eng,
-            Slot::new(0),
-            Slot::new(0),
-            4,
-            &holes,
-            head0(),
-            false,
-        )
-        .unwrap_err();
+        let write_err =
+            write_derived_serve_window(&eng, Slot::new(0), Slot::new(0), 4, &holes, head0(), false)
+                .unwrap_err();
         assert!(
             write_err.to_string().contains("cap") || write_err.to_string().contains("65"),
             "err={write_err}"
@@ -1005,7 +990,12 @@ mod tests {
             cgc: 4,
             oldest_custodied_column_slot: Slot::new(50),
         };
-        assert!(try_extend_column_floor(&mut cols, Slot::new(49), false, true));
+        assert!(try_extend_column_floor(
+            &mut cols,
+            Slot::new(49),
+            false,
+            true
+        ));
         let w = derive_serve_window(
             Slot::new(40),
             cols.oldest_custodied_column_slot,
@@ -1232,7 +1222,7 @@ mod tests {
     #[test]
     fn flip_triggered_by_column_completion_predicate_not_timer() {
         use crate::backfill_progress::{
-            column_backfill_complete, column_backfill_target_slot, COLUMN_BACKFILL_EPOCHS,
+            COLUMN_BACKFILL_EPOCHS, column_backfill_complete, column_backfill_target_slot,
         };
 
         let current_epoch = 6_000u64;
@@ -1263,7 +1253,10 @@ mod tests {
             .split("pub fn earliest_available_slot")
             .nth(1)
             .expect("function body");
-        let flip_fn = flip_region.split("pub fn derive_serve_window").next().unwrap();
+        let flip_fn = flip_region
+            .split("pub fn derive_serve_window")
+            .next()
+            .unwrap();
         for forbidden in ["Instant", "elapsed", "SystemTime"] {
             assert!(
                 !flip_fn.contains(forbidden),
@@ -1307,12 +1300,14 @@ mod tests {
         // Block floor still 100 days *above* the full block target (still descending).
         // Full block target ≈ current − 33024 epochs; we place B 100 days short of that.
         let block_target_epochs = 33_024u64;
-        let full_block_floor =
-            current_slot
-                .as_u64()
-                .saturating_sub(block_target_epochs.saturating_mul(SLOTS_PER_EPOCH));
+        let full_block_floor = current_slot
+            .as_u64()
+            .saturating_sub(block_target_epochs.saturating_mul(SLOTS_PER_EPOCH));
         let b = Slot::new(full_block_floor.saturating_add(100 * DAY_SLOTS));
-        assert!(b.as_u64() > full_block_floor, "B still moving toward target");
+        assert!(
+            b.as_u64() > full_block_floor,
+            "B still moving toward target"
+        );
         assert!(c.as_u64() <= r.as_u64());
 
         let w = derive_serve_window(b, c, 4, &[], current_slot).unwrap();
@@ -1338,13 +1333,9 @@ mod tests {
                 .as_u64()
                 .saturating_sub(33_024u64.saturating_mul(SLOTS_PER_EPOCH)),
         );
-        let c = Slot::new(
-            current_slot
-                .as_u64()
-                .saturating_sub(
-                    MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS.saturating_mul(SLOTS_PER_EPOCH),
-                ),
-        );
+        let c = Slot::new(current_slot.as_u64().saturating_sub(
+            MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS.saturating_mul(SLOTS_PER_EPOCH),
+        ));
         assert!(c.as_u64() <= sidecar_retention_floor(current_slot).as_u64());
 
         let branch1 = derive_serve_window(b, c, 4, &[], current_slot).unwrap();
@@ -1365,6 +1356,9 @@ mod tests {
              ({delta_slots} slots at 12 s); DAY_SLOTS={DAY_SLOTS}"
         );
         // Sanity: ~129 days (33024 − 4096) epochs × 32 × 12 / 86400.
-        assert!(delta_days > 120 && delta_days < 140, "expected ~129 days, got {delta_days}");
+        assert!(
+            delta_days > 120 && delta_days < 140,
+            "expected ~129 days, got {delta_days}"
+        );
     }
 }

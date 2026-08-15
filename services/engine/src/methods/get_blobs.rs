@@ -481,14 +481,9 @@ mod tests {
 
         let m = metrics();
         let t = transport(&server.uri(), Some(m.clone()));
-        let out = get_blobs_v2(
-            &t,
-            Some(&m),
-            &[sample_hash(1)],
-            NullContext::PrunedPool,
-        )
-        .await
-        .expect("null is Ok(Miss)");
+        let out = get_blobs_v2(&t, Some(&m), &[sample_hash(1)], NullContext::PrunedPool)
+            .await
+            .expect("null is Ok(Miss)");
         assert_eq!(out, GetBlobsOutcome::Miss(NullCause::PrunedPool));
         let miss = m
             .getblobs_total
@@ -536,14 +531,9 @@ mod tests {
             Duration::from_secs(60),
             Some(m.clone()),
         );
-        let err = get_blobs_v2(
-            &t,
-            Some(&m),
-            &[sample_hash(1)],
-            NullContext::PrunedPool,
-        )
-        .await
-        .expect_err("must time out");
+        let err = get_blobs_v2(&t, Some(&m), &[sample_hash(1)], NullContext::PrunedPool)
+            .await
+            .expect_err("must time out");
         assert!(matches!(err, EngineError::Timeout { .. }));
         let miss = m
             .getblobs_total

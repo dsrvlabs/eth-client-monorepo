@@ -45,7 +45,6 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
     }
 }
 
-
 fn active_validator(i: u64) -> Validator {
     Validator {
         pubkey: BlsPublicKey::from_array({
@@ -227,8 +226,8 @@ fn spawn_svc(
         ring_capacity: 64,
         subscriber_queue_capacity: 32,
         session_id: Some(42),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
     let head = HeadSnapshotStore::new();
     let core = spawn_core_thread(
         store,

@@ -49,8 +49,7 @@ impl TaskPolicy {
 }
 
 /// Factory that (re)spawns a named worker. Must not reset metric counters.
-pub type TaskFactory =
-    Box<dyn FnMut() -> JoinHandle<()> + Send + 'static>;
+pub type TaskFactory = Box<dyn FnMut() -> JoinHandle<()> + Send + 'static>;
 
 /// One supervised task.
 #[allow(missing_debug_implementations)] // holds `TaskFactory` closure
@@ -143,7 +142,10 @@ pub async fn run_supervisor(
                 // run deaf.
                 let name = tasks[idx].name;
                 if matches!(tasks[idx].policy, TaskPolicy::ProcessFatal) {
-                    error!(task = name, "process-fatal task exited cleanly; treating as fatal");
+                    error!(
+                        task = name,
+                        "process-fatal task exited cleanly; treating as fatal"
+                    );
                     return SupervisorOutcome::Fatal {
                         task: name,
                         payload: "clean exit".to_owned(),
@@ -175,10 +177,7 @@ pub async fn run_supervisor(
                         let now = Instant::now();
                         let log = &mut restart_log[idx];
                         log.push_back(now);
-                        while log
-                            .front()
-                            .is_some_and(|t| now.duration_since(*t) > window)
-                        {
+                        while log.front().is_some_and(|t| now.duration_since(*t) > window) {
                             log.pop_front();
                         }
                         if log.len() as u32 > max_restarts {
@@ -189,9 +188,7 @@ pub async fn run_supervisor(
                             );
                             return SupervisorOutcome::Fatal {
                                 task: name,
-                                payload: format!(
-                                    "restart budget exhausted after panic: {payload}"
-                                ),
+                                payload: format!("restart budget exhausted after panic: {payload}"),
                             };
                         }
                         handles[idx] = Some((tasks[idx].factory)());

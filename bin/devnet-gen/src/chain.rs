@@ -5,11 +5,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use cc_crypto::{
-    compute_signing_root, get_domain, SecretKey, DOMAIN_BEACON_PROPOSER, DOMAIN_RANDAO,
-    INFINITY_SIGNATURE,
+    DOMAIN_BEACON_PROPOSER, DOMAIN_RANDAO, INFINITY_SIGNATURE, SecretKey, compute_signing_root,
+    get_domain,
 };
-use cc_state_transition::{get_beacon_proposer_index, get_current_epoch, get_randao_mix, process_block, process_slots,
-    measured_canonical_root, TransitionContext,
+use cc_state_transition::{
+    TransitionContext, get_beacon_proposer_index, get_current_epoch, get_randao_mix,
+    measured_canonical_root, process_block, process_slots,
 };
 use cc_types::block::{BeaconBlock, BeaconBlockBody, SignedBeaconBlock};
 use cc_types::config::ChainConfig;
@@ -24,7 +25,7 @@ use tree_hash::TreeHash;
 
 use crate::inclusion::{kzg_commitments_inclusion_proof, verify_inclusion_proof};
 use crate::keys::ValidatorKey;
-use crate::kzg_columns::{columns_from_materials, compute_blob_materials, ColumnBundle};
+use crate::kzg_columns::{ColumnBundle, columns_from_materials, compute_blob_materials};
 use crate::params::DevnetParams;
 
 /// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
@@ -39,7 +40,6 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
         Ok(cc_state_transition::PayloadStatus::Valid)
     }
 }
-
 
 /// One generated slot's artifacts (in memory).
 #[derive(Debug, Clone)]
@@ -94,8 +94,7 @@ pub fn generate_chain<P: Preset>(
             .secret;
 
         // Parent = hash_tree_root(latest_block_header) after process_slots.
-        let parent_root =
-            Root::from_hash256(TreeHash::tree_hash_root(state.latest_block_header()));
+        let parent_root = Root::from_hash256(TreeHash::tree_hash_root(state.latest_block_header()));
 
         // Blob / column material.
         let materials = compute_blob_materials(kzg, &seed, slot_u, blob_count)?;
@@ -196,10 +195,7 @@ pub fn generate_chain<P: Preset>(
         // Persist to disk.
         let slot_dir = chain_dir.join(format!("slot_{slot_u:06}"));
         fs::create_dir_all(&slot_dir)?;
-        fs::write(
-            slot_dir.join("block.ssz"),
-            signed.as_ssz_bytes(),
-        )?;
+        fs::write(slot_dir.join("block.ssz"), signed.as_ssz_bytes())?;
         for sc in &sidecars {
             fs::write(
                 slot_dir.join(format!("column_{:03}.ssz", sc.index)),
@@ -213,7 +209,10 @@ pub fn generate_chain<P: Preset>(
             "blob_count": blob_count,
             "block_root": format!("0x{}", hex::encode(block_root.as_slice())),
         });
-        fs::write(slot_dir.join("meta.json"), serde_json::to_vec_pretty(&meta)?)?;
+        fs::write(
+            slot_dir.join("meta.json"),
+            serde_json::to_vec_pretty(&meta)?,
+        )?;
 
         artifacts.push(SlotArtifacts {
             slot: slot_u,
@@ -280,4 +279,3 @@ pub fn verify_block_proposer_sig<P: Preset>(
     };
     cc_crypto::verify(proposer_pk, root.as_array(), &sig)
 }
-

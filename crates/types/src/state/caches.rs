@@ -599,7 +599,8 @@ pub struct ShuffledCommitteeEpoch {
 /// eviction removes entries (Architecture §5.4).
 pub struct ShufflingCache {
     capacity: usize,
-    inner: std::sync::Mutex<lru::LruCache<ShufflingCacheKey, std::sync::Arc<ShuffledCommitteeEpoch>>>,
+    inner:
+        std::sync::Mutex<lru::LruCache<ShufflingCacheKey, std::sync::Arc<ShuffledCommitteeEpoch>>>,
     /// Number of times a shuffling was computed (cache miss fill). Instrumented
     /// for CC-13/6 compute-once assertions.
     compute_count: std::sync::atomic::AtomicU64,
@@ -618,7 +619,10 @@ impl Clone for ShufflingCache {
             .unwrap_or(std::num::NonZeroUsize::MIN);
         let mut new_map = lru::LruCache::new(cap);
         // Preserve LRU order: `iter` yields MRU → LRU; re-insert in reverse.
-        let entries: Vec<_> = guard.iter().map(|(k, v)| (*k, std::sync::Arc::clone(v))).collect();
+        let entries: Vec<_> = guard
+            .iter()
+            .map(|(k, v)| (*k, std::sync::Arc::clone(v)))
+            .collect();
         for (k, v) in entries.into_iter().rev() {
             new_map.put(k, v);
         }
@@ -668,10 +672,7 @@ impl ShufflingCache {
 
     /// Current number of cached epochs.
     pub fn len(&self) -> usize {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Whether the cache is empty.
@@ -692,10 +693,7 @@ impl ShufflingCache {
     }
 
     /// Lookup without computing.
-    pub fn get(
-        &self,
-        key: &ShufflingCacheKey,
-    ) -> Option<std::sync::Arc<ShuffledCommitteeEpoch>> {
+    pub fn get(&self, key: &ShufflingCacheKey) -> Option<std::sync::Arc<ShuffledCommitteeEpoch>> {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -743,10 +741,7 @@ impl ShufflingCache {
 
     /// Clear all entries (does not reset compute_count).
     pub fn clear(&self) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     /// Whether `key` is present (does not update LRU order).

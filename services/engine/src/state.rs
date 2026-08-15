@@ -68,12 +68,7 @@ impl EngineStateInternal {
     }
 
     /// All four internal states (table-driven tests).
-    pub const ALL: [Self; 4] = [
-        Self::Synced,
-        Self::Syncing,
-        Self::Offline,
-        Self::AuthFailed,
-    ];
+    pub const ALL: [Self; 4] = [Self::Synced, Self::Syncing, Self::Offline, Self::AuthFailed];
 }
 
 /// Externally visible engine reachability (two values).
@@ -145,9 +140,9 @@ impl UpcheckOutcome {
     #[must_use]
     pub fn from_engine_error(err: &EngineError) -> Self {
         match err {
-            EngineError::Http401 { body } | EngineError::Http403 { body } => Self::AuthRejected {
-                body: body.clone(),
-            },
+            EngineError::Http401 { body } | EngineError::Http403 { body } => {
+                Self::AuthRejected { body: body.clone() }
+            }
             other => Self::Failure {
                 detail: other.to_string(),
             },
@@ -408,12 +403,14 @@ impl EngineStateMachine {
         }
 
         let (to, reason) = match &outcome {
-            UpcheckOutcome::Ok(EthSyncingResult::NotSyncing) => {
-                (EngineStateInternal::Synced, TransitionReason::EthSyncingFalse)
-            }
-            UpcheckOutcome::Ok(EthSyncingResult::Syncing(_)) => {
-                (EngineStateInternal::Syncing, TransitionReason::EthSyncingOther)
-            }
+            UpcheckOutcome::Ok(EthSyncingResult::NotSyncing) => (
+                EngineStateInternal::Synced,
+                TransitionReason::EthSyncingFalse,
+            ),
+            UpcheckOutcome::Ok(EthSyncingResult::Syncing(_)) => (
+                EngineStateInternal::Syncing,
+                TransitionReason::EthSyncingOther,
+            ),
             UpcheckOutcome::AuthRejected { body } => {
                 tracing::error!(
                     body = %body,
@@ -500,8 +497,7 @@ impl EngineStateMachine {
                 })
                 .set(v);
         }
-        m.el_offline
-            .set(i64::from(self.external().el_offline()));
+        m.el_offline.set(i64::from(self.external().el_offline()));
     }
 }
 
@@ -546,8 +542,7 @@ pub fn spawn_upcheck_driver(
                     let sched2 = sched.clone();
                     tokio::spawn(async move {
                         tokio::time::sleep(Duration::from_millis(250)).await;
-                        run_upcheck_with_side_effects(&h2, t2.as_ref(), m2.as_ref(), &sched2)
-                            .await;
+                        run_upcheck_with_side_effects(&h2, t2.as_ref(), m2.as_ref(), &sched2).await;
                     });
                 }
             });
@@ -588,7 +583,7 @@ mod tests {
 
     fn seed_cache(m: &EngineStateMachine) {
         m.capabilities().store(CapabilitySnapshot::from_el_methods([
-            "engine_newPayloadV4".into(),
+            "engine_newPayloadV4".into()
         ]));
         assert!(!m.capabilities().is_empty());
     }
@@ -680,9 +675,7 @@ mod tests {
             ),
             (
                 EngineStateInternal::Synced,
-                UpcheckOutcome::Failure {
-                    detail: "x".into(),
-                },
+                UpcheckOutcome::Failure { detail: "x".into() },
                 EngineStateInternal::Offline,
                 EngineState::Offline,
             ),
@@ -707,9 +700,7 @@ mod tests {
             ),
             (
                 EngineStateInternal::AuthFailed,
-                UpcheckOutcome::Failure {
-                    detail: "x".into(),
-                },
+                UpcheckOutcome::Failure { detail: "x".into() },
                 EngineStateInternal::AuthFailed,
                 EngineState::Offline,
             ),
@@ -723,14 +714,8 @@ mod tests {
         assert_eq!(labels, vec!["synced", "syncing", "offline", "auth_failed"]);
 
         // External collapse.
-        assert_eq!(
-            EngineStateInternal::Synced.external(),
-            EngineState::Online
-        );
-        assert_eq!(
-            EngineStateInternal::Syncing.external(),
-            EngineState::Online
-        );
+        assert_eq!(EngineStateInternal::Synced.external(), EngineState::Online);
+        assert_eq!(EngineStateInternal::Syncing.external(), EngineState::Online);
         assert_eq!(
             EngineStateInternal::Offline.external(),
             EngineState::Offline
@@ -965,10 +950,7 @@ mod tests {
         let mut m = machine();
         let mut floors = 0u64;
         for slot in 0..5 {
-            assert!(
-                m.should_floor_upcheck(slot),
-                "slot {slot} must allow floor"
-            );
+            assert!(m.should_floor_upcheck(slot), "slot {slot} must allow floor");
             m.mark_floor_upcheck(slot);
             floors += 1;
             // Same slot again must not floor.

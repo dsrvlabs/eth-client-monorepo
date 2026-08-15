@@ -27,12 +27,12 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use cc_crypto::{Blob, CellKzg, Cells, KzgError, BYTES_PER_BLOB};
+use cc_crypto::{BYTES_PER_BLOB, Blob, CellKzg, Cells, KzgError};
 use cc_types::primitives::KzgCommitment;
-use cc_types::{Cell, KzgProof, CELLS_PER_EXT_BLOB};
+use cc_types::{CELLS_PER_EXT_BLOB, Cell, KzgProof};
 
 use crate::methods::get_blobs::{
-    kzg_commitment_to_versioned_hash, BlobAndProofV2, BYTES_PER_KZG_PROOF, CELL_PROOFS_PER_BLOB,
+    BYTES_PER_KZG_PROOF, BlobAndProofV2, CELL_PROOFS_PER_BLOB, kzg_commitment_to_versioned_hash,
 };
 use crate::metrics::{EngineMetrics, FastpathStage, FastpathStageLabels};
 
@@ -86,7 +86,9 @@ impl From<KzgError> for CellsError {
 }
 
 /// Parse EL-supplied cell proofs (exactly 128 × 48 B) into typed proofs.
-pub fn parse_el_proofs(proofs: &[Vec<u8>]) -> Result<Box<[KzgProof; CELLS_PER_EXT_BLOB]>, CellsError> {
+pub fn parse_el_proofs(
+    proofs: &[Vec<u8>],
+) -> Result<Box<[KzgProof; CELLS_PER_EXT_BLOB]>, CellsError> {
     if proofs.len() != CELL_PROOFS_PER_BLOB {
         return Err(CellsError::InvalidProofs(format!(
             "expected {CELL_PROOFS_PER_BLOB} proofs, got {}",
@@ -145,9 +147,8 @@ fn compute_cells_zipped_sync(
                 item.blob.len()
             )));
         }
-        let blob = Blob::from_slice(&item.blob).map_err(|e| {
-            CellsError::InvalidBlob(format!("blob[{i}]: {e}"))
-        })?;
+        let blob = Blob::from_slice(&item.blob)
+            .map_err(|e| CellsError::InvalidBlob(format!("blob[{i}]: {e}")))?;
 
         // Cheap integrity bind before extension (not full proof batch verify).
         let commitment = kzg.blob_to_kzg_commitment(&blob)?;
@@ -329,13 +330,8 @@ mod tests {
 
         let kzg = backend();
         let (items, hashes, commits) = fixture_batch(kzg.as_ref(), 0..21);
-        let cells_fut = compute_cells_zipped_with_el_proofs(
-            Arc::clone(&kzg),
-            items,
-            hashes,
-            commits,
-            None,
-        );
+        let cells_fut =
+            compute_cells_zipped_with_el_proofs(Arc::clone(&kzg), items, hashes, commits, None);
         let np_fut = async {
             let started = Instant::now();
             let r = t
@@ -401,19 +397,11 @@ mod tests {
         let kzg = backend();
         let (items, mut hashes, commits) = fixture_batch(kzg.as_ref(), [1u8]);
         hashes[0][31] ^= 0xff;
-        let err = compute_cells_zipped_with_el_proofs(
-            Arc::clone(&kzg),
-            items,
-            hashes,
-            commits,
-            None,
-        )
-        .await
-        .expect_err("must bind");
-        assert!(
-            matches!(err, CellsError::BindingMismatch(_)),
-            "got {err:?}"
-        );
+        let err =
+            compute_cells_zipped_with_el_proofs(Arc::clone(&kzg), items, hashes, commits, None)
+                .await
+                .expect_err("must bind");
+        assert!(matches!(err, CellsError::BindingMismatch(_)), "got {err:?}");
     }
 
     #[test]

@@ -10,8 +10,8 @@ use std::fmt;
 
 use cc_libp2p::PeerId;
 
-use crate::reqresp::limits::OutboundLimiter;
 use crate::reqresp::Protocol;
+use crate::reqresp::limits::OutboundLimiter;
 
 /// Default max attempts per peer (Architecture §7.6).
 pub const DEFAULT_MAX_ATTEMPTS: u8 = 3;
@@ -247,12 +247,7 @@ impl RequestScheduler {
     /// Hold an outbound slot as an in-flight request (for preemption / tests).
     ///
     /// Returns a hold id released by [`Self::release_hold`] or preemption.
-    pub fn hold(
-        &mut self,
-        peer: PeerId,
-        protocol: Protocol,
-        priority: Priority,
-    ) -> Option<u64> {
+    pub fn hold(&mut self, peer: PeerId, protocol: Protocol, priority: Priority) -> Option<u64> {
         if !self.outbound.try_acquire(peer, protocol) {
             return None;
         }
@@ -397,9 +392,7 @@ impl RequestScheduler {
                 return Err(ScheduleError::NoEligiblePeers);
             };
 
-            if !self.outbound.can_send(peer, protocol)
-                && spec.priority == Priority::Recovery
-            {
+            if !self.outbound.can_send(peer, protocol) && spec.priority == Priority::Recovery {
                 let _ = self.preempt_for_recovery(peer);
             }
 
@@ -429,11 +422,7 @@ impl RequestScheduler {
 }
 
 fn sanitize_score(score: f64) -> f64 {
-    if score.is_finite() {
-        score
-    } else {
-        0.0
-    }
+    if score.is_finite() { score } else { 0.0 }
 }
 
 #[cfg(test)]
@@ -481,9 +470,7 @@ mod tests {
         ];
         let eligible: PeerPredicate = Box::new(|_| true);
         let exclude = HashSet::new();
-        let choice = sched
-            .choose_peer(&candidates, &eligible, &exclude)
-            .unwrap();
+        let choice = sched.choose_peer(&candidates, &eligible, &exclude).unwrap();
         assert_ne!(choice.peer, p0, "must not pick highest-inflight peer");
         assert_eq!(choice.in_flight, 0);
         assert_eq!(choice.app_score, 10.0);
@@ -504,9 +491,7 @@ mod tests {
                 app_score: 50.0,
             },
         ];
-        let choice = sched
-            .choose_peer(&candidates, &eligible, &exclude)
-            .unwrap();
+        let choice = sched.choose_peer(&candidates, &eligible, &exclude).unwrap();
         assert_eq!(choice.peer, p2);
         assert_eq!(choice.app_score, 50.0);
     }
@@ -582,12 +567,16 @@ mod tests {
         let hold_id = sched
             .hold(p, Protocol::BeaconBlocksByRangeV2, Priority::Backfill)
             .expect("hold backfill");
-        assert!(sched
-            .outbound
-            .try_acquire(p, Protocol::DataColumnSidecarsByRangeV1));
-        assert!(sched
-            .outbound
-            .try_acquire(p, Protocol::DataColumnSidecarsByRootV1));
+        assert!(
+            sched
+                .outbound
+                .try_acquire(p, Protocol::DataColumnSidecarsByRangeV1)
+        );
+        assert!(
+            sched
+                .outbound
+                .try_acquire(p, Protocol::DataColumnSidecarsByRootV1)
+        );
         assert!(sched.outbound.try_acquire(p, Protocol::StatusV2));
         assert_eq!(sched.outbound.in_flight_peer(p), 4);
 

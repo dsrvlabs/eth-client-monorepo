@@ -1,8 +1,8 @@
 //! Spec `process_slashings_reset`.
 
+use cc_types::BeaconState;
 use cc_types::preset::Preset;
 use cc_types::primitives::Gwei;
-use cc_types::BeaconState;
 
 use crate::error::EpochError;
 use crate::helpers::accessors::get_current_epoch;

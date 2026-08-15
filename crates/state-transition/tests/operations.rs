@@ -14,12 +14,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cc_state_transition::{
-    process_attestation, process_attester_slashing, process_block_header,
-    process_bls_to_execution_change, process_consolidation_request, process_deposit_request,
-    process_eth1_data, process_execution_payload, process_proposer_slashing, process_randao,
-    process_sync_aggregate_with_opts, process_voluntary_exit, process_withdrawal_request,
-    process_withdrawals, BlockError, EngineError, ExecutionEngine, GossipClass, NewPayloadRequest,
-    PayloadStatus, ProcessAttestationOpts, TransitionContext,
+    BlockError, EngineError, ExecutionEngine, GossipClass, NewPayloadRequest, PayloadStatus,
+    ProcessAttestationOpts, TransitionContext, process_attestation, process_attester_slashing,
+    process_block_header, process_bls_to_execution_change, process_consolidation_request,
+    process_deposit_request, process_eth1_data, process_execution_payload,
+    process_proposer_slashing, process_randao, process_sync_aggregate_with_opts,
+    process_voluntary_exit, process_withdrawal_request, process_withdrawals,
 };
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::containers::SyncAggregate;
@@ -176,7 +176,14 @@ fn collect_cases(tests: &Path, preset: &str, handler: &str) -> Vec<(String, Path
         return Vec::new();
     }
     let mut out = Vec::new();
-    collect_leaf_cases(&handler_dir, &handler_dir, preset, runner, handler, &mut out);
+    collect_leaf_cases(
+        &handler_dir,
+        &handler_dir,
+        preset,
+        runner,
+        handler,
+        &mut out,
+    );
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
@@ -381,7 +388,12 @@ fn rebuild_pubkey_cache<P: Preset>(state: &mut BeaconState<P>) {
     let pk_entries: Vec<_> = state
         .validators_iter()
         .enumerate()
-        .map(|(i, v)| (v.pubkey, cc_types::primitives::ValidatorIndex::new(i as u64)))
+        .map(|(i, v)| {
+            (
+                v.pubkey,
+                cc_types::primitives::ValidatorIndex::new(i as u64),
+            )
+        })
         .collect();
     for (pk, idx) in pk_entries {
         state.caches_mut().pubkeys.insert(pk, idx);
@@ -458,7 +470,11 @@ fn run_withdrawals_cases<P: Preset>() {
     let tests = tests_root();
     let prefixes = skiplist_prefixes();
     let cases = collect_cases(&tests, P::NAME, "withdrawals");
-    assert!(!cases.is_empty(), "expected withdrawals cases for {}", P::NAME);
+    assert!(
+        !cases.is_empty(),
+        "expected withdrawals cases for {}",
+        P::NAME
+    );
 
     let mut ran = 0usize;
     let mut invalid_ok = 0usize;
@@ -633,7 +649,11 @@ fn run_single_op_handler<P: Preset, Op, F>(
     let tests = tests_root();
     let prefixes = skiplist_prefixes();
     let cases = collect_cases(&tests, P::NAME, handler);
-    assert!(!cases.is_empty(), "expected {handler} cases for {}", P::NAME);
+    assert!(
+        !cases.is_empty(),
+        "expected {handler} cases for {}",
+        P::NAME
+    );
 
     let config = spec_config_for_preset(match P::NAME {
         "mainnet" => PresetName::Mainnet,
@@ -1021,8 +1041,8 @@ fn hoodi_payload_fixture(
 #[test]
 fn hoodi_blob_bound_vs_pre_bpo_same_binary() {
     // Shipping parse path (§5.6) — committed hoodi-config.yaml.
-    let hoodi_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../types/tests/fixtures/hoodi-config.yaml");
+    let hoodi_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../types/tests/fixtures/hoodi-config.yaml");
     let hoodi = ChainConfig::from_yaml_file(&hoodi_path).expect("parse hoodi-config.yaml");
     assert_eq!(hoodi.config_name, "hoodi");
 
@@ -1053,20 +1073,16 @@ fn hoodi_blob_bound_vs_pre_bpo_same_binary() {
     let ctx_pre = TransitionContext::<Mainnet>::new(&pre_bpo, &engine);
     let err = process_execution_payload(&mut state_fail, &block2, &ctx_pre).unwrap_err();
     assert!(
-        matches!(
-            err,
-            BlockError::BlobBoundExceeded {
-                count: 15,
-                max: 9
-            }
-        ),
+        matches!(err, BlockError::BlobBoundExceeded { count: 15, max: 9 }),
         "pre-BPO must reject with BlobBoundExceeded, got {err:?}"
     );
     assert_eq!(err.gossip_class(), GossipClass::Reject);
 
     // Confirm get_blob_parameters numbers for the two configs at this epoch.
     assert_eq!(
-        hoodi.get_blob_parameters::<Mainnet>(Epoch::new(epoch)).max_blobs_per_block,
+        hoodi
+            .get_blob_parameters::<Mainnet>(Epoch::new(epoch))
+            .max_blobs_per_block,
         21
     );
     assert_eq!(
@@ -1234,7 +1250,7 @@ fn deposit_top_up_lands_in_pending_deposits_not_balances() {
 
 #[test]
 fn deposit_new_validator_appends_registry_and_pubkey_map() {
-    use cc_crypto::{compute_domain, compute_signing_root, DOMAIN_DEPOSIT, BLS_SIGNATURE_DST};
+    use cc_crypto::{BLS_SIGNATURE_DST, DOMAIN_DEPOSIT, compute_domain, compute_signing_root};
     use cc_state_transition::block::operations::apply_deposit;
     use cc_types::containers::DepositMessage;
     use cc_types::primitives::{BlsPublicKey, BlsSignature, Gwei};
@@ -1290,7 +1306,7 @@ fn multi_committee_electra_attestation_and_nonzero_index_from_vectors() {
     // committee_bits). `invalid_attestation_data_index_not_zero` for both.
     // Both are exercised by the attestation runner; this test pins their
     // presence and re-runs them through the handler for an explicit AC assert.
-    use cc_state_transition::{process_attestation, ProcessAttestationOpts};
+    use cc_state_transition::{ProcessAttestationOpts, process_attestation};
 
     let tests = tests_root();
     let suite = operations_suite_name();
@@ -1377,7 +1393,7 @@ fn multi_committee_electra_attestation_and_nonzero_index_from_vectors() {
 
 #[test]
 fn operation_count_overflow_is_reject() {
-    use cc_state_transition::{process_operations};
+    use cc_state_transition::process_operations;
     use cc_types::operations::ProposerSlashing;
 
     // Construct a body that would overflow if VariableList allowed it —
@@ -1420,13 +1436,15 @@ fn operation_count_overflow_is_reject() {
 #[test]
 fn bls_to_execution_change_rejects_current_fork_version_domain() {
     use cc_crypto::{
-        compute_domain, compute_signing_root, hash_fixed, DOMAIN_BLS_TO_EXECUTION_CHANGE,
-        BLS_SIGNATURE_DST,
+        BLS_SIGNATURE_DST, DOMAIN_BLS_TO_EXECUTION_CHANGE, compute_domain, compute_signing_root,
+        hash_fixed,
     };
     use cc_state_transition::process_bls_to_execution_change;
     use cc_types::containers::Validator;
     use cc_types::operations::{BlsToExecutionChange, SignedBlsToExecutionChange};
-    use cc_types::primitives::{BlsPublicKey, BlsSignature, ExecutionAddress, Gwei, ValidatorIndex};
+    use cc_types::primitives::{
+        BlsPublicKey, BlsSignature, ExecutionAddress, Gwei, ValidatorIndex,
+    };
 
     let ikm = [9u8; 32];
     let sk = blst::min_pk::SecretKey::key_gen(&ikm, &[]).unwrap();
@@ -1486,10 +1504,7 @@ fn bls_to_execution_change_rejects_current_fork_version_domain() {
     // Sign with GENESIS fork version — must succeed.
     let mut state2 = state.clone();
     // Reset credentials (previous attempt may not have mutated on Err).
-    state2
-        .validators_get_mut(0)
-        .unwrap()
-        .withdrawal_credentials = Root::from_array(creds);
+    state2.validators_get_mut(0).unwrap().withdrawal_credentials = Root::from_array(creds);
     let message2 = BlsToExecutionChange {
         validator_index: ValidatorIndex::new(0),
         from_bls_pubkey: from_pk,
@@ -1508,7 +1523,11 @@ fn bls_to_execution_change_rejects_current_fork_version_domain() {
     };
     process_bls_to_execution_change(&mut state2, &signed2, &config, true).unwrap();
     assert_eq!(
-        state2.validators_get(0).unwrap().withdrawal_credentials.as_array()[0],
+        state2
+            .validators_get(0)
+            .unwrap()
+            .withdrawal_credentials
+            .as_array()[0],
         0x01
     );
 }
@@ -1567,7 +1586,10 @@ fn invalid_withdrawal_and_consolidation_requests_are_noops() {
         target_pubkey: BlsPublicKey::from_array([0x22; 48]),
     };
     process_consolidation_request(&mut state, &bad_con).unwrap();
-    assert_eq!(state, pre, "invalid consolidation must leave state unchanged");
+    assert_eq!(
+        state, pre,
+        "invalid consolidation must leave state unchanged"
+    );
 }
 
 /// `process_deposit_request` appends pending deposits and sets start index once.
@@ -1608,7 +1630,10 @@ fn deposit_request_sets_start_index_once_across_two_requests() {
         "start index set exactly once"
     );
     assert_eq!(state.pending_deposits_len(), 2);
-    assert_eq!(state.pending_deposits_get(1).unwrap().amount.as_u64(), 1_000_000_000);
+    assert_eq!(
+        state.pending_deposits_get(1).unwrap().amount.as_u64(),
+        1_000_000_000
+    );
 }
 
 /// Empty sync participants + infinity signature passes via eth_fast_aggregate_verify.
@@ -1687,7 +1712,12 @@ fn sync_aggregate_uses_pubkey_index_map_no_registry_scan() {
     let pk_entries: Vec<_> = state
         .validators_iter()
         .enumerate()
-        .map(|(i, v)| (v.pubkey, cc_types::primitives::ValidatorIndex::new(i as u64)))
+        .map(|(i, v)| {
+            (
+                v.pubkey,
+                cc_types::primitives::ValidatorIndex::new(i as u64),
+            )
+        })
         .collect();
     for (pk, idx) in pk_entries {
         state.caches_mut().pubkeys.insert(pk, idx);

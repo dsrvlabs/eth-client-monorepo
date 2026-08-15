@@ -4,8 +4,8 @@
 //! and resolves participant indices exclusively through [`PubkeyIndexMap`].
 
 use cc_crypto::{
-    compute_signing_root, eth_fast_aggregate_verify, get_domain, Signature, DOMAIN_SYNC_COMMITTEE,
-    INFINITY_SIGNATURE,
+    DOMAIN_SYNC_COMMITTEE, INFINITY_SIGNATURE, Signature, compute_signing_root,
+    eth_fast_aggregate_verify, get_domain,
 };
 use cc_types::containers::SyncAggregate;
 use cc_types::preset::Preset;
@@ -81,8 +81,7 @@ fn process_sync_aggregate_inner<P: Preset>(
     if verify_signatures {
         // Infinity is rejected by `Signature::deserialize` (sig_infcheck) but is
         // the required empty-participant aggregate (eth_fast_aggregate_verify).
-        let signature = if sync_aggregate.sync_committee_signature.as_array()
-            == &INFINITY_SIGNATURE
+        let signature = if sync_aggregate.sync_committee_signature.as_array() == &INFINITY_SIGNATURE
         {
             Signature::infinity()
         } else {
@@ -104,14 +103,12 @@ fn process_sync_aggregate_inner<P: Preset>(
     let total_base_rewards = base_reward_per_increment
         .as_u64()
         .saturating_mul(total_active_increments);
-    let max_participant_rewards = total_base_rewards
-        .saturating_mul(SYNC_REWARD_WEIGHT)
+    let max_participant_rewards = total_base_rewards.saturating_mul(SYNC_REWARD_WEIGHT)
         / WEIGHT_DENOMINATOR
         / P::SLOTS_PER_EPOCH;
     let participant_reward = Gwei::new(max_participant_rewards / P::SYNC_COMMITTEE_SIZE);
     let proposer_reward = Gwei::new(
-        participant_reward.as_u64() * PROPOSER_WEIGHT
-            / (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT),
+        participant_reward.as_u64() * PROPOSER_WEIGHT / (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT),
     );
 
     // Resolve committee indices **only** through PubkeyIndexMap (no linear scan).

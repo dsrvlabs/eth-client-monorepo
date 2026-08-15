@@ -21,8 +21,8 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use cc_crypto::{Blob, CellKzg};
-use cc_types::{Cell, KzgCommitment, KzgProof, CELLS_PER_EXT_BLOB};
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use cc_types::{CELLS_PER_EXT_BLOB, Cell, KzgCommitment, KzgProof};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 /// Hoodi current BPO max blobs per slot (Architecture §4.4).
 const HOODI_BPO_MAX_BLOBS: usize = 21;
@@ -181,9 +181,7 @@ fn print_setup_memory_line(label: &str, load: impl FnOnce()) {
         (Some(b), Some(a)) if a >= b => Some(a - b),
         _ => None,
     };
-    let delta_s = delta
-        .map(format_bytes)
-        .unwrap_or_else(|| "n/a".to_string());
+    let delta_s = delta.map(format_bytes).unwrap_or_else(|| "n/a".to_string());
     let before_s = before
         .map(format_bytes)
         .unwrap_or_else(|| "n/a".to_string());
@@ -238,7 +236,11 @@ fn measure_setup_memory() {
     );
 }
 
-fn bench_verify_for(group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>, label_prefix: &str, backend: &impl CellKzg) {
+fn bench_verify_for(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    label_prefix: &str,
+    backend: &impl CellKzg,
+) {
     let p1 = VerifyFixture::phase1(backend);
     let p2 = VerifyFixture::phase2(backend);
 
@@ -292,11 +294,7 @@ fn bench_verify(c: &mut Criterion) {
             [("precompute-0", 0u64), ("precompute-8", C_KZG_PRECOMP_ON)]
         {
             let backend = CKzgBackend::load(precompute).expect("load c-kzg");
-            bench_verify_for(
-                &mut group,
-                &format!("c-kzg/{precomp_label}"),
-                &backend,
-            );
+            bench_verify_for(&mut group, &format!("c-kzg/{precomp_label}"), &backend);
         }
     }
 

@@ -10,10 +10,10 @@
 
 use super::setup::TRUSTED_SETUP_JSON;
 use super::{Blob, CellKzg, CellProofs, Cells, CellsAndProofs, KzgError};
-use cc_types::{Cell, KzgCommitment, KzgProof, BYTES_PER_CELL, CELLS_PER_EXT_BLOB};
+use cc_types::{BYTES_PER_CELL, CELLS_PER_EXT_BLOB, Cell, KzgCommitment, KzgProof};
 use rust_eth_kzg::{
-    constants::{self, CELLS_PER_EXT_BLOB as REK_CELLS},
     DASContext, Error as RekError, TrustedSetup,
+    constants::{self, CELLS_PER_EXT_BLOB as REK_CELLS},
 };
 
 // KZG-VARIANT: rust_eth_kzg 0.10.0 proof-verification-failure =

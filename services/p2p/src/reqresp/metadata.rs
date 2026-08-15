@@ -7,15 +7,15 @@
 //! `custody_group_count` is mutable at CC-21d.
 
 use std::io;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cc_types::CUSTODY_REQUIREMENT;
 
 use crate::channels::GoodbyeReason;
 use crate::discovery::enr::{ATTNETS_BIT_LEN, SYNCNETS_BIT_LEN};
-use crate::reqresp::codec::{ResponseChunk, SszSnappyFraming};
 use crate::reqresp::Protocol;
+use crate::reqresp::codec::{ResponseChunk, SszSnappyFraming};
 
 /// Fixed SSZ length of `MetaData v3` (8+8+1+8).
 pub const METADATA_V3_SSZ_LEN: usize = 25;
@@ -63,16 +63,22 @@ impl MetaDataV3 {
             ));
         }
         Ok(Self {
-            seq_number: u64::from_le_bytes(bytes[0..8].try_into().map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "seq_number")
-            })?),
-            attnets: u64::from_le_bytes(bytes[8..16].try_into().map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "attnets")
-            })?),
+            seq_number: u64::from_le_bytes(
+                bytes[0..8]
+                    .try_into()
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "seq_number"))?,
+            ),
+            attnets: u64::from_le_bytes(
+                bytes[8..16]
+                    .try_into()
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "attnets"))?,
+            ),
             syncnets: bytes[16] & 0x0f,
-            custody_group_count: u64::from_le_bytes(bytes[17..25].try_into().map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "custody_group_count")
-            })?),
+            custody_group_count: u64::from_le_bytes(
+                bytes[17..25].try_into().map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "custody_group_count")
+                })?,
+            ),
         })
     }
 }
@@ -349,10 +355,7 @@ mod tests {
     #[test]
     fn cgc_policy_both_ways() {
         // Default: accept cgc = 1.
-        assert_eq!(
-            evaluate_peer_cgc(CgcPolicy::default(), 1),
-            CgcEval::Accept
-        );
+        assert_eq!(evaluate_peer_cgc(CgcPolicy::default(), 1), CgcEval::Accept);
         assert_eq!(
             evaluate_peer_cgc(CgcPolicy::accept_low_cgc(), 1),
             CgcEval::Accept

@@ -1,11 +1,11 @@
 //! Spec `process_effective_balance_updates` (Electra hysteresis).
 
+use cc_types::BeaconState;
 use cc_types::preset::Preset;
 use cc_types::primitives::Gwei;
-use cc_types::BeaconState;
 
-use crate::error::EpochError;
 use crate::epoch_cache::note_registry_or_effective_balance_change;
+use crate::error::EpochError;
 use crate::helpers::constants::{
     EFFECTIVE_BALANCE_INCREMENT, HYSTERESIS_DOWNWARD_MULTIPLIER, HYSTERESIS_QUOTIENT,
     HYSTERESIS_UPWARD_MULTIPLIER,
@@ -36,7 +36,10 @@ pub fn process_effective_balance_updates<P: Preset>(
             let v = state
                 .validators_get(index)
                 .ok_or(EpochError::ArithmeticOverflow)?;
-            (v.effective_balance.as_u64(), get_max_effective_balance(v).as_u64())
+            (
+                v.effective_balance.as_u64(),
+                get_max_effective_balance(v).as_u64(),
+            )
         };
 
         if balance.saturating_add(downward_threshold) < effective_balance

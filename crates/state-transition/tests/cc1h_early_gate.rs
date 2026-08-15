@@ -103,9 +103,7 @@ fn process_slots_five_epoch_boundaries_from_hoodi() {
     {
         println!("mem_gb: {:.1}", bytes as f64 / (1024.0 * 1024.0 * 1024.0));
     }
-    println!(
-        "anchor_slot={start_slot} slots_per_epoch={slots_per_epoch} epochs={EPOCHS_TO_CROSS}"
-    );
+    println!("anchor_slot={start_slot} slots_per_epoch={slots_per_epoch} epochs={EPOCHS_TO_CROSS}");
     println!("epoch_idx,from_slot,to_slot,wall_ms,hash_ms,hash_share_pct,root_calls");
 
     let mut walls_ms = Vec::new();

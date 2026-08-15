@@ -15,14 +15,12 @@ use cc_chain::service::{
     ChainServiceImpl, REASON_BELOW_FINALIZED_RETENTION, REASON_NOT_BOOTSTRAPPED,
 };
 use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
-use cc_proto::chain::chain_service_server::ChainService;
 use cc_proto::chain::GetCanonicalRootsRequest;
+use cc_proto::chain::chain_service_server::ChainService;
 use cc_proto::error_info_from_status;
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::preset::Minimal;
-use cc_types::primitives::{
-    Epoch, ExecutionAddress, ForkVersion, Root, Slot, ValidatorIndex,
-};
+use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Root, Slot, ValidatorIndex};
 use cc_types::{BeaconBlock, BeaconState};
 use prometheus_client::registry::Registry;
 use tonic::{Code, Request};

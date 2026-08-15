@@ -15,9 +15,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cc_crypto::{
-    compute_domain, compute_signing_root, hash_fixed, PublicKey, Signature, SignatureSet,
     DOMAIN_BEACON_ATTESTER, DOMAIN_BEACON_PROPOSER, DOMAIN_BLS_TO_EXECUTION_CHANGE,
-    DOMAIN_VOLUNTARY_EXIT,
+    DOMAIN_VOLUNTARY_EXIT, PublicKey, Signature, SignatureSet, compute_domain,
+    compute_signing_root, hash_fixed,
 };
 use cc_proto::p2p::{ChainView, Reason};
 use cc_types::config::ChainConfig;
@@ -464,10 +464,7 @@ pub async fn validate_voluntary_exit<P: Preset>(
     }
 
     steps.tick(ve_step::RECORD);
-    let records = match cache
-        .get_many(&[index], input.current_epoch, source)
-        .await
-    {
+    let records = match cache.get_many(&[index], input.current_epoch, source).await {
         Ok(m) => m,
         Err(RecordsError::Missing(_)) => {
             return Verdict::reject(Reason::Invalid, corr);
@@ -765,10 +762,7 @@ pub async fn validate_bls_to_execution_change<P: Preset>(
     }
 
     steps.tick(btec_step::RECORD);
-    let records = match cache
-        .get_many(&[index], input.current_epoch, source)
-        .await
-    {
+    let records = match cache.get_many(&[index], input.current_epoch, source).await {
         Ok(m) => m,
         Err(RecordsError::Missing(_)) => return Verdict::reject(Reason::Invalid, corr),
         Err(RecordsError::Fetch(msg)) if msg.contains("out of range") => {
@@ -818,9 +812,7 @@ pub async fn validate_operation<P: Preset>(
     source: &dyn ValidatorRecordSource,
 ) -> Verdict {
     match name {
-        TopicName::VoluntaryExit => {
-            validate_voluntary_exit::<P>(state, input, cache, source).await
-        }
+        TopicName::VoluntaryExit => validate_voluntary_exit::<P>(state, input, cache, source).await,
         TopicName::ProposerSlashing => {
             validate_proposer_slashing::<P>(state, input, cache, source).await
         }
@@ -941,10 +933,7 @@ fn verify_proposer_slashing_sigs<P: Preset>(
     };
     let gvr = gvr_from_view(view);
     let mut set = SignatureSet::new();
-    for signed_header in [
-        &slashing.signed_header_1,
-        &slashing.signed_header_2,
-    ] {
+    for signed_header in [&slashing.signed_header_1, &slashing.signed_header_2] {
         let epoch = signed_header
             .message
             .slot
@@ -1192,20 +1181,14 @@ mod tests {
             current_epoch: 300,
         };
         let v = validate_voluntary_exit::<Mainnet>(&state, &input, &cache, &src).await;
-        assert!(matches!(
-            v.acceptance,
-            cc_proto::p2p::Acceptance::Accept
-        ));
+        assert!(matches!(v.acceptance, cc_proto::p2p::Acceptance::Accept));
         assert_eq!(state.steps().get(ve_step::ACCEPT), 1);
         assert_eq!(state.occupancy().voluntary_exit, 1);
 
         // Duplicate → IGNORE at SEEN; later steps must not re-run sig.
         state.set_steps(Arc::new(OpStepCounters::new()));
         let v2 = validate_voluntary_exit::<Mainnet>(&state, &input, &cache, &src).await;
-        assert!(matches!(
-            v2.acceptance,
-            cc_proto::p2p::Acceptance::Ignore
-        ));
+        assert!(matches!(v2.acceptance, cc_proto::p2p::Acceptance::Ignore));
         assert_eq!(state.steps().get(ve_step::SEEN), 1);
         assert_eq!(state.steps().get(ve_step::SIG), 0);
         assert_eq!(state.steps().max_step_ran(), ve_step::SEEN);
@@ -1242,10 +1225,7 @@ mod tests {
             current_epoch: 300,
         };
         let v = validate_voluntary_exit::<Mainnet>(&state, &input, &cache, &src).await;
-        assert!(matches!(
-            v.acceptance,
-            cc_proto::p2p::Acceptance::Reject
-        ));
+        assert!(matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject));
         assert_eq!(state.steps().get(ve_step::SIG), 1);
         assert_eq!(state.steps().get(ve_step::ACCEPT), 0);
         assert_eq!(state.occupancy().voluntary_exit, 0);
@@ -1374,10 +1354,7 @@ mod tests {
             current_epoch: 300,
         };
         let v = validate_voluntary_exit::<Mainnet>(&state, &input, &cache, &src).await;
-        assert!(matches!(
-            v.acceptance,
-            cc_proto::p2p::Acceptance::Reject
-        ));
+        assert!(matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject));
         assert_eq!(
             state.occupancy().voluntary_exit,
             0,
@@ -1414,10 +1391,7 @@ mod tests {
             current_epoch: 300,
         };
         let v = validate_voluntary_exit::<Mainnet>(&state, &input, &cache, &src).await;
-        assert!(matches!(
-            v.acceptance,
-            cc_proto::p2p::Acceptance::Accept
-        ));
+        assert!(matches!(v.acceptance, cc_proto::p2p::Acceptance::Accept));
         assert_eq!(state.occupancy().voluntary_exit, 1);
         assert_eq!(state.occupancy().proposer_slashing, 0);
         assert_eq!(state.occupancy().attester_slashing, 0);
@@ -1461,12 +1435,8 @@ mod tests {
             slots_per_epoch: 32,
             current_epoch: 10,
         };
-        let v =
-            validate_bls_to_execution_change::<Mainnet>(&state, &input, &cache, &src).await;
-        assert!(matches!(
-            v.acceptance,
-            cc_proto::p2p::Acceptance::Accept
-        ));
+        let v = validate_bls_to_execution_change::<Mainnet>(&state, &input, &cache, &src).await;
+        assert!(matches!(v.acceptance, cc_proto::p2p::Acceptance::Accept));
     }
 
     #[tokio::test]
@@ -1486,10 +1456,7 @@ mod tests {
             current_epoch: 1,
         };
         let v = validate_voluntary_exit::<Mainnet>(&state, &input, &cache, &src).await;
-        assert!(matches!(
-            v.acceptance,
-            cc_proto::p2p::Acceptance::Reject
-        ));
+        assert!(matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject));
         assert_eq!(state.steps().get(ve_step::SIZE), 1);
         assert_eq!(state.steps().get(ve_step::DECODE), 0);
     }
@@ -1527,10 +1494,7 @@ mod tests {
             current_epoch: 10,
         };
         let v = validate_proposer_slashing::<Mainnet>(&state, &input, &cache, &src).await;
-        assert!(matches!(
-            v.acceptance,
-            cc_proto::p2p::Acceptance::Reject
-        ));
+        assert!(matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject));
         assert_eq!(state.steps().get(ps_step::DIFFER), 1);
         assert_eq!(state.steps().get(ps_step::SIG), 0);
     }
@@ -1577,10 +1541,7 @@ mod tests {
             current_epoch: 10,
         };
         let v = validate_attester_slashing::<Mainnet>(&state, &input, &cache, &src).await;
-        assert!(matches!(
-            v.acceptance,
-            cc_proto::p2p::Acceptance::Reject
-        ));
+        assert!(matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject));
         assert_eq!(state.steps().get(as_step::SLASHABLE_DATA), 1);
         assert_eq!(state.steps().get(as_step::ATT1), 0);
     }

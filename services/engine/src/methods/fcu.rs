@@ -158,8 +158,17 @@ pub async fn forkchoice_updated_v3(
         safe_block_hash,
         finalized_block_hash,
     )?;
-    call_fcu_http(transport, metrics, params, head_block_hash, safe_block_hash, finalized_block_hash, head_slot, false)
-        .await
+    call_fcu_http(
+        transport,
+        metrics,
+        params,
+        head_block_hash,
+        safe_block_hash,
+        finalized_block_hash,
+        head_slot,
+        false,
+    )
+    .await
 }
 
 /// Admit `sequence` under the ordered-lane lock, then issue fcU (CC-33 F1).
@@ -320,10 +329,7 @@ async fn call_fcu_http(
                     head_slot,
                 );
                 // Retry only when we can re-acquire the lane ourselves.
-                if !ordered_held
-                    && e.retry_class() == RetryClass::Transient
-                    && attempts < 2
-                {
+                if !ordered_held && e.retry_class() == RetryClass::Transient && attempts < 2 {
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                     continue;
                 }
@@ -618,7 +624,10 @@ mod tests {
     #[test]
     fn sequence_gate_resets_on_session_change() {
         let gate = FcuSequenceGate::new();
-        assert!(!gate.note_session(7), "first session is a stamp, not a change");
+        assert!(
+            !gate.note_session(7),
+            "first session is a stamp, not a change"
+        );
         assert!(gate.try_admit(10));
         assert_eq!(gate.high_water(), 10);
 
@@ -1084,5 +1093,4 @@ mod tests {
             "attrs field name must be absent from fcu production code"
         );
     }
-
 }

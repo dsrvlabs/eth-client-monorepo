@@ -20,8 +20,8 @@
 
 use std::fmt;
 
-use crate::metrics::EngineMetrics;
 use crate::methods::names;
+use crate::metrics::EngineMetrics;
 
 /// EL fork identity derived from a payload timestamp and the loaded schedule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

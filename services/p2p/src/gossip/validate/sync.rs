@@ -17,19 +17,19 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use cc_crypto::{
-    compute_domain, compute_signing_root, eth_fast_aggregate_verify, hash_fixed, verify,
-    PublicKey, Signature, DOMAIN_CONTRIBUTION_AND_PROOF, DOMAIN_SYNC_COMMITTEE,
-    DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF,
+    DOMAIN_CONTRIBUTION_AND_PROOF, DOMAIN_SYNC_COMMITTEE, DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF,
+    PublicKey, Signature, compute_domain, compute_signing_root, eth_fast_aggregate_verify,
+    hash_fixed, verify,
 };
 use cc_proto::common::Source;
 use cc_proto::p2p::{GossipObject, ObjectKind, Reason};
+use cc_types::Mainnet;
 use cc_types::config::ChainConfig;
 use cc_types::operations::{
     SignedContributionAndProof, SyncAggregatorSelectionData, SyncCommitteeMessage,
 };
 use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, ForkVersion, Root};
-use cc_types::Mainnet;
 use ssz::Decode;
 
 use super::check_payload_len;
@@ -605,11 +605,7 @@ fn verify_contribution_signatures<P: Preset>(
     }
 
     // aggregator signature over ContributionAndProof
-    let domain_cap = compute_domain(
-        DOMAIN_CONTRIBUTION_AND_PROOF,
-        Some(fork_version),
-        Some(gvr),
-    );
+    let domain_cap = compute_domain(DOMAIN_CONTRIBUTION_AND_PROOF, Some(fork_version), Some(gvr));
     let root_cap = *compute_signing_root(cap, domain_cap).as_array();
     if !verify_sig_bytes(&agg_pk, &root_cap, signed.signature.as_slice()) {
         return SigResult::Bad;
@@ -690,7 +686,9 @@ fn correlation_from_message(msg: &SyncCommitteeMessage) -> Vec<u8> {
     let mut out = Vec::with_capacity(24);
     out.extend_from_slice(&msg.slot.as_u64().to_le_bytes());
     out.extend_from_slice(&msg.validator_index.as_u64().to_le_bytes());
-    out.extend_from_slice(&msg.beacon_block_root.as_slice()[..8.min(msg.beacon_block_root.as_slice().len())]);
+    out.extend_from_slice(
+        &msg.beacon_block_root.as_slice()[..8.min(msg.beacon_block_root.as_slice().len())],
+    );
     out
 }
 
@@ -773,12 +771,8 @@ mod tests {
             slots_per_epoch: 32,
             genesis_validators_root: &[0u8; 32],
         };
-        let out = validate_sync_committee_message::<Mainnet>(
-            &mut seen,
-            &source,
-            &input,
-            Some(&steps),
-        );
+        let out =
+            validate_sync_committee_message::<Mainnet>(&mut seen, &source, &input, Some(&steps));
         match out {
             SyncOutcome::Done(v) => {
                 assert_eq!(v.reason, Reason::Internal);
@@ -808,12 +802,8 @@ mod tests {
             slots_per_epoch: 32,
             genesis_validators_root: &[0u8; 32],
         };
-        let out = validate_sync_committee_message::<Mainnet>(
-            &mut seen,
-            &source,
-            &input,
-            Some(&steps),
-        );
+        let out =
+            validate_sync_committee_message::<Mainnet>(&mut seen, &source, &input, Some(&steps));
         assert!(matches!(out, SyncOutcome::Done(_)));
         assert_eq!(steps.get(SyncMessageStep::Size), 1);
         assert_eq!(steps.get(SyncMessageStep::SszDecode), 0);

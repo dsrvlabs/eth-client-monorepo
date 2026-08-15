@@ -10,8 +10,8 @@
 
 use cc_store::keys::encode_cold_block_key;
 use cc_store::{
-    list_snapshot_slots, plan_snapshot_put, Engine, Slot, StoreError, TABLE_SNAPSHOTS,
-    TABLE_STATE_ROOTS,
+    Engine, Slot, StoreError, TABLE_SNAPSHOTS, TABLE_STATE_ROOTS, list_snapshot_slots,
+    plan_snapshot_put,
 };
 
 use super::PrunePlan;
@@ -32,7 +32,9 @@ pub(crate) fn plan_state_root_deletes(
     if let Ok(iter) = rt.range(TABLE_STATE_ROOTS, &lo, &hi) {
         for item in iter {
             let (key, value) = item?;
-            plan.bytes = plan.bytes.saturating_add(key.len() as u64 + value.len() as u64);
+            plan.bytes = plan
+                .bytes
+                .saturating_add(key.len() as u64 + value.len() as u64);
             plan.rows = plan.rows.saturating_add(1);
             plan.deletes.push((TABLE_STATE_ROOTS.to_owned(), key));
         }
@@ -46,10 +48,7 @@ pub(crate) fn plan_state_root_deletes(
 /// [`plan_snapshot_put`] (CC-42). This helper re-derives the same plan shape
 /// for an explicit prune-pass invocation (metrics / tests) without writing a
 /// new snapshot body — it only stages oldest-first deletes when depth > ring.
-pub(crate) fn plan_snapshot_ring_trim(
-    engine: &Engine,
-    ring: u64,
-) -> Result<PrunePlan, StoreError> {
+pub(crate) fn plan_snapshot_ring_trim(engine: &Engine, ring: u64) -> Result<PrunePlan, StoreError> {
     let ring = ring.max(1);
     let rt = engine.read()?;
     let slots = list_snapshot_slots(&rt)?;
@@ -65,7 +64,8 @@ pub(crate) fn plan_snapshot_ring_trim(
             plan.bytes = plan.bytes.saturating_add(key.len() as u64 + v.len() as u64);
         }
         plan.rows = plan.rows.saturating_add(1);
-        plan.deletes.push((TABLE_SNAPSHOTS.to_owned(), key.to_vec()));
+        plan.deletes
+            .push((TABLE_SNAPSHOTS.to_owned(), key.to_vec()));
     }
     Ok(plan)
 }
@@ -89,7 +89,7 @@ mod tests {
 
     use super::*;
     use cc_store::engine::{Durability, EngineOptions};
-    use cc_store::{plan_snapshot_put, Engine};
+    use cc_store::{Engine, plan_snapshot_put};
 
     fn tmp_engine() -> Engine {
         let dir = crate::test_tmpdir::unique_temp_dir("cc-storage-prune-states");

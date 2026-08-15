@@ -500,14 +500,18 @@ impl<P: Preset> BeaconState<P> {
         self.eth1_data_votes
             .push(v)
             .map_err(StateAccessError::from)?;
-        self.caches.field_roots.mark_dirty(StateField::Eth1DataVotes);
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::Eth1DataVotes);
         Ok(())
     }
 
     /// Replace eth1 data votes (e.g. epoch reset).
     pub fn eth1_data_votes_clear(&mut self) {
         self.eth1_data_votes = List::default();
-        self.caches.field_roots.mark_dirty(StateField::Eth1DataVotes);
+        self.caches
+            .field_roots
+            .mark_dirty(StateField::Eth1DataVotes);
     }
 
     /// Set next withdrawal index.
@@ -550,8 +554,7 @@ impl<P: Preset> BeaconState<P> {
         let old = std::mem::take(&mut self.pending_partial_withdrawals);
         let mut remaining: Vec<PendingPartialWithdrawal> = old.to_vec();
         remaining.drain(..n);
-        self.pending_partial_withdrawals =
-            List::new(remaining).map_err(StateAccessError::from)?;
+        self.pending_partial_withdrawals = List::new(remaining).map_err(StateAccessError::from)?;
         self.caches
             .field_roots
             .mark_dirty(StateField::PendingPartialWithdrawals);

@@ -209,7 +209,11 @@ impl EventInput {
     }
 
     /// `DATA_COLUMN` with payload = `DataColumnSidecar` SSZ, verbatim (no decode).
-    pub fn data_column(slot: u64, block_root: impl Into<Bytes>, sidecar_ssz: impl Into<Bytes>) -> Self {
+    pub fn data_column(
+        slot: u64,
+        block_root: impl Into<Bytes>,
+        sidecar_ssz: impl Into<Bytes>,
+    ) -> Self {
         Self {
             slot,
             root: block_root.into(),

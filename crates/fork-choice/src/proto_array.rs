@@ -80,9 +80,7 @@ pub enum ProtoArrayError {
     NonViableHead(Root),
     /// H-3: `Optimistic` / `Invalid` nodes must not carry the all-zeros
     /// execution hash (CC-35 case-2 `latestValidHash` sentinel).
-    #[error(
-        "H-3: execution_block_hash must not be ZERO for {status:?} node (root {root:?})"
-    )]
+    #[error("H-3: execution_block_hash must not be ZERO for {status:?} node (root {root:?})")]
     ZeroExecutionBlockHash {
         /// Block root that was refused.
         root: Root,
@@ -922,11 +920,7 @@ pub fn is_optimistic_candidate_block(
         return true;
     }
     // Branch 2 — block is at least `safe_slots` behind the wall clock.
-    if block_slot
-        .as_u64()
-        .saturating_add(safe_slots)
-        <= current_slot.as_u64()
-    {
+    if block_slot.as_u64().saturating_add(safe_slots) <= current_slot.as_u64() {
         return true;
     }
     false

@@ -54,8 +54,7 @@ pub struct CountingSamplingTracker {
 
 impl SamplingTrackerProbe for CountingSamplingTracker {
     fn note_interaction(&self) {
-        self.hits
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
     fn interactions(&self) -> u64 {
         self.hits.load(std::sync::atomic::Ordering::SeqCst)
@@ -176,8 +175,7 @@ pub async fn fetch_blobs(
     request: &FetchRequest,
 ) -> FetchResult {
     let epoch = epoch_at_slot(request.slot);
-    let params = match assert_request_length_within_bound(&request.versioned_hashes, bound, epoch)
-    {
+    let params = match assert_request_length_within_bound(&request.versioned_hashes, bound, epoch) {
         Ok(p) => p,
         Err("empty versioned_hashes") => {
             return FetchResult::Skipped {

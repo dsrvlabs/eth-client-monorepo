@@ -27,9 +27,8 @@ pub struct Lockfile {
 impl Lockfile {
     /// Parse the embedded lockfile text.
     pub fn parse(src: &str) -> Result<Self, Error> {
-        let tag = parse_scalar(src, "tag").ok_or_else(|| {
-            Error::Lockfile("missing `tag` field in spec-vectors.lock".into())
-        })?;
+        let tag = parse_scalar(src, "tag")
+            .ok_or_else(|| Error::Lockfile("missing `tag` field in spec-vectors.lock".into()))?;
         // Mirror scripts/fetch-spec-vectors.sh: tag is a single path segment.
         if !is_safe_tag(tag) {
             return Err(Error::Lockfile(format!(
@@ -40,9 +39,7 @@ impl Lockfile {
         let mut digests = [String::new(), String::new(), String::new(), String::new()];
         for (i, art) in ARTIFACTS.iter().enumerate() {
             let digest = parse_sha256(src, art).ok_or_else(|| {
-                Error::Lockfile(format!(
-                    "missing sha256 for `{art}` in spec-vectors.lock"
-                ))
+                Error::Lockfile(format!("missing sha256 for `{art}` in spec-vectors.lock"))
             })?;
             if !is_sha256_hex(digest) {
                 return Err(Error::Lockfile(format!(
@@ -112,9 +109,7 @@ fn parse_sha256<'a>(src: &'a str, artifact: &str) -> Option<&'a str> {
 }
 
 fn unquote(s: &str) -> &str {
-    s.trim()
-        .trim_matches('"')
-        .trim()
+    s.trim().trim_matches('"').trim()
 }
 
 /// Same charset as `scripts/fetch-spec-vectors.sh` tag sanitisation.

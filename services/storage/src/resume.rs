@@ -23,9 +23,7 @@ use cc_proto::chain::{RestoreBlock, RestoreFooter, RestoreHeader};
 use cc_store::blocks::{TABLE_BLOCKS_HOT, get_block_by_root};
 use cc_store::canonical::get_canonical;
 use cc_store::engine::Engine;
-use cc_store::keys::{
-    BlockRegion, decode_block_slot_by_root_value, encode_hot_block_key,
-};
+use cc_store::keys::{BlockRegion, decode_block_slot_by_root_value, encode_hot_block_key};
 use cc_store::meta::{
     AnchorInfo, ForkChoiceScalars, KEY_ANCHOR_INFO, KEY_CONFIG_DIGEST, KEY_FC_SCALARS,
     KEY_SCHEMA_VERSION, KEY_SPLIT, KEY_WRITE_CURSOR, Split, TABLE_META, WriteCursor,
@@ -142,7 +140,11 @@ pub(crate) async fn run_resume_sequence(
         .as_ref()
         .map(|f| root_from_bytes(&f.expected_head_root))
         .unwrap_or(Root::ZERO);
-    let expected_slot = plan.footer.as_ref().map(|f| f.expected_head_slot).unwrap_or(0);
+    let expected_slot = plan
+        .footer
+        .as_ref()
+        .map(|f| f.expected_head_slot)
+        .unwrap_or(0);
 
     // ── restore_send + chain_replay (stream then await response) ────────────
     let t_send = Instant::now();
@@ -273,7 +275,8 @@ fn build_restore_plan(
     let anchor_info: Option<AnchorInfo> = read_meta_ssz_rt(&rt, KEY_ANCHOR_INFO)?;
 
     // Real stored anchor-block SSZ for the snapshot slot (never Default body).
-    let anchor_block_ssz = load_snapshot_anchor_block_ssz(&rt, snap_slot, split.as_ref(), anchor_info.as_ref())?;
+    let anchor_block_ssz =
+        load_snapshot_anchor_block_ssz(&rt, snap_slot, split.as_ref(), anchor_info.as_ref())?;
 
     // Expected head from scalars (preferred) or walk.
     let (expected_head_root, expected_head_slot) = if let Some(ref s) = fc {
@@ -330,7 +333,8 @@ fn load_snapshot_anchor_block_ssz(
     anchor: Option<&AnchorInfo>,
 ) -> Result<Vec<u8>, ResumeError> {
     // 1. Canonical root at the snapshot slot.
-    if let Some(root) = get_canonical(rt, snap_slot).map_err(|e| ResumeError::Store(e.to_string()))?
+    if let Some(root) =
+        get_canonical(rt, snap_slot).map_err(|e| ResumeError::Store(e.to_string()))?
         && let Some(ssz) =
             get_block_by_root(rt, &root).map_err(|e| ResumeError::Store(e.to_string()))?
     {
@@ -340,8 +344,8 @@ fn load_snapshot_anchor_block_ssz(
     if let Some(s) = split
         && s.slot == snap_slot
         && s.block_root != Root::ZERO
-        && let Some(ssz) = get_block_by_root(rt, &s.block_root)
-            .map_err(|e| ResumeError::Store(e.to_string()))?
+        && let Some(ssz) =
+            get_block_by_root(rt, &s.block_root).map_err(|e| ResumeError::Store(e.to_string()))?
     {
         return Ok(ssz);
     }
@@ -349,8 +353,8 @@ fn load_snapshot_anchor_block_ssz(
     if let Some(a) = anchor
         && a.anchor_slot == snap_slot
         && a.anchor_root != Root::ZERO
-        && let Some(ssz) = get_block_by_root(rt, &a.anchor_root)
-            .map_err(|e| ResumeError::Store(e.to_string()))?
+        && let Some(ssz) =
+            get_block_by_root(rt, &a.anchor_root).map_err(|e| ResumeError::Store(e.to_string()))?
     {
         return Ok(ssz);
     }

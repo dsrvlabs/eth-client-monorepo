@@ -96,8 +96,8 @@ the remainder of the file. The pattern also matches only `env::var`, missing `va
 M7's baseline is **2** red gates; this is the second (3 diffs ✓).
 
 **Acceptance**
-1. `cargo fmt --all --check` exits 0 on `HEAD`.
-2. The commit is formatting-only — no semantic hunk in the diff. Reviewer check, not CI check.
+1. [x] `cargo fmt --all --check` exits 0 on `HEAD`.
+2. [x] The commit is formatting-only — no semantic hunk in the diff. Reviewer check, not CI check.
 
 ---
 

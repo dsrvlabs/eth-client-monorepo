@@ -47,13 +47,13 @@ pub mod split;
 pub mod window;
 
 pub use backfill_progress::{
+    BACKFILL_BATCH_SLOT_LIMIT, COLUMN_BACKFILL_EPOCHS, COLUMN_INDEX_COUNT, ProgressError,
     advance_per_index_oldest, apply_block_batch_progress, apply_column_batch_progress,
     block_backfill_complete, block_backfill_target_slot, column_backfill_complete,
     column_backfill_target_slot, ensure_per_index_len, load_backfill_progress,
     load_backfill_progress_txn, oldest_custodied_column_slot, put_backfill_progress,
     resume_block_frontier, resume_block_parent, resume_column_frontier, resume_within_one_batch,
-    serve_window_above_block_target, serve_window_above_column_target, BACKFILL_BATCH_SLOT_LIMIT,
-    COLUMN_BACKFILL_EPOCHS, COLUMN_INDEX_COUNT, ProgressError,
+    serve_window_above_block_target, serve_window_above_column_target,
 };
 pub use blocks::{
     BlockClassStats, MAX_BLOCKS_BY_RANGE, PARENT_ROOT_SSZ_OFFSET, PutBlockOutcome, RangeBlock,
@@ -68,9 +68,9 @@ pub use canonical::{
 pub use columns::{
     BYTES_PER_BLOB_IN_SIDECAR, COLUMN_HEADER_SLOT_SSZ_OFFSET, COLUMN_INDEX_SSZ_OFFSET,
     ColumnClassStats, ColumnsForBlock, DATA_COLUMN_SIDECAR_FIXED_BYTES, DaStatus,
-    MAX_BLOBS_PER_COLUMN_SIDECAR, MAX_COLUMNS_BY_RANGE_SIDECARS, MAX_COLUMNS_BY_RANGE_SLOTS,
-    MAX_COLUMN_SIDECAR_BYTES, PutColumnOutcome, RangeColumn, TABLE_COLUMNS_HOT,
-    TABLE_COLUMN_SLOT_BY_ROOT, TABLE_DA_STATUS, column_index_at_offset, column_slot_at_offset,
+    MAX_BLOBS_PER_COLUMN_SIDECAR, MAX_COLUMN_SIDECAR_BYTES, MAX_COLUMNS_BY_RANGE_SIDECARS,
+    MAX_COLUMNS_BY_RANGE_SLOTS, PutColumnOutcome, RangeColumn, TABLE_COLUMN_SLOT_BY_ROOT,
+    TABLE_COLUMNS_HOT, TABLE_DA_STATUS, column_index_at_offset, column_slot_at_offset,
     columns_by_range, columns_for_block, data_column_sidecar_size, get_column_by_root,
     get_da_status, measure_column_class_stats, put_column, put_da_status,
 };
@@ -90,21 +90,22 @@ pub use schema::{
     parse_shard_table,
 };
 pub use snapshots::{
-    DEFAULT_SNAPSHOT_EPOCHS, MAX_SNAPSHOT_BYTES, SnapshotPlan, TABLE_SNAPSHOTS, apply_snapshot_plan,
-    check_snapshot_len, encode_snapshot_key, epoch_of_slot as snapshot_epoch_of_slot, get_snapshot,
-    list_snapshot_slots, newest_snapshot, oldest_snapshot_slot, plan_snapshot_put, put_snapshot,
-    ring_depth, snapshot_due,
+    DEFAULT_SNAPSHOT_EPOCHS, MAX_SNAPSHOT_BYTES, SnapshotPlan, TABLE_SNAPSHOTS,
+    apply_snapshot_plan, check_snapshot_len, encode_snapshot_key,
+    epoch_of_slot as snapshot_epoch_of_slot, get_snapshot, list_snapshot_slots, newest_snapshot,
+    oldest_snapshot_slot, plan_snapshot_put, put_snapshot, ring_depth, snapshot_due,
 };
 pub use split::{
     DEFAULT_EPOCHS_PER_MIGRATION, MAX_MIGRATION_SLOTS_PER_BATCH, MigrationPlan, MigrationStats,
-    SPLIT_KEY, SLOTS_PER_EPOCH as SPLIT_SLOTS_PER_EPOCH, SplitLock, epoch_of_slot, epoch_start_slot,
-    load_split, migrate, migrate_with_commit_fault, migration_needed, migration_window_end,
-    plan_migration, put_split, should_migrate_on_finalization, stage_migration,
+    SLOTS_PER_EPOCH as SPLIT_SLOTS_PER_EPOCH, SPLIT_KEY, SplitLock, epoch_of_slot,
+    epoch_start_slot, load_split, migrate, migrate_with_commit_fault, migration_needed,
+    migration_window_end, plan_migration, put_split, should_migrate_on_finalization,
+    stage_migration,
 };
 pub use window::{
     BlockServeWindowCfg, HoleAppendResult, MAX_SERVE_WINDOW_HOLES,
-    MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS, ServeWindowError, WindowBranch, WindowConfigError,
-    append_hole, check_min_epochs_for_block_requests, column_slot_contiguous,
+    MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS, ServeWindowError, WindowBranch,
+    WindowConfigError, append_hole, check_min_epochs_for_block_requests, column_slot_contiguous,
     compute_min_epochs_for_block_requests, derive_serve_window, derive_serve_window_from_meta,
     earliest_available_slot, extend_block_floor, hole_slots_total, load_serve_window,
     put_serve_window, raise_for_holes, shrink_holes_filled, sidecar_retention_floor,

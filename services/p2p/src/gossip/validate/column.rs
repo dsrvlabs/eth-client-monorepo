@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cc_crypto::{
-    compute_domain, compute_signing_root, hash32_concat, verify, PublicKey, Signature,
-    DOMAIN_BEACON_PROPOSER,
+    DOMAIN_BEACON_PROPOSER, PublicKey, Signature, compute_domain, compute_signing_root,
+    hash32_concat, verify,
 };
 use cc_proto::p2p::{ChainView, Reason};
 use cc_types::config::ChainConfig;
@@ -21,8 +21,8 @@ use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, Root, Slot};
 use cc_types::sidecar::DataColumnSidecar;
 use cc_types::{
-    compute_subnet_for_data_column_sidecar, ForkVersion, NUMBER_OF_COLUMNS,
-    KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH,
+    ForkVersion, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, NUMBER_OF_COLUMNS,
+    compute_subnet_for_data_column_sidecar,
 };
 use lru::LruCache;
 use ssz::Decode;
@@ -37,7 +37,7 @@ use crate::verdict::Verdict;
 
 // Re-export KZG seam used by the pool and tests.
 pub use super::kzg_verify::{
-    production_kzg_verify, AlwaysValidKzg, CellKzgVerifier, FailClosedKzg, KzgVerify,
+    AlwaysValidKzg, CellKzgVerifier, FailClosedKzg, KzgVerify, production_kzg_verify,
 };
 
 // ── Post-validation publish decision seam (Track D) ─────────────────────────
@@ -216,8 +216,7 @@ impl InclusionProofCache {
     /// Capacity 512.
     #[must_use]
     pub fn new() -> Self {
-        let cap = NonZeroUsize::new(INCLUSION_PROOF_CACHE_BOUND)
-            .unwrap_or(NonZeroUsize::MIN);
+        let cap = NonZeroUsize::new(INCLUSION_PROOF_CACHE_BOUND).unwrap_or(NonZeroUsize::MIN);
         Self {
             cache: LruCache::new(cap),
             verifications: 0,
@@ -356,8 +355,11 @@ pub fn validate_data_column_sidecar<P: Preset>(
 
     // 1. size check
     steps.tick(ColumnStep::Size);
-    if check_payload_len::<P>(TopicName::DataColumnSidecar(input.topic_subnet), input.payload.len())
-        .is_err()
+    if check_payload_len::<P>(
+        TopicName::DataColumnSidecar(input.topic_subnet),
+        input.payload.len(),
+    )
+    .is_err()
     {
         return ColumnOutcome::Done(Verdict::reject(Reason::Invalid, corr));
     }
@@ -409,7 +411,8 @@ pub fn validate_data_column_sidecar<P: Preset>(
 
     // 6. verify_data_column_sidecar structural
     steps.tick(ColumnStep::VerifySidecar);
-    if let Err(reason) = verify_data_column_sidecar_structure::<P>(&sidecar, input.config, input.slots_per_epoch)
+    if let Err(reason) =
+        verify_data_column_sidecar_structure::<P>(&sidecar, input.config, input.slots_per_epoch)
     {
         return ColumnOutcome::Done(Verdict::reject(reason, corr));
     }
@@ -427,7 +430,8 @@ pub fn validate_data_column_sidecar<P: Preset>(
 
     // 8. proposer signature
     steps.tick(ColumnStep::ProposerSignature);
-    match verify_proposer_signature::<P>(&sidecar, input.view, input.config, input.slots_per_epoch) {
+    match verify_proposer_signature::<P>(&sidecar, input.view, input.config, input.slots_per_epoch)
+    {
         SigResult::Bad => {
             return ColumnOutcome::Done(Verdict::reject(Reason::InvalidSignature, corr));
         }
@@ -624,11 +628,7 @@ fn verify_proposer_signature<P: Preset>(
     let epoch = slot / slots_per_epoch.max(1);
     let fork_version = fork_version_at_epoch(config, epoch);
     let gvr = root_from_bytes(&view.genesis_validators_root);
-    let domain = compute_domain(
-        DOMAIN_BEACON_PROPOSER,
-        Some(fork_version),
-        Some(gvr),
-    );
+    let domain = compute_domain(DOMAIN_BEACON_PROPOSER, Some(fork_version), Some(gvr));
     let message = *compute_signing_root(header, domain).as_array();
     if verify(&pubkey, &message, &signature) {
         SigResult::Ok
@@ -753,13 +753,7 @@ pub fn verify_inclusion_proof(
     }
     let leaf = Root::from_array(*commitments_root);
     let root = Root::from_array(body_root);
-    is_valid_merkle_branch(
-        leaf,
-        branch,
-        depth,
-        BLOB_KZG_COMMITMENTS_FIELD_INDEX,
-        root,
-    )
+    is_valid_merkle_branch(leaf, branch, depth, BLOB_KZG_COMMITMENTS_FIELD_INDEX, root)
 }
 
 fn is_valid_merkle_branch(
@@ -837,8 +831,7 @@ mod tests {
             sc.kzg_commitments = VariableList::new(vec![commitment]).expect("1 commitment");
             sc.kzg_proofs = VariableList::new(vec![cc_types::primitives::KzgProof::default()])
                 .expect("1 proof");
-            sc.column =
-                VariableList::new(vec![cc_types::primitives::Cell::ZERO]).expect("1 cell");
+            sc.column = VariableList::new(vec![cc_types::primitives::Cell::ZERO]).expect("1 cell");
             sc.kzg_commitments_inclusion_proof = FixedVector::default();
             sc
         }
@@ -926,7 +919,9 @@ mod tests {
             &NoopSamplingFeed,
             None,
         );
-        assert!(matches!(out, ColumnOutcome::Done(ref v) if matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject)));
+        assert!(
+            matches!(out, ColumnOutcome::Done(ref v) if matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject))
+        );
         assert_eq!(state.steps.get(ColumnStep::IndexBound), 1);
         assert_eq!(state.steps.get(ColumnStep::Subnet), 0);
     }
@@ -947,7 +942,9 @@ mod tests {
             &NoopSamplingFeed,
             None,
         );
-        assert!(matches!(out, ColumnOutcome::Done(ref v) if matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject)));
+        assert!(
+            matches!(out, ColumnOutcome::Done(ref v) if matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject))
+        );
         assert_eq!(state.steps.get(ColumnStep::Subnet), 1);
         assert_eq!(state.steps.get(ColumnStep::SlotWindow), 0);
     }
@@ -995,7 +992,9 @@ mod tests {
             &NoopSamplingFeed,
             None,
         );
-        assert!(matches!(out, ColumnOutcome::Done(ref v) if matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject)));
+        assert!(
+            matches!(out, ColumnOutcome::Done(ref v) if matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject))
+        );
         assert_eq!(state.steps.get(ColumnStep::VerifySidecar), 1);
         assert_eq!(state.steps.get(ColumnStep::SeenSet), 0);
     }
@@ -1012,9 +1011,7 @@ mod tests {
         let proofs: Vec<_> = (0..15)
             .map(|_| cc_types::primitives::KzgProof::default())
             .collect();
-        let cells: Vec<_> = (0..15)
-            .map(|_| cc_types::primitives::Cell::ZERO)
-            .collect();
+        let cells: Vec<_> = (0..15).map(|_| cc_types::primitives::Cell::ZERO).collect();
         sc.kzg_commitments = VariableList::new(commitments).expect("15");
         sc.kzg_proofs = VariableList::new(proofs).expect("15");
         sc.column = VariableList::new(cells).expect("15");
@@ -1134,7 +1131,7 @@ mod tests {
         // or scan. Fixture puts pubkey at index matching proposer via scan.
         // If lookahead cleared, scan fails → UnknownKey at step 8.
         // Rebuild: keep pubkey list with one entry and lookahead empty but
-        // pubkey_for_proposer falls back to scan of lookahead only... 
+        // pubkey_for_proposer falls back to scan of lookahead only...
         // Looking at code: scan is over proposer_lookahead. So empty → UnknownKey.
         //
         // Fix production code: allow step 8 to use proposer_pubkeys[0] when
@@ -1192,14 +1189,8 @@ mod tests {
     }
 
     /// Build a sidecar with a real BLS signature over the header.
-    fn signed_sidecar_fixture(
-        index: u64,
-        slot: u64,
-        proposer: u64,
-    ) -> (ChainView, Vec<u8>) {
-        use cc_crypto::{
-            compute_domain, compute_signing_root, SecretKey, DOMAIN_BEACON_PROPOSER,
-        };
+    fn signed_sidecar_fixture(index: u64, slot: u64, proposer: u64) -> (ChainView, Vec<u8>) {
+        use cc_crypto::{DOMAIN_BEACON_PROPOSER, SecretKey, compute_domain, compute_signing_root};
 
         let sk = SecretKey::from_ikm(&[7u8; 32]).expect("sk");
         let pk_bytes = sk.public_key().serialize();
@@ -1214,11 +1205,7 @@ mod tests {
             body_root: Root::from_array([9u8; 32]),
         };
         let fork_version = fork_version_at_epoch(&config, epoch);
-        let domain = compute_domain(
-            DOMAIN_BEACON_PROPOSER,
-            Some(fork_version),
-            Some(Root::ZERO),
-        );
+        let domain = compute_domain(DOMAIN_BEACON_PROPOSER, Some(fork_version), Some(Root::ZERO));
         // Use GVR zero; view must match.
         let msg = *compute_signing_root(&header, domain).as_array();
         let sig_bytes = sk.sign(&msg).serialize();

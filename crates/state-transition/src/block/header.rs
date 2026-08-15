@@ -142,8 +142,7 @@ mod tests {
         // process_slot already filled header.state_root with pre_root.
         assert_eq!(state.latest_block_header().state_root, pre_root);
 
-        let parent_root =
-            Root::from_hash256(TreeHash::tree_hash_root(state.latest_block_header()));
+        let parent_root = Root::from_hash256(TreeHash::tree_hash_root(state.latest_block_header()));
 
         let block = BeaconBlock {
             slot: Slot::new(1),

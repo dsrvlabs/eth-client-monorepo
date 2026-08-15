@@ -61,26 +61,26 @@ pub use core::{
     SHUTDOWN_JOIN_TIMEOUT, spawn_core_thread, spawn_core_thread_with_epoch,
 };
 pub use da::{
-    CELL_PAYLOAD_SOFT_MIN, DEFAULT_DA_PENDING_TIMEOUT_SLOTS, DEFAULT_RECOVERY_MAX_ATTEMPTS,
-    DEFAULT_RECOVERY_MAX_PEERS, DEFAULT_SECONDS_PER_SLOT, PENDING_DA_BOUND, PendingDa,
-    PendingDaEntry, RESP_TIMEOUT_SECS, TEMPLATE_WIRE_SOFT_MAX, TTFB_TIMEOUT_SECS, BlockBranchTrigger,
-    OutboundTriggerBytes, assert_timeout_outlasts_recovery, block_branch_trigger_from_signed,
-    chain_pending_timeout_secs, default_timeout_ordering_ok, kzg_commitment_to_versioned_hash,
-    recovery_ladder_worst_case_secs, versioned_hashes_from_commitments,
+    BlockBranchTrigger, CELL_PAYLOAD_SOFT_MIN, DEFAULT_DA_PENDING_TIMEOUT_SLOTS,
+    DEFAULT_RECOVERY_MAX_ATTEMPTS, DEFAULT_RECOVERY_MAX_PEERS, DEFAULT_SECONDS_PER_SLOT,
+    OutboundTriggerBytes, PENDING_DA_BOUND, PendingDa, PendingDaEntry, RESP_TIMEOUT_SECS,
+    TEMPLATE_WIRE_SOFT_MAX, TTFB_TIMEOUT_SECS, assert_timeout_outlasts_recovery,
+    block_branch_trigger_from_signed, chain_pending_timeout_secs, default_timeout_ordering_ok,
+    kzg_commitment_to_versioned_hash, recovery_ladder_worst_case_secs,
+    versioned_hashes_from_commitments,
 };
-pub use pending_engine::{
-    DEFAULT_ENGINE_PENDING_TIMEOUT_SLOTS, PENDING_ENGINE_BOUND, PendingEngine, PendingEngineEntry,
-};
-pub use engine_client::{DEFAULT_ENGINE_URI, EngineApiClient, fire_fetch_blobs, poll_engine_online};
-pub use fcu_driver::{
-    FcuBuildError, FcuDriver, FcuSink, FcuSkip, ForkchoiceState, GrpcFcuSink, RecordingFcuSink,
-    build_forkchoice_state, safe_is_ancestor_of_head,
+pub use engine_client::{
+    DEFAULT_ENGINE_URI, EngineApiClient, fire_fetch_blobs, poll_engine_online,
 };
 pub use epoch_context::{EpochContext, EpochContextStore};
 pub use events::{
     DEFAULT_RING_BYTES, DEFAULT_RING_CAPACITY, DEFAULT_SUBSCRIBER_QUEUE_CAPACITY, ERROR_DOMAIN,
     EventInput, EventSubscription, EventsConfig, EventsHandle, MAX_EVENT_PAYLOAD_BYTES, Occupancy,
     REASON_CURSOR_TOO_OLD, REASON_CURSOR_UNKNOWN_SESSION, SESSION_ID_METADATA_KEY,
+};
+pub use fcu_driver::{
+    FcuBuildError, FcuDriver, FcuSink, FcuSkip, ForkchoiceState, GrpcFcuSink, RecordingFcuSink,
+    build_forkchoice_state, safe_is_ancestor_of_head,
 };
 pub use head::{HeadSnapshot, HeadSnapshotStore};
 pub use import::{
@@ -100,6 +100,9 @@ pub use p2p_stream::{
     MAX_P2P_STREAM_SESSIONS, P2pStreamDeps, REASON_STREAM_SESSION_LIMIT, REASON_UNKNOWN_TOPIC,
     STREAM_OUTBOUND_CAPACITY, VIEW_KIND_EPOCH_TICK, VIEW_KIND_FULL, VIEW_KIND_HEAD_CHANGE,
     VIEW_KIND_SLOT_TICK, ViewTick, build_chain_view, validate_publish_topic,
+};
+pub use pending_engine::{
+    DEFAULT_ENGINE_PENDING_TIMEOUT_SLOTS, PENDING_ENGINE_BOUND, PendingEngine, PendingEngineEntry,
 };
 pub use residency::{
     BodyRingEntry, DEFAULT_BODY_RING_CAPACITY, DEFAULT_MAX_RESIDENT_STATES, Residency,

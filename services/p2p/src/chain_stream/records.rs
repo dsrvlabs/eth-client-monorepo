@@ -12,8 +12,8 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use cc_proto::chain::chain_service_client::ChainServiceClient;
 use cc_proto::chain::GetValidatorRecordsRequest;
+use cc_proto::chain::chain_service_client::ChainServiceClient;
 use cc_types::containers::Validator;
 use lru::LruCache;
 use ssz::Decode;
@@ -39,9 +39,7 @@ struct CacheEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RecordsError {
     /// Caller asked for more than [`MAX_VALIDATOR_RECORDS_PER_REQUEST`] in one batch.
-    #[error(
-        "GetValidatorRecords bound is {bound} indices; got {got} (never truncated)"
-    )]
+    #[error("GetValidatorRecords bound is {bound} indices; got {got} (never truncated)")]
     OverBound {
         /// Configured bound.
         bound: usize,
@@ -103,8 +101,8 @@ impl ValidatorRecordSource for RpcValidatorRecordSource {
                     got: indices.len(),
                 });
             }
-            let endpoint = Endpoint::from_shared(uri)
-                .map_err(|e| RecordsError::Fetch(e.to_string()))?;
+            let endpoint =
+                Endpoint::from_shared(uri).map_err(|e| RecordsError::Fetch(e.to_string()))?;
             let channel = endpoint
                 .connect()
                 .await
@@ -193,10 +191,7 @@ impl ValidatorRecordSource for MapValidatorRecordSource {
                 };
                 records.push(v);
             }
-            Ok(FetchedRecords {
-                records,
-                slot: 0,
-            })
+            Ok(FetchedRecords { records, slot: 0 })
         })
     }
 }

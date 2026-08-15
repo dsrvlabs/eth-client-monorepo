@@ -154,12 +154,9 @@ mod tests {
     #[test]
     fn empty_head_yields_head_plus_one_clamped_to_anchor() {
         let complete: BTreeSet<u64> = BTreeSet::new();
-        let s = compute_earliest_available_slot(
-            Slot::new(10),
-            Slot::new(20),
-            Slot::new(10),
-            |t| complete.contains(&t.as_u64()),
-        );
+        let s = compute_earliest_available_slot(Slot::new(10), Slot::new(20), Slot::new(10), |t| {
+            complete.contains(&t.as_u64())
+        });
         assert_eq!(s, Slot::new(21));
     }
 
@@ -167,12 +164,9 @@ mod tests {
     fn contiguous_suffix_from_head() {
         // Complete: 5,6,7,8,9,10 — missing 4. head=10, floor=0 → earliest=5.
         let complete: BTreeSet<u64> = (5..=10).collect();
-        let s = compute_earliest_available_slot(
-            Slot::new(0),
-            Slot::new(10),
-            Slot::new(0),
-            |t| complete.contains(&t.as_u64()),
-        );
+        let s = compute_earliest_available_slot(Slot::new(0), Slot::new(10), Slot::new(0), |t| {
+            complete.contains(&t.as_u64())
+        });
         assert_eq!(s, Slot::new(5));
     }
 
@@ -180,24 +174,18 @@ mod tests {
     fn walk_floor_caps_backward_scan() {
         // All complete down to 0, but floor=8 → earliest cannot go below 8.
         let complete: BTreeSet<u64> = (0..=10).collect();
-        let s = compute_earliest_available_slot(
-            Slot::new(0),
-            Slot::new(10),
-            Slot::new(8),
-            |t| complete.contains(&t.as_u64()),
-        );
+        let s = compute_earliest_available_slot(Slot::new(0), Slot::new(10), Slot::new(8), |t| {
+            complete.contains(&t.as_u64())
+        });
         assert_eq!(s, Slot::new(8));
     }
 
     #[test]
     fn anchor_floors_the_window() {
         let complete: BTreeSet<u64> = (0..=10).collect();
-        let s = compute_earliest_available_slot(
-            Slot::new(7),
-            Slot::new(10),
-            Slot::new(0),
-            |t| complete.contains(&t.as_u64()),
-        );
+        let s = compute_earliest_available_slot(Slot::new(7), Slot::new(10), Slot::new(0), |t| {
+            complete.contains(&t.as_u64())
+        });
         assert_eq!(s, Slot::new(7));
     }
 

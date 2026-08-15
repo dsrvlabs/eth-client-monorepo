@@ -31,12 +31,13 @@ use alloy_primitives::U256;
 use cc_store::meta::ServeWindow;
 use cc_store::split::SLOTS_PER_EPOCH;
 use cc_store::{
-    earliest_available_slot, load_serve_window, measure_column_class_stats, put_column,
-    put_serve_window, write_derived_serve_window, BlockRegion, Durability, Engine, EngineOptions,
-    WindowBranch, COLUMN_HEADER_SLOT_SSZ_OFFSET, COLUMN_INDEX_SSZ_OFFSET,
-    DATA_COLUMN_SIDECAR_FIXED_BYTES, MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS,
+    BlockRegion, COLUMN_HEADER_SLOT_SSZ_OFFSET, COLUMN_INDEX_SSZ_OFFSET,
+    DATA_COLUMN_SIDECAR_FIXED_BYTES, Durability, Engine, EngineOptions,
+    MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS, WindowBranch, earliest_available_slot,
+    load_serve_window, measure_column_class_stats, put_column, put_serve_window,
+    write_derived_serve_window,
 };
-use cc_types::{get_custody_groups, Root, Slot};
+use cc_types::{Root, Slot, get_custody_groups};
 
 // ── Engine fixture ──────────────────────────────────────────────────────────
 

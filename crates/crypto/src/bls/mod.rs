@@ -10,11 +10,11 @@ pub use batch::{OsRandom, RandomScalarSource, SignatureSet};
 
 use std::cell::Cell;
 
+use blst::BLST_ERROR;
 use blst::min_pk::{
     AggregatePublicKey as BlstAggPk, AggregateSignature as BlstAggSig, PublicKey as BlstPk,
     Signature as BlstSig,
 };
-use blst::BLST_ERROR;
 
 // SecretKey is tooling-only (feature `signing` / unit tests). Keep the blst
 // import gated so default-feature service builds stay unused-import free.
@@ -286,13 +286,10 @@ pub fn aggregate_verify(pks: &[PublicKey], msgs: &[[u8; 32]], sig: &Signature) -
     record_bls_verify();
     let pk_refs: Vec<&BlstPk> = pks.iter().map(|p| p.inner()).collect();
     let msg_refs: Vec<&[u8]> = msgs.iter().map(|m| m.as_slice()).collect();
-    success(sig.inner().aggregate_verify(
-        false,
-        &msg_refs,
-        BLS_SIGNATURE_DST,
-        &pk_refs,
-        false,
-    ))
+    success(
+        sig.inner()
+            .aggregate_verify(false, &msg_refs, BLS_SIGNATURE_DST, &pk_refs, false),
+    )
 }
 
 /// Fast aggregate verify: many pubkeys, one shared message, one aggregate sig.
@@ -413,7 +410,10 @@ mod tests {
         let err = PublicKey::deserialize(&[0u8; 48]).unwrap_err();
         assert!(matches!(
             err,
-            BlsError::BadEncoding | BlsError::Infinity | BlsError::PointNotInGroup | BlsError::Other(_)
+            BlsError::BadEncoding
+                | BlsError::Infinity
+                | BlsError::PointNotInGroup
+                | BlsError::Other(_)
         ));
     }
 
@@ -422,7 +422,10 @@ mod tests {
         let err = Signature::deserialize(&[0u8; 96]).unwrap_err();
         assert!(matches!(
             err,
-            BlsError::BadEncoding | BlsError::Infinity | BlsError::PointNotInGroup | BlsError::Other(_)
+            BlsError::BadEncoding
+                | BlsError::Infinity
+                | BlsError::PointNotInGroup
+                | BlsError::Other(_)
         ));
     }
 

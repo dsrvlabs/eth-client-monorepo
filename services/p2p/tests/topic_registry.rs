@@ -15,7 +15,7 @@ use cc_p2p::gossip::{
     expand_fulu_topic_strings, format_topic_string,
 };
 use cc_types::{
-    DATA_COLUMN_SIDECAR_SUBNET_COUNT, ChainConfig, Epoch, ForkDigest, Mainnet, Preset, Root,
+    ChainConfig, DATA_COLUMN_SIDECAR_SUBNET_COUNT, Epoch, ForkDigest, Mainnet, Preset, Root,
     parse_hex_bytes,
 };
 
@@ -74,14 +74,8 @@ fn hoodi_topic_strings_match_committed_fixture() {
 
     let counts = SubnetCounts::mainnet();
     assert_eq!(counts.attestation, ATTESTATION_SUBNET_COUNT);
-    assert_eq!(
-        counts.sync_committee,
-        Mainnet::SYNC_COMMITTEE_SUBNET_COUNT
-    );
-    assert_eq!(
-        counts.data_column_sidecar,
-        DATA_COLUMN_SIDECAR_SUBNET_COUNT
-    );
+    assert_eq!(counts.sync_committee, Mainnet::SYNC_COMMITTEE_SUBNET_COUNT);
+    assert_eq!(counts.data_column_sidecar, DATA_COLUMN_SIDECAR_SUBNET_COUNT);
 
     let constructed = expand_fulu_topic_strings(digest, &counts);
     let expected = load_fixture_topics();
@@ -96,10 +90,7 @@ fn hoodi_topic_strings_match_committed_fixture() {
     for (i, (got, want)) in constructed.iter().zip(expected.iter()).enumerate() {
         assert_eq!(got, want, "topic string mismatch at index {i}");
     }
-    assert_eq!(
-        constructed, expected,
-        "full fixture equality (CC-22/1)"
-    );
+    assert_eq!(constructed, expected, "full fixture equality (CC-22/1)");
 }
 
 #[test]
@@ -211,9 +202,7 @@ fn params_applied_before_subscribe_on_recording_stub() {
     assert!(
         matches!(&calls[0], cc_p2p::gossip::GossipCall::SetTopicParams { topic: t, params: p } if t == &topic && p == &params)
     );
-    assert!(
-        matches!(&calls[1], cc_p2p::gossip::GossipCall::Subscribe { topic: t } if t == &topic)
-    );
+    assert!(matches!(&calls[1], cc_p2p::gossip::GossipCall::Subscribe { topic: t } if t == &topic));
 }
 
 // ── state machine live set ──────────────────────────────────────────────────

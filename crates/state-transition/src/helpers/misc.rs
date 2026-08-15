@@ -1,10 +1,8 @@
 //! Miscellaneous pure helpers (`compute_*`, merkle, shuffling).
 
-use cc_crypto::{hash32_concat, hash_fixed};
+use cc_crypto::{hash_fixed, hash32_concat};
 use cc_types::preset::Preset;
-use cc_types::primitives::{
-    Epoch, ExecutionAddress, KzgCommitment, Root, Slot, ValidatorIndex,
-};
+use cc_types::primitives::{Epoch, ExecutionAddress, KzgCommitment, Root, Slot, ValidatorIndex};
 
 use crate::engine_seam::VersionedHash;
 use crate::error::BlockError;

@@ -38,19 +38,23 @@ use cc_types::{
 use ssz::Decode;
 
 use cc_p2p::chain_stream::{MapValidatorRecordSource, ValidatorRecordCache};
-use cc_p2p::gossip::topics::{expand_fulu_topic_names, SubnetCounts, TopicName};
+use cc_p2p::gossip::topics::{SubnetCounts, TopicName, expand_fulu_topic_names};
 use cc_p2p::gossip::validate::{
-    check_payload_len, max_container_bytes, validate_beacon_block_local,
-    validate_data_column_sidecar, validate_operation, AlwaysValidKzg, BlockValidateInput,
-    ColumnValidateInput, ColumnValidatorState, NoopSamplingFeed, OperationValidateInput,
-    OperationValidatorState,
+    AlwaysValidKzg, BlockValidateInput, ColumnValidateInput, ColumnValidatorState,
+    NoopSamplingFeed, OperationValidateInput, OperationValidatorState, check_payload_len,
+    max_container_bytes, validate_beacon_block_local, validate_data_column_sidecar,
+    validate_operation,
 };
-use cc_p2p::gossip::{PendingQueues, SeenSets, ATTESTATION_SUBNET_COUNT};
-use cc_p2p::reqresp::codec::{ResponseChunk, ResponseCode, SszLimits, SszSnappyFraming, MAX_PAYLOAD_SIZE};
-use cc_p2p::reqresp::columns::{ColumnsByRangeRequest, ColumnsByRootRequest, make_by_root_identifier};
+use cc_p2p::gossip::{ATTESTATION_SUBNET_COUNT, PendingQueues, SeenSets};
 use cc_p2p::reqresp::Protocol;
-use cc_types::primitives::Root;
+use cc_p2p::reqresp::codec::{
+    MAX_PAYLOAD_SIZE, ResponseChunk, ResponseCode, SszLimits, SszSnappyFraming,
+};
+use cc_p2p::reqresp::columns::{
+    ColumnsByRangeRequest, ColumnsByRootRequest, make_by_root_identifier,
+};
 use cc_types::Slot;
+use cc_types::primitives::Root;
 
 // ── Counting GlobalAlloc (test harness only) ────────────────────────────────
 
@@ -168,7 +172,10 @@ const ALLOC_OVERHEAD: usize = 64 * 1024;
 /// Ten Fulu topic families — one representative name each (subnets share the container).
 const FAMILIES: &[(&str, TopicName)] = &[
     ("beacon_block", TopicName::BeaconBlock),
-    ("beacon_aggregate_and_proof", TopicName::BeaconAggregateAndProof),
+    (
+        "beacon_aggregate_and_proof",
+        TopicName::BeaconAggregateAndProof,
+    ),
     ("beacon_attestation", TopicName::BeaconAttestation(0)),
     ("data_column_sidecar", TopicName::DataColumnSidecar(0)),
     (
@@ -207,8 +214,7 @@ fn load_seed(family: &str) -> Vec<u8> {
 }
 
 fn hoodi_config() -> ChainConfig {
-    const YAML: &str =
-        include_str!("../../../crates/types/tests/fixtures/hoodi-config.yaml");
+    const YAML: &str = include_str!("../../../crates/types/tests/fixtures/hoodi-config.yaml");
     ChainConfig::from_yaml_str(YAML).expect("hoodi config")
 }
 
@@ -485,9 +491,8 @@ fn run_one(
     oversize: bool,
     bound_override: Option<usize>,
 ) {
-    let bound = bound_override.unwrap_or_else(|| {
-        max_container_bytes::<Mainnet>(name).saturating_add(ALLOC_OVERHEAD)
-    });
+    let bound = bound_override
+        .unwrap_or_else(|| max_container_bytes::<Mainnet>(name).saturating_add(ALLOC_OVERHEAD));
 
     let track = alloc_start();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -655,7 +660,14 @@ fn hostile_input_no_panic_and_alloc_bound() {
             let oversize = rng.gen_range(20) == 0;
             if oversize {
                 run_one(
-                    &mut ctx, family, *name, &[], "random_oversize", i, true, None,
+                    &mut ctx,
+                    family,
+                    *name,
+                    &[],
+                    "random_oversize",
+                    i,
+                    true,
+                    None,
                 );
             } else {
                 let payload = {
@@ -665,9 +677,7 @@ fn hostile_input_no_panic_and_alloc_bound() {
                     rng.fill_bytes(&mut buf);
                     buf
                 };
-                run_one(
-                    &mut ctx, family, *name, &payload, "random", i, false, None,
-                );
+                run_one(&mut ctx, family, *name, &payload, "random", i, false, None);
             }
         }
 
@@ -675,9 +685,7 @@ fn hostile_input_no_panic_and_alloc_bound() {
         let mut rng = XorShift64::new(MASTER_SEED ^ family_mix(family) ^ 0xBEEF);
         for i in 0..INPUTS_PER_CLASS {
             let payload = mutate(&seed, &mut rng);
-            run_one(
-                &mut ctx, family, *name, &payload, "mutated", i, false, None,
-            );
+            run_one(&mut ctx, family, *name, &payload, "mutated", i, false, None);
         }
     }
 
@@ -743,7 +751,10 @@ fn valid_request_seed(protocol: Protocol) -> Vec<u8> {
         }
         .to_ssz_bytes(),
         Protocol::DataColumnSidecarsByRootV1 => ColumnsByRootRequest {
-            identifiers: vec![make_by_root_identifier(Root::from_array([0x11; 32]), &[0, 1])],
+            identifiers: vec![make_by_root_identifier(
+                Root::from_array([0x11; 32]),
+                &[0, 1],
+            )],
         }
         .to_ssz_bytes(),
         Protocol::BeaconBlocksByRangeV2 => {
@@ -900,7 +911,10 @@ fn reqresp_length_prefix_disagrees_with_payload() {
     let track = alloc_start();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let err = SszSnappyFraming::decode_request(&hostile, protocol);
-        assert!(err.is_err(), "mismatched length prefix must error, not succeed");
+        assert!(
+            err.is_err(),
+            "mismatched length prefix must error, not succeed"
+        );
     }));
     let peak = alloc_stop_peak(track);
     assert!(result.is_ok(), "mismatched length prefix must not panic");
@@ -982,7 +996,10 @@ fn reqresp_snappy_expands_past_declared_size() {
         assert!(err.is_err(), "response expand-past-declared must error");
     }));
     let peak = alloc_stop_peak(track);
-    assert!(result.is_ok(), "response expand-past-declared must not panic");
+    assert!(
+        result.is_ok(),
+        "response expand-past-declared must not panic"
+    );
     assert!(peak <= REQRESP_ALLOC_BOUND, "peak {peak}");
 }
 

@@ -22,23 +22,21 @@ use cc_libp2p::PeerId;
 use cc_types::networking::ColumnIndex;
 use cc_types::primitives::Root;
 use cc_types::sidecar::DataColumnsByRootIdentifier;
-use cc_types::{
-    compute_columns_for_custody_group, get_custody_groups, NUMBER_OF_CUSTODY_GROUPS,
-};
+use cc_types::{NUMBER_OF_CUSTODY_GROUPS, compute_columns_for_custody_group, get_custody_groups};
 use discv5::enr::NodeId;
 use ssz::Encode;
-use ssz_types::typenum::U128;
 use ssz_types::VariableList;
+use ssz_types::typenum::U128;
 use tracing::warn;
 
 use crate::discovery::enr::node_id_as_u256;
 use crate::metrics::{P2pMetrics, PeerPenaltyReason};
 use crate::peer_manager::score::{apply_penalty_with_metrics, penalty_delta};
-use crate::reqresp::client::{
-    PeerView, Priority, RequestPayload, RequestScheduler, RequestSpec, DEFAULT_MAX_ATTEMPTS,
-    DEFAULT_MAX_PEERS,
-};
 use crate::reqresp::Protocol;
+use crate::reqresp::client::{
+    DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_PEERS, PeerView, Priority, RequestPayload, RequestScheduler,
+    RequestSpec,
+};
 
 // ── Bounds (Architecture §8.5 / CC-24d inequality) ──────────────────────────
 
@@ -347,8 +345,7 @@ struct ColumnBudget {
 
 impl ColumnBudget {
     fn can_try(&self, peer: PeerId) -> bool {
-        if self.peers_tried.len() as u8 >= RECOVERY_MAX_PEERS && !self.peers_tried.contains(&peer)
-        {
+        if self.peers_tried.len() as u8 >= RECOVERY_MAX_PEERS && !self.peers_tried.contains(&peer) {
             return false;
         }
         self.per_peer.get(&peer).copied().unwrap_or(0) < RECOVERY_MAX_ATTEMPTS
@@ -522,12 +519,7 @@ pub fn recover(
                     !served.contains(c) && peer_custodies_column(peer.node_id, peer.cgc, *c)
                 });
                 if unserved_custodied {
-                    emit_custody_unserved(
-                        peer_id,
-                        &mut penalised,
-                        &mut on_penalty,
-                        metrics,
-                    );
+                    emit_custody_unserved(peer_id, &mut penalised, &mut on_penalty, metrics);
                 }
             }
             PeerQueryResult::Failed => {
@@ -535,12 +527,7 @@ pub fn recover(
                     .iter()
                     .any(|c| peer_custodies_column(peer.node_id, peer.cgc, *c));
                 if any_custodied {
-                    emit_custody_unserved(
-                        peer_id,
-                        &mut penalised,
-                        &mut on_penalty,
-                        metrics,
-                    );
+                    emit_custody_unserved(peer_id, &mut penalised, &mut on_penalty, metrics);
                 }
             }
         }
@@ -652,8 +639,8 @@ pub fn plan_batched_requests(
 #[must_use]
 pub fn decode_single_root_columns(payload: &RequestPayload) -> Option<([u8; 32], Vec<u64>)> {
     use ssz::Decode;
-    let list = VariableList::<DataColumnsByRootIdentifier, U128>::from_ssz_bytes(&payload.ssz)
-        .ok()?;
+    let list =
+        VariableList::<DataColumnsByRootIdentifier, U128>::from_ssz_bytes(&payload.ssz).ok()?;
     let first = list.first()?;
     let mut root = [0u8; 32];
     root.copy_from_slice(first.block_root.as_slice());
@@ -668,12 +655,12 @@ mod tests {
 
     use super::*;
     use crate::gossip::validate::column::{
-        validate_data_column_sidecar, AlwaysValidKzg, ColumnOutcome, ColumnValidateInput,
-        ColumnValidatorState, NoopSamplingFeed,
+        AlwaysValidKzg, ColumnOutcome, ColumnValidateInput, ColumnValidatorState, NoopSamplingFeed,
+        validate_data_column_sidecar,
     };
     use crate::metrics::P2pMetrics;
-    use crate::reqresp::client::{Priority, ScheduleError};
     use crate::reqresp::Protocol;
+    use crate::reqresp::client::{Priority, ScheduleError};
     use crate::verdict::Verdict;
     use cc_proto::p2p::{Acceptance, ChainView, Reason};
     use cc_types::containers::SignedBeaconBlockHeader;

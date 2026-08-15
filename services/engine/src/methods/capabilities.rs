@@ -8,11 +8,12 @@
 use serde_json::{Value, json};
 
 use crate::capabilities::{
-    ADVERTISED_CAPABILITIES, CapabilityCache, CapabilitySnapshot, GET_BLOBS_V3, REQUIRED_CAPABILITIES,
+    ADVERTISED_CAPABILITIES, CapabilityCache, CapabilitySnapshot, GET_BLOBS_V3,
+    REQUIRED_CAPABILITIES,
 };
 use crate::errors::EngineError;
-use crate::metrics::{EngineMethod, EngineMetrics, MethodLabels};
 use crate::methods::names;
+use crate::metrics::{EngineMethod, EngineMetrics, MethodLabels};
 use crate::transport::{EngineTransport, Lane};
 
 /// Result of a capability handshake.

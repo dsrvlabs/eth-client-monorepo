@@ -25,9 +25,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use cc_p2p::discovery::{
-    EnrManager, EnrSeqStrategy, generic_peer_predicate, read_eth2, read_nfd,
-};
+use cc_p2p::discovery::{EnrManager, EnrSeqStrategy, generic_peer_predicate, read_eth2, read_nfd};
 use cc_p2p::fork_digest::{
     FAR_FUTURE_EPOCH, ForkContext, compute_fork_digest, compute_fork_version,
     discovery_allowed_digests, enr_fork_id, is_overlap_entry_epoch, next_fork, next_fork_digest,
@@ -44,8 +42,7 @@ use cc_types::{
 
 // ── Hoodi fixtures ──────────────────────────────────────────────────────────
 
-const HOODI_GVR_HEX: &str =
-    "0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f";
+const HOODI_GVR_HEX: &str = "0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f";
 
 /// V-3 live head epoch recorded 2026-08-07 (see module docs).
 const V3_LIVE_HEAD_EPOCH: u64 = 114_273;
@@ -159,7 +156,10 @@ fn boundary_known_in_advance_from_schedule_before_arrival() {
         "boundary must be known strictly before it arrives"
     );
     assert_eq!(version, cfg.fulu_fork_version);
-    assert_eq!(digest, compute_fork_digest(&cfg, gvr, Epoch::new(EPOCH_BPO1)));
+    assert_eq!(
+        digest,
+        compute_fork_digest(&cfg, gvr, Epoch::new(EPOCH_BPO1))
+    );
 
     let mut ctx = ForkContext::new(cfg.clone(), gvr, epoch);
     assert_eq!(ctx.next_boundary_epoch(), Some(Epoch::new(EPOCH_BPO1)));
@@ -212,7 +212,11 @@ fn overlap_window_both_topic_sets_inside_exactly_one_outside() {
     reg.advance_to(e, &ctx).unwrap();
     assert_eq!(reg.phase(), SubscriptionPhase::Overlap);
     assert_eq!(reg.live_digests(), HashSet::from([d_current, d_next]));
-    assert_eq!(reg.publish_digest(e), d_current, "pre-boundary publish = current");
+    assert_eq!(
+        reg.publish_digest(e),
+        d_current,
+        "pre-boundary publish = current"
+    );
 
     // At boundary: still Overlap; publish switches to next.
     ctx.on_epoch(boundary);
@@ -265,9 +269,9 @@ fn set_topic_params_precedes_subscribe_for_next_digest_on_overlap() {
 
     let next_topic = format_topic_string(&d_next, TopicName::BeaconBlock);
     let calls = &reg.gossip().calls;
-    let set_idx = calls.iter().position(|c| {
-        matches!(c, GossipCall::SetTopicParams { topic, .. } if topic == &next_topic)
-    });
+    let set_idx = calls.iter().position(
+        |c| matches!(c, GossipCall::SetTopicParams { topic, .. } if topic == &next_topic),
+    );
     let sub_idx = calls
         .iter()
         .position(|c| matches!(c, GossipCall::Subscribe { topic } if topic == &next_topic));
@@ -364,7 +368,10 @@ fn enr_eth2_nfd_coalesce_one_seq_bump_across_bpo_boundary() {
     assert_eq!(read_eth2(&enr).unwrap().fork_digest, ctx.current_digest());
     assert_eq!(read_nfd(&enr).unwrap(), ctx.nfd());
     // next_fork_version still Fulu after the bump.
-    assert_eq!(read_eth2(&enr).unwrap().next_fork_version, cfg.fulu_fork_version);
+    assert_eq!(
+        read_eth2(&enr).unwrap().next_fork_version,
+        cfg.fulu_fork_version
+    );
     assert_eq!(
         read_eth2(&enr).unwrap().next_fork_epoch,
         Epoch::new(EPOCH_BPO2)
@@ -429,7 +436,14 @@ fn discovery_allowed_digests_overlap_window_hoodi() {
 
     // Far before: only current.
     let far = discovery_allowed_digests(&cfg, gvr, Epoch::new(EPOCH_FULU_FALLBACK));
-    assert_eq!(far, vec![compute_fork_digest(&cfg, gvr, Epoch::new(EPOCH_FULU_FALLBACK))]);
+    assert_eq!(
+        far,
+        vec![compute_fork_digest(
+            &cfg,
+            gvr,
+            Epoch::new(EPOCH_FULU_FALLBACK)
+        )]
+    );
 
     // boundary − 1: current + next.
     let pre = discovery_allowed_digests(&cfg, gvr, Epoch::new(EPOCH_BPO1 - 1));
@@ -554,10 +568,7 @@ fn two_boundary_devnet_schedule_steady_overlap_drain_twice() {
 fn get_blob_parameters_consumed_not_reimplemented_in_fork_digest() {
     // Grep-style: fork_digest.rs must call ChainConfig::get_blob_parameters
     // and must not hard-code Electra/Fulu max-blobs constants.
-    let src = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/fork_digest.rs"
-    ));
+    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/fork_digest.rs"));
     assert!(
         src.contains("get_blob_parameters"),
         "CC-2A/1: must consume get_blob_parameters from Phase 1"

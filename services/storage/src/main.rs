@@ -29,26 +29,25 @@ use cc_bootstrap::{PeerSpec, ServiceSpec, TelemetrySettings};
 use cc_config::ServiceConfig;
 use cc_proto::storage::storage_service_server::StorageServiceServer;
 use cc_store::engine::{Durability, EngineOptions};
+use cc_store::{BlockServeWindowCfg, SplitLock, compute_min_epochs_for_block_requests};
 use cc_store::{ConfigDigestInput, Store, StoreOpenOptions};
 use cc_types::{ChainConfig, Root};
 use metrics::StorageMetrics;
-use serde::Deserialize;
-use tokio::sync::watch;
-use tonic::service::Routes;
 use migrate::{MigrationConfig, Migrator};
 use prune::{
+    DEFAULT_DISK_ALARM_BYTES, DEFAULT_PRUNE_BLOCKS_EPOCHS, DEFAULT_PRUNE_COLUMNS_EPOCHS,
+    DEFAULT_PRUNE_MARGIN_EPOCHS, PruneConfig, Pruner,
     chunk::{DEFAULT_PRUNE_CHUNK_KEYS, DEFAULT_PRUNE_DEADLINE},
-    columns::DEFAULT_COLUMNS_RETENTION_EPOCHS, genesis_time_from_fixture, spawn_prune_task,
-    PruneConfig, Pruner, DEFAULT_DISK_ALARM_BYTES, DEFAULT_PRUNE_BLOCKS_EPOCHS,
-    DEFAULT_PRUNE_COLUMNS_EPOCHS, DEFAULT_PRUNE_MARGIN_EPOCHS,
+    columns::DEFAULT_COLUMNS_RETENTION_EPOCHS,
+    genesis_time_from_fixture, spawn_prune_task,
 };
 use replay::{ReplayConfig, ReplayDriver, spawn_replay_task};
+use serde::Deserialize;
 use serve::{ServeConfig, StorageServer};
+use tokio::sync::watch;
+use tonic::service::Routes;
 use write_behind::{WriteBehindConfig, spawn_write_behind};
 use writer::{WriterBounds, WriterFaults, WriterHandle, load_write_cursor, spawn_writer};
-use cc_store::{
-    BlockServeWindowCfg, SplitLock, compute_min_epochs_for_block_requests,
-};
 
 /// Process name and config slug (`config/storage.toml`, `CC_STORAGE_*`).
 const SERVICE: &str = "storage";
@@ -395,24 +394,22 @@ fn block_serve_floor_from_fixture() -> Option<u64> {
     compute_min_epochs_for_block_requests(&cfg).ok()
 }
 
-
 /// Open the store under `data_dir` with durability + digest from config.
 ///
 /// When [`StorageConfig::node_key_path`] is set and present, loads the expected
 /// NodeId surface for **I-node-id** (§1.7) so a mismatched key refuses open.
 fn open_store(cfg: &StorageConfig) -> anyhow::Result<Store> {
-    let durability = Durability::parse(&cfg.durability)
-        .map_err(|e| anyhow::anyhow!("durability: {e}"))?;
+    let durability =
+        Durability::parse(&cfg.durability).map_err(|e| anyhow::anyhow!("durability: {e}"))?;
     let gvr = parse_gvr(cfg.genesis_validators_root.as_deref())?;
     // Digest inputs: use mainnet-scalar defaults until a network_config path lands.
     // Fork epochs / BLOB_SCHEDULE come from a minimal mainnet-shaped ChainConfig
     // so a fresh store opens without a YAML fixture dependency.
     let chain = ChainConfig::mainnet_like_for_digest();
     let digest_input = ConfigDigestInput::with_mainnet_scalars(chain, gvr);
-    let expected_node_id = durable_set::load_expected_node_id_from_key_path(
-        cfg.node_key_path.as_deref(),
-    )
-    .map_err(|e| anyhow::anyhow!("node_key_path: {e}"))?;
+    let expected_node_id =
+        durable_set::load_expected_node_id_from_key_path(cfg.node_key_path.as_deref())
+            .map_err(|e| anyhow::anyhow!("node_key_path: {e}"))?;
     if let Some(id) = expected_node_id {
         tracing::info!(
             path = ?cfg.node_key_path,
@@ -437,7 +434,10 @@ fn parse_gvr(s: Option<&str>) -> anyhow::Result<Root> {
     };
     let hex = raw.strip_prefix("0x").unwrap_or(raw);
     if hex.len() != 64 {
-        anyhow::bail!("genesis_validators_root must be 32-byte hex, got len {}", hex.len());
+        anyhow::bail!(
+            "genesis_validators_root must be 32-byte hex, got len {}",
+            hex.len()
+        );
     }
     let mut arr = [0u8; 32];
     for i in 0..32 {
@@ -586,12 +586,10 @@ async fn main() -> anyhow::Result<()> {
                     true, // process-fatal on panic (§1.5); write-behind is not
                 );
                 // CC-41: split lock + migrator (FINALIZED_CHECKPOINT cadence).
-                let split = Arc::new(
-                    SplitLock::load(&engine).unwrap_or_else(|e| {
-                        tracing::warn!(error = %e, "split load failed; defaulting to zero");
-                        SplitLock::new(cc_store::Split::default())
-                    }),
-                );
+                let split = Arc::new(SplitLock::load(&engine).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "split load failed; defaulting to zero");
+                    SplitLock::new(cc_store::Split::default())
+                }));
                 let migrator = Arc::new(Migrator::new(
                     Arc::clone(&split),
                     Arc::clone(&engine),
@@ -661,7 +659,9 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     } else {
-        tracing::warn!("enable_write_path=false — writer/write-behind not started; serve stub only");
+        tracing::warn!(
+            "enable_write_path=false — writer/write-behind not started; serve stub only"
+        );
         // Still collapse chain's AwaitingRestore so compose first-boot does not
         // wait restore_grace_seconds (CC-45b EMPTY path without a store).
         let chain_uri = cfg
@@ -689,12 +689,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let storage_svc = match serve_engine {
-        Some(engine) => StorageServer::new(
-            engine,
-            serve_writer,
-            storage_metrics,
-            cfg.serve_config(),
-        ),
+        Some(engine) => {
+            StorageServer::new(engine, serve_writer, storage_metrics, cfg.serve_config())
+        }
         None => StorageServer::stub(storage_metrics, cfg.serve_config()),
     };
     let routes = Routes::default().add_service(StorageServiceServer::new(storage_svc));
@@ -774,13 +771,7 @@ mod config_tests {
         let cfg = cc_config::load_from::<StorageConfig>("storage", &path)
             .unwrap_or_else(|e| panic!("load {}: {e}", path.display()));
         assert!(cfg.retention_override.is_none());
-        assert!(
-            cfg.debug
-                .crash_point
-                .as_deref()
-                .unwrap_or("")
-                .is_empty()
-        );
+        assert!(cfg.debug.crash_point.as_deref().unwrap_or("").is_empty());
         cfg.check_dangerous_knobs()
             .expect("default storage.toml must start without GVR");
     }
@@ -838,7 +829,10 @@ mod config_tests {
         let path = storage_toml_path();
         let cfg = cc_config::load_from::<StorageConfig>("storage", &path)
             .unwrap_or_else(|e| panic!("load {}: {e}", path.display()));
-        assert_eq!(cfg.snapshot_epochs, 32, "Grandine archival interval default");
+        assert_eq!(
+            cfg.snapshot_epochs, 32,
+            "Grandine archival interval default"
+        );
         assert_eq!(cfg.snapshot_ring, 4, "ring depth default");
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("snapshot_epochs"));

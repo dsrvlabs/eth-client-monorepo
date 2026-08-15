@@ -44,11 +44,7 @@ pub fn get_max_effective_balance(validator: &Validator) -> Gwei {
 
 /// Spec `is_fully_withdrawable_validator` (Electra).
 #[inline]
-pub fn is_fully_withdrawable_validator(
-    validator: &Validator,
-    balance: Gwei,
-    epoch: Epoch,
-) -> bool {
+pub fn is_fully_withdrawable_validator(validator: &Validator, balance: Gwei, epoch: Epoch) -> bool {
     has_execution_withdrawal_credential(validator)
         && validator.withdrawable_epoch.as_u64() <= epoch.as_u64()
         && balance.as_u64() > 0

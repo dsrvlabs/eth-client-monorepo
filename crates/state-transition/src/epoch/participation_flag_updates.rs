@@ -1,7 +1,7 @@
 //! Spec `process_participation_flag_updates` (Altair).
 
-use cc_types::preset::Preset;
 use cc_types::BeaconState;
+use cc_types::preset::Preset;
 
 use crate::error::EpochError;
 

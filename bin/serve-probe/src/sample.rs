@@ -88,7 +88,12 @@ pub fn negative_range(eas: u64, lookback: u64) -> Option<(u64, u64)> {
 /// - Caps at [`MAX_SAMPLE_COUNT`].
 /// - `head < eas` → 0 (empty positive window).
 #[must_use]
-pub fn positive_sample_budget(eas: u64, head: u64, slots: usize, full_window: bool) -> Option<usize> {
+pub fn positive_sample_budget(
+    eas: u64,
+    head: u64,
+    slots: usize,
+    full_window: bool,
+) -> Option<usize> {
     if head < eas {
         return Some(0);
     }

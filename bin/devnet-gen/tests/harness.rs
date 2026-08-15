@@ -9,8 +9,8 @@ use cc_devnet_gen::config_emit::{assert_devnet_config, render_config_yaml, write
 use cc_devnet_gen::generate;
 use cc_devnet_gen::genesis::build_genesis;
 use cc_devnet_gen::inclusion::{
-    kzg_commitments_inclusion_proof, kzg_commitments_leaf, verify_inclusion_proof,
-    BLOB_KZG_COMMITMENTS_FIELD_INDEX,
+    BLOB_KZG_COMMITMENTS_FIELD_INDEX, kzg_commitments_inclusion_proof, kzg_commitments_leaf,
+    verify_inclusion_proof,
 };
 use cc_devnet_gen::keys::derive_keys;
 use cc_devnet_gen::kzg_columns::{load_kzg, verify_column_cells};
@@ -22,7 +22,7 @@ use cc_state_transition::{
 use cc_types::config::ChainConfig;
 use cc_types::preset::Minimal;
 use cc_types::primitives::{Epoch, Root, Slot};
-use cc_types::{DataColumnSidecar, NUMBER_OF_COLUMNS, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH};
+use cc_types::{DataColumnSidecar, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, NUMBER_OF_COLUMNS};
 use tree_hash::TreeHash;
 
 fn test_out(name: &str) -> PathBuf {
@@ -201,37 +201,20 @@ fn short_chain_generation_sidecar_and_proposer() {
         .secret
         .public_key();
     assert!(
-        verify_block_proposer_sig(
-            &state.fork(),
-            state.genesis_validators_root(),
-            &block,
-            &pk,
-        ),
+        verify_block_proposer_sig(&state.fork(), state.genesis_validators_root(), &block, &pk,),
         "proposer signature must verify"
     );
 
     // Sidecars: columns 0 and 127 (breadth) + structural + inclusion + cell KZG.
     let kzg = load_kzg().unwrap();
-    verify_sidecar_file(
-        &out.join("chain/slot_000001/column_000.ssz"),
-        &block,
-        &kzg,
-    );
-    verify_sidecar_file(
-        &out.join("chain/slot_000001/column_127.ssz"),
-        &block,
-        &kzg,
-    );
+    verify_sidecar_file(&out.join("chain/slot_000001/column_000.ssz"), &block, &kzg);
+    verify_sidecar_file(&out.join("chain/slot_000001/column_127.ssz"), &block, &kzg);
     // Also sample column mid-range on a multi-blob slot (slot 2 has 2 blobs).
     let block2_bytes = std::fs::read(out.join("chain/slot_000002/block.ssz")).unwrap();
     let block2: cc_types::SignedBeaconBlock<Minimal> =
         ssz::Decode::from_ssz_bytes(&block2_bytes).unwrap();
     assert_eq!(block2.message.body.blob_kzg_commitments.len(), 2);
-    verify_sidecar_file(
-        &out.join("chain/slot_000002/column_064.ssz"),
-        &block2,
-        &kzg,
-    );
+    verify_sidecar_file(&out.join("chain/slot_000002/column_064.ssz"), &block2, &kzg);
 
     // Dual-run identity.
     let out2 = test_out("short2");
@@ -319,10 +302,9 @@ fn expected_manifest_matches_devnet_toml_and_genesis_gvr() {
 fn dag_forbids_proto_and_libp2p_declared() {
     // DAG ceiling is checked by scripts/check-crate-dag.sh (allow-list).
     // This test asserts forbidden edges are absent from package metadata.
-    let manifest = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
-    )
-    .unwrap();
+    let manifest =
+        std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+            .unwrap();
     assert!(
         !manifest.contains("cc-proto"),
         "cc-devnet-gen must not depend on cc-proto"

@@ -284,8 +284,7 @@ impl Vectors {
                     let runner_path = runner_ent.path();
                     for handler_ent in read_dirs(&runner_path)? {
                         let handler = handler_ent.file_name().to_string_lossy().into_owned();
-                        let cases =
-                            self.cases(&preset, &fork, &runner, &handler)?;
+                        let cases = self.cases(&preset, &fork, &runner, &handler)?;
                         for c in cases {
                             set.insert(c.rel_path());
                         }

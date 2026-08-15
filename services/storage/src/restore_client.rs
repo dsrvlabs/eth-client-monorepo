@@ -150,9 +150,7 @@ async fn dial(uri: &str, connect_timeout: Duration) -> Result<Channel, RestoreCl
 }
 
 /// Convert a plan into a tonic-compatible stream of chunks.
-fn plan_to_stream(
-    plan: RestoreStreamPlan,
-) -> impl Stream<Item = RestoreChunk> + Send + 'static {
+fn plan_to_stream(plan: RestoreStreamPlan) -> impl Stream<Item = RestoreChunk> + Send + 'static {
     let (tx, rx) = tokio::sync::mpsc::channel::<RestoreChunk>(8);
     tokio::spawn(async move {
         if plan.empty {

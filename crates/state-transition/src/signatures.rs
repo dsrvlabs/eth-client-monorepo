@@ -6,9 +6,9 @@
 //! skipped (already verified here under VerifyBatch / VerifyIndividual).
 
 use cc_crypto::{
-    compute_domain, compute_signing_root, fast_aggregate_verify, get_domain, verify, PublicKey,
-    Signature, SignatureSet, DOMAIN_BEACON_ATTESTER, DOMAIN_BEACON_PROPOSER,
-    DOMAIN_BLS_TO_EXECUTION_CHANGE, DOMAIN_RANDAO, DOMAIN_VOLUNTARY_EXIT,
+    DOMAIN_BEACON_ATTESTER, DOMAIN_BEACON_PROPOSER, DOMAIN_BLS_TO_EXECUTION_CHANGE, DOMAIN_RANDAO,
+    DOMAIN_VOLUNTARY_EXIT, PublicKey, Signature, SignatureSet, compute_domain,
+    compute_signing_root, fast_aggregate_verify, get_domain, verify,
 };
 use cc_types::config::ChainConfig;
 use cc_types::operations::IndexedAttestation;
@@ -16,10 +16,10 @@ use cc_types::preset::Preset;
 use cc_types::primitives::BlsPublicKey;
 use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
 
+use crate::BlockSignatureStrategy;
 use crate::error::{BlockError, OperationError, SignatureKind};
 use crate::helpers::accessors::{get_beacon_proposer_index, get_indexed_attestation};
 use crate::helpers::misc::compute_epoch_at_slot;
-use crate::BlockSignatureStrategy;
 
 /// One labelled signature triple for individual verification / re-attribution.
 ///
@@ -264,12 +264,7 @@ pub fn push_operation_signatures<P: Preset>(
     for (i, attestation) in body.attestations.iter().enumerate() {
         // Build indexed form for committee-resolved pubkeys (Electra).
         let indexed = get_indexed_attestation(state, attestation)?;
-        push_indexed_attestation_signature(
-            set,
-            state,
-            &indexed,
-            SignatureKind::Attestation(i),
-        )?;
+        push_indexed_attestation_signature(set, state, &indexed, SignatureKind::Attestation(i))?;
     }
     for (i, exit) in body.voluntary_exits.iter().enumerate() {
         push_voluntary_exit_signature(set, state, exit, config, i)?;
@@ -362,12 +357,14 @@ fn push_voluntary_exit_signature<P: Preset>(
     op_index: usize,
 ) -> Result<(), BlockError> {
     let index = signed.message.validator_index;
-    let validator = state.validators_get(index.as_u64() as usize).ok_or_else(|| {
-        BlockError::InvalidOperation(OperationError::Invalid {
-            op: "voluntary_exit",
-            detail: format!("validator index {} out of range", index.as_u64()),
-        })
-    })?;
+    let validator = state
+        .validators_get(index.as_u64() as usize)
+        .ok_or_else(|| {
+            BlockError::InvalidOperation(OperationError::Invalid {
+                op: "voluntary_exit",
+                detail: format!("validator index {} out of range", index.as_u64()),
+            })
+        })?;
     let domain = compute_domain(
         DOMAIN_VOLUNTARY_EXIT,
         Some(config.capella_fork_version),
@@ -436,7 +433,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use cc_crypto::{compute_signing_root, BLS_SIGNATURE_DST};
+    use cc_crypto::{BLS_SIGNATURE_DST, compute_signing_root};
     use cc_types::primitives::Root;
 
     /// Local signing helper (cc-crypto keeps `SecretKey` crate-private).
@@ -478,8 +475,7 @@ mod tests {
             message: [9u8; 32],
             signature: sk.sign(&[0u8; 32]),
         });
-        set.verify(BlockSignatureStrategy::NoVerification)
-            .unwrap();
+        set.verify(BlockSignatureStrategy::NoVerification).unwrap();
     }
 
     #[test]
@@ -523,9 +519,7 @@ mod tests {
             signature: sk1.sign(&m2), // wrong
         });
         // Batch must fail, then individual names Attestation(0).
-        let err = set
-            .verify(BlockSignatureStrategy::VerifyBatch)
-            .unwrap_err();
+        let err = set.verify(BlockSignatureStrategy::VerifyBatch).unwrap_err();
         match err {
             BlockError::InvalidSignature {
                 which: SignatureKind::Attestation(0),
@@ -558,11 +552,7 @@ mod tests {
         let m_exit = [3u8; 32];
 
         let mut set = BlockSignatureSet::new();
-        set.push(labelled(
-            &sk_proposer,
-            m_prop,
-            SignatureKind::BlockProposer,
-        ));
+        set.push(labelled(&sk_proposer, m_prop, SignatureKind::BlockProposer));
         set.push(labelled(&sk_randao, m_randao, SignatureKind::Randao));
         // Forged: wrong signer for the exit message.
         set.push(LabelledSignature {
@@ -572,9 +562,7 @@ mod tests {
             signature: sk_forger.sign(&m_exit),
         });
 
-        let err = set
-            .verify(BlockSignatureStrategy::VerifyBatch)
-            .unwrap_err();
+        let err = set.verify(BlockSignatureStrategy::VerifyBatch).unwrap_err();
         match err {
             BlockError::InvalidSignature {
                 which: SignatureKind::VoluntaryExit(0),
@@ -584,17 +572,9 @@ mod tests {
 
         // Honest exit signs correctly → batch ok.
         let mut good = BlockSignatureSet::new();
-        good.push(labelled(
-            &sk_proposer,
-            m_prop,
-            SignatureKind::BlockProposer,
-        ));
+        good.push(labelled(&sk_proposer, m_prop, SignatureKind::BlockProposer));
         good.push(labelled(&sk_randao, m_randao, SignatureKind::Randao));
-        good.push(labelled(
-            &sk_exit,
-            m_exit,
-            SignatureKind::VoluntaryExit(0),
-        ));
+        good.push(labelled(&sk_exit, m_exit, SignatureKind::VoluntaryExit(0)));
         good.verify(BlockSignatureStrategy::VerifyBatch).unwrap();
     }
 
@@ -627,9 +607,7 @@ mod tests {
             message: msg,
             signature: sk_forger.sign(&msg),
         });
-        let err = bad
-            .verify(BlockSignatureStrategy::VerifyBatch)
-            .unwrap_err();
+        let err = bad.verify(BlockSignatureStrategy::VerifyBatch).unwrap_err();
         match err {
             BlockError::InvalidSignature {
                 which: SignatureKind::Attestation(0),

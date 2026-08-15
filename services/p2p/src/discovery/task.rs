@@ -34,9 +34,7 @@ use crate::discovery::enr::{
     enr_secp256k1_pubkey_bytes, parse_bootnodes, read_attnets, read_cgc, read_eth2, read_nfd,
     read_syncnets, syncnets_has,
 };
-use crate::discovery::predicate::{
-    attestation_subnet_predicate, generic_peer_predicate,
-};
+use crate::discovery::predicate::{attestation_subnet_predicate, generic_peer_predicate};
 use crate::fork_digest::ForkContext;
 use crate::metrics::P2pMetrics;
 use crate::peer_manager::PeerEnrInfo;
@@ -330,8 +328,7 @@ fn try_enqueue_one(
         return Some(false);
     }
     let addr = multiaddr_from_enr(enr)?;
-    let priority =
-        dial_priority_for_enr(enr, view, min_peers_per_subnet, interested_attnets);
+    let priority = dial_priority_for_enr(enr, view, min_peers_per_subnet, interested_attnets);
     let enr_info = peer_enr_info_from_enr(enr);
     Some(queue.push(DialCandidate {
         peer_id,
@@ -448,7 +445,11 @@ pub async fn run_discovery_task(task: DiscoveryTask) {
     match load_bootnodes(&cfg) {
         Ok(boot) => {
             let n = manager.add_bootnodes(&boot);
-            info!(added = n, total = boot.len(), "bootnodes loaded into discv5");
+            info!(
+                added = n,
+                total = boot.len(),
+                "bootnodes loaded into discv5"
+            );
         }
         Err(e) => warn!(error = %e, "bootnode load failed"),
     }

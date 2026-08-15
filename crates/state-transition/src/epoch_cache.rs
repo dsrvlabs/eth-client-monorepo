@@ -5,9 +5,9 @@
 //! epoch; invalidated by any registry or effective-balance change and rebuilt
 //! at the epoch boundary. Primary consumer: CC-13b rewards.
 
+use cc_types::BeaconState;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, Gwei};
-use cc_types::BeaconState;
 
 use crate::error::BlockError;
 use crate::helpers::accessors::{
@@ -57,9 +57,7 @@ pub fn note_registry_or_effective_balance_change<P: Preset>(state: &mut BeaconSt
 
 /// Read total active balance from the cache when valid for the current epoch;
 /// otherwise compute (without filling the cache).
-pub fn total_active_balance_cached<P: Preset>(
-    state: &BeaconState<P>,
-) -> Result<Gwei, BlockError> {
+pub fn total_active_balance_cached<P: Preset>(state: &BeaconState<P>) -> Result<Gwei, BlockError> {
     let current = get_current_epoch(state);
     if let Some(epoch) = state.caches().epoch.epoch
         && epoch == current

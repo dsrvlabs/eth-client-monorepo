@@ -55,7 +55,6 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
     }
 }
 
-
 const VALIDATORS: usize = 64;
 
 fn minimal_config() -> ChainConfig {
@@ -150,8 +149,8 @@ fn spawn_svc() -> (ChainServiceImpl, cc_chain::CoreThread, EventsHandle) {
         ring_capacity: 32,
         subscriber_queue_capacity: 16,
         session_id: Some(0x27),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
     let head = HeadSnapshotStore::new();
     let epoch = EpochContextStore::new();
     let core = spawn_core_thread_with_epoch(

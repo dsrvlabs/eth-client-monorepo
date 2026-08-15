@@ -13,8 +13,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use cc_store::{
-    DEFAULT_SNAPSHOT_RING, Engine, EngineOptions, InvariantCheckMode, InvariantContext,
-    StoreError, StoreInvariant, check_invariants, db_file_path,
+    DEFAULT_SNAPSHOT_RING, Engine, EngineOptions, InvariantCheckMode, InvariantContext, StoreError,
+    StoreInvariant, check_invariants, db_file_path,
 };
 
 /// Bytes of value payload shown as hex prefix by [`dump`].
@@ -52,10 +52,7 @@ pub fn verify(path: &Path) -> Result<()> {
     };
     match check_invariants(&engine, InvariantCheckMode::Open, &ctx, None) {
         Ok(0) => {
-            println!(
-                "verify: ok ({} invariants)",
-                StoreInvariant::ALL.len()
-            );
+            println!("verify: ok ({} invariants)", StoreInvariant::ALL.len());
             Ok(())
         }
         Ok(n) => {
@@ -138,9 +135,7 @@ mod tests {
         KEY_SERVE_WINDOW, KEY_SPLIT, KEY_WRITE_CURSOR, PruneMarks, ServeWindow, Split, TABLE_META,
         WriteCursor,
     };
-    use cc_store::{
-        Durability, EngineOptions, Root, Slot, SszEncode, TABLE_BLOCKS_HOT,
-    };
+    use cc_store::{Durability, EngineOptions, Root, Slot, SszEncode, TABLE_BLOCKS_HOT};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -277,10 +272,7 @@ mod tests {
         }
         let err = verify(&dir).expect_err("orphan column must fail");
         let msg = format!("{err:#}");
-        assert!(
-            msg.contains("col_block"),
-            "must name I-col-block: {msg}"
-        );
+        assert!(msg.contains("col_block"), "must name I-col-block: {msg}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -16,8 +16,8 @@ pub mod subnet_manager;
 pub mod task;
 
 pub use cgc_hook::{
-    column_family_total, column_family_total_is_half, set_custody_group_count, CgcEffectKind,
-    CgcHookError, CgcHookOutcome, CgcHookTarget,
+    CgcEffectKind, CgcHookError, CgcHookOutcome, CgcHookTarget, column_family_total,
+    column_family_total_is_half, set_custody_group_count,
 };
 pub use dial_queue::{DIAL_QUEUE_BOUND, DialCandidate, DialQueue};
 pub use enr::{
@@ -33,13 +33,14 @@ pub use predicate::{
     generic_peer_predicate, sync_subnet_predicate,
 };
 pub use subnet_manager::{
+    SYNC_SUBNET_COUNT, SubnetApplyOutcome, SubnetApplyTarget, SubnetEffectKind, SubnetError,
+    SubnetManager, SubnetManagerError, SyncSubnetEffect, SyncSubnetOutcome, SyncSubnetTarget,
     attnets_bitvector, compute_subscribed_subnet, compute_subscribed_subnets, subscription_period,
-    SubnetApplyOutcome, SubnetApplyTarget, SubnetEffectKind, SubnetError, SubnetManager,
-    SubnetManagerError, SyncSubnetEffect, SyncSubnetOutcome, SyncSubnetTarget, SYNC_SUBNET_COUNT,
 };
 pub use task::{
-    DEFAULT_MIN_PEERS_PER_SUBNET, DiscoveredPeer, DiscoveryConfig, DiscoveryPeerView, DiscoveryTask,
-    PRIORITY_BASE, QUERY_INTERVAL_AT_TARGET, QUERY_INTERVAL_BELOW_TARGET, SUBNET_QUERY_COOLDOWN,
-    build_enr_manager, deficit_attnets, dial_priority_for_enr, load_bootnodes, multiaddr_from_enr,
-    peer_enr_info_from_enr, peer_id_from_enr, run_discovery_task,
+    DEFAULT_MIN_PEERS_PER_SUBNET, DiscoveredPeer, DiscoveryConfig, DiscoveryPeerView,
+    DiscoveryTask, PRIORITY_BASE, QUERY_INTERVAL_AT_TARGET, QUERY_INTERVAL_BELOW_TARGET,
+    SUBNET_QUERY_COOLDOWN, build_enr_manager, deficit_attnets, dial_priority_for_enr,
+    load_bootnodes, multiaddr_from_enr, peer_enr_info_from_enr, peer_id_from_enr,
+    run_discovery_task,
 };

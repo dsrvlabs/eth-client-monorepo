@@ -11,8 +11,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cc_state_transition::{
-    state_transition, BlockError, BlockSignatureStrategy, EngineError, ExecutionEngine,
-    GossipClass, NewPayloadRequest, PayloadStatus, TransitionContext,
+    BlockError, BlockSignatureStrategy, EngineError, ExecutionEngine, GossipClass,
+    NewPayloadRequest, PayloadStatus, TransitionContext, state_transition,
 };
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::preset::{Mainnet, Minimal, Preset};
@@ -163,7 +163,12 @@ fn rebuild_pubkey_cache<P: Preset>(state: &mut BeaconState<P>) {
     let pk_entries: Vec<_> = state
         .validators_iter()
         .enumerate()
-        .map(|(i, v)| (v.pubkey, cc_types::primitives::ValidatorIndex::new(i as u64)))
+        .map(|(i, v)| {
+            (
+                v.pubkey,
+                cc_types::primitives::ValidatorIndex::new(i as u64),
+            )
+        })
         .collect();
     for (pk, idx) in pk_entries {
         state.caches_mut().pubkeys.insert(pk, idx);
@@ -299,9 +304,8 @@ fn run_finality_cases<P: Preset>() {
         for i in 0..blocks_count {
             let block_path = case_dir.join(format!("blocks_{i}.ssz_snappy"));
             let block_bytes = snappy_decompress(&block_path);
-            let signed =
-                SignedBeaconBlock::<P>::from_ssz_bytes_with(ForkName::Fulu, &block_bytes)
-                    .unwrap_or_else(|e| panic!("decode blocks_{i} {rel}: {e:?}"));
+            let signed = SignedBeaconBlock::<P>::from_ssz_bytes_with(ForkName::Fulu, &block_bytes)
+                .unwrap_or_else(|e| panic!("decode blocks_{i} {rel}: {e:?}"));
 
             match state_transition(&mut state, &signed, &ctx, strategy) {
                 Ok(()) => {}

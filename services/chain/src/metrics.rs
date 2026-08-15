@@ -1390,11 +1390,7 @@ mod tests {
             after_loc.buckets.len(),
             "bucket label sets must align"
         );
-        for ((le_i, v_i), (le_l, v_l)) in after_inc
-            .buckets
-            .iter()
-            .zip(after_loc.buckets.iter())
-        {
+        for ((le_i, v_i), (le_l, v_l)) in after_inc.buckets.iter().zip(after_loc.buckets.iter()) {
             assert_eq!(le_i, le_l, "bucket le mismatch");
             let before_i = before_inc
                 .buckets

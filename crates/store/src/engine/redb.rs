@@ -250,7 +250,9 @@ impl Engine {
             )));
         }
         refuse_symlink_store(&file)?;
-        let db = Database::builder().open(&file).map_err(map_database_error)?;
+        let db = Database::builder()
+            .open(&file)
+            .map_err(map_database_error)?;
         Ok(Self {
             db: Mutex::new(DbInner::ReadWrite(db)),
             path: file,
@@ -290,10 +292,7 @@ impl Engine {
 
     /// Whether this engine was opened with [`Self::open_read_only`].
     pub fn is_read_only(&self) -> bool {
-        self.db
-            .lock()
-            .map(|g| g.is_read_only())
-            .unwrap_or(false)
+        self.db.lock().map(|g| g.is_read_only()).unwrap_or(false)
     }
 
     /// Durability setting this engine was opened with.
@@ -350,9 +349,7 @@ impl Engine {
             let db = self.lock_db()?;
             match &*db {
                 DbInner::ReadOnly(_) => {
-                    return Err(StoreError::Config(
-                        "read-only engine refuses writes".into(),
-                    ));
+                    return Err(StoreError::Config("read-only engine refuses writes".into()));
                 }
                 DbInner::ReadWrite(rw) => rw.begin_write().map_err(StoreError::engine)?,
             }

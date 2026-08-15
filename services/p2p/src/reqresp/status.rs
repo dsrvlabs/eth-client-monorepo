@@ -8,13 +8,13 @@
 use std::io;
 
 use cc_proto::p2p::ChainView;
-use cc_types::primitives::{Epoch, Root, Slot};
 use cc_types::ForkDigest;
+use cc_types::primitives::{Epoch, Root, Slot};
 
 use crate::channels::GoodbyeReason;
 use crate::fork_digest::ForkContext;
-use crate::reqresp::codec::{ResponseChunk, SszSnappyFraming};
 use crate::reqresp::Protocol;
+use crate::reqresp::codec::{ResponseChunk, SszSnappyFraming};
 
 /// Fixed SSZ length of `Status v2` (4+32+8+32+8+8).
 pub const STATUS_V2_SSZ_LEN: usize = 92;
@@ -70,13 +70,17 @@ impl StatusV2 {
         Ok(Self {
             fork_digest: ForkDigest::from_array(fd),
             finalized_root: Root::from_array(fr),
-            finalized_epoch: Epoch::new(u64::from_le_bytes(bytes[36..44].try_into().map_err(
-                |_| io::Error::new(io::ErrorKind::InvalidData, "finalized_epoch"),
-            )?)),
+            finalized_epoch: Epoch::new(u64::from_le_bytes(
+                bytes[36..44]
+                    .try_into()
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "finalized_epoch"))?,
+            )),
             head_root: Root::from_array(hr),
-            head_slot: Slot::new(u64::from_le_bytes(bytes[76..84].try_into().map_err(
-                |_| io::Error::new(io::ErrorKind::InvalidData, "head_slot"),
-            )?)),
+            head_slot: Slot::new(u64::from_le_bytes(
+                bytes[76..84]
+                    .try_into()
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "head_slot"))?,
+            )),
             earliest_available_slot: Slot::new(u64::from_le_bytes(
                 bytes[84..92].try_into().map_err(|_| {
                     io::Error::new(io::ErrorKind::InvalidData, "earliest_available_slot")
@@ -186,8 +190,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use cc_types::{ChainConfig, Epoch, Root};
     use crate::fork_digest::ForkContext;
+    use cc_types::{ChainConfig, Epoch, Root};
 
     fn hoodi_fork_ctx() -> ForkContext {
         const YAML: &str =
@@ -330,10 +334,7 @@ mod tests {
         let src = include_str!("status.rs");
         assert!(
             !src.contains("fn evaluate_peer_status") || {
-                let f = src
-                    .split("fn evaluate_peer_status")
-                    .nth(1)
-                    .unwrap_or("");
+                let f = src.split("fn evaluate_peer_status").nth(1).unwrap_or("");
                 let sig = f.split('{').next().unwrap_or("");
                 !sig.contains("nfd")
             },

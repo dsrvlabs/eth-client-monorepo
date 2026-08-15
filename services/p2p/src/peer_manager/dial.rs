@@ -44,9 +44,7 @@ pub fn schedule_dials(
     }
 
     let in_flight = table.dialing_count();
-    let slots = config
-        .max_concurrent_dials
-        .saturating_sub(in_flight);
+    let slots = config.max_concurrent_dials.saturating_sub(in_flight);
     if slots == 0 {
         return Vec::new();
     }

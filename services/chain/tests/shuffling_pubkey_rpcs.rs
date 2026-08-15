@@ -48,7 +48,6 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
     }
 }
 
-
 const VALIDATORS: usize = 64;
 /// Minimal SLOTS_PER_EPOCH = 8 → epoch 1 starts at slot 8.
 const SLOT_EPOCH_1: u64 = 8;
@@ -172,8 +171,8 @@ fn spawn_svc_with_state(
         ring_capacity: 32,
         subscriber_queue_capacity: 16,
         session_id: Some(0x1F),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
     let head = HeadSnapshotStore::new();
     let core = spawn_core_thread(
         store,

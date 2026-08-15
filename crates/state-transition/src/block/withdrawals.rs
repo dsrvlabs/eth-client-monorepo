@@ -64,8 +64,8 @@ pub fn get_expected_withdrawals<P: Preset>(
             && has_sufficient_effective_balance
             && has_excess_balance
         {
-            let withdrawable_balance = (balance - MIN_ACTIVATION_BALANCE.as_u64())
-                .min(pending.amount.as_u64());
+            let withdrawable_balance =
+                (balance - MIN_ACTIVATION_BALANCE.as_u64()).min(pending.amount.as_u64());
             withdrawals.push(Withdrawal {
                 index: withdrawal_index,
                 validator_index: pending.validator_index,

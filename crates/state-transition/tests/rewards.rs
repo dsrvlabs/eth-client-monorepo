@@ -10,14 +10,14 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use cc_state_transition::{
-    get_flag_index_deltas, get_inactivity_penalty_deltas, process_justification_and_finalization,
-    process_rewards_and_penalties, rebuild_epoch_cache, decrease_balance, increase_balance,
-    EpochError,
-};
 use cc_state_transition::helpers::constants::{
     FAR_FUTURE_EPOCH, MAX_EFFECTIVE_BALANCE, TIMELY_HEAD_FLAG_INDEX, TIMELY_SOURCE_FLAG_INDEX,
     TIMELY_TARGET_FLAG_INDEX,
+};
+use cc_state_transition::{
+    EpochError, decrease_balance, get_flag_index_deltas, get_inactivity_penalty_deltas,
+    increase_balance, process_justification_and_finalization, process_rewards_and_penalties,
+    rebuild_epoch_cache,
 };
 use cc_types::containers::{Checkpoint, Validator};
 use cc_types::preset::{Mainnet, Minimal, Preset};
@@ -119,11 +119,15 @@ fn decode_deltas(bytes: &[u8]) -> (Vec<u64>, Vec<u64>) {
     let mut penalties = Vec::with_capacity(n_penalties);
     for i in 0..n_rewards {
         let start = off0 + i * 8;
-        rewards.push(u64::from_le_bytes(bytes[start..start + 8].try_into().unwrap()));
+        rewards.push(u64::from_le_bytes(
+            bytes[start..start + 8].try_into().unwrap(),
+        ));
     }
     for i in 0..n_penalties {
         let start = off1 + i * 8;
-        penalties.push(u64::from_le_bytes(bytes[start..start + 8].try_into().unwrap()));
+        penalties.push(u64::from_le_bytes(
+            bytes[start..start + 8].try_into().unwrap(),
+        ));
     }
     (rewards, penalties)
 }
@@ -225,11 +229,16 @@ fn run_case<P: Preset>(rel: &str, case_dir: &Path) {
     // Warm epoch cache once (mirrors process_rewards_and_penalties).
     rebuild_epoch_cache(&mut state).unwrap_or_else(|e| panic!("epoch cache {rel}: {e:?}"));
 
-    let source_exp = decode_deltas(&snappy_decompress(&case_dir.join("source_deltas.ssz_snappy")));
-    let target_exp = decode_deltas(&snappy_decompress(&case_dir.join("target_deltas.ssz_snappy")));
+    let source_exp = decode_deltas(&snappy_decompress(
+        &case_dir.join("source_deltas.ssz_snappy"),
+    ));
+    let target_exp = decode_deltas(&snappy_decompress(
+        &case_dir.join("target_deltas.ssz_snappy"),
+    ));
     let head_exp = decode_deltas(&snappy_decompress(&case_dir.join("head_deltas.ssz_snappy")));
-    let inactivity_exp =
-        decode_deltas(&snappy_decompress(&case_dir.join("inactivity_penalty_deltas.ssz_snappy")));
+    let inactivity_exp = decode_deltas(&snappy_decompress(
+        &case_dir.join("inactivity_penalty_deltas.ssz_snappy"),
+    ));
 
     let source = get_flag_index_deltas(&state, TIMELY_SOURCE_FLAG_INDEX)
         .unwrap_or_else(|e| panic!("source deltas {rel}: {e:?}"));
@@ -250,7 +259,11 @@ fn run_handler<P: Preset>(handler: &str) {
     let tests = tests_root();
     let prefixes = skiplist_prefixes();
     let cases = collect_cases(&tests, P::NAME, handler);
-    assert!(!cases.is_empty(), "expected {handler} cases for {}", P::NAME);
+    assert!(
+        !cases.is_empty(),
+        "expected {handler} cases for {}",
+        P::NAME
+    );
     let mut ran = 0usize;
     for (rel, dir) in &cases {
         if is_skipped(rel, &prefixes) {

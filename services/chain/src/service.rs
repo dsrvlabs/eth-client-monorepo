@@ -29,15 +29,15 @@ use cc_proto::chain::{
     GetCommitteeShufflingResponse, GetHeadRequest, GetHeadResponse, GetInfoRequest,
     GetInfoResponse, GetValidatorPubkeysRequest, GetValidatorPubkeysResponse,
     GetValidatorRecordsRequest, GetValidatorRecordsResponse, ImportBlockRequest,
-    ImportBlockResponse, IsOptimisticRequest, IsOptimisticResponse, RestoreChunk,
-    RestoreResponse, SubscribeEventsRequest,
+    ImportBlockResponse, IsOptimisticRequest, IsOptimisticResponse, RestoreChunk, RestoreResponse,
+    SubscribeEventsRequest,
 };
-use cc_types::config::ChainConfig;
-use cc_types::preset::Mainnet;
-use cc_types::primitives::Root;
 use cc_proto::common::BuildInfo;
 use cc_proto::p2p::{ChainToP2p, P2pToChain, PublishRequest};
 use cc_proto::status_with_error_info;
+use cc_types::config::ChainConfig;
+use cc_types::preset::Mainnet;
+use cc_types::primitives::Root;
 use futures::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Response, Status, Streaming};
@@ -533,7 +533,10 @@ impl ChainService for ChainServiceImpl {
         }
         // Bound the range so a miswired client cannot force a multi-million-slot walk.
         const MAX_RANGE: u64 = 4096;
-        let span = req.end_slot.saturating_sub(req.start_slot).saturating_add(1);
+        let span = req
+            .end_slot
+            .saturating_sub(req.start_slot)
+            .saturating_add(1);
         if span > MAX_RANGE {
             return Err(Status::invalid_argument(format!(
                 "GetCanonicalRoots range {span} exceeds bound of {MAX_RANGE}"
@@ -547,10 +550,7 @@ impl ChainService for ChainServiceImpl {
             .await?;
         match reply {
             QueryReply::CanonicalRoots { roots } => Ok(Response::new(GetCanonicalRootsResponse {
-                roots: roots
-                    .into_iter()
-                    .map(|r| r.as_slice().to_vec())
-                    .collect(),
+                roots: roots.into_iter().map(|r| r.as_slice().to_vec()).collect(),
             })),
             other => Err(Status::internal(format!(
                 "unexpected query reply for GetCanonicalRoots: {other:?}"

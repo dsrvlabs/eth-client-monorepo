@@ -6,10 +6,8 @@
 //! CSPRNG scalars drawn **fresh per call**; reusing them makes forged batches
 //! accept.
 
-use super::{
-    aggregate_public_keys, BlsError, PublicKey, Signature, BLS_SIGNATURE_DST,
-};
-use blst::{blst_scalar, min_pk::Signature as BlstSig, BLST_ERROR};
+use super::{BLS_SIGNATURE_DST, BlsError, PublicKey, Signature, aggregate_public_keys};
+use blst::{BLST_ERROR, blst_scalar, min_pk::Signature as BlstSig};
 
 /// Source of 64-bit batch-verification coefficients.
 ///
@@ -31,7 +29,8 @@ impl RandomScalarSource for OsRandom {
         let mut bytes = [0u8; 8];
         // Reject zero so the term is never dropped from the linear combination.
         for _ in 0..16 {
-            getrandom::fill(&mut bytes).map_err(|_| BlsError::Other(BLST_ERROR::BLST_BAD_ENCODING))?;
+            getrandom::fill(&mut bytes)
+                .map_err(|_| BlsError::Other(BLST_ERROR::BLST_BAD_ENCODING))?;
             let v = u64::from_le_bytes(bytes);
             if v != 0 {
                 return Ok(v);
@@ -160,18 +159,9 @@ impl SignatureSet {
             rands.push(rand_i);
         }
 
-        let pk_refs: Vec<&blst::min_pk::PublicKey> =
-            agg_pks.iter().map(PublicKey::inner).collect();
-        let sig_refs: Vec<&BlstSig> = self
-            .entries
-            .iter()
-            .map(|e| e.signature.inner())
-            .collect();
-        let msg_refs: Vec<&[u8]> = self
-            .entries
-            .iter()
-            .map(|e| e.message.as_slice())
-            .collect();
+        let pk_refs: Vec<&blst::min_pk::PublicKey> = agg_pks.iter().map(PublicKey::inner).collect();
+        let sig_refs: Vec<&BlstSig> = self.entries.iter().map(|e| e.signature.inner()).collect();
+        let msg_refs: Vec<&[u8]> = self.entries.iter().map(|e| e.message.as_slice()).collect();
 
         // pks_validate=false, sigs_groupcheck=false: deserialization already
         // validated. rand_bits=64 matches the 64-bit coefficients.
@@ -251,12 +241,8 @@ mod tests {
 
         // Two consecutive OS draws must produce different coefficient vectors
         // (collision probability 2^-64 per entry).
-        let (_, c1) = set
-            .verify_with_rng_recorded(&mut OsRandom)
-            .expect("rng");
-        let (_, c2) = set
-            .verify_with_rng_recorded(&mut OsRandom)
-            .expect("rng");
+        let (_, c1) = set.verify_with_rng_recorded(&mut OsRandom).expect("rng");
+        let (_, c2) = set.verify_with_rng_recorded(&mut OsRandom).expect("rng");
         assert_ne!(c1, c2, "batch coefficients must be fresh per call");
     }
 

@@ -54,9 +54,7 @@ impl ReqRespResponse {
     /// Empty response (goodbye / no body).
     #[must_use]
     pub fn empty() -> Self {
-        Self {
-            framed: Vec::new(),
-        }
+        Self { framed: Vec::new() }
     }
 
     /// Wrap already-framed bytes.
@@ -478,8 +476,10 @@ mod tests {
 
     #[test]
     fn by_root_max_is_list_bound_not_10_mib() {
-        let (_, max) =
-            request_limits("/eth2/beacon_chain/req/beacon_blocks_by_root/2/ssz_snappy", 10_000_000);
+        let (_, max) = request_limits(
+            "/eth2/beacon_chain/req/beacon_blocks_by_root/2/ssz_snappy",
+            10_000_000,
+        );
         assert_eq!(max, 4 + 1024 * 32);
         assert!(max < 100_000);
     }

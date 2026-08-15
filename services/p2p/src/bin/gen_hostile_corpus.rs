@@ -10,6 +10,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use cc_types::SignedBeaconBlock;
 use cc_types::operations::{
     Attestation, AttesterSlashing, ProposerSlashing, SignedAggregateAndProof,
     SignedBlsToExecutionChange, SignedContributionAndProof, SignedVoluntaryExit,
@@ -17,7 +18,6 @@ use cc_types::operations::{
 };
 use cc_types::preset::Mainnet;
 use cc_types::sidecar::DataColumnSidecar;
-use cc_types::SignedBeaconBlock;
 use ssz::Encode;
 
 fn main() {

@@ -1,11 +1,11 @@
 //! Depth-4 Merkle inclusion proof for `blob_kzg_commitments` in `BeaconBlockBody`.
 
 use cc_crypto::hash32_concat;
+use cc_types::KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH;
 use cc_types::block::BeaconBlockBody;
 use cc_types::preset::Preset;
 use cc_types::primitives::Root;
 use cc_types::sidecar::KzgCommitmentsInclusionProofDepth;
-use cc_types::KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH;
 use ssz_types::FixedVector;
 use tree_hash::TreeHash;
 

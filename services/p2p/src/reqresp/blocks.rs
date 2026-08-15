@@ -23,10 +23,10 @@ use ssz::Encode;
 
 use crate::backfill::{BackfillCache, EMPTY_WINDOW_SLOT};
 use crate::fork_digest::ForkContext;
-use crate::reqresp::codec::{
-    success_chunk_for_slot, ResponseChunk, ResponseCode, CONTEXT_BYTES_LEN,
-};
 use crate::reqresp::Protocol;
+use crate::reqresp::codec::{
+    CONTEXT_BYTES_LEN, ResponseChunk, ResponseCode, success_chunk_for_slot,
+};
 
 // ── Spec / config constants ─────────────────────────────────────────────────
 
@@ -74,18 +74,19 @@ impl BlocksByRangeRequest {
         if bytes.len() != BY_RANGE_SSZ_LEN {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "by_range SSZ length {} != {BY_RANGE_SSZ_LEN}",
-                    bytes.len()
-                ),
+                format!("by_range SSZ length {} != {BY_RANGE_SSZ_LEN}", bytes.len()),
             ));
         }
-        let start = u64::from_le_bytes(bytes[0..8].try_into().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "start_slot")
-        })?);
-        let count = u64::from_le_bytes(bytes[8..16].try_into().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "count")
-        })?);
+        let start = u64::from_le_bytes(
+            bytes[0..8]
+                .try_into()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "start_slot"))?,
+        );
+        let count = u64::from_le_bytes(
+            bytes[8..16]
+                .try_into()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "count"))?,
+        );
         Ok(Self {
             start_slot: Slot::new(start),
             count,
@@ -122,9 +123,11 @@ impl BlocksByHeadRequest {
         }
         let mut root = [0u8; 32];
         root.copy_from_slice(&bytes[0..32]);
-        let count = u64::from_le_bytes(bytes[32..40].try_into().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "count")
-        })?);
+        let count = u64::from_le_bytes(
+            bytes[32..40]
+                .try_into()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "count"))?,
+        );
         Ok(Self {
             beacon_root: Root::from_array(root),
             count,
@@ -161,9 +164,11 @@ impl BlocksByRootRequest {
                 "by_root SSZ too short for list offset",
             ));
         }
-        let offset = u32::from_le_bytes(bytes[0..4].try_into().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "list offset")
-        })?) as usize;
+        let offset = u32::from_le_bytes(
+            bytes[0..4]
+                .try_into()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "list offset"))?,
+        ) as usize;
         if offset != 4 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -216,7 +221,9 @@ pub fn validate_block_count(count: u64) -> Result<(), BlockServeError> {
 /// Validate a by-root list length **before** planning a response.
 pub fn validate_root_list_len(len: usize) -> Result<(), BlockServeError> {
     if len == 0 {
-        return Err(BlockServeError::InvalidRequest("root list must be non-empty"));
+        return Err(BlockServeError::InvalidRequest(
+            "root list must be non-empty",
+        ));
     }
     if len as u64 > MAX_REQUEST_BLOCKS_DENEB {
         return Err(BlockServeError::InvalidRequest(
@@ -341,9 +348,7 @@ impl BlockServeError {
 impl From<WindowDeny> for BlockServeError {
     fn from(d: WindowDeny) -> Self {
         match d {
-            WindowDeny::BelowEarliest => {
-                Self::ResourceUnavailable("below earliest_available_slot")
-            }
+            WindowDeny::BelowEarliest => Self::ResourceUnavailable("below earliest_available_slot"),
             WindowDeny::BelowMinimumEpoch => {
                 Self::ResourceUnavailable("below minimum_request_epoch")
             }
@@ -573,21 +578,18 @@ pub fn plan_block_response<P: Preset>(
 ) -> Result<PlannedBlocks, BlockServeError> {
     match protocol {
         Protocol::BeaconBlocksByRangeV2 => {
-            let req = BlocksByRangeRequest::from_ssz_bytes(ssz).map_err(|_| {
-                BlockServeError::InvalidRequest("malformed by_range request")
-            })?;
+            let req = BlocksByRangeRequest::from_ssz_bytes(ssz)
+                .map_err(|_| BlockServeError::InvalidRequest("malformed by_range request"))?;
             serve_blocks_by_range(ctx, req)
         }
         Protocol::BeaconBlocksByRootV2 => {
-            let req = BlocksByRootRequest::from_ssz_bytes(ssz).map_err(|_| {
-                BlockServeError::InvalidRequest("malformed by_root request")
-            })?;
+            let req = BlocksByRootRequest::from_ssz_bytes(ssz)
+                .map_err(|_| BlockServeError::InvalidRequest("malformed by_root request"))?;
             serve_blocks_by_root(ctx, &req)
         }
         Protocol::BeaconBlocksByHeadV1 => {
-            let req = BlocksByHeadRequest::from_ssz_bytes(ssz).map_err(|_| {
-                BlockServeError::InvalidRequest("malformed by_head request")
-            })?;
+            let req = BlocksByHeadRequest::from_ssz_bytes(ssz)
+                .map_err(|_| BlockServeError::InvalidRequest("malformed by_head request"))?;
             serve_blocks_by_head(ctx, req)
         }
         _ => Err(BlockServeError::InvalidRequest("not a block protocol")),
@@ -610,14 +612,13 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use crate::fork_digest::{compute_fork_digest, ForkContext};
+    use crate::fork_digest::{ForkContext, compute_fork_digest};
     use crate::reqresp::codec::SszSnappyFraming;
     use cc_types::{ChainConfig, Mainnet, Preset, Root};
     use prometheus_client::registry::Registry;
     use std::sync::Arc;
 
-    const HOODI: &str =
-        include_str!("../../../../crates/types/tests/fixtures/hoodi-config.yaml");
+    const HOODI: &str = include_str!("../../../../crates/types/tests/fixtures/hoodi-config.yaml");
 
     fn hoodi_cfg() -> ChainConfig {
         ChainConfig::from_yaml_str(HOODI).expect("hoodi")
@@ -660,8 +661,7 @@ mod tests {
         for s in lo..=hi {
             let block = block_at(s, parent);
             let root = Root::from(block.canonical_root());
-            cache
-                .insert_block(Slot::new(s), root, Arc::clone(&block));
+            cache.insert_block(Slot::new(s), root, Arc::clone(&block));
             parent = root;
         }
         cache.set_head_slot(Slot::new(hi));
@@ -906,13 +906,10 @@ mod tests {
         assert_ne!(ctx_a, ctx_b, "chunks either side of 54016 must differ");
 
         // Round-trip framing preserves both digests.
-        let enc = SszSnappyFraming::encode_response(
-            &planned.chunks,
-            Protocol::BeaconBlocksByRangeV2,
-        )
-        .unwrap();
-        let dec =
-            SszSnappyFraming::decode_response(&enc, Protocol::BeaconBlocksByRangeV2).unwrap();
+        let enc =
+            SszSnappyFraming::encode_response(&planned.chunks, Protocol::BeaconBlocksByRangeV2)
+                .unwrap();
+        let dec = SszSnappyFraming::decode_response(&enc, Protocol::BeaconBlocksByRangeV2).unwrap();
         assert_eq!(chunk_context(&dec[0]), Some(ctx_a));
         assert_eq!(chunk_context(dec.last().unwrap()), Some(ctx_b));
     }
@@ -1035,7 +1032,10 @@ mod tests {
         let cache = filled_cache(50, 60);
         let mut fork_ctx = fork_ctx_at(60_000);
         let ctx = serve_ctx(&cache, &mut fork_ctx);
-        assert_eq!(ctx.earliest_available_slot(), cache.earliest_available_slot());
+        assert_eq!(
+            ctx.earliest_available_slot(),
+            cache.earliest_available_slot()
+        );
         let _ = Registry::default();
     }
 
@@ -1045,9 +1045,7 @@ mod tests {
         let src = include_str!("blocks.rs");
         let prod = src.split("mod tests").next().expect("tests module");
         assert!(prod.contains("BackfillCache"));
-        assert!(
-            prod.contains("cache.block_ssz_at_slot") || prod.contains("cache.block_by_root")
-        );
+        assert!(prod.contains("cache.block_ssz_at_slot") || prod.contains("cache.block_by_root"));
         // No second store type in production code.
         assert!(!prod.contains("HashMap<Slot"));
     }
@@ -1065,7 +1063,11 @@ mod tests {
         let fulu = cfg.fulu_fork_epoch;
         let min_epochs = compute_min_epochs_for_block_requests();
         // "Today": comfortably past FULU + min_epochs so the FULU arm of max() is idle.
-        let today = Epoch::new(fulu.as_u64().saturating_add(min_epochs).saturating_add(10_000));
+        let today = Epoch::new(
+            fulu.as_u64()
+                .saturating_add(min_epochs)
+                .saturating_add(10_000),
+        );
         let pure = today.as_u64().saturating_sub(min_epochs);
         let clamped = minimum_request_epoch_blocks(today, fulu);
         assert_eq!(
@@ -1077,8 +1079,7 @@ mod tests {
         let src = include_str!("blocks.rs");
         let prod = src.split("mod tests").next().expect("tests module");
         assert!(
-            prod.contains("FULU_FORK_EPOCH")
-                && prod.contains("simplification licensed by D1"),
+            prod.contains("FULU_FORK_EPOCH") && prod.contains("simplification licensed by D1"),
             "must retain the clamp with the D1 licensing comment"
         );
         // And when current is exactly FULU, the floor is FULU (clamp binds).

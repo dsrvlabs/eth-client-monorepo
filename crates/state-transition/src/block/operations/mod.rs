@@ -12,10 +12,12 @@ mod voluntary_exit;
 mod withdrawal_request;
 
 pub use attestation::{
-    get_attesting_indices_for_test, process_attestation, ProcessAttestationOpts,
+    ProcessAttestationOpts, get_attesting_indices_for_test, process_attestation,
 };
 pub use attester_slashing::process_attester_slashing;
-pub use bls_to_execution_change::{bls_to_execution_change_domain, process_bls_to_execution_change};
+pub use bls_to_execution_change::{
+    bls_to_execution_change_domain, process_bls_to_execution_change,
+};
 pub use consolidation_request::process_consolidation_request;
 pub use deposit::{
     add_validator_to_registry, apply_deposit, get_validator_from_deposit,
@@ -86,10 +88,7 @@ pub fn process_operations<P: Preset>(
         if body.deposits.len() as u64 != expected {
             return Err(BlockError::InvalidOperation(OperationError::Invalid {
                 op: "deposits",
-                detail: format!(
-                    "expected {expected} deposits, got {}",
-                    body.deposits.len()
-                ),
+                detail: format!("expected {expected} deposits, got {}", body.deposits.len()),
             }));
         }
     } else if !body.deposits.is_empty() {
@@ -109,9 +108,7 @@ pub fn process_operations<P: Preset>(
         process_attestation(
             state,
             attestation,
-            ProcessAttestationOpts {
-                verify_signatures,
-            },
+            ProcessAttestationOpts { verify_signatures },
         )?;
     }
     for deposit in body.deposits.iter() {

@@ -24,8 +24,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use cc_crypto::{
-    compute_domain, compute_signing_root, PublicKey, Signature, SignatureSet,
-    DOMAIN_BEACON_PROPOSER,
+    DOMAIN_BEACON_PROPOSER, PublicKey, Signature, SignatureSet, compute_domain,
+    compute_signing_root,
 };
 use cc_types::{
     ChainConfig, Domain, ForkName, ForkVersion, Mainnet, Root, SignedBeaconBlock, Slot,
@@ -346,8 +346,7 @@ pub fn verify_below_batch(
         let Ok(pubkey) = PublicKey::deserialize(pk_bytes) else {
             return BelowBatchOutcome::RejectedSignatures;
         };
-        let Ok(signed) =
-            SignedBeaconBlock::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, &b.ssz)
+        let Ok(signed) = SignedBeaconBlock::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, &b.ssz)
         else {
             return BelowBatchOutcome::RejectedSignatures;
         };
@@ -470,7 +469,11 @@ fn peek_parent_root(ssz: &[u8]) -> Option<[u8; 32]> {
 
 /// Lift a planner [`FetchedBlock`] plus raw SSZ into a [`BelowBlock`].
 #[must_use]
-pub fn below_block_from_fetched(block: &FetchedBlock, ssz: Vec<u8>, proposer_index: u64) -> BelowBlock {
+pub fn below_block_from_fetched(
+    block: &FetchedBlock,
+    ssz: Vec<u8>,
+    proposer_index: u64,
+) -> BelowBlock {
     BelowBlock {
         slot: block.slot,
         root: block.root,
@@ -506,8 +509,7 @@ mod tests {
     use ssz::Encode;
     use tree_hash::TreeHash;
 
-    const HOODI: &str =
-        include_str!("../../../../crates/types/tests/fixtures/hoodi-config.yaml");
+    const HOODI: &str = include_str!("../../../../crates/types/tests/fixtures/hoodi-config.yaml");
 
     fn root(n: u8) -> [u8; 32] {
         let mut r = [0u8; 32];
@@ -692,7 +694,11 @@ mod tests {
             Some(&counters),
         );
         assert_eq!(outcome, BelowBatchOutcome::RejectedSignatures);
-        assert_eq!(counters.accepted(), 0, "whole-batch reject: zero accepted rows");
+        assert_eq!(
+            counters.accepted(),
+            0,
+            "whole-batch reject: zero accepted rows"
+        );
         assert_eq!(counters.bls(), 1, "one batch verify invocation");
     }
 
@@ -715,17 +721,16 @@ mod tests {
         assert_eq!(v1, cfg.fulu_fork_version);
         assert_eq!(d1, d2, "domain identical across BPO boundaries");
         // Sanity: fork version is the Fulu one, not a BPO-specific version.
-        assert_eq!(v1, ForkVersion::from_array(*cfg.fulu_fork_version.as_array()));
+        assert_eq!(
+            v1,
+            ForkVersion::from_array(*cfg.fulu_fork_version.as_array())
+        );
 
         // Production path: one lookup for a batch spanning both.
         let counters2 = VerifyCounters::new();
         let high_epoch = 54_016 + 10;
         let _ = one_domain_for_window(&cfg, gvr, high_epoch, Some(&counters2));
-        assert_eq!(
-            counters2.fork_at_epoch(),
-            1,
-            "one fork_at_epoch per batch"
-        );
+        assert_eq!(counters2.fork_at_epoch(), 1, "one fork_at_epoch per batch");
     }
 
     #[test]
@@ -775,15 +780,7 @@ mod tests {
         let (mut b, r) = sign_block(&sk, 5, root(4), 0, domain);
         // Claim a different parent than the SSZ body.
         b.parent_root = root(99);
-        let outcome = verify_below_batch(
-            &[b],
-            r,
-            &cfg,
-            gvr,
-            32,
-            &pubkeys,
-            None,
-        );
+        let outcome = verify_below_batch(&[b], r, &cfg, gvr, 32, &pubkeys, None);
         assert!(matches!(
             outcome,
             BelowBatchOutcome::RejectedFieldMismatch { slot: 5 }

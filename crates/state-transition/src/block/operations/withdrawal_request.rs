@@ -3,18 +3,18 @@
 //! **Invalid requests are no-ops** — the handler returns `Ok(())` without
 //! mutating state rather than rejecting the block.
 
+use cc_types::BeaconState;
 use cc_types::operations::{PendingPartialWithdrawal, WithdrawalRequest};
 use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, Gwei};
-use cc_types::BeaconState;
 
 use crate::error::BlockError;
 use crate::helpers::accessors::{
     get_current_epoch, get_pending_balance_to_withdraw, get_validator_index_by_pubkey,
 };
 use crate::helpers::constants::{
-    network, FAR_FUTURE_EPOCH, FULL_EXIT_REQUEST_AMOUNT, MIN_ACTIVATION_BALANCE,
-    MIN_VALIDATOR_WITHDRAWABILITY_DELAY,
+    FAR_FUTURE_EPOCH, FULL_EXIT_REQUEST_AMOUNT, MIN_ACTIVATION_BALANCE,
+    MIN_VALIDATOR_WITHDRAWABILITY_DELAY, network,
 };
 use crate::helpers::misc::execution_address_from_credentials;
 use crate::helpers::mutators::{compute_exit_epoch_and_update_churn, initiate_validator_exit};
@@ -40,8 +40,7 @@ pub fn process_withdrawal_request<P: Preset>(
         return Ok(());
     }
 
-    let Some(index) =
-        get_validator_index_by_pubkey(state, &withdrawal_request.validator_pubkey)
+    let Some(index) = get_validator_index_by_pubkey(state, &withdrawal_request.validator_pubkey)
     else {
         return Ok(());
     };
@@ -52,9 +51,9 @@ pub fn process_withdrawal_request<P: Preset>(
     };
 
     let has_correct_credential = has_execution_withdrawal_credential(&validator);
-    let is_correct_source_address = execution_address_from_credentials(
-        &validator.withdrawal_credentials,
-    ) == withdrawal_request.source_address;
+    let is_correct_source_address =
+        execution_address_from_credentials(&validator.withdrawal_credentials)
+            == withdrawal_request.source_address;
     if !(has_correct_credential && is_correct_source_address) {
         return Ok(());
     }
@@ -104,8 +103,7 @@ pub fn process_withdrawal_request<P: Preset>(
             .saturating_sub(MIN_ACTIVATION_BALANCE.as_u64())
             .saturating_sub(pending_balance_to_withdraw.as_u64()))
         .min(amount);
-        let exit_queue_epoch =
-            compute_exit_epoch_and_update_churn(state, Gwei::new(to_withdraw))?;
+        let exit_queue_epoch = compute_exit_epoch_and_update_churn(state, Gwei::new(to_withdraw))?;
         let withdrawable_epoch = Epoch::new(
             exit_queue_epoch
                 .as_u64()

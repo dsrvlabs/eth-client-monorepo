@@ -13,7 +13,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use bytes::Bytes;
-use cc_chain::events::{EventInput, EventRing, EventsConfig, EventsHandle, MAX_EVENT_PAYLOAD_BYTES};
+use cc_chain::events::{
+    EventInput, EventRing, EventsConfig, EventsHandle, MAX_EVENT_PAYLOAD_BYTES,
+};
 use cc_chain::{
     BLOCK_PAYLOAD_VERDICT_DEFERRED_DA, BLOCK_PAYLOAD_VERDICT_IMPORTED, DEFAULT_RING_BYTES,
     DEFAULT_RING_CAPACITY, FORK_CHOICE_SCALARS_SSZ_LEN, ForkChoiceScalarsPayload,
@@ -23,8 +25,8 @@ use cc_proto::chain::EventKind;
 use cc_proto::p2p::{ColumnSidecar, P2pToChain, p2p_to_chain};
 use cc_types::containers::Checkpoint;
 use cc_types::primitives::{Epoch, Root, Slot};
-use ssz::Encode;
 use serde::Deserialize;
+use ssz::Encode;
 
 // ── §4.2 payload shape helpers ──────────────────────────────────────────────
 

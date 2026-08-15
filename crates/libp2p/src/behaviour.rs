@@ -41,8 +41,7 @@ use crate::snappy::{GOSSIP_MAX_SIZE, SnappyTransform};
 /// Gossipsub message-id callback installed on [`CcBehaviour`].
 ///
 /// Signature matches `libp2p::gossipsub::ConfigBuilder::message_id_fn`.
-pub type MessageIdFn =
-    Arc<dyn Fn(&Message) -> MessageId + Send + Sync + 'static>;
+pub type MessageIdFn = Arc<dyn Fn(&Message) -> MessageId + Send + Sync + 'static>;
 
 /// Eth2 Altair+ message-id over a **successfully snappy-decoded** payload.
 ///
@@ -71,9 +70,9 @@ pub fn default_eth2_message_id(message: &Message) -> MessageId {
 
 // SszSnappyCodec lives in `ssz_snappy_codec` (streaming, protocol-aware, TTFB/RESP).
 pub use crate::ssz_snappy_codec::{
-    decode_ssz_snappy_payload, encode_ssz_snappy_payload, request_limits, response_stream_cap,
     MAX_RESPONSE_STREAM_BYTES, REQRESP_MAX_PAYLOAD_SIZE, RESP_TIMEOUT, ReqRespRequest,
-    ReqRespResponse, SszSnappyCodec, TTFB_TIMEOUT,
+    ReqRespResponse, SszSnappyCodec, TTFB_TIMEOUT, decode_ssz_snappy_payload,
+    encode_ssz_snappy_payload, request_limits, response_stream_cap,
 };
 
 /// Composite network behaviour for the consensus client (Architecture §3.2).
@@ -487,9 +486,11 @@ mod tests {
     #[test]
     fn idontwant_on_publish_default_true_and_overridable() {
         assert!(BehaviourConfig::default().idontwant_on_publish);
-        assert!(!BehaviourConfig::default()
-            .with_idontwant_on_publish(false)
-            .idontwant_on_publish);
+        assert!(
+            !BehaviourConfig::default()
+                .with_idontwant_on_publish(false)
+                .idontwant_on_publish
+        );
         // Construction succeeds with both settings (ConfigBuilder accepts the flag).
         let keypair = Keypair::generate_secp256k1();
         let _ = CcBehaviour::new(&keypair, BehaviourConfig::default()).expect("idontwant on");

@@ -407,9 +407,7 @@ pub fn decode_response_chunks_bounded(
         if chunks.len() >= max_chunks {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "response exceeds max chunk count {max_chunks} (fail closed, SEC-4B-1)"
-                ),
+                format!("response exceeds max chunk count {max_chunks} (fail closed, SEC-4B-1)"),
             ));
         }
         let (chunk, n) = decode_response_chunk(&buf[offset..], has_context, response_limits)?;
@@ -525,16 +523,12 @@ mod tests {
         // Three tiny success chunks; cap at 2 → fail closed.
         let mut framed = Vec::new();
         for payload in [b"a".as_slice(), b"b", b"c"] {
-            framed.extend(
-                encode_success_chunk(payload, false, None, limits).unwrap(),
-            );
+            framed.extend(encode_success_chunk(payload, false, None, limits).unwrap());
         }
-        let err = decode_response_chunks_bounded(&framed, false, limits, 2, MAX_RESPONSE_UNCOMPRESSED)
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("max chunk count"),
-            "{err}"
-        );
+        let err =
+            decode_response_chunks_bounded(&framed, false, limits, 2, MAX_RESPONSE_UNCOMPRESSED)
+                .unwrap_err();
+        assert!(err.to_string().contains("max chunk count"), "{err}");
     }
 
     #[test]
@@ -549,9 +543,6 @@ mod tests {
         framed.extend(b);
         // Budget smaller than combined payloads (5+7).
         let err = decode_response_chunks_bounded(&framed, false, limits, 16, 10).unwrap_err();
-        assert!(
-            err.to_string().contains("uncompressed budget"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("uncompressed budget"), "{err}");
     }
 }

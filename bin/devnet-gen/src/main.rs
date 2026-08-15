@@ -3,9 +3,9 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::Parser;
-use cc_devnet_gen::params::DevnetParams;
 use cc_devnet_gen::generate;
+use cc_devnet_gen::params::DevnetParams;
+use clap::Parser;
 
 /// Generate genesis, config, keys, and a pre-signed block+sidecar chain.
 #[derive(Debug, Parser)]
@@ -27,9 +27,7 @@ fn main() -> Result<()> {
     let result = generate(&params, out)?;
     println!(
         "devnet-gen complete: slots={} gvr={} head={}",
-        params.slot_count,
-        result.manifest.genesis_validators_root,
-        result.manifest.head_block_root
+        params.slot_count, result.manifest.genesis_validators_root, result.manifest.head_block_root
     );
     println!(
         "artifacts under {}",

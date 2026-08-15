@@ -13,7 +13,7 @@
 //! map the proof-verification-failure variant to `Ok(false)` and everything
 //! else to `Err`.
 
-use cc_types::{Cell, KzgCommitment, KzgProof, CELLS_PER_EXT_BLOB};
+use cc_types::{CELLS_PER_EXT_BLOB, Cell, KzgCommitment, KzgProof};
 
 /// Byte length of a Deneb/Fulu blob (`BYTES_PER_FIELD_ELEMENT * FIELD_ELEMENTS_PER_BLOB`).
 pub const BYTES_PER_BLOB: usize =
@@ -36,10 +36,12 @@ impl Blob {
     /// All-zero blob.
     #[allow(clippy::expect_used)] // allocation of a fixed size cannot fail in practice
     pub fn zero() -> Self {
-        Self(vec![0u8; BYTES_PER_BLOB]
-            .into_boxed_slice()
-            .try_into()
-            .expect("BYTES_PER_BLOB length"))
+        Self(
+            vec![0u8; BYTES_PER_BLOB]
+                .into_boxed_slice()
+                .try_into()
+                .expect("BYTES_PER_BLOB length"),
+        )
     }
 
     /// Construct from a fixed-size array (moved onto the heap).

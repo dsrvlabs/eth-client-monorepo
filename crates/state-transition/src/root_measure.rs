@@ -12,9 +12,9 @@
 use std::cell::Cell;
 use std::time::Instant;
 
+use cc_types::BeaconState;
 use cc_types::preset::Preset;
 use cc_types::primitives::Root;
-use cc_types::BeaconState;
 
 thread_local! {
     static CANONICAL_ROOT_CALLS: Cell<u64> = const { Cell::new(0) };

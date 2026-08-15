@@ -1,9 +1,9 @@
 //! Spec `process_pending_deposits` / `apply_pending_deposit` (Fulu / Electra).
 
+use cc_types::BeaconState;
 use cc_types::operations::PendingDeposit;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, Gwei, ValidatorIndex};
-use cc_types::BeaconState;
 
 use crate::block::operations::{add_validator_to_registry, is_valid_deposit_signature};
 use crate::error::EpochError;
@@ -63,9 +63,7 @@ pub fn apply_pending_deposit<P: Preset>(
 /// activation-exit balance churn. Exiting validators' deposits are postponed
 /// (kept in the queue) rather than dropped; withdrawn validators receive the
 /// balance without consuming churn.
-pub fn process_pending_deposits<P: Preset>(
-    state: &mut BeaconState<P>,
-) -> Result<(), EpochError> {
+pub fn process_pending_deposits<P: Preset>(state: &mut BeaconState<P>) -> Result<(), EpochError> {
     let next_epoch = Epoch::new(get_current_epoch(state).as_u64().saturating_add(1));
     let available_for_processing = state
         .deposit_balance_to_consume()
@@ -140,10 +138,7 @@ pub fn process_pending_deposits<P: Preset>(
     }
 
     // remaining = queue[next_deposit_index..] + postponed
-    let mut new_queue: Vec<PendingDeposit> = queue
-        .into_iter()
-        .skip(next_deposit_index)
-        .collect();
+    let mut new_queue: Vec<PendingDeposit> = queue.into_iter().skip(next_deposit_index).collect();
     new_queue.append(&mut deposits_to_postpone);
     state
         .pending_deposits_replace(new_queue)

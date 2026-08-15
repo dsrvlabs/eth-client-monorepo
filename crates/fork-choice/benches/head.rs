@@ -29,7 +29,6 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
     }
 }
 
-
 const N_NODES: usize = 100_000;
 const SAMPLES: usize = 50;
 

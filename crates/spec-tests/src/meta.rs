@@ -48,7 +48,10 @@ impl BlsSetting {
 pub struct Meta {
     /// BLS verification mode. Defaults to [`BlsSetting::Optional`] (`0`) when
     /// the key is absent — matching the consensus-specs test format.
-    #[serde(default = "default_bls_setting_u8", deserialize_with = "de_bls_setting")]
+    #[serde(
+        default = "default_bls_setting_u8",
+        deserialize_with = "de_bls_setting"
+    )]
     pub bls_setting: BlsSetting,
 }
 
@@ -70,9 +73,7 @@ where
 {
     let v = u8::deserialize(deserializer)?;
     BlsSetting::from_u8(v).ok_or_else(|| {
-        serde::de::Error::custom(format!(
-            "bls_setting must be 0, 1, or 2 (got {v})"
-        ))
+        serde::de::Error::custom(format!("bls_setting must be 0, 1, or 2 (got {v})"))
     })
 }
 

@@ -3,11 +3,11 @@
 //! Callable standalone on a cloned state (CC-15b `compute_pulled_up_tip`); takes
 //! only `&mut BeaconState` — no `TransitionContext`.
 
+use cc_types::BeaconState;
 use cc_types::containers::Checkpoint;
 use cc_types::preset::Preset;
 use cc_types::primitives::Epoch;
 use cc_types::state::JustificationBitsLength;
-use cc_types::BeaconState;
 use ssz_types::BitVector;
 
 use crate::epoch_cache::total_active_balance_cached;
@@ -16,7 +16,9 @@ use crate::helpers::accessors::{
     get_block_root, get_current_epoch, get_previous_epoch, get_total_balance,
     get_unslashed_participating_indices,
 };
-use crate::helpers::constants::{GENESIS_EPOCH, JUSTIFICATION_BITS_LENGTH, TIMELY_TARGET_FLAG_INDEX};
+use crate::helpers::constants::{
+    GENESIS_EPOCH, JUSTIFICATION_BITS_LENGTH, TIMELY_TARGET_FLAG_INDEX,
+};
 
 /// Spec `process_justification_and_finalization` (Altair+).
 ///
@@ -144,9 +146,7 @@ fn checked_supermajority(target: u64, total: u64) -> Result<bool, EpochError> {
     let lhs = target
         .checked_mul(3)
         .ok_or(EpochError::ArithmeticOverflow)?;
-    let rhs = total
-        .checked_mul(2)
-        .ok_or(EpochError::ArithmeticOverflow)?;
+    let rhs = total.checked_mul(2).ok_or(EpochError::ArithmeticOverflow)?;
     Ok(lhs >= rhs)
 }
 

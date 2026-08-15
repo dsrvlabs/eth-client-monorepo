@@ -8,7 +8,7 @@
 
 mod r#trait;
 
-pub use r#trait::{Blob, CellKzg, CellProofs, Cells, CellsAndProofs, KzgError, BYTES_PER_BLOB};
+pub use r#trait::{BYTES_PER_BLOB, Blob, CellKzg, CellProofs, Cells, CellsAndProofs, KzgError};
 
 pub mod setup;
 
@@ -22,7 +22,7 @@ pub use c_kzg::CKzgBackend;
 pub mod rust_eth_kzg;
 
 #[cfg(feature = "kzg-rust-eth-kzg")]
-pub use rust_eth_kzg::{RustEthKzgBackend, UsePrecomp, DEFAULT_USE_PRECOMP};
+pub use rust_eth_kzg::{DEFAULT_USE_PRECOMP, RustEthKzgBackend, UsePrecomp};
 
 // ---------------------------------------------------------------------------
 // KzgBackendKind — config selection (Architecture §4.3, CC-11d)

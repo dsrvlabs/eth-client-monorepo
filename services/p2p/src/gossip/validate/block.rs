@@ -177,8 +177,8 @@ mod tests {
     use super::*;
     use crate::gossip::pending::PendingQueues;
     use crate::gossip::seen::SeenSets;
-    use cc_types::preset::Mainnet;
     use cc_types::SignedBeaconBlock;
+    use cc_types::preset::Mainnet;
 
     #[test]
     fn oversize_rejects() {
@@ -196,7 +196,9 @@ mod tests {
             peer_id: b"p",
         };
         let out = validate_beacon_block_local::<Mainnet>(&mut seen, &mut pending, &inp, None);
-        assert!(matches!(out, BlockOutcome::Done(ref v) if matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject)));
+        assert!(
+            matches!(out, BlockOutcome::Done(ref v) if matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject))
+        );
     }
 
     #[test]
@@ -214,7 +216,9 @@ mod tests {
             peer_id: b"p",
         };
         let out = validate_beacon_block_local::<Mainnet>(&mut seen, &mut pending, &inp, None);
-        assert!(matches!(out, BlockOutcome::Done(ref v) if matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject)));
+        assert!(
+            matches!(out, BlockOutcome::Done(ref v) if matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject))
+        );
     }
 
     #[test]

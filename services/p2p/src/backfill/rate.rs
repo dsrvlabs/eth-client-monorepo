@@ -210,9 +210,7 @@ impl OutboundBlockBudget {
             for right in 0..events.len() {
                 sum = sum.saturating_add(events[right].1);
                 while left <= right
-                    && events[right]
-                        .0
-                        .saturating_duration_since(events[left].0)
+                    && events[right].0.saturating_duration_since(events[left].0)
                         > OUTBOUND_BLOCKS_WINDOW
                 {
                     sum = sum.saturating_sub(events[left].1);

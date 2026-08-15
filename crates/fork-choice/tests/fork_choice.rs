@@ -693,9 +693,8 @@ fn run_case<P: Preset>(rel: &str, case_dir: &Path, config: &ChainConfig, da: Arc
             // receives the vector's reference PayloadStatusV1 for this hash
             // (CC-34d / §10.2 / tests/formats/fork_choice README).
             "block_hash" => {
-                let hash = yaml_root(step, "block_hash").unwrap_or_else(|| {
-                    panic!("block_hash missing hex at step {i} of {rel}")
-                });
+                let hash = yaml_root(step, "block_hash")
+                    .unwrap_or_else(|| panic!("block_hash missing hex at step {i} of {rel}"));
                 let ps = step.get("payload_status").unwrap_or_else(|| {
                     panic!("block_hash step missing payload_status at step {i} of {rel}")
                 });

@@ -16,32 +16,32 @@ pub mod hash;
 pub mod kzg;
 
 pub use bls::{
-    aggregate_public_keys, aggregate_signatures, aggregate_verify, bls_verify_count,
-    eth_fast_aggregate_verify, fast_aggregate_verify, take_bls_verify_count, verify,
-    AggregatePublicKey, AggregateSignature, BlsError, PublicKey, Signature, SignatureSet,
-    BLS_SIGNATURE_DST, INFINITY_SIGNATURE,
+    AggregatePublicKey, AggregateSignature, BLS_SIGNATURE_DST, BlsError, INFINITY_SIGNATURE,
+    PublicKey, Signature, SignatureSet, aggregate_public_keys, aggregate_signatures,
+    aggregate_verify, bls_verify_count, eth_fast_aggregate_verify, fast_aggregate_verify,
+    take_bls_verify_count, verify,
 };
 
 #[cfg(any(test, feature = "signing"))]
 pub use bls::SecretKey;
 pub use domain::{
-    compute_domain, compute_fork_data_root, compute_signing_root, get_domain, SigningData,
     DOMAIN_AGGREGATE_AND_PROOF, DOMAIN_BEACON_ATTESTER, DOMAIN_BEACON_BUILDER,
     DOMAIN_BEACON_PROPOSER, DOMAIN_BLS_TO_EXECUTION_CHANGE, DOMAIN_BUILDER_DEPOSIT,
     DOMAIN_CONTRIBUTION_AND_PROOF, DOMAIN_DEPOSIT, DOMAIN_PROPOSER_PREFERENCES,
     DOMAIN_PTC_ATTESTER, DOMAIN_RANDAO, DOMAIN_SELECTION_PROOF, DOMAIN_SYNC_COMMITTEE,
-    DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF, DOMAIN_VOLUNTARY_EXIT,
+    DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF, DOMAIN_VOLUNTARY_EXIT, SigningData, compute_domain,
+    compute_fork_data_root, compute_signing_root, get_domain,
 };
-pub use hash::{hash32_concat, hash_fixed};
+pub use hash::{hash_fixed, hash32_concat};
 pub use kzg::{
-    Blob, CellKzg, CellProofs, Cells, CellsAndProofs, KzgBackendKind, KzgError, BYTES_PER_BLOB,
+    BYTES_PER_BLOB, Blob, CellKzg, CellProofs, Cells, CellsAndProofs, KzgBackendKind, KzgError,
 };
 
 #[cfg(feature = "kzg-c-kzg")]
 pub use kzg::CKzgBackend;
 
 #[cfg(feature = "kzg-rust-eth-kzg")]
-pub use kzg::{RustEthKzgBackend, UsePrecomp, DEFAULT_USE_PRECOMP};
+pub use kzg::{DEFAULT_USE_PRECOMP, RustEthKzgBackend, UsePrecomp};
 
 #[cfg(any(
     all(feature = "kzg-c-kzg", not(feature = "kzg-rust-eth-kzg")),

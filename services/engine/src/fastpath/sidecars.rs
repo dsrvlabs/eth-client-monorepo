@@ -16,9 +16,7 @@ use cc_types::containers::SignedBeaconBlockHeader;
 use cc_types::preset::Mainnet;
 use cc_types::primitives::{KzgCommitment, Root};
 use cc_types::sidecar::DataColumnSidecar;
-use cc_types::{
-    CELLS_PER_EXT_BLOB, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, NUMBER_OF_COLUMNS,
-};
+use cc_types::{CELLS_PER_EXT_BLOB, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, NUMBER_OF_COLUMNS};
 use ssz_types::{FixedVector, VariableList};
 
 use super::cells::ZippedBlobMaterial;
@@ -84,10 +82,7 @@ pub enum AssembleError {
 impl std::fmt::Display for AssembleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::CountMismatch {
-                commitments,
-                blobs,
-            } => write!(
+            Self::CountMismatch { commitments, blobs } => write!(
                 f,
                 "commitment/blob count mismatch: commitments={commitments} blobs={blobs}"
             ),
@@ -120,9 +115,8 @@ pub fn transpose_to_sidecars(
     }
 
     let inclusion: FixedVector<Root, cc_types::sidecar::KzgCommitmentsInclusionProofDepth> =
-        FixedVector::new(template.kzg_commitments_inclusion_proof.to_vec()).map_err(|_| {
-            AssembleError::Ssz("inclusion proof length != 4".into())
-        })?;
+        FixedVector::new(template.kzg_commitments_inclusion_proof.to_vec())
+            .map_err(|_| AssembleError::Ssz("inclusion proof length != 4".into()))?;
 
     let n_cols = NUMBER_OF_COLUMNS as usize;
     debug_assert_eq!(n_cols, CELLS_PER_EXT_BLOB);
@@ -178,7 +172,8 @@ pub fn verify_data_column_sidecar_structure<P: cc_types::preset::Preset>(
     if (n as u64) > max_blobs_per_block {
         return false;
     }
-    sc.column.len() == n && sc.kzg_proofs.len() == n
+    sc.column.len() == n
+        && sc.kzg_proofs.len() == n
         && sc.kzg_commitments_inclusion_proof.len()
             == KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH as usize
 }
@@ -220,15 +215,19 @@ pub fn verify_inclusion_proof_branch(
 #[allow(clippy::expect_used)] // fixture builder; failure is a test bug
 pub fn synthetic_inclusion_proof(
     commitments: &[KzgCommitment],
-) -> ([Root; KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH as usize], [u8; 32], [u8; 32]) {
+) -> (
+    [Root; KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH as usize],
+    [u8; 32],
+    [u8; 32],
+) {
     use cc_crypto::hash32_concat;
     use cc_types::preset::Preset;
     use ssz_types::VariableList;
     use tree_hash::TreeHash;
 
     type Max = <Mainnet as Preset>::MaxBlobCommitmentsPerBlock;
-    let list = VariableList::<KzgCommitment, Max>::new(commitments.to_vec())
-        .expect("commitments fit");
+    let list =
+        VariableList::<KzgCommitment, Max>::new(commitments.to_vec()).expect("commitments fit");
     let leaf_hash = list.tree_hash_root();
     let mut leaf = [0u8; 32];
     leaf.copy_from_slice(leaf_hash.as_slice());
@@ -262,10 +261,10 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use crate::fastpath::cells::{compute_cells_zipped_with_el_proofs, ZippedBlobMaterial};
+    use crate::fastpath::cells::{ZippedBlobMaterial, compute_cells_zipped_with_el_proofs};
     use crate::methods::get_blobs::BlobAndProofV2;
     use crate::metrics::EngineMetrics;
-    use cc_crypto::{Blob, CellKzg, CKzgBackend};
+    use cc_crypto::{Blob, CKzgBackend, CellKzg};
     use cc_types::primitives::Slot;
     use prometheus_client::registry::Registry;
     use std::sync::Arc;
@@ -282,7 +281,11 @@ mod tests {
     fn fixture_materials(
         kzg: &dyn CellKzg,
         n: usize,
-    ) -> (Vec<ZippedBlobMaterial>, Vec<KzgCommitment>, Vec<BlobAndProofV2>) {
+    ) -> (
+        Vec<ZippedBlobMaterial>,
+        Vec<KzgCommitment>,
+        Vec<BlobAndProofV2>,
+    ) {
         use crate::methods::get_blobs::kzg_commitment_to_versioned_hash;
         let mut items = Vec::with_capacity(n);
         let mut commitments = Vec::with_capacity(n);
@@ -402,7 +405,8 @@ mod tests {
                 let mut leaf = [0u8; 32];
                 leaf.copy_from_slice(h.as_slice());
                 // Recompute body root from the stored branch + leaf.
-                let branch: Vec<Root> = sc.kzg_commitments_inclusion_proof.iter().copied().collect();
+                let branch: Vec<Root> =
+                    sc.kzg_commitments_inclusion_proof.iter().copied().collect();
                 let mut value = leaf;
                 let index = BLOB_KZG_COMMITMENTS_FIELD_INDEX;
                 for (i, node) in branch.iter().enumerate() {

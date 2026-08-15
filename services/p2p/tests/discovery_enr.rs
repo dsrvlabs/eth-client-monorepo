@@ -6,35 +6,30 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use cc_libp2p::PeerId;
+use cc_libp2p::reexport::Keypair;
 use cc_p2p::discovery::{
-    DIAL_QUEUE_BOUND, DialCandidate, DialQueue, ENR_KEY_CGC, ENR_KEY_ETH2, EnrFieldChange,
-    EnrManager, EnrSeqStrategy, PRIORITY_BASE, attestation_subnet_predicate, column_predicate,
-    decode_cgc, dial_priority_for_enr, encode_attnets, encode_cgc, encode_eth2, encode_syncnets,
-    enr_custody_groups, enr_field_payload, generic_peer_predicate, parse_bootnode, parse_bootnodes,
-    read_cgc, read_eth2, read_nfd, sync_subnet_predicate, DiscoveryPeerView,
+    DIAL_QUEUE_BOUND, DialCandidate, DialQueue, DiscoveryPeerView, ENR_KEY_CGC, ENR_KEY_ETH2,
+    EnrFieldChange, EnrManager, EnrSeqStrategy, PRIORITY_BASE, attestation_subnet_predicate,
+    column_predicate, decode_cgc, dial_priority_for_enr, encode_attnets, encode_cgc, encode_eth2,
+    encode_syncnets, enr_custody_groups, enr_field_payload, generic_peer_predicate, parse_bootnode,
+    parse_bootnodes, read_cgc, read_eth2, read_nfd, sync_subnet_predicate,
 };
-use cc_p2p::fork_digest::{
-    FAR_FUTURE_EPOCH, ForkContext, enr_fork_id, next_fork_digest,
-};
+use cc_p2p::fork_digest::{FAR_FUTURE_EPOCH, ForkContext, enr_fork_id, next_fork_digest};
+use cc_p2p::metrics::P2pMetrics;
 use cc_p2p::peer_manager::{
     ConnectionState, PeerEnrInfo, PeerManager, PeerManagerConfig, PeerRecord, PeerTable,
 };
 use cc_p2p::supervisor::{
     SupervisedTask, SupervisorOutcome, TaskPolicy, factory_from_future, run_supervisor,
 };
-use cc_p2p::metrics::P2pMetrics;
-use cc_types::{
-    ChainConfig, Epoch, ForkDigest, ForkVersion, Root, parse_hex_bytes,
-};
-use cc_libp2p::reexport::Keypair;
-use cc_libp2p::PeerId;
+use cc_types::{ChainConfig, Epoch, ForkDigest, ForkVersion, Root, parse_hex_bytes};
 use prometheus_client::registry::Registry;
 use tokio::sync::watch;
 
 // ── Hoodi fixtures ──────────────────────────────────────────────────────────
 
-const HOODI_GVR_HEX: &str =
-    "0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f";
+const HOODI_GVR_HEX: &str = "0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f";
 const EPOCH_FULU_FALLBACK: u64 = 51_000;
 const EPOCH_BPO1: u64 = 52_480;
 
@@ -306,8 +301,14 @@ fn discovery_module_does_not_reference_swarm() {
     for (name, src) in [
         ("mod.rs", include_str!("../src/discovery/mod.rs")),
         ("enr.rs", include_str!("../src/discovery/enr.rs")),
-        ("predicate.rs", include_str!("../src/discovery/predicate.rs")),
-        ("dial_queue.rs", include_str!("../src/discovery/dial_queue.rs")),
+        (
+            "predicate.rs",
+            include_str!("../src/discovery/predicate.rs"),
+        ),
+        (
+            "dial_queue.rs",
+            include_str!("../src/discovery/dial_queue.rs"),
+        ),
         ("task.rs", include_str!("../src/discovery/task.rs")),
     ] {
         for line in src.lines() {
@@ -340,13 +341,7 @@ fn hoodi_bootnodes_from_config_parse() {
     let sample = "enr:-Ku4QLVumWTwyOUVS4ajqq8ZuZz2ik6t3Gtq0Ozxqecj0qNZWpMnudcvTs-4jrlwYRQMQwBS8Pvtmu4ZPP2Lx3i2t7YBh2F0dG5ldHOIAAAAAAAAAACEZXRoMpBd9cEGEAAJEP__________gmlkgnY0gmlwhNEmfKCJc2VjcDI1NmsxoQLdRlI8aCa_ELwTJhVN8k7km7IDc3pYu-FMYBs5_FiigIN1ZHCCIyk";
     let enr = parse_bootnode(sample).expect("parse hoodi bootnode");
     assert!(enr.udp4().is_some() || enr.tcp4().is_some());
-    let list = parse_bootnodes([
-        "# comment",
-        "",
-        sample,
-        &format!("enr:{sample}"),
-    ])
-    .unwrap();
+    let list = parse_bootnodes(["# comment", "", sample, &format!("enr:{sample}")]).unwrap();
     assert_eq!(list.len(), 2);
 }
 
@@ -367,9 +362,7 @@ async fn discovery_restart_budget_exhausted_is_fatal() {
         factory,
     }];
 
-    let handle = tokio::spawn(async move {
-        run_supervisor(tasks, metrics, shutdown_rx).await
-    });
+    let handle = tokio::spawn(async move { run_supervisor(tasks, metrics, shutdown_rx).await });
 
     // Budget: 5 restarts in 5 minutes → 6th panic is fatal (len > max_restarts).
     // Policy counts panics in the window; first panic is restart 1, …

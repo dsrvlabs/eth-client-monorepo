@@ -38,7 +38,6 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
     }
 }
 
-
 fn minimal_config() -> ChainConfig {
     ChainConfig {
         preset_base: PresetName::Minimal,
@@ -114,8 +113,8 @@ fn spawn_test_core() -> (
         ring_capacity: 64,
         subscriber_queue_capacity: 32,
         session_id: Some(7),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
     let head = HeadSnapshotStore::new();
     let core = spawn_core_thread(
         store,
@@ -272,8 +271,8 @@ async fn snapshot_published_before_head_event() {
         ring_capacity: 16,
         subscriber_queue_capacity: 8,
         session_id: Some(99),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
     let mut sub = events.subscribe(None).await.unwrap();
 
     let root = Root::from_array([0xAB; 32]);

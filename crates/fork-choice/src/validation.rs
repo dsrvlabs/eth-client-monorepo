@@ -128,8 +128,7 @@ pub fn propagate_execution_payload_validation<P: Preset>(
                 break;
             }
             ExecutionStatus::Optimistic => {
-                store.proto_array_mut().nodes_mut()[idx].execution_status =
-                    ExecutionStatus::Valid;
+                store.proto_array_mut().nodes_mut()[idx].execution_status = ExecutionStatus::Valid;
                 outcome.transitioned = outcome.transitioned.saturating_add(1);
                 outcome.transitioned_roots.push(block_root);
             }
@@ -202,8 +201,7 @@ pub fn try_mark_execution_invalid<P: Preset>(
             })
         }
         ExecutionStatus::Optimistic => {
-            store.proto_array_mut().nodes_mut()[idx].execution_status =
-                ExecutionStatus::Invalid;
+            store.proto_array_mut().nodes_mut()[idx].execution_status = ExecutionStatus::Invalid;
             store.bump_mutation_counter();
             Ok(())
         }
@@ -225,33 +223,32 @@ fn log_valid_became_invalid(block_root: Root, payload_block_hash: Hash256) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
-#[derive(Debug, Default, Clone, Copy)]
-struct AcceptEngine;
+    /// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+    #[derive(Debug, Default, Clone, Copy)]
+    struct AcceptEngine;
 
-impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
-    fn verify_and_notify_new_payload(
-        &self,
-        _request: cc_state_transition::NewPayloadRequest<'_, P>,
-    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
-        Ok(cc_state_transition::PayloadStatus::Valid)
+    impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+        fn verify_and_notify_new_payload(
+            &self,
+            _request: cc_state_transition::NewPayloadRequest<'_, P>,
+        ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+            Ok(cc_state_transition::PayloadStatus::Valid)
+        }
     }
-}
 
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use cc_state_transition::{ExecutionEngine, NewPayloadRequest, PayloadStatus,
-    };
-    use cc_types::preset::Minimal;
-    use cc_types::primitives::{Hash256, Root, Slot};
-    use cc_types::{BeaconBlock, BeaconState};
     use super::*;
     use crate::da_seam::HarnessAvailability;
     use crate::execution_status::is_optimistic;
     use crate::on_block::get_forkchoice_store;
     use crate::proto_array::ProtoNodeBlock;
     use crate::store::Store;
+    use cc_state_transition::{ExecutionEngine, NewPayloadRequest, PayloadStatus};
+    use cc_types::preset::Minimal;
+    use cc_types::primitives::{Hash256, Root, Slot};
+    use cc_types::{BeaconBlock, BeaconState};
 
     /// Counts `verify_and_notify_new_payload` calls — used to assert zero
     /// re-submissions across the upward pass.
@@ -367,8 +364,7 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
         assert_eq!(before_calls, 0, "fixture must not submit payloads");
 
         // One VALID for the tip — single ancestor pass, no engine traffic.
-        let outcome =
-            propagate_execution_payload_validation(&mut store, root_of(64)).unwrap();
+        let outcome = propagate_execution_payload_validation(&mut store, root_of(64)).unwrap();
 
         assert_eq!(
             outcome.transitioned, 64,
@@ -376,10 +372,7 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
         );
         assert_eq!(outcome.transitioned_roots.len(), 64);
         // Walk examines 64 Optimistic + the Valid anchor floor.
-        assert_eq!(
-            outcome.visited, 65,
-            "64 Optimistic + 1 Valid-anchor stop"
-        );
+        assert_eq!(outcome.visited, 65, "64 Optimistic + 1 Valid-anchor stop");
 
         for i in 1u16..=64 {
             assert_eq!(
@@ -445,8 +438,7 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
                 .unwrap();
         }
 
-        let outcome =
-            propagate_execution_payload_validation(&mut store, root_of(64)).unwrap();
+        let outcome = propagate_execution_payload_validation(&mut store, root_of(64)).unwrap();
 
         // Nodes 31..=64 (34 nodes) transition; node 30 is the Valid stop.
         assert_eq!(outcome.transitioned, 34, "nodes 31..=64 only");
@@ -526,11 +518,7 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
             .unwrap();
 
         // Snapshot store.blocks + every execution_status before the attempt.
-        let mut blocks_before: Vec<_> = store
-            .blocks()
-            .iter()
-            .map(|(r, h)| (*r, *h))
-            .collect();
+        let mut blocks_before: Vec<_> = store.blocks().iter().map(|(r, h)| (*r, *h)).collect();
         blocks_before.sort_by(|a, b| a.0.as_slice().cmp(b.0.as_slice()));
         let statuses_before: Vec<_> = store
             .proto_array()
@@ -569,13 +557,12 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
 
         // Store unmutated — blocks and every ProtoNode.execution_status
         // byte-identical to before.
-        let mut blocks_after: Vec<_> = store
-            .blocks()
-            .iter()
-            .map(|(r, h)| (*r, *h))
-            .collect();
+        let mut blocks_after: Vec<_> = store.blocks().iter().map(|(r, h)| (*r, *h)).collect();
         blocks_after.sort_by(|a, b| a.0.as_slice().cmp(b.0.as_slice()));
-        assert_eq!(blocks_before, blocks_after, "store.blocks must be unmutated");
+        assert_eq!(
+            blocks_before, blocks_after,
+            "store.blocks must be unmutated"
+        );
         let statuses_after: Vec<_> = store
             .proto_array()
             .nodes()
@@ -728,8 +715,7 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
             .unwrap();
 
         let before = store.mutation_counter();
-        let outcome =
-            propagate_execution_payload_validation(&mut store, root_of(1)).unwrap();
+        let outcome = propagate_execution_payload_validation(&mut store, root_of(1)).unwrap();
         assert_eq!(outcome.transitioned, 1);
         assert!(
             store.mutation_counter() > before,
@@ -738,8 +724,7 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
 
         // Second pass is a no-op (already Valid floor) — no further bump.
         let mid = store.mutation_counter();
-        let again =
-            propagate_execution_payload_validation(&mut store, root_of(1)).unwrap();
+        let again = propagate_execution_payload_validation(&mut store, root_of(1)).unwrap();
         assert_eq!(again.transitioned, 0);
         assert_eq!(store.mutation_counter(), mid);
 

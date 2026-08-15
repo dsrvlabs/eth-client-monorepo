@@ -26,12 +26,12 @@
 //! lowers the proposed mark to the floor.
 
 use cc_store::keys::{
-    block_shard_id, blocks_shard_table, decode_block_slot_by_root_value, decode_hot_block_key,
-    encode_cold_block_key, encode_hot_block_key, encode_root_key, SLOTS_PER_EPOCH,
+    SLOTS_PER_EPOCH, block_shard_id, blocks_shard_table, decode_block_slot_by_root_value,
+    decode_hot_block_key, encode_cold_block_key, encode_hot_block_key, encode_root_key,
 };
 use cc_store::{
-    epoch_start_slot, Engine, Root, Slot, StoreError, TABLE_BLOCKS_HOT, TABLE_BLOCK_SLOT_BY_ROOT,
-    TABLE_CANONICAL,
+    Engine, Root, Slot, StoreError, TABLE_BLOCK_SLOT_BY_ROOT, TABLE_BLOCKS_HOT, TABLE_CANONICAL,
+    epoch_start_slot,
 };
 use tracing::error;
 
@@ -71,11 +71,7 @@ pub(crate) fn block_serve_floor_slot(current_epoch: u64, floor_epochs: u64) -> S
 /// Newest slot deleted = `mark − 1` =
 /// `start_slot(current_epoch − floor) − margin × SPE − 1` (CC-46 /2).
 #[must_use]
-pub(crate) fn blocks_prune_mark(
-    current_epoch: u64,
-    floor_epochs: u64,
-    margin_epochs: u64,
-) -> Slot {
+pub(crate) fn blocks_prune_mark(current_epoch: u64, floor_epochs: u64, margin_epochs: u64) -> Slot {
     let floor = block_serve_floor_slot(current_epoch, floor_epochs);
     let margin_slots = margin_epochs.saturating_mul(SLOTS_PER_EPOCH);
     floor.saturating_sub(margin_slots)
@@ -86,11 +82,7 @@ pub(crate) fn blocks_prune_mark(
 /// **Not a clamp** — the only actions are Allow or Refuse. Callers must not
 /// lower `proposed` to `floor` on Refuse.
 #[must_use]
-pub(crate) fn i2_check(
-    proposed: Slot,
-    current_epoch: u64,
-    floor_epochs: u64,
-) -> I2Decision {
+pub(crate) fn i2_check(proposed: Slot, current_epoch: u64, floor_epochs: u64) -> I2Decision {
     let floor = block_serve_floor_slot(current_epoch, floor_epochs);
     if proposed.as_u64() > floor.as_u64() {
         I2Decision::Refuse { proposed, floor }
@@ -148,7 +140,9 @@ pub(crate) fn plan_block_deletes(
         };
         for item in iter {
             let (key, value) = item?;
-            plan.bytes = plan.bytes.saturating_add(key.len() as u64 + value.len() as u64);
+            plan.bytes = plan
+                .bytes
+                .saturating_add(key.len() as u64 + value.len() as u64);
             plan.rows = plan.rows.saturating_add(1);
             plan.deletes.push((table.clone(), key));
         }
@@ -160,11 +154,15 @@ pub(crate) fn plan_block_deletes(
     if let Ok(iter) = rt.range(TABLE_BLOCKS_HOT, &lo, &hi) {
         for item in iter {
             let (key, value) = item?;
-            plan.bytes = plan.bytes.saturating_add(key.len() as u64 + value.len() as u64);
+            plan.bytes = plan
+                .bytes
+                .saturating_add(key.len() as u64 + value.len() as u64);
             plan.rows = plan.rows.saturating_add(1);
             if let Some((_slot, root)) = decode_hot_block_key(&key) {
-                plan.deletes
-                    .push((TABLE_BLOCK_SLOT_BY_ROOT.to_owned(), encode_root_key(&root).to_vec()));
+                plan.deletes.push((
+                    TABLE_BLOCK_SLOT_BY_ROOT.to_owned(),
+                    encode_root_key(&root).to_vec(),
+                ));
             }
             plan.deletes.push((TABLE_BLOCKS_HOT.to_owned(), key));
         }
@@ -176,7 +174,9 @@ pub(crate) fn plan_block_deletes(
     if let Ok(iter) = rt.range(TABLE_CANONICAL, &clo, &chi) {
         for item in iter {
             let (key, value) = item?;
-            plan.bytes = plan.bytes.saturating_add(key.len() as u64 + value.len() as u64);
+            plan.bytes = plan
+                .bytes
+                .saturating_add(key.len() as u64 + value.len() as u64);
             plan.rows = plan.rows.saturating_add(1);
             plan.deletes.push((TABLE_CANONICAL.to_owned(), key));
         }
@@ -276,7 +276,9 @@ mod tests {
     #[test]
     fn i2_source_has_no_clamp_of_proposed() {
         let src = include_str!("blocks.rs");
-        let i2_start = src.find("pub(crate) fn i2_check").expect("i2_check present");
+        let i2_start = src
+            .find("pub(crate) fn i2_check")
+            .expect("i2_check present");
         let i2_body = &src[i2_start..];
         let i2_end = i2_body
             .find("pub(crate) fn record_i2_refusal")

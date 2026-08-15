@@ -60,10 +60,7 @@ pub struct SigningData {
 ///
 /// `genesis_validators_root` is taken by value with no default — callers must
 /// pass the fetched value. Writing a zero root is greppable at the call site.
-pub fn compute_fork_data_root(
-    current_version: ForkVersion,
-    genesis_validators_root: Root,
-) -> Root {
+pub fn compute_fork_data_root(current_version: ForkVersion, genesis_validators_root: Root) -> Root {
     let fork_data = ForkData {
         current_version,
         genesis_validators_root,
@@ -158,18 +155,8 @@ mod tests {
             epoch: Epoch::new(50688),
         };
         let gvr = Root::from_array([0x11; 32]);
-        let before = get_domain(
-            &fork,
-            DOMAIN_BEACON_PROPOSER,
-            Some(Epoch::new(50687)),
-            gvr,
-        );
-        let after = get_domain(
-            &fork,
-            DOMAIN_BEACON_PROPOSER,
-            Some(Epoch::new(50688)),
-            gvr,
-        );
+        let before = get_domain(&fork, DOMAIN_BEACON_PROPOSER, Some(Epoch::new(50687)), gvr);
+        let after = get_domain(&fork, DOMAIN_BEACON_PROPOSER, Some(Epoch::new(50688)), gvr);
         let current = get_domain(&fork, DOMAIN_BEACON_PROPOSER, None, gvr);
         assert_ne!(before, after);
         assert_eq!(after, current);

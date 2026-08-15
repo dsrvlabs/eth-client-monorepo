@@ -17,10 +17,10 @@ pub mod params;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use cc_types::BeaconState;
 use cc_types::config::ChainConfig;
 use cc_types::preset::{Mainnet, Minimal, Preset};
 use cc_types::primitives::Root;
-use cc_types::BeaconState;
 
 use crate::chain::generate_chain;
 use crate::config_emit::{assert_devnet_config, write_config};
@@ -59,10 +59,7 @@ pub fn generate(params: &DevnetParams, output_dir: Option<&Path>) -> Result<Gene
     }
 }
 
-fn generate_with_preset<P: Preset>(
-    params: &DevnetParams,
-    out: &Path,
-) -> Result<GenerateResult> {
+fn generate_with_preset<P: Preset>(params: &DevnetParams, out: &Path) -> Result<GenerateResult> {
     let seed = params.seed_bytes()?;
     let keys = derive_keys(&seed, params.validator_count)?;
     write_keys(&out.join("keys"), &keys)?;
@@ -79,15 +76,11 @@ fn generate_with_preset<P: Preset>(
 
     let blobs_per_block: Vec<u64> = artifacts.iter().map(|a| a.blob_count).collect();
     let block_roots: Vec<Root> = artifacts.iter().map(|a| a.block_root).collect();
-    let head = block_roots
-        .last()
-        .copied()
-        .unwrap_or(Root::ZERO);
+    let head = block_roots.last().copied().unwrap_or(Root::ZERO);
 
     let gvr_bytes = *gvr.as_array();
     let head_bytes = *head.as_array();
-    let block_root_arrays: Vec<[u8; 32]> =
-        block_roots.iter().map(|r| *r.as_array()).collect();
+    let block_root_arrays: Vec<[u8; 32]> = block_roots.iter().map(|r| *r.as_array()).collect();
 
     let manifest = Manifest::new(
         params,

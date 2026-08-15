@@ -74,10 +74,7 @@ impl SubscriptionHandle {
     /// Current subscription snapshot.
     #[must_use]
     pub fn current(&self) -> LocalSubscription {
-        self.inner
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     /// Replace the set and notify every stream session (cgc change / hello rebuild).

@@ -16,23 +16,23 @@ pub mod sampling;
 pub mod verify_pool;
 
 pub use custody::{
-    count_custody_compatible_peers, is_peer_custody_compatible, column_subnets_for_groups,
-    CustodiedGroups, CustodyManager, SampledGroups,
+    CustodiedGroups, CustodyManager, SampledGroups, column_subnets_for_groups,
+    count_custody_compatible_peers, is_peer_custody_compatible,
 };
 pub use recovery::{
-    apply_custody_unserved, batch_for_peer, candidates_for_column, candidates_for_missing,
-    chain_timeout_outlasts_ladder, default_ladder_under_chain_timeout, encode_single_root_request,
-    log_abandoned, peer_custody_columns, peer_custodies_column, plan_batched_requests, recover,
-    recovery_ladder_worst_case_secs, recovery_request_spec, PeerQueryResult, PlannedRequest,
-    RecoveryInput, RecoveryOutcome, RecoveryPeer, RecoveryPenalty, CHAIN_PENDING_DA_TIMEOUT_SLOTS,
-    RECOVERY_MAX_ATTEMPTS, RECOVERY_MAX_PEERS, RECOVERY_RESP_SECS, RECOVERY_TTFB_SECS,
+    CHAIN_PENDING_DA_TIMEOUT_SLOTS, PeerQueryResult, PlannedRequest, RECOVERY_MAX_ATTEMPTS,
+    RECOVERY_MAX_PEERS, RECOVERY_RESP_SECS, RECOVERY_TTFB_SECS, RecoveryInput, RecoveryOutcome,
+    RecoveryPeer, RecoveryPenalty, apply_custody_unserved, batch_for_peer, candidates_for_column,
+    candidates_for_missing, chain_timeout_outlasts_ladder, default_ladder_under_chain_timeout,
+    encode_single_root_request, log_abandoned, peer_custodies_column, peer_custody_columns,
+    plan_batched_requests, recover, recovery_ladder_worst_case_secs, recovery_request_spec,
 };
 pub use sampling::{
-    DeadlineClock, FixedDeadline, RecoveryTrigger, SamplingHandle, SamplingTask, SamplingTracker,
-    TaskState, SAMPLING_TASK_BOUND,
+    DeadlineClock, FixedDeadline, RecoveryTrigger, SAMPLING_TASK_BOUND, SamplingHandle,
+    SamplingTask, SamplingTracker, TaskState,
 };
 pub use verify_pool::{
-    pool_worker_count, run_verify_pool_bridge, verify_sidecar_three_steps, BatchMode,
+    BatchMode, CROSS_SIDECAR_BATCH_MIN, SAMPLING_P95_BUDGET_SECS, VERIFY_QUEUE_BOUND,
     VerifyFailReason, VerifyJob, VerifyOutcome, VerifyPool, VerifyStep, VerifyStepCounters,
-    CROSS_SIDECAR_BATCH_MIN, SAMPLING_P95_BUDGET_SECS, VERIFY_QUEUE_BOUND,
+    pool_worker_count, run_verify_pool_bridge, verify_sidecar_three_steps,
 };

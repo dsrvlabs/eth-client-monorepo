@@ -24,9 +24,9 @@
 
 use std::collections::BTreeSet;
 
+use cc_types::NUMBER_OF_COLUMNS;
 use cc_types::preset::Mainnet;
 use cc_types::sidecar::DataColumnSidecar;
-use cc_types::NUMBER_OF_COLUMNS;
 use ssz::Encode;
 
 use crate::metrics::{EngineMetrics, Subscribed, SubscribedLabels};
@@ -165,11 +165,11 @@ mod tests {
     use super::*;
     use crate::fastpath::cells::compute_cells_zipped_with_el_proofs;
     use crate::fastpath::sidecars::{
-        synthetic_inclusion_proof, transpose_to_sidecars, SidecarTemplate,
+        SidecarTemplate, synthetic_inclusion_proof, transpose_to_sidecars,
     };
     use crate::methods::get_blobs::BlobAndProofV2;
     use crate::metrics::EngineMetrics;
-    use cc_crypto::{Blob, CellKzg, CKzgBackend};
+    use cc_crypto::{Blob, CKzgBackend, CellKzg};
     use cc_types::containers::SignedBeaconBlockHeader;
     use cc_types::primitives::Slot;
     use prometheus_client::registry::Registry;
@@ -190,10 +190,7 @@ mod tests {
         SubscriptionSet::from_indices(0..n, cgc)
     }
 
-    async fn assemble_n(
-        kzg: &Arc<dyn CellKzg>,
-        n: usize,
-    ) -> Vec<DataColumnSidecar<Mainnet>> {
+    async fn assemble_n(kzg: &Arc<dyn CellKzg>, n: usize) -> Vec<DataColumnSidecar<Mainnet>> {
         use crate::methods::get_blobs::kzg_commitment_to_versioned_hash;
         let mut items = Vec::new();
         let mut commitments = Vec::new();
@@ -248,7 +245,11 @@ mod tests {
         assert_eq!(outcome.published.len(), 8, "exactly the subscribed indices");
         assert_eq!(outcome.dropped, 120, "remainder dropped");
         for sc in &outcome.published {
-            assert!(sub.is_subscribed(sc.index), "published unsubscribed {}", sc.index);
+            assert!(
+                sub.is_subscribed(sc.index),
+                "published unsubscribed {}",
+                sc.index
+            );
         }
         let false_after = m
             .sidecars_published
@@ -356,9 +357,7 @@ mod tests {
             // Split on cfg(test) modules — production region must not verify.
             let production: String = src
                 .lines()
-                .take_while(|l| {
-                    !l.contains("#[cfg(test)]") && !l.contains("mod tests")
-                })
+                .take_while(|l| !l.contains("#[cfg(test)]") && !l.contains("mod tests"))
                 .collect::<Vec<_>>()
                 .join("\n");
             assert!(

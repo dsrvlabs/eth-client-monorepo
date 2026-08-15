@@ -7,9 +7,9 @@
 //! advances one empty predecessor therefore pays exactly **two**
 //! `canonical_root` calls across the full transition (pre + post).
 
+use cc_types::BeaconState;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Root, Slot};
-use cc_types::BeaconState;
 use tree_hash::TreeHash;
 
 use crate::epoch::process_epoch;

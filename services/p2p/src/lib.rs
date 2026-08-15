@@ -56,6 +56,4 @@ pub mod storage_client;
 pub mod supervisor;
 pub mod verdict;
 
-pub use verdict::{
-    gossip_class_for_reason, is_late_import_reject, to_message_acceptance, Verdict,
-};
+pub use verdict::{Verdict, gossip_class_for_reason, is_late_import_reject, to_message_acceptance};

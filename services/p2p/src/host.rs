@@ -37,24 +37,26 @@ use crate::channels::{
 use crate::fork_digest::ForkContext;
 use crate::gossip::validate::{check_payload_len, parse_topic_name};
 use crate::metrics::{P2pMetrics, PeerPenaltyReason, QueueName};
-use crate::reqresp::codec::{ResponseChunk, ResponseCode, SszSnappyFraming};
-use crate::reqresp::handshake::{
-    encode_goodbye_ssz, handle_inbound_goodbye, HandshakeBook, HandshakeDeps, OutboundAction,
-};
-use crate::reqresp::blocks::{plan_block_response, BlockServeCtx};
-use crate::reqresp::columns::{plan_column_response, ColumnServeCtx};
-use crate::reqresp::limits::{rate_limit_kind, ChunkBudgetResult, InboundRateLimiter, RateLimitKind};
-use crate::reqresp::metadata::{encode_metadata_response, LocalMetaData};
-use crate::reqresp::ping::{decode_ping_ssz, encode_ping_response, Ping};
-use crate::reqresp::server::{BlockServeState, ServeResultLabel};
-use crate::reqresp::status::{decode_status_ssz, encode_status_response, StatusV2};
 use crate::reqresp::Protocol;
+use crate::reqresp::blocks::{BlockServeCtx, plan_block_response};
+use crate::reqresp::codec::{ResponseChunk, ResponseCode, SszSnappyFraming};
+use crate::reqresp::columns::{ColumnServeCtx, plan_column_response};
+use crate::reqresp::handshake::{
+    HandshakeBook, HandshakeDeps, OutboundAction, encode_goodbye_ssz, handle_inbound_goodbye,
+};
+use crate::reqresp::limits::{
+    ChunkBudgetResult, InboundRateLimiter, RateLimitKind, rate_limit_kind,
+};
+use crate::reqresp::metadata::{LocalMetaData, encode_metadata_response};
+use crate::reqresp::ping::{Ping, decode_ping_ssz, encode_ping_response};
+use crate::reqresp::server::{BlockServeState, ServeResultLabel};
+use crate::reqresp::status::{StatusV2, decode_status_ssz, encode_status_response};
 use crate::storage_client::StorageClientHandle;
-use crate::verdict::{to_message_acceptance, Verdict};
+use crate::verdict::{Verdict, to_message_acceptance};
+use cc_libp2p::reexport::StreamProtocol;
 use cc_proto::p2p::Reason;
 use cc_types::preset::Mainnet;
 use cc_types::{Epoch, Slot};
-use cc_libp2p::reexport::StreamProtocol;
 
 /// CC-23b handshake state owned by the swarm task.
 #[derive(Debug)]
@@ -327,11 +329,7 @@ fn flush_pending_conn(task: &mut SwarmTask) {
         match task.conn_tx.try_send(front.clone()) {
             Ok(()) => {
                 task.pending_conn.pop_front();
-                bump_depth(
-                    &task.metrics,
-                    QueueName::Conn,
-                    task.conn_tx.max_capacity(),
-                );
+                bump_depth(&task.metrics, QueueName::Conn, task.conn_tx.max_capacity());
             }
             Err(mpsc::error::TrySendError::Full(_)) => break,
             Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -349,11 +347,7 @@ fn deliver_lifecycle(task: &mut SwarmTask, event: ConnEvent) {
     flush_pending_conn(task);
     match task.conn_tx.try_send(event) {
         Ok(()) => {
-            bump_depth(
-                &task.metrics,
-                QueueName::Conn,
-                task.conn_tx.max_capacity(),
-            );
+            bump_depth(&task.metrics, QueueName::Conn, task.conn_tx.max_capacity());
         }
         Err(mpsc::error::TrySendError::Full(ev)) => {
             // Durable buffer — never drop ConnectionClosed / Established / DialFailure.
@@ -369,11 +363,7 @@ fn deliver_lifecycle(task: &mut SwarmTask, event: ConnEvent) {
     }
 }
 
-async fn route_swarm_event(
-    task: &mut SwarmTask,
-    event: SwarmEvent<CcBehaviourEvent>,
-    shed: bool,
-) {
+async fn route_swarm_event(task: &mut SwarmTask, event: SwarmEvent<CcBehaviourEvent>, shed: bool) {
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
             info!(%address, "new listen address");
@@ -383,11 +373,7 @@ async fn route_swarm_event(
                 .try_send(ConnEvent::NewListenAddr { address })
                 .is_ok()
             {
-                bump_depth(
-                    &task.metrics,
-                    QueueName::Conn,
-                    task.conn_tx.max_capacity(),
-                );
+                bump_depth(&task.metrics, QueueName::Conn, task.conn_tx.max_capacity());
             }
         }
         SwarmEvent::ConnectionEstablished {
@@ -409,9 +395,10 @@ async fn route_swarm_event(
                 },
             );
             // CC-23b: Status handshake on connect (this side of the bidirectional exchange).
-            let actions = task.handshake.as_mut().map(|hs| {
-                hs.book.on_connect(peer_id, &hs.fork_ctx, &hs.deps)
-            });
+            let actions = task
+                .handshake
+                .as_mut()
+                .map(|hs| hs.book.on_connect(peer_id, &hs.fork_ctx, &hs.deps));
             if let Some(actions) = actions {
                 apply_outbound_actions(task, actions);
             }
@@ -605,16 +592,13 @@ fn handle_reqresp_event(
             RequestResponseMessage::Response { response, .. } => {
                 if let Some(proto) = known_protocol {
                     handle_outbound_response(task, peer, proto, &response.framed);
-                    task.metrics
-                        .inc_reqresp_outbound(proto.as_str(), "ok");
+                    task.metrics.inc_reqresp_outbound(proto.as_str(), "ok");
                 } else {
                     task.metrics.inc_reqresp_outbound("response", "ok");
                 }
             }
         },
-        RequestResponseEvent::OutboundFailure {
-            peer, error, ..
-        } => {
+        RequestResponseEvent::OutboundFailure { peer, error, .. } => {
             let label = known_protocol.map(Protocol::as_str).unwrap_or("unknown");
             debug!(%peer, ?error, protocol = label, "req/resp outbound failure");
             task.metrics.inc_reqresp_outbound(label, "failure");
@@ -691,10 +675,8 @@ fn handle_inbound_request(
             .behaviour_mut()
             .send_reqresp_response(channel, ReqRespResponse::from_framed(framed))
             .is_ok();
-        task.metrics.inc_reqresp_inbound(
-            proto_label,
-            if ok { "ok" } else { "channel_closed" },
-        );
+        task.metrics
+            .inc_reqresp_inbound(proto_label, if ok { "ok" } else { "channel_closed" });
         return;
     }
 
@@ -710,14 +692,8 @@ fn handle_inbound_request(
             .behaviour_mut()
             .send_reqresp_response(channel, ReqRespResponse::from_framed(body))
             .is_ok();
-        task.metrics.inc_reqresp_inbound(
-            proto_label,
-            if ok {
-                label
-            } else {
-                "channel_closed"
-            },
-        );
+        task.metrics
+            .inc_reqresp_inbound(proto_label, if ok { label } else { "channel_closed" });
         return;
     }
 
@@ -733,14 +709,8 @@ fn handle_inbound_request(
             .behaviour_mut()
             .send_reqresp_response(channel, ReqRespResponse::from_framed(body))
             .is_ok();
-        task.metrics.inc_reqresp_inbound(
-            proto_label,
-            if ok {
-                label
-            } else {
-                "channel_closed"
-            },
-        );
+        task.metrics
+            .inc_reqresp_inbound(proto_label, if ok { label } else { "channel_closed" });
         return;
     }
 
@@ -835,10 +805,7 @@ fn handle_block_protocol(
             };
             // Cache miss + storage down → explicit ResourceUnavailable (never empty).
             if label == ServeResultLabel::ResourceUnavailable
-                && task
-                    .storage
-                    .as_ref()
-                    .is_some_and(|s| !s.is_available())
+                && task.storage.as_ref().is_some_and(|s| !s.is_available())
             {
                 return (
                     encode_storage_unavailable(protocol),
@@ -929,10 +896,7 @@ fn handle_column_protocol(
                 _ => ServeResultLabel::Failure,
             };
             if label == ServeResultLabel::ResourceUnavailable
-                && task
-                    .storage
-                    .as_ref()
-                    .is_some_and(|s| !s.is_available())
+                && task.storage.as_ref().is_some_and(|s| !s.is_available())
             {
                 return (
                     encode_storage_unavailable(protocol),
@@ -1060,13 +1024,12 @@ fn handle_inbound_status(task: &mut SwarmTask, peer: PeerId, ssz: &[u8]) -> Vec<
             return encode_status_response(&empty).unwrap_or_default();
         };
         let local_digest = hs.fork_ctx.current_digest();
-        let result =
-            hs.book
-                .on_inbound_status(peer, peer_status, local_digest, &hs.deps);
+        let result = hs
+            .book
+            .on_inbound_status(peer, peer_status, local_digest, &hs.deps);
         let local = hs.deps.local_status(&hs.fork_ctx);
-        let framed = encode_status_response(&local).unwrap_or_else(|_| {
-            encode_resource_unavailable(Protocol::StatusV2)
-        });
+        let framed = encode_status_response(&local)
+            .unwrap_or_else(|_| encode_resource_unavailable(Protocol::StatusV2));
         (framed, result.disconnect)
     };
     if let Some(action) = disconnect {
@@ -1150,8 +1113,7 @@ fn send_reqresp(task: &mut SwarmTask, peer_id: PeerId, protocol: Protocol, ssz: 
     };
     // Dedicated control behaviours negotiate exactly one protocol ID (CC-23b F2).
     let _id = task.swarm.behaviour_mut().send_reqresp(&peer_id, req);
-    task.metrics
-        .inc_reqresp_outbound(protocol.as_str(), "sent");
+    task.metrics.inc_reqresp_outbound(protocol.as_str(), "sent");
 }
 
 fn send_goodbye_wire(
@@ -1171,32 +1133,25 @@ fn send_goodbye_wire(
 }
 
 /// Decode an outbound response using the **negotiated** protocol (SEC H1 — no body sniff).
-fn handle_outbound_response(
-    task: &mut SwarmTask,
-    peer: PeerId,
-    protocol: Protocol,
-    framed: &[u8],
-) {
+fn handle_outbound_response(task: &mut SwarmTask, peer: PeerId, protocol: Protocol, framed: &[u8]) {
     let actions = {
         let Some(hs) = task.handshake.as_mut() else {
             return;
         };
         match protocol {
-            Protocol::MetaDataV3 => {
-                match crate::reqresp::decode_metadata_response_framed(framed) {
-                    Ok(md) => hs.book.on_peer_metadata(peer, md, &hs.deps),
-                    Err(e) => {
-                        debug!(%peer, error = %e, "invalid metadata response");
-                        Vec::new()
-                    }
+            Protocol::MetaDataV3 => match crate::reqresp::decode_metadata_response_framed(framed) {
+                Ok(md) => hs.book.on_peer_metadata(peer, md, &hs.deps),
+                Err(e) => {
+                    debug!(%peer, error = %e, "invalid metadata response");
+                    Vec::new()
                 }
-            }
+            },
             Protocol::StatusV2 => match crate::reqresp::decode_status_response_framed(framed) {
                 Ok(status) => {
                     let local_digest = hs.fork_ctx.current_digest();
-                    let result =
-                        hs.book
-                            .on_inbound_status(peer, status, local_digest, &hs.deps);
+                    let result = hs
+                        .book
+                        .on_inbound_status(peer, status, local_digest, &hs.deps);
                     result.disconnect.into_iter().collect()
                 }
                 Err(e) => {
@@ -1247,8 +1202,7 @@ fn encode_resource_unavailable(protocol: Protocol) -> Vec<u8> {
 fn encode_storage_unavailable(protocol: Protocol) -> Vec<u8> {
     let chunk = ResponseChunk::Error {
         code: ResponseCode::ResourceUnavailable.as_u8(),
-        message: b"storage backend unreachable; ResourceUnavailable (never empty success)"
-            .to_vec(),
+        message: b"storage backend unreachable; ResourceUnavailable (never empty success)".to_vec(),
     };
     encode_error_response(&chunk, protocol)
 }
@@ -1410,9 +1364,7 @@ fn bump_depth(metrics: &P2pMetrics, q: QueueName, max_capacity: usize) {
 ///
 /// Installs the eth2 Altair+ `message_id_fn` (SEC C1 / CC-22b) and the nine
 /// req/resp protocols (CC-23a) via [`crate::reqresp::ethereum_behaviour_config`].
-pub fn build_host_swarm(
-    keypair: cc_libp2p::Keypair,
-) -> Result<Swarm<CcBehaviour>, HostBuildError> {
+pub fn build_host_swarm(keypair: cc_libp2p::Keypair) -> Result<Swarm<CcBehaviour>, HostBuildError> {
     build_host_swarm_with_config(keypair, crate::reqresp::ethereum_behaviour_config())
 }
 

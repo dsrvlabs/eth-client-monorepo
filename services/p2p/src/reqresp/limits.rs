@@ -16,8 +16,8 @@ use cc_libp2p::PeerId;
 
 use crate::metrics::{P2pMetrics, PeerPenaltyReason};
 use crate::peer_manager::score::apply_penalty_with_metrics;
-use crate::reqresp::codec::{ResponseChunk, ResponseCode};
 use crate::reqresp::Protocol;
+use crate::reqresp::codec::{ResponseChunk, ResponseCode};
 
 /// Per-peer inbound block budget (Architecture §7.3).
 pub const INBOUND_BLOCKS_CAPACITY: u64 = 128;
@@ -221,7 +221,12 @@ impl InboundRateLimiter {
     }
 
     /// Try to serve one chunk of `kind` for `peer`. Debits both buckets on allow.
-    pub fn check_chunk(&mut self, peer: PeerId, kind: RateLimitKind, now: Instant) -> RateLimitOutcome {
+    pub fn check_chunk(
+        &mut self,
+        peer: PeerId,
+        kind: RateLimitKind,
+        now: Instant,
+    ) -> RateLimitOutcome {
         // Peer first — report the more specific limit.
         if !self.peer_bucket(peer, kind).try_acquire(1, now) {
             return RateLimitOutcome::PeerLimited;
@@ -606,10 +611,7 @@ mod tests {
             metrics.reqresp_ratelimit_count("peer", "beacon_blocks_by_range"),
             1
         );
-        assert_eq!(
-            metrics.peer_penalty_count(PeerPenaltyReason::RateLimit),
-            1
-        );
+        assert_eq!(metrics.peer_penalty_count(PeerPenaltyReason::RateLimit), 1);
         assert!((score - (-5.0)).abs() < f64::EPSILON);
     }
 

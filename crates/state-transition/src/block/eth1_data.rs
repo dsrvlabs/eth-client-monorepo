@@ -22,11 +22,7 @@ pub fn process_eth1_data<P: Preset>(
         .ok_or(BlockError::ArithmeticOverflow)?;
     let count = state.eth1_data_votes_count(&vote) as u64;
     // Spec: `count * 2 > EPOCHS_PER_ETH1_VOTING_PERIOD * SLOTS_PER_EPOCH`
-    if count
-        .checked_mul(2)
-        .ok_or(BlockError::ArithmeticOverflow)?
-        > threshold
-    {
+    if count.checked_mul(2).ok_or(BlockError::ArithmeticOverflow)? > threshold {
         state.set_eth1_data(vote);
     }
     Ok(())

@@ -206,18 +206,18 @@ pub(crate) fn h3_execution_hash_ok(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
-#[derive(Debug, Default, Clone, Copy)]
-struct AcceptEngine;
+    /// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+    #[derive(Debug, Default, Clone, Copy)]
+    struct AcceptEngine;
 
-impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
-    fn verify_and_notify_new_payload(
-        &self,
-        _request: cc_state_transition::NewPayloadRequest<'_, P>,
-    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
-        Ok(cc_state_transition::PayloadStatus::Valid)
+    impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+        fn verify_and_notify_new_payload(
+            &self,
+            _request: cc_state_transition::NewPayloadRequest<'_, P>,
+        ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+            Ok(cc_state_transition::PayloadStatus::Valid)
+        }
     }
-}
 
     use super::*;
     use crate::proto_array::{ProtoArray, ProtoArrayError, ProtoNodeBlock};
@@ -384,7 +384,7 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
         use crate::da_seam::HarnessAvailability;
         use crate::on_block::get_forkchoice_store;
         use crate::store::Store;
-                use cc_types::preset::Minimal;
+        use cc_types::preset::Minimal;
         use cc_types::{BeaconBlock, BeaconState};
         use std::sync::Arc;
 
@@ -827,7 +827,11 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
         )
         .unwrap();
         let head = pa.find_head(root(1), Epoch::new(0), 8).unwrap();
-        assert_eq!(head, root(3), "sibling re-org across invalidation selects C");
+        assert_eq!(
+            head,
+            root(3),
+            "sibling re-org across invalidation selects C"
+        );
         assert_eq!(
             pa.justified_checkpoint(),
             justified_before,

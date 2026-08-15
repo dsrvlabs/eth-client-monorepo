@@ -6,8 +6,8 @@
 
 use std::io;
 
-use crate::reqresp::codec::{ResponseChunk, SszSnappyFraming};
 use crate::reqresp::Protocol;
+use crate::reqresp::codec::{ResponseChunk, SszSnappyFraming};
 
 /// Fixed SSZ length of a `Ping` body (`uint64`).
 pub const PING_SSZ_LEN: usize = 8;
@@ -40,9 +40,9 @@ impl Ping {
                 format!("Ping SSZ length {} != {PING_SSZ_LEN}", bytes.len()),
             ));
         }
-        let arr: [u8; 8] = bytes.try_into().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "ping seq_number")
-        })?;
+        let arr: [u8; 8] = bytes
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "ping seq_number"))?;
         Ok(Self {
             seq_number: u64::from_le_bytes(arr),
         })

@@ -20,15 +20,16 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use cc_crypto::hash32_concat;
 use cc_crypto::CellKzg;
+use cc_crypto::hash32_concat;
 use cc_types::primitives::{Cell, KzgCommitment, KzgProof, Root};
-use cc_types::{NUMBER_OF_COLUMNS, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH};
+use cc_types::{KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, NUMBER_OF_COLUMNS};
 use tokio::sync::oneshot;
 use tracing::{debug, error};
 
 use crate::gossip::validate::column::{
-    verify_inclusion_proof, InclusionProofCache, InclusionProofKey, BLOB_KZG_COMMITMENTS_FIELD_INDEX,
+    BLOB_KZG_COMMITMENTS_FIELD_INDEX, InclusionProofCache, InclusionProofKey,
+    verify_inclusion_proof,
 };
 use crate::metrics::{P2pMetrics, PeerPenaltyReason};
 
@@ -783,14 +784,11 @@ fn process_cross_sidecar(jobs: Vec<VerifyJob>, state: &PoolState) {
     }
 
     // Step 3: one cross-sidecar batch.
-    let batch_ok = match verify_kzg_cross_batch(
-        state.backend.as_ref(),
-        &survivors,
-        &state.step_counters,
-    ) {
-        Ok(true) => true,
-        Ok(false) | Err(_) => false,
-    };
+    let batch_ok =
+        match verify_kzg_cross_batch(state.backend.as_ref(), &survivors, &state.step_counters) {
+            Ok(true) => true,
+            Ok(false) | Err(_) => false,
+        };
 
     if batch_ok {
         for job in survivors {
@@ -816,9 +814,7 @@ fn process_cross_sidecar(jobs: Vec<VerifyJob>, state: &PoolState) {
             &job.proofs,
             &state.step_counters,
         );
-        state
-            .batch_counters
-            .record(BatchMode::CrossSidecarFallback);
+        state.batch_counters.record(BatchMode::CrossSidecarFallback);
         let outcome = match kzg {
             Ok(()) => VerifyOutcome::Valid,
             Err(reason) => {
@@ -862,7 +858,11 @@ fn observe_latency(state: &PoolState, job: &VerifyJob, start: Instant) {
         return;
     };
     // Sampling wall: from receipt (8th column / job enqueue) to verify done.
-    let sampling = job.received_at.elapsed().as_secs_f64().max(start.elapsed().as_secs_f64());
+    let sampling = job
+        .received_at
+        .elapsed()
+        .as_secs_f64()
+        .max(start.elapsed().as_secs_f64());
     m.observe_sampling(sampling);
     // Separate series: slot delta between block slot and "now".
     let delta = job.current_slot.saturating_sub(job.slot) as f64;
@@ -978,12 +978,7 @@ impl VerifyPool {
         metrics: Option<P2pMetrics>,
         inclusion_cache: Arc<Mutex<InclusionProofCache>>,
     ) -> Self {
-        Self::start_with_workers_and_cache(
-            backend,
-            metrics,
-            pool_worker_count(),
-            inclusion_cache,
-        )
+        Self::start_with_workers_and_cache(backend, metrics, pool_worker_count(), inclusion_cache)
     }
 
     /// Start with explicit workers + shared cache.
@@ -1043,10 +1038,7 @@ impl VerifyPool {
     pub fn submit(&self, job: VerifyJob) {
         self.queue.push(job);
         if let Some(m) = &self.state.metrics {
-            m.set_queue_depth(
-                crate::metrics::QueueName::Kzg,
-                self.queue.len() as i64,
-            );
+            m.set_queue_depth(crate::metrics::QueueName::Kzg, self.queue.len() as i64);
         }
     }
 
@@ -1219,7 +1211,10 @@ mod tests {
     }
 
     impl CellKzg for RecordingKzg {
-        fn blob_to_kzg_commitment(&self, _blob: &Blob) -> Result<KzgCommitment, cc_crypto::KzgError> {
+        fn blob_to_kzg_commitment(
+            &self,
+            _blob: &Blob,
+        ) -> Result<KzgCommitment, cc_crypto::KzgError> {
             Ok(KzgCommitment::default())
         }
         fn compute_cells(&self, _blob: &Blob) -> Result<cc_crypto::Cells, cc_crypto::KzgError> {
@@ -1256,12 +1251,7 @@ mod tests {
 
     fn valid_inclusion(commitments: &[KzgCommitment]) -> ([Root; 4], [u8; 32]) {
         let leaf = list_tree_hash_root(commitments);
-        let branch_bytes = [
-            [1u8; 32],
-            [2u8; 32],
-            [3u8; 32],
-            [4u8; 32],
-        ];
+        let branch_bytes = [[1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32]];
         let body = merkle_root_from_branch(leaf, &branch_bytes, BLOB_KZG_COMMITMENTS_FIELD_INDEX);
         let branch = [
             Root::from_array(branch_bytes[0]),
@@ -1446,9 +1436,7 @@ mod tests {
         // 15 blobs, epoch schedule allows 21 → structure passes (later may fail KZG mock ok).
         let job_ok = job_with(0, [1u8; 32], b"p", 15, 21, true);
         let counters_ok = VerifyStepCounters::new();
-        assert!(
-            verify_sidecar_three_steps(&backend, &job_ok, &mut cache, &counters_ok).is_ok()
-        );
+        assert!(verify_sidecar_three_steps(&backend, &job_ok, &mut cache, &counters_ok).is_ok());
 
         // Same 15 blobs, schedule allows 9 → structure rejects.
         let job_bad = job_with(0, [1u8; 32], b"p", 15, 9, true);
@@ -1470,11 +1458,7 @@ mod tests {
         let commitments = vec![KzgCommitment::default()];
         let (branch, body_root) = valid_inclusion(&commitments);
         let leaf = list_tree_hash_root(&commitments);
-        assert!(verify_inclusion_proof(
-            &leaf,
-            branch.as_ref(),
-            body_root,
-        ));
+        assert!(verify_inclusion_proof(&leaf, branch.as_ref(), body_root,));
 
         // Mutate body_root → fail.
         let mut bad_body = body_root;
@@ -1520,15 +1504,17 @@ mod tests {
         let counters = VerifyStepCounters::new();
         // Claim max = u64::MAX but build 15 rows — still OK (15 < hard cap).
         let job_ok = job_with(0, [1u8; 32], b"p", 15, u64::MAX, true);
-        assert!(verify_structure(
-            job_ok.column_index,
-            &job_ok.commitments,
-            &job_ok.cells,
-            &job_ok.proofs,
-            job_ok.max_blobs_per_block,
-            &counters,
-        )
-        .is_ok());
+        assert!(
+            verify_structure(
+                job_ok.column_index,
+                &job_ok.commitments,
+                &job_ok.cells,
+                &job_ok.proofs,
+                job_ok.max_blobs_per_block,
+                &counters,
+            )
+            .is_ok()
+        );
 
         assert_eq!(effective_max_blobs(u64::MAX), HARD_MAX_BLOB_COMMITMENTS);
         assert_eq!(effective_max_blobs(9), 9);

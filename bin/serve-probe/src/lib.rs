@@ -13,8 +13,8 @@ pub mod sample;
 pub use client::{PeerInfo, ProbeClient, ProbeClientError};
 pub use codec::{
     MAX_ERROR_MESSAGE, MAX_PAYLOAD_SIZE, MAX_RESPONSE_CHUNKS, MAX_RESPONSE_UNCOMPRESSED,
-    ResponseChunk, ResponseCode, SszLimits, decode_response_chunks,
-    decode_response_chunks_bounded, encode_error_chunk, encode_request, encode_success_chunk,
+    ResponseChunk, ResponseCode, SszLimits, decode_response_chunks, decode_response_chunks_bounded,
+    encode_error_chunk, encode_request, encode_success_chunk,
 };
 pub use probe::{ProbeConfig, ProbeError, ProbeOutcome, SideResult, run_probe};
 pub use protocols::{

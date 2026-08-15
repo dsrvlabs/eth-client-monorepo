@@ -90,8 +90,8 @@ async fn cc18_1_reconnect_no_gap_no_duplicate() {
         ring_capacity: 64,
         subscriber_queue_capacity: 64,
         session_id: Some(7),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
 
     let mut sub = h.subscribe(None).await.unwrap();
     publish_n(&h, 0, 10).await;
@@ -135,8 +135,8 @@ async fn cc18_6_monotonic_across_reconnect() {
         ring_capacity: 32,
         subscriber_queue_capacity: 32,
         session_id: Some(3),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
     let mut sub = h.subscribe(None).await.unwrap();
     publish_n(&h, 0, 5).await;
     let batch = recv_n(&mut sub, 5).await;
@@ -167,8 +167,8 @@ async fn cc18_2_cursor_too_old_on_eviction() {
         ring_capacity: ring,
         subscriber_queue_capacity: 16,
         session_id: Some(11),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
 
     let mut sub = h.subscribe(None).await.unwrap();
     publish_n(&h, 0, 1).await;
@@ -210,8 +210,8 @@ async fn cursor_unknown_session_not_too_old() {
         ring_capacity: 4,
         subscriber_queue_capacity: 4,
         session_id: Some(42),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
     publish_n(&h, 0, 2).await;
     tokio::task::yield_now().await;
 
@@ -244,8 +244,8 @@ async fn cc18_3_slow_consumer_resource_exhausted_bounded_occupancy() {
         ring_capacity: ring,
         subscriber_queue_capacity: sub_q,
         session_id: Some(5),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
 
     // Subscribe and never read.
     let mut slow = h.subscribe(None).await.unwrap();
@@ -306,8 +306,8 @@ async fn subscribe_publish_race_no_gap_no_duplicate() {
         ring_capacity: 512,
         subscriber_queue_capacity: 256,
         session_id: Some(99),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
 
     let producer = h.clone();
     let publish_task = tokio::spawn(async move {
@@ -382,8 +382,8 @@ async fn config_overrides_both_bounds() {
         ring_capacity: 3,
         subscriber_queue_capacity: 2,
         session_id: Some(1),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
     assert_eq!(h.ring_capacity(), 3);
     assert_eq!(h.subscriber_queue_capacity(), 2);
 
@@ -424,8 +424,8 @@ async fn replay_delivers_missed_range_exactly_once() {
         ring_capacity: 128,
         subscriber_queue_capacity: 64,
         session_id: Some(2),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
 
     let mut sub = h.subscribe(None).await.unwrap();
     publish_n(&h, 0, 3).await;

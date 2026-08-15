@@ -8,10 +8,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use cc_bootstrap::{
-    AGGREGATE_HEALTH, SignalTrigger, bootstrap_without_tracing,
-};
-use cc_p2p::channels::{ChannelMap, CMD_BOUND, GOSSIP_BOUND, SwarmCommand};
+use cc_bootstrap::{AGGREGATE_HEALTH, SignalTrigger, bootstrap_without_tracing};
+use cc_p2p::channels::{CMD_BOUND, ChannelMap, GOSSIP_BOUND, SwarmCommand};
 use cc_p2p::clock::ClockConfig;
 use cc_p2p::identity::{self, IdentityError, NODE_KEY_MODE};
 use cc_p2p::metrics::{P2pMetrics, QueueName};
@@ -21,14 +19,14 @@ use cc_p2p::service::{
 use cc_p2p::supervisor::{
     SupervisedTask, SupervisorOutcome, TaskPolicy, factory_from_future, run_supervisor,
 };
+use cc_proto::p2p::p2p_service_server::P2pService;
 use cc_proto::p2p::p2p_service_server::P2pServiceServer;
 use cc_proto::p2p::{GetInfoRequest, GetInfoResponse};
-use cc_proto::p2p::p2p_service_server::P2pService;
 use prometheus_client::registry::Registry;
 use tokio::sync::{oneshot, watch};
 use tonic::service::Routes;
-use tonic::{Request, Response, Status};
 use tonic::transport::Endpoint;
+use tonic::{Request, Response, Status};
 use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_check_response::ServingStatus as WireStatus;
 use tonic_health::pb::health_client::HealthClient;
@@ -129,7 +127,10 @@ async fn serve_twice_same_key_stable_peer_and_node_id() {
         assert_eq!(out.peer_id, peer_ids[i]);
     }
 
-    assert_eq!(peer_ids[0], peer_ids[1], "PeerId must be stable across serve()");
+    assert_eq!(
+        peer_ids[0], peer_ids[1],
+        "PeerId must be stable across serve()"
+    );
     assert_eq!(
         node_ids[0].raw(),
         node_ids[1].raw(),
@@ -382,10 +383,7 @@ async fn run_process_swarm_fatal_not_serving_and_returns_error() {
     match &result {
         Err(RuntimeError::SwarmPanic { task, payload }) => {
             assert_eq!(*task, "swarm");
-            assert!(
-                payload.contains("induced swarm panic"),
-                "payload={payload}"
-            );
+            assert!(payload.contains("induced swarm panic"), "payload={payload}");
         }
         other => panic!("expected SwarmPanic from run_process, got {other:?}"),
     }
@@ -442,6 +440,9 @@ fn swarm_type_only_in_host() {
     ] {
         assert!(!src.contains("Swarm<"), "{name} must not name Swarm<");
         assert!(!src.contains("Mutex<Swarm"), "{name} must not Mutex swarm");
-        assert!(!src.contains("RwLock<Swarm"), "{name} must not RwLock swarm");
+        assert!(
+            !src.contains("RwLock<Swarm"),
+            "{name} must not RwLock swarm"
+        );
     }
 }

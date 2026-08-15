@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::Error;
-use crate::lockfile::{Lockfile, ARTIFACTS, LOCKFILE_SRC};
+use crate::lockfile::{ARTIFACTS, LOCKFILE_SRC, Lockfile};
 
 /// Default cache root when `SPEC_VECTORS_CACHE` is unset.
 pub(crate) const DEFAULT_CACHE_DIR_NAME: &str = "eth-consensus-spec-vectors";
@@ -13,15 +13,12 @@ pub fn resolve_cache_root() -> Result<PathBuf, Error> {
     if let Ok(p) = std::env::var("SPEC_VECTORS_CACHE") {
         let p = p.trim();
         if p.is_empty() {
-            return Err(Error::Env(
-                "SPEC_VECTORS_CACHE is set but empty".into(),
-            ));
+            return Err(Error::Env("SPEC_VECTORS_CACHE is set but empty".into()));
         }
         return Ok(PathBuf::from(p));
     }
-    let home = std::env::var("HOME").map_err(|_| {
-        Error::Env("HOME is unset and SPEC_VECTORS_CACHE was not provided".into())
-    })?;
+    let home = std::env::var("HOME")
+        .map_err(|_| Error::Env("HOME is unset and SPEC_VECTORS_CACHE was not provided".into()))?;
     Ok(PathBuf::from(home)
         .join(".cache")
         .join(DEFAULT_CACHE_DIR_NAME))
@@ -91,10 +88,7 @@ mod tests {
 
     #[test]
     fn empty_cache_errors_with_fetch_hint() {
-        let dir = std::env::temp_dir().join(format!(
-            "cc-spec-tests-empty-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("cc-spec-tests-empty-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("mkdir");
         let lock = embedded_lockfile().expect("lock");
@@ -109,10 +103,8 @@ mod tests {
     #[test]
     fn corrupt_marker_names_artifact_and_digests() {
         let lock = embedded_lockfile().expect("lock");
-        let dir = std::env::temp_dir().join(format!(
-            "cc-spec-tests-corrupt-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("cc-spec-tests-corrupt-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let tag_dir = dir.join(&lock.tag);
         fs::create_dir_all(tag_dir.join("tests")).expect("mkdir");
@@ -122,8 +114,11 @@ mod tests {
             } else {
                 lock.digests[i].clone()
             };
-            fs::write(tag_dir.join(format!(".complete-{art}")), format!("{digest}\n"))
-                .expect("write marker");
+            fs::write(
+                tag_dir.join(format!(".complete-{art}")),
+                format!("{digest}\n"),
+            )
+            .expect("write marker");
         }
         let err = verify_and_tests_root(&dir, &lock).expect_err("corrupt");
         let msg = err.to_string();

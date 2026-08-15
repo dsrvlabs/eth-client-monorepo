@@ -1,9 +1,9 @@
 //! Spec `process_attestation` (Electra / EIP-7549).
 
+use cc_types::BeaconState;
 use cc_types::operations::Attestation;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Gwei, ValidatorIndex};
-use cc_types::BeaconState;
 
 use crate::error::{BlockError, OperationError};
 use crate::helpers::accessors::{
@@ -13,7 +13,8 @@ use crate::helpers::accessors::{
     is_valid_indexed_attestation,
 };
 use crate::helpers::constants::{
-    MIN_ATTESTATION_INCLUSION_DELAY, PARTICIPATION_FLAG_WEIGHTS, PROPOSER_WEIGHT, WEIGHT_DENOMINATOR,
+    MIN_ATTESTATION_INCLUSION_DELAY, PARTICIPATION_FLAG_WEIGHTS, PROPOSER_WEIGHT,
+    WEIGHT_DENOMINATOR,
 };
 use crate::helpers::misc::compute_epoch_at_slot;
 use crate::helpers::mutators::increase_balance;
@@ -57,7 +58,12 @@ pub fn process_attestation<P: Preset>(
     if data.target.epoch != compute_epoch_at_slot::<P>(data.slot) {
         return Err(invalid("target epoch does not match attestation slot"));
     }
-    if state.slot().as_u64() < data.slot.as_u64().saturating_add(MIN_ATTESTATION_INCLUSION_DELAY) {
+    if state.slot().as_u64()
+        < data
+            .slot
+            .as_u64()
+            .saturating_add(MIN_ATTESTATION_INCLUSION_DELAY)
+    {
         return Err(invalid("attestation included before min inclusion delay"));
     }
 
@@ -137,11 +143,10 @@ pub fn process_attestation<P: Preset>(
         let mut new_flags = flags;
         let base = get_base_reward(state, index)?;
         for (flag_index, weight) in PARTICIPATION_FLAG_WEIGHTS.iter().enumerate() {
-            if participation_flag_indices.contains(&flag_index) && !has_flag(flags, flag_index)
-            {
+            if participation_flag_indices.contains(&flag_index) && !has_flag(flags, flag_index) {
                 new_flags = add_flag(new_flags, flag_index);
-                proposer_reward_numerator = proposer_reward_numerator
-                    .saturating_add(base.as_u64().saturating_mul(*weight));
+                proposer_reward_numerator =
+                    proposer_reward_numerator.saturating_add(base.as_u64().saturating_mul(*weight));
             }
         }
         if new_flags != flags {
@@ -168,5 +173,3 @@ pub fn get_attesting_indices_for_test<P: Preset>(
 ) -> Result<Vec<ValidatorIndex>, BlockError> {
     get_attesting_indices(state, attestation)
 }
-
-

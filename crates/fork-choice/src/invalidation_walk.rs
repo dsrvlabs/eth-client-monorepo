@@ -215,9 +215,7 @@ pub fn propagate_execution_payload_invalidation(
             };
 
             match status {
-                ExecutionStatus::Valid
-                | ExecutionStatus::Invalid
-                | ExecutionStatus::Optimistic => {
+                ExecutionStatus::Valid | ExecutionStatus::Invalid | ExecutionStatus::Optimistic => {
                     // (3) Junk / pre-finalization: do not walk past the head.
                     if !latest_valid_ancestor_is_descendant && node_root != head_block_root {
                         break 'walk WalkStopReason::JunkOrPrefinalization;
@@ -499,13 +497,9 @@ mod tests {
         let _g = COUNTER_LOCK.lock().unwrap();
         let mut pa = linear_post_merge();
         // LVH = B's exec hash → stop at B without invalidating B.
-        let outcome = propagate_execution_payload_invalidation(
-            &mut pa,
-            root(4),
-            Some(hash(0x22)),
-            true,
-        )
-        .unwrap();
+        let outcome =
+            propagate_execution_payload_invalidation(&mut pa, root(4), Some(hash(0x22)), true)
+                .unwrap();
 
         assert_eq!(outcome.stop_reason, WalkStopReason::LatestValidAncestor);
         assert!(outcome.latest_valid_ancestor_is_descendant);
@@ -691,13 +685,9 @@ mod tests {
             nodes[2].weight = 10;
         }
 
-        let outcome = propagate_execution_payload_invalidation(
-            &mut pa,
-            root(3),
-            Some(Hash256::ZERO),
-            true,
-        )
-        .unwrap();
+        let outcome =
+            propagate_execution_payload_invalidation(&mut pa, root(3), Some(Hash256::ZERO), true)
+                .unwrap();
 
         assert_eq!(
             outcome.stop_reason,
@@ -724,13 +714,9 @@ mod tests {
         let _g = COUNTER_LOCK.lock().unwrap();
         let mut pa = linear_post_merge();
         // Junk hash — no node has exec hash 0xAB.
-        let outcome = propagate_execution_payload_invalidation(
-            &mut pa,
-            root(4),
-            Some(hash(0xAB)),
-            true,
-        )
-        .unwrap();
+        let outcome =
+            propagate_execution_payload_invalidation(&mut pa, root(4), Some(hash(0xAB)), true)
+                .unwrap();
 
         assert_eq!(outcome.stop_reason, WalkStopReason::JunkOrPrefinalization);
         assert!(!outcome.latest_valid_ancestor_is_descendant);
@@ -924,22 +910,8 @@ mod tests {
         insert(&mut pa, 0, 1, None, ExecutionStatus::Valid, hash(1));
         insert(&mut pa, 1, 2, Some(1), ExecutionStatus::Valid, hash(2));
         insert(&mut pa, 1, 3, Some(1), ExecutionStatus::Valid, hash(3));
-        insert(
-            &mut pa,
-            2,
-            4,
-            Some(3),
-            ExecutionStatus::Optimistic,
-            hash(4),
-        );
-        insert(
-            &mut pa,
-            3,
-            5,
-            Some(4),
-            ExecutionStatus::Optimistic,
-            hash(5),
-        );
+        insert(&mut pa, 2, 4, Some(3), ExecutionStatus::Optimistic, hash(4));
+        insert(&mut pa, 3, 5, Some(4), ExecutionStatus::Optimistic, hash(5));
         insert(&mut pa, 1, 6, Some(1), ExecutionStatus::Valid, hash(6));
         {
             let nodes = pa.nodes_mut();
@@ -971,7 +943,7 @@ mod tests {
 
         let outcome = propagate_execution_payload_invalidation(
             &mut pa,
-            root(5), // head = E
+            root(5),       // head = E
             Some(hash(3)), // LVH = C
             true,
         )

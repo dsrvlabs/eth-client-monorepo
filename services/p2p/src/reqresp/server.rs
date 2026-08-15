@@ -15,15 +15,14 @@ use cc_types::{Epoch, Mainnet, Preset};
 use crate::backfill::BackfillCache;
 use crate::fork_digest::ForkContext;
 use crate::metrics::P2pMetrics;
-use crate::reqresp::blocks::{
-    plan_block_response, BlockServeCtx, BlockServeError, PlannedBlocks,
-};
-use crate::reqresp::codec::{ResponseChunk, ResponseCode, SszSnappyFraming};
-use crate::reqresp::columns::{plan_column_response, ColumnServeCtx};
-use crate::reqresp::limits::{
-    ChunkBudgetResult, InboundRateLimiter, RateLimitKind, RateLimitOutcome, RATE_LIMIT_ERROR_MESSAGE,
-};
 use crate::reqresp::Protocol;
+use crate::reqresp::blocks::{BlockServeCtx, BlockServeError, PlannedBlocks, plan_block_response};
+use crate::reqresp::codec::{ResponseChunk, ResponseCode, SszSnappyFraming};
+use crate::reqresp::columns::{ColumnServeCtx, plan_column_response};
+use crate::reqresp::limits::{
+    ChunkBudgetResult, InboundRateLimiter, RATE_LIMIT_ERROR_MESSAGE, RateLimitKind,
+    RateLimitOutcome,
+};
 
 /// Shared block-serve state owned by the swarm task (optional until cache is
 /// attached at runtime).
@@ -170,10 +169,8 @@ fn apply_budget_and_frame_kind(
                 && let Some(m) = metrics
             {
                 InboundRateLimiter::record_violation(
-                    m,
-                    &mut 0.0, // score applied via host PeerPenalty path
-                    *outcome,
-                    protocol,
+                    m, &mut 0.0, // score applied via host PeerPenalty path
+                    *outcome, protocol,
                 );
             }
             // Truncated success still counts as ok for the requester;
@@ -300,9 +297,7 @@ mod tests {
     use super::*;
     use crate::backfill::BackfillCache;
     use crate::fork_digest::ForkContext;
-    use crate::reqresp::blocks::{
-        BlocksByRangeRequest, MAX_REQUEST_BLOCKS_DENEB,
-    };
+    use crate::reqresp::blocks::{BlocksByRangeRequest, MAX_REQUEST_BLOCKS_DENEB};
     use crate::reqresp::codec::SszSnappyFraming;
     use cc_types::primitives::{Root, Slot};
     use cc_types::{ChainConfig, Mainnet, Preset, SignedBeaconBlock};
@@ -310,8 +305,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Instant;
 
-    const HOODI: &str =
-        include_str!("../../../../crates/types/tests/fixtures/hoodi-config.yaml");
+    const HOODI: &str = include_str!("../../../../crates/types/tests/fixtures/hoodi-config.yaml");
 
     fn hoodi() -> ChainConfig {
         ChainConfig::from_yaml_str(HOODI).unwrap()
@@ -386,11 +380,9 @@ mod tests {
             Some(&metrics),
         );
         assert_eq!(framed.label, ServeResultLabel::Ok);
-        let chunks = SszSnappyFraming::decode_response(
-            &framed.framed,
-            Protocol::BeaconBlocksByRangeV2,
-        )
-        .unwrap();
+        let chunks =
+            SszSnappyFraming::decode_response(&framed.framed, Protocol::BeaconBlocksByRangeV2)
+                .unwrap();
         assert_eq!(chunks.len(), 3);
         metrics.inc_reqresp_inbound(
             Protocol::BeaconBlocksByRangeV2.as_str(),
@@ -426,11 +418,9 @@ mod tests {
             None,
         );
         assert_eq!(framed.label, ServeResultLabel::InvalidRequest);
-        let chunks = SszSnappyFraming::decode_response(
-            &framed.framed,
-            Protocol::BeaconBlocksByRangeV2,
-        )
-        .unwrap();
+        let chunks =
+            SszSnappyFraming::decode_response(&framed.framed, Protocol::BeaconBlocksByRangeV2)
+                .unwrap();
         assert_eq!(chunks.len(), 1);
         match &chunks[0] {
             ResponseChunk::Error { code, .. } => {
@@ -474,11 +464,9 @@ mod tests {
         );
         assert_eq!(framed.label, ServeResultLabel::Ok);
         assert!(framed.rate_limited.is_some());
-        let chunks = SszSnappyFraming::decode_response(
-            &framed.framed,
-            Protocol::BeaconBlocksByRangeV2,
-        )
-        .unwrap();
+        let chunks =
+            SszSnappyFraming::decode_response(&framed.framed, Protocol::BeaconBlocksByRangeV2)
+                .unwrap();
         assert_eq!(chunks.len(), 2, "must truncate to remaining tokens");
         // Truncated response still decodes as a complete multi-chunk success stream.
         for c in &chunks {
@@ -518,10 +506,8 @@ mod tests {
 
         // by_root
         let (root, _, _) = cache.block_at_slot(Slot::new(301)).unwrap();
-        let root_ssz = crate::reqresp::blocks::BlocksByRootRequest {
-            roots: vec![root],
-        }
-        .to_ssz_bytes();
+        let root_ssz =
+            crate::reqresp::blocks::BlocksByRootRequest { roots: vec![root] }.to_ssz_bytes();
         let f = serve_block_protocol(
             Protocol::BeaconBlocksByRootV2,
             &root_ssz,
@@ -575,14 +561,8 @@ mod tests {
 
     fn filled_cols(lo: u64, hi: u64) -> BackfillCache<Mainnet> {
         use cc_types::sidecar::DataColumnSidecar;
-        let mut cache = BackfillCache::with_bounds(
-            Slot::new(0),
-            0u64..8,
-            0u64..4,
-            1 << 30,
-            2048,
-            2048 * 8,
-        );
+        let mut cache =
+            BackfillCache::with_bounds(Slot::new(0), 0u64..8, 0u64..4, 1 << 30, 2048, 2048 * 8);
         let mut parent = Root::ZERO;
         for s in lo..=hi {
             let block = block_at(s, parent);
@@ -680,11 +660,9 @@ mod tests {
             None,
         );
         assert_eq!(framed.label, ServeResultLabel::Ok);
-        let chunks = SszSnappyFraming::decode_response(
-            &framed.framed,
-            Protocol::DataColumnSidecarsByRootV1,
-        )
-        .unwrap();
+        let chunks =
+            SszSnappyFraming::decode_response(&framed.framed, Protocol::DataColumnSidecarsByRootV1)
+                .unwrap();
         assert_eq!(chunks.len(), 2);
     }
 }

@@ -63,12 +63,10 @@ pub fn decompress_block(compressed: &[u8], path_for_err: &Path) -> Result<Vec<u8
 /// [`MAX_DECOMPRESSED_BYTES`] via [`Read::take`].
 #[cfg(test)]
 pub(crate) fn try_decompress_frame(compressed: &[u8]) -> Result<Vec<u8>, String> {
-    let mut decoder = snap::read::FrameDecoder::new(compressed)
-        .take(MAX_DECOMPRESSED_BYTES as u64 + 1);
+    let mut decoder =
+        snap::read::FrameDecoder::new(compressed).take(MAX_DECOMPRESSED_BYTES as u64 + 1);
     let mut out = Vec::new();
-    decoder
-        .read_to_end(&mut out)
-        .map_err(|e| e.to_string())?;
+    decoder.read_to_end(&mut out).map_err(|e| e.to_string())?;
     if out.len() > MAX_DECOMPRESSED_BYTES {
         return Err(format!(
             "frame stream exceeded hard max {MAX_DECOMPRESSED_BYTES}"
@@ -146,7 +144,10 @@ mod tests {
             msg.contains("exceeds hard max") || msg.contains(&MAX_DECOMPRESSED_BYTES.to_string()),
             "expected size-cap error, got {msg}"
         );
-        assert!(msg.contains(&claimed.to_string()) || msg.contains("hard max"), "{msg}");
+        assert!(
+            msg.contains(&claimed.to_string()) || msg.contains("hard max"),
+            "{msg}"
+        );
     }
 
     #[test]

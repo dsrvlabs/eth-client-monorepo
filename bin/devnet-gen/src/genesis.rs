@@ -4,12 +4,12 @@ use anyhow::{Context, Result};
 use cc_state_transition::{
     get_beacon_proposer_indices, get_next_sync_committee, rebuild_epoch_cache,
 };
+use cc_types::BeaconState;
 use cc_types::config::ChainConfig;
 use cc_types::containers::{BeaconBlockHeader, Eth1Data, Validator};
 use cc_types::fork::Fork;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, Gwei, Root, Slot, ValidatorIndex};
-use cc_types::BeaconState;
 use ssz::Encode;
 use tree_hash::TreeHash;
 
@@ -144,8 +144,7 @@ pub fn build_genesis<P: Preset>(
         body_root,
     });
 
-    rebuild_epoch_cache(&mut state)
-        .map_err(|e| anyhow::anyhow!("rebuild_epoch_cache: {e:?}"))?;
+    rebuild_epoch_cache(&mut state).map_err(|e| anyhow::anyhow!("rebuild_epoch_cache: {e:?}"))?;
     state.commit();
 
     let _ = config; // timing/fork already applied

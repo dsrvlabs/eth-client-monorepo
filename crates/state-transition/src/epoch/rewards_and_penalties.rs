@@ -5,15 +5,15 @@
 
 use std::collections::HashSet;
 
+use cc_types::BeaconState;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Gwei, ValidatorIndex};
-use cc_types::BeaconState;
 
-use crate::error::EpochError;
+use super::block_to_epoch;
 use crate::epoch_cache::{
     base_reward_per_increment_cached, rebuild_epoch_cache, total_active_balance_cached,
 };
-use super::block_to_epoch;
+use crate::error::EpochError;
 use crate::helpers::accessors::{
     get_base_reward, get_current_epoch, get_eligible_validator_indices, get_previous_epoch,
     get_total_balance, get_unslashed_participating_indices, is_in_inactivity_leak,
@@ -121,14 +121,11 @@ pub fn get_inactivity_penalty_deltas<P: Preset>(
     let mut penalties = vec![Gwei::new(0); n];
 
     let previous_epoch = get_previous_epoch(state);
-    let matching_target: HashSet<ValidatorIndex> = get_unslashed_participating_indices(
-        state,
-        TIMELY_TARGET_FLAG_INDEX,
-        previous_epoch,
-    )
-    .map_err(block_to_epoch)?
-    .into_iter()
-    .collect();
+    let matching_target: HashSet<ValidatorIndex> =
+        get_unslashed_participating_indices(state, TIMELY_TARGET_FLAG_INDEX, previous_epoch)
+            .map_err(block_to_epoch)?
+            .into_iter()
+            .collect();
 
     let penalty_denominator = INACTIVITY_SCORE_BIAS
         .checked_mul(INACTIVITY_PENALTY_QUOTIENT_BELLATRIX)
@@ -177,7 +174,8 @@ pub fn process_rewards_and_penalties<P: Preset>(
     // Fill epoch cache once for total_active_balance / base_reward_per_increment.
     rebuild_epoch_cache(state).map_err(block_to_epoch)?;
 
-    let mut all_deltas: Vec<RewardPenalties> = Vec::with_capacity(PARTICIPATION_FLAG_WEIGHTS.len() + 1);
+    let mut all_deltas: Vec<RewardPenalties> =
+        Vec::with_capacity(PARTICIPATION_FLAG_WEIGHTS.len() + 1);
     for flag_index in 0..PARTICIPATION_FLAG_WEIGHTS.len() {
         all_deltas.push(get_flag_index_deltas(state, flag_index)?);
     }

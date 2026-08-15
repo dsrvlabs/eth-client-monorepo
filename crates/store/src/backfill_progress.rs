@@ -23,7 +23,7 @@ use cc_types::Slot;
 
 use crate::engine::{Batch, Engine, ReadTxn, StoreError};
 use crate::meta::{BackfillProgress, KEY_BACKFILL_PROG, TABLE_META};
-use crate::split::{epoch_start_slot, SLOTS_PER_EPOCH};
+use crate::split::{SLOTS_PER_EPOCH, epoch_start_slot};
 
 /// Spec `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` (≈ 18 days).
 pub const COLUMN_BACKFILL_EPOCHS: u64 = 4_096;
@@ -46,9 +46,8 @@ pub fn load_backfill_progress(engine: &Engine) -> Result<Option<BackfillProgress
 pub fn load_backfill_progress_txn(rt: &ReadTxn) -> Result<Option<BackfillProgress>, StoreError> {
     match rt.get(TABLE_META, KEY_BACKFILL_PROG.as_bytes())? {
         Some(bytes) => {
-            let p = BackfillProgress::from_ssz_bytes(&bytes).map_err(|e| {
-                StoreError::Codec(format!("BackfillProgress SSZ decode: {e:?}"))
-            })?;
+            let p = BackfillProgress::from_ssz_bytes(&bytes)
+                .map_err(|e| StoreError::Codec(format!("BackfillProgress SSZ decode: {e:?}")))?;
             Ok(Some(p))
         }
         None => Ok(None),
@@ -69,10 +68,7 @@ pub fn put_backfill_progress(batch: &mut Batch, progress: &BackfillProgress) {
 /// Build a 128-entry `per_index_oldest` list, defaulting missing entries to
 /// `default_slot` (typically the current frontier / head).
 #[must_use]
-pub fn ensure_per_index_len(
-    list: &[Slot],
-    default_slot: Slot,
-) -> VariableList<Slot, U128> {
+pub fn ensure_per_index_len(list: &[Slot], default_slot: Slot) -> VariableList<Slot, U128> {
     let mut v: Vec<Slot> = list.to_vec();
     if v.len() > COLUMN_INDEX_COUNT {
         v.truncate(COLUMN_INDEX_COUNT);
@@ -106,11 +102,7 @@ pub fn oldest_custodied_column_slot(
             any = true;
         }
     }
-    if any {
-        min
-    } else {
-        progress.columns_oldest
-    }
+    if any { min } else { progress.columns_oldest }
 }
 
 /// Advance one index's oldest slot **only if non-increasing** (descending frontier).
@@ -204,20 +196,14 @@ pub fn column_backfill_target_slot(current_epoch: u64) -> Slot {
 ///
 /// `oldest_custodied_column_slot ≤ start_slot(current_epoch − 4 096)`.
 #[must_use]
-pub fn column_backfill_complete(
-    oldest_custodied: Slot,
-    current_epoch: u64,
-) -> bool {
+pub fn column_backfill_complete(oldest_custodied: Slot, current_epoch: u64) -> bool {
     let target = column_backfill_target_slot(current_epoch);
     oldest_custodied.as_u64() <= target.as_u64()
 }
 
 /// Whether the serve window is above its column target (fifth-trigger half).
 #[must_use]
-pub fn serve_window_above_column_target(
-    earliest_available_slot: Slot,
-    current_epoch: u64,
-) -> bool {
+pub fn serve_window_above_column_target(earliest_available_slot: Slot, current_epoch: u64) -> bool {
     earliest_available_slot.as_u64() > column_backfill_target_slot(current_epoch).as_u64()
 }
 
@@ -237,11 +223,7 @@ pub fn block_backfill_target_slot(current_epoch: u64, min_epochs: u64) -> Slot {
 /// `oldest_contiguous_block_slot ≤ start_slot(current_epoch − min_epochs)`,
 /// where `min_epochs` is the CC-4A computed floor.
 #[must_use]
-pub fn block_backfill_complete(
-    oldest_block: Slot,
-    current_epoch: u64,
-    min_epochs: u64,
-) -> bool {
+pub fn block_backfill_complete(oldest_block: Slot, current_epoch: u64, min_epochs: u64) -> bool {
     let target = block_backfill_target_slot(current_epoch, min_epochs);
     oldest_block.as_u64() <= target.as_u64()
 }
@@ -277,10 +259,7 @@ pub fn resume_column_frontier(
 /// Companion to [`resume_column_frontier`]. The parent root is available via
 /// [`BackfillProgress::blocks_oldest_parent`] when progress is present.
 #[must_use]
-pub fn resume_block_frontier(
-    progress: Option<&BackfillProgress>,
-    fallback: Slot,
-) -> Slot {
+pub fn resume_block_frontier(progress: Option<&BackfillProgress>, fallback: Slot) -> Slot {
     match progress {
         Some(p) => p.blocks_oldest,
         None => fallback,
@@ -411,11 +390,17 @@ mod tests {
         assert_eq!(target.as_u64(), 904 * SLOTS_PER_EPOCH);
 
         // Above target → incomplete.
-        assert!(!column_backfill_complete(Slot::new(target.as_u64() + 1), current));
+        assert!(!column_backfill_complete(
+            Slot::new(target.as_u64() + 1),
+            current
+        ));
         // At target → complete.
         assert!(column_backfill_complete(target, current));
         // Below target → complete.
-        assert!(column_backfill_complete(Slot::new(target.as_u64().saturating_sub(1)), current));
+        assert!(column_backfill_complete(
+            Slot::new(target.as_u64().saturating_sub(1)),
+            current
+        ));
     }
 
     #[test]
@@ -543,10 +528,7 @@ mod tests {
         let min_epochs = 256u64 + 65_536 / 2;
         let current = 50_000u64;
         let target = block_backfill_target_slot(current, min_epochs);
-        assert_eq!(
-            target,
-            epoch_start_slot(current.saturating_sub(min_epochs))
-        );
+        assert_eq!(target, epoch_start_slot(current.saturating_sub(min_epochs)));
         // Above target → incomplete.
         assert!(!block_backfill_complete(
             Slot::new(target.as_u64() + 1),
@@ -575,10 +557,7 @@ mod tests {
             resume_block_parent(Some(&p), Root::default()),
             Root::from_array([0x42; 32])
         );
-        assert_eq!(
-            resume_block_frontier(None, Slot::new(99)),
-            Slot::new(99)
-        );
+        assert_eq!(resume_block_frontier(None, Slot::new(99)), Slot::new(99));
         // Kill mid-batch: durable stays; in-flight lost ≤ 64 slots.
         let in_flight = Slot::new(420 - BACKFILL_BATCH_SLOT_LIMIT);
         assert!(resume_within_one_batch(in_flight, Slot::new(420)));
@@ -594,6 +573,8 @@ mod tests {
             current,
             min_epochs
         ));
-        assert!(!serve_window_above_block_target(target, current, min_epochs));
+        assert!(!serve_window_above_block_target(
+            target, current, min_epochs
+        ));
     }
 }

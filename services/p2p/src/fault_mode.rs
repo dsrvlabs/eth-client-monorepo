@@ -32,9 +32,9 @@ use cc_libp2p::reexport::request_response::{
 };
 use cc_libp2p::reexport::{Multiaddr, PeerId, SwarmEvent};
 use cc_libp2p::{
-    build_swarm, CcBehaviour, CcBehaviourEvent, ReqRespRequest, ReqRespResponse, SwarmConfig,
+    CcBehaviour, CcBehaviourEvent, ReqRespRequest, ReqRespResponse, SwarmConfig, build_swarm,
 };
-use cc_types::{compute_columns_for_custody_group, ChainConfig, Epoch, Root};
+use cc_types::{ChainConfig, Epoch, Root, compute_columns_for_custody_group};
 use discv5::Enr;
 use discv5::enr::{CombinedKey, NodeId};
 use sha2::{Digest, Sha256};
@@ -106,10 +106,7 @@ pub fn is_withheld_released() -> bool {
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match guard.as_ref() {
-        Some(a) => a
-            .flag_path
-            .as_ref()
-            .is_some_and(|p| p.exists()),
+        Some(a) => a.flag_path.as_ref().is_some_and(|p| p.exists()),
         None => false,
     }
 }
@@ -139,10 +136,7 @@ pub fn active_allows_by_root_serve(column_index: u64) -> bool {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match guard.as_ref() {
         Some(a) => {
-            let released = a
-                .flag_path
-                .as_ref()
-                .is_some_and(|p| p.exists());
+            let released = a.flag_path.as_ref().is_some_and(|p| p.exists());
             a.mode.allows_by_root_serve(column_index, released)
         }
         None => true,
@@ -447,8 +441,8 @@ pub fn transform_column_payload(payload: &[u8], kind: MisbehaveKind, variant: u3
 /// Decode as `DataColumnSidecar`, flip one byte in the first KZG proof, re-encode.
 /// Falls back to a trailing XOR if decode fails (still yields a non-honest payload).
 fn mutate_kzg_proof(payload: &[u8]) -> Vec<u8> {
-    use cc_types::sidecar::DataColumnSidecar;
     use cc_types::Mainnet;
+    use cc_types::sidecar::DataColumnSidecar;
 
     if let Ok(mut sc) = DataColumnSidecar::<Mainnet>::from_ssz_bytes(payload) {
         if let Some(proof) = sc.kzg_proofs.first_mut() {
@@ -468,7 +462,9 @@ fn make_malformed(payload: &[u8]) -> Vec<u8> {
         return vec![0xDE, 0xAD];
     }
     // Keep a non-empty prefix so gossip still carries bytes, but drop the tail.
-    let keep = (payload.len() / 2).max(1).min(payload.len().saturating_sub(1));
+    let keep = (payload.len() / 2)
+        .max(1)
+        .min(payload.len().saturating_sub(1));
     let mut out = payload[..keep].to_vec();
     // Force an obviously broken length-ish prefix when long enough.
     if out.len() >= 4 {
@@ -549,8 +545,8 @@ pub fn sampled_columns_for_role(role: &str, cgc: u64) -> Result<BTreeSet<u64>> {
 /// asserts the loaded store actually holds at least one column sidecar.
 pub fn assert_nonzero_commitments(manifest_path: &Path, store: &FixtureStore) -> Result<()> {
     if manifest_path.is_file() {
-        let text =
-            fs::read_to_string(manifest_path).with_context(|| format!("read {}", manifest_path.display()))?;
+        let text = fs::read_to_string(manifest_path)
+            .with_context(|| format!("read {}", manifest_path.display()))?;
         let v: serde_json::Value = serde_json::from_str(&text).context("manifest json")?;
         if let Some(arr) = v.get("blobs_per_block").and_then(|x| x.as_array()) {
             let any = arr.iter().any(|x| x.as_u64().unwrap_or(0) > 0);
@@ -919,10 +915,9 @@ pub async fn run_devnet(
     if matches!(cfg.fault_mode, FaultMode::WithholdColumn { .. }) {
         let store_preview = FixtureStore::load(&cfg.fixture_chain)?;
         assert_nonzero_commitments(&cfg.manifest_json, &store_preview)?;
-        let sampled = cfg.fault_mode.ensure_withheld_in_sampled(
-            &cfg.withhold_target_role,
-            cfg.withhold_target_cgc,
-        )?;
+        let sampled = cfg
+            .fault_mode
+            .ensure_withheld_in_sampled(&cfg.withhold_target_role, cfg.withhold_target_cgc)?;
         info!(
             withheld = ?cfg.fault_mode.withheld_columns(),
             target = %cfg.withhold_target_role,
@@ -1223,13 +1218,11 @@ fn handle_publisher_reqresp(
     store: Option<&FixtureStore>,
     metrics: &P2pMetrics,
 ) {
-    use crate::reqresp::codec::{
-        ResponseChunk, ResponseCode, SszSnappyFraming, CONTEXT_BYTES_LEN,
-    };
-    use crate::reqresp::columns::{
-        decide_by_root_column_serve, ByRootServeDecision, ColumnsByRootRequest,
-    };
     use crate::reqresp::Protocol;
+    use crate::reqresp::codec::{CONTEXT_BYTES_LEN, ResponseChunk, ResponseCode, SszSnappyFraming};
+    use crate::reqresp::columns::{
+        ByRootServeDecision, ColumnsByRootRequest, decide_by_root_column_serve,
+    };
 
     let RequestResponseEvent::Message { peer, message, .. } = ev else {
         return;
@@ -1255,7 +1248,10 @@ fn handle_publisher_reqresp(
     // Only publisher answers column by-root with the fault seam; other protocols
     // get a resource-unavailable so the peer can distinguish "asked" from hang.
     if protocol != Protocol::DataColumnSidecarsByRootV1 {
-        let framed = encode_simple_error(ResponseCode::ResourceUnavailable, b"not served by publisher");
+        let framed = encode_simple_error(
+            ResponseCode::ResourceUnavailable,
+            b"not served by publisher",
+        );
         let _ = swarm
             .behaviour_mut()
             .send_reqresp_response(channel, ReqRespResponse::from_framed(framed));
@@ -1343,8 +1339,8 @@ fn handle_publisher_reqresp(
 }
 
 fn encode_simple_error(code: crate::reqresp::codec::ResponseCode, msg: &[u8]) -> Vec<u8> {
-    use crate::reqresp::codec::{ResponseChunk, SszSnappyFraming};
     use crate::reqresp::Protocol;
+    use crate::reqresp::codec::{ResponseChunk, SszSnappyFraming};
     let chunk = ResponseChunk::Error {
         code: code.as_u8(),
         message: msg.to_vec(),
@@ -1657,7 +1653,10 @@ mod tests {
                 .by_root_fault_policy(),
             ByRootFaultPolicy::Honest
         );
-        assert_eq!(FaultMode::None.by_root_fault_policy(), ByRootFaultPolicy::Honest);
+        assert_eq!(
+            FaultMode::None.by_root_fault_policy(),
+            ByRootFaultPolicy::Honest
+        );
     }
 
     #[test]
@@ -1714,9 +1713,7 @@ mod tests {
     fn withhold_inside_sampled_accepts() {
         let sampled = sampled_columns_for_role("node-a", CUSTODY_REQUIREMENT).unwrap();
         let idx = *sampled.iter().next().unwrap();
-        let m = FaultMode::WithholdColumn {
-            columns: vec![idx],
-        };
+        let m = FaultMode::WithholdColumn { columns: vec![idx] };
         let got = m
             .ensure_withheld_in_sampled("node-a", CUSTODY_REQUIREMENT)
             .unwrap();
@@ -1754,7 +1751,12 @@ mod tests {
         fs::write(slot_dir.join("block.ssz"), b"B").unwrap();
         fs::write(slot_dir.join("column_000.ssz"), b"C0").unwrap();
         let mut meta = fs::File::create(slot_dir.join("meta.json")).unwrap();
-        write!(meta, r#"{{"slot":1,"block_root":"0x{}"}}"#, hex::encode([1u8; 32])).unwrap();
+        write!(
+            meta,
+            r#"{{"slot":1,"block_root":"0x{}"}}"#,
+            hex::encode([1u8; 32])
+        )
+        .unwrap();
         let store = FixtureStore::load(&root).unwrap();
         let manifest = root.join("manifest.json");
         fs::write(

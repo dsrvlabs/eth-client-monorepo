@@ -25,9 +25,9 @@
 //! nothing else changes.
 
 use cc_store::keys::{
-    block_shard_id, block_shard_start_slot, blocks_shard_table, column_shard_id,
-    column_shard_start_slot, columns_shard_table, BLOCK_SHARD_EPOCHS, COLUMN_SHARD_EPOCHS,
-    SLOTS_PER_EPOCH,
+    BLOCK_SHARD_EPOCHS, COLUMN_SHARD_EPOCHS, SLOTS_PER_EPOCH, block_shard_id,
+    block_shard_start_slot, blocks_shard_table, column_shard_id, column_shard_start_slot,
+    columns_shard_table,
 };
 use cc_store::{Engine, Slot, StoreError};
 use tracing::{info, warn};
@@ -245,7 +245,7 @@ mod tests {
     use super::*;
     use crate::metrics::StorageMetrics;
     use cc_store::engine::{Durability, EngineOptions};
-    use cc_store::keys::{encode_cold_column_key, columns_shard_table};
+    use cc_store::keys::{columns_shard_table, encode_cold_column_key};
     use prometheus_client::registry::Registry;
 
     fn metrics() -> StorageMetrics {

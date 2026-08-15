@@ -8,9 +8,7 @@
 use std::sync::Arc;
 use std::thread;
 
-use cc_chain::{
-    FcuDriver, RecordingFcuSink, build_forkchoice_state, safe_is_ancestor_of_head,
-};
+use cc_chain::{FcuDriver, RecordingFcuSink, build_forkchoice_state, safe_is_ancestor_of_head};
 use cc_fork_choice::{ExecutionStatus, ProtoArray, ProtoNodeBlock};
 use cc_types::containers::Checkpoint;
 use cc_types::primitives::{Epoch, Hash256, Root, Slot};

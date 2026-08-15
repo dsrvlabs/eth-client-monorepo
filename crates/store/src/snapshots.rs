@@ -154,8 +154,10 @@ pub fn plan_snapshot_put(
             // Pathological: only the new slot remains but count still > ring — break.
             break;
         }
-        plan.deletes
-            .push((TABLE_SNAPSHOTS.to_owned(), encode_snapshot_key(oldest).to_vec()));
+        plan.deletes.push((
+            TABLE_SNAPSHOTS.to_owned(),
+            encode_snapshot_key(oldest).to_vec(),
+        ));
         plan.evicted.push(oldest);
     }
     plan.depth_after = slots.len() as u64;
@@ -270,10 +272,7 @@ mod tests {
         assert_eq!(slots.len(), 4);
         assert_eq!(slots[0].as_u64(), 32 * 32); // first evicted
         assert!(get_snapshot(&rt, Slot::new(0)).unwrap().is_none());
-        assert_eq!(
-            get_snapshot(&rt, slots[3]).unwrap().unwrap(),
-            payloads[4]
-        );
+        assert_eq!(get_snapshot(&rt, slots[3]).unwrap().unwrap(), payloads[4]);
     }
 
     #[test]

@@ -305,7 +305,7 @@ pub fn import_block_with_early<P: Preset>(
             early_accept: false,
             late_import_reject: false,
             late_import_internal: false,
-        block_branch: None,
+            block_branch: None,
         });
     }
 
@@ -342,7 +342,7 @@ pub fn import_block_with_early<P: Preset>(
             early_accept: false,
             late_import_reject: false,
             late_import_internal: false,
-        block_branch: None,
+            block_branch: None,
         });
     }
 
@@ -366,7 +366,7 @@ pub fn import_block_with_early<P: Preset>(
             early_accept,
             late_import_reject,
             late_import_internal,
-        block_branch: None,
+            block_branch: None,
         });
     }
 
@@ -454,7 +454,7 @@ pub fn import_block_with_early<P: Preset>(
                 early_accept,
                 late_import_reject: false,
                 late_import_internal: false,
-            block_branch: None,
+                block_branch: None,
             })
         }
         Ok(BlockImport::Deferred(DeferralReason::FutureSlot)) => {
@@ -469,7 +469,7 @@ pub fn import_block_with_early<P: Preset>(
                 // Future slot is Ignore-class for gossip; not a late Reject penalty.
                 late_import_reject: false,
                 late_import_internal: false,
-            block_branch: None,
+                block_branch: None,
             })
         }
         Ok(BlockImport::Deferred(DeferralReason::ExecutionEngineUnavailable)) => {
@@ -504,7 +504,7 @@ pub fn import_block_with_early<P: Preset>(
                 early_accept,
                 late_import_reject: false,
                 late_import_internal: false,
-            block_branch: None,
+                block_branch: None,
             })
         }
         Err(e) => {
@@ -520,7 +520,7 @@ pub fn import_block_with_early<P: Preset>(
                 early_accept,
                 late_import_reject,
                 late_import_internal,
-            block_branch: None,
+                block_branch: None,
             })
         }
     }
@@ -832,7 +832,7 @@ fn finish_imported<P: Preset>(
         early_accept,
         late_import_reject: false,
         late_import_internal: false,
-    block_branch: None,
+        block_branch: None,
     })
 }
 
@@ -1107,7 +1107,10 @@ mod tests {
         assert_eq!(head.load().head_root, root);
         let ev = rx.recv().await.expect("block_imported");
         assert_eq!(ev.kind, cc_proto::chain::EventKind::BlockImported);
-        assert_eq!(ev.payload.first().copied(), Some(BLOCK_PAYLOAD_VERDICT_IMPORTED));
+        assert_eq!(
+            ev.payload.first().copied(),
+            Some(BLOCK_PAYLOAD_VERDICT_IMPORTED)
+        );
         let ev = rx.recv().await.expect("head");
         assert_eq!(ev.kind, cc_proto::chain::EventKind::Head);
         assert_eq!(ev.payload.len(), 8);
@@ -1183,7 +1186,10 @@ mod tests {
         assert!(!input.payload_within_cap());
         try_publish_event(&tx, &metrics, input);
         assert_eq!(metrics.event_payload_rejected_count(), 1);
-        assert!(rx.try_recv().is_err(), "oversize must not enter the channel");
+        assert!(
+            rx.try_recv().is_err(),
+            "oversize must not enter the channel"
+        );
     }
 
     /// F2: block_imported_payload preserves arrival bytes after the discriminator.

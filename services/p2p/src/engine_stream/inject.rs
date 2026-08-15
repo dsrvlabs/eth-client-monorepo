@@ -32,7 +32,7 @@ use cc_proto::p2p::InjectColumns;
 use cc_types::preset::Mainnet;
 use cc_types::primitives::Root;
 use cc_types::sidecar::DataColumnSidecar;
-use cc_types::{compute_subnet_for_data_column_sidecar, NUMBER_OF_COLUMNS};
+use cc_types::{NUMBER_OF_COLUMNS, compute_subnet_for_data_column_sidecar};
 use ssz::Decode;
 use tracing::{debug, warn};
 use tree_hash::TreeHash;
@@ -41,7 +41,7 @@ use crate::channels::PublishRequest;
 use crate::das::SamplingHandle;
 use crate::gossip::seen::{ColumnSeenKey, SeenSets};
 use crate::gossip::validate::{
-    production_kzg_verify, verify_inclusion_proof, AlwaysValidKzg, FailClosedKzg, KzgVerify,
+    AlwaysValidKzg, FailClosedKzg, KzgVerify, production_kzg_verify, verify_inclusion_proof,
 };
 use crate::metrics::{ColumnSource, P2pMetrics};
 
@@ -249,23 +249,11 @@ impl InjectCounters {
 pub trait SamplingSink: Send + Sync {
     /// Same signature family as gossip's [`crate::gossip::validate::SamplingFeed`],
     /// with an explicit [`ColumnSource`] (engine path uses [`ColumnSource::Engine`]).
-    fn on_column(
-        &self,
-        root: [u8; 32],
-        slot: u64,
-        column_index: u64,
-        source: ColumnSource,
-    );
+    fn on_column(&self, root: [u8; 32], slot: u64, column_index: u64, source: ColumnSource);
 }
 
 impl SamplingSink for SamplingHandle {
-    fn on_column(
-        &self,
-        root: [u8; 32],
-        slot: u64,
-        column_index: u64,
-        source: ColumnSource,
-    ) {
+    fn on_column(&self, root: [u8; 32], slot: u64, column_index: u64, source: ColumnSource) {
         self.lock().on_column(root, slot, column_index, source);
     }
 }
@@ -291,13 +279,7 @@ pub struct MockSamplingSink {
 }
 
 impl SamplingSink for MockSamplingSink {
-    fn on_column(
-        &self,
-        root: [u8; 32],
-        slot: u64,
-        column_index: u64,
-        source: ColumnSource,
-    ) {
+    fn on_column(&self, root: [u8; 32], slot: u64, column_index: u64, source: ColumnSource) {
         self.calls
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -348,10 +330,7 @@ impl ChannelPublisher {
 
 impl ColumnPublisher for ChannelPublisher {
     fn publish_column(&self, _column_index: u64, ssz: Vec<u8>, topic: String) {
-        let req = PublishRequest {
-            topic,
-            data: ssz,
-        };
+        let req = PublishRequest { topic, data: ssz };
         // Drop-oldest semantics live on the swarm side; here we best-effort try.
         if self.tx.try_send(req).is_err() {
             warn!("engine inject publish queue full/closed; column publish dropped");
@@ -557,9 +536,7 @@ impl InjectPipeline {
         let trusted_local = msg.trusted_local;
         let skip_kzg = match self.kzg_policy {
             KzgPolicy::AlwaysVerify => false,
-            KzgPolicy::SkipWhenAuthenticatedTrusted => {
-                should_skip_kzg(trusted_local, self.auth)
-            }
+            KzgPolicy::SkipWhenAuthenticatedTrusted => should_skip_kzg(trusted_local, self.auth),
         };
 
         let sub = self.subscription.current();
@@ -604,10 +581,7 @@ impl InjectPipeline {
 
         // Structural lengths (gossip step 6 subset).
         let n = sidecar.kzg_commitments.len();
-        if n == 0
-            || sidecar.column.len() != n
-            || sidecar.kzg_proofs.len() != n
-        {
+        if n == 0 || sidecar.column.len() != n || sidecar.kzg_proofs.len() != n {
             self.counters.bump_injected(InjectOutcome::Rejected);
             return InjectSidecarResult {
                 column_index: Some(column_index),
@@ -769,11 +743,11 @@ fn root_from_bytes(b: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::field_reassign_with_default)]
 pub fn minimal_sidecar_ssz(index: u64, slot: u64, proposer: u64) -> Vec<u8> {
+    use cc_types::BeaconBlockHeader;
     use cc_types::containers::SignedBeaconBlockHeader;
     use cc_types::primitives::{
         BlsSignature, Cell, KzgCommitment, KzgProof, Root, Slot, ValidatorIndex,
     };
-    use cc_types::BeaconBlockHeader;
     use ssz::Encode;
     use ssz_types::{FixedVector, VariableList};
 
@@ -948,10 +922,7 @@ mod tests {
         };
         assert_eq!(pipeline.inject(&msg)[0].outcome, InjectOutcome::New);
         // Subsequent inject of the same column → duplicate (seen set).
-        assert_eq!(
-            pipeline.inject(&msg)[0].outcome,
-            InjectOutcome::Duplicate
-        );
+        assert_eq!(pipeline.inject(&msg)[0].outcome, InjectOutcome::Duplicate);
         assert_eq!(counters.injected(InjectOutcome::Duplicate), 1);
         // Tracker only saw one Engine receipt (duplicate did not re-insert).
         assert_eq!(metrics.columns_received(ColumnSource::Engine), 1);
@@ -974,10 +945,7 @@ mod tests {
         let msg = InjectColumns {
             beacon_block_root: root(4).to_vec(),
             slot: 40,
-            sidecar_ssz: vec![
-                minimal_sidecar_ssz(0, 40, 1),
-                minimal_sidecar_ssz(5, 40, 1),
-            ],
+            sidecar_ssz: vec![minimal_sidecar_ssz(0, 40, 1), minimal_sidecar_ssz(5, 40, 1)],
             trusted_local: true,
         };
         let results = pipeline.inject(&msg);
@@ -1040,8 +1008,7 @@ mod tests {
     #[test]
     fn tracker_completion_is_btreeset_equality() {
         // Re-assert CC-24c: 7-of-8 with one duplicate does NOT complete.
-        let (pipeline, mut rx, _m, _p, _c) =
-            pipeline_with_real_tracker(required_eight(), 0..8, 4);
+        let (pipeline, mut rx, _m, _p, _c) = pipeline_with_real_tracker(required_eight(), 0..8, 4);
         let mut sidecar_ssz = Vec::new();
         for col in 0..7u64 {
             sidecar_ssz.push(minimal_sidecar_ssz(col, 60, 1));
@@ -1232,12 +1199,12 @@ mod tests {
         // CC-38 /7: re-run CC-24d's timeout-ordering check unchanged.
         // Single-variable because ADR P3-05 put engine requeue in a separate
         // map (pending_engine 64/8) vs pending_da (64/4).
-        use crate::das::{
-            default_ladder_under_chain_timeout, recovery_ladder_worst_case_secs,
-            CHAIN_PENDING_DA_TIMEOUT_SLOTS, RECOVERY_MAX_ATTEMPTS, RECOVERY_MAX_PEERS,
-            RECOVERY_RESP_SECS, RECOVERY_TTFB_SECS,
-        };
         use crate::das::recovery::DEFAULT_SECONDS_PER_SLOT;
+        use crate::das::{
+            CHAIN_PENDING_DA_TIMEOUT_SLOTS, RECOVERY_MAX_ATTEMPTS, RECOVERY_MAX_PEERS,
+            RECOVERY_RESP_SECS, RECOVERY_TTFB_SECS, default_ladder_under_chain_timeout,
+            recovery_ladder_worst_case_secs,
+        };
         assert!(
             default_ladder_under_chain_timeout(),
             "4×12s must exceed 3×(5+10)s — pending_da timeout still outlasts recovery"

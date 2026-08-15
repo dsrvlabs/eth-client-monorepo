@@ -84,10 +84,7 @@ fn fixture_header_records_spec_release_and_read_date() {
 #[test]
 fn committed_message_id_fixture_passes() {
     let f = load_fixture();
-    assert!(
-        f.cases.len() >= 2,
-        "fixture must carry multiple triples"
-    );
+    assert!(f.cases.len() >= 2, "fixture must carry multiple triples");
 
     let mut saw_invalid = false;
     for case in &f.cases {

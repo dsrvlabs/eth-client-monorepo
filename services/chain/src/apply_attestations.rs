@@ -166,10 +166,12 @@ fn recompute_and_publish_head<P: Preset>(
 
     // HEAD / REORG with §4.2 payloads. Core thread uses blocking_send (F1 /
     // Phase 1 §7.3) so storage-facing events are not silently dropped.
-    if let Err(tokio::sync::mpsc::error::SendError(lost)) = event_tx.blocking_send(EventInput::head(
-        head_slot.as_u64(),
-        Bytes::copy_from_slice(head_root.as_slice()),
-    )) {
+    if let Err(tokio::sync::mpsc::error::SendError(lost)) =
+        event_tx.blocking_send(EventInput::head(
+            head_slot.as_u64(),
+            Bytes::copy_from_slice(head_root.as_slice()),
+        ))
+    {
         metrics.inc_event_publish_dropped();
         tracing::error!(
             kind = ?lost.kind,
@@ -200,18 +202,18 @@ fn recompute_and_publish_head<P: Preset>(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
-#[derive(Debug, Default, Clone, Copy)]
-struct AcceptEngine;
+    /// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+    #[derive(Debug, Default, Clone, Copy)]
+    struct AcceptEngine;
 
-impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
-    fn verify_and_notify_new_payload(
-        &self,
-        _request: cc_state_transition::NewPayloadRequest<'_, P>,
-    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
-        Ok(cc_state_transition::PayloadStatus::Valid)
+    impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+        fn verify_and_notify_new_payload(
+            &self,
+            _request: cc_state_transition::NewPayloadRequest<'_, P>,
+        ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+            Ok(cc_state_transition::PayloadStatus::Valid)
+        }
     }
-}
 
     use super::*;
     use std::sync::Arc;

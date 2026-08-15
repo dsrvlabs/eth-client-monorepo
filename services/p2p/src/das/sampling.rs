@@ -91,10 +91,7 @@ impl SamplingTask {
     /// Missing columns still required for completion.
     #[must_use]
     pub fn missing(&self) -> BTreeSet<ColumnIndex> {
-        self.required
-            .difference(&self.verified)
-            .copied()
-            .collect()
+        self.required.difference(&self.verified).copied().collect()
     }
 }
 
@@ -406,11 +403,7 @@ impl SamplingTracker {
     ///
     /// Records `cc_p2p_da_outcome_total{result="abandoned"}` once and emits
     /// the structured abandon log (root, slot, missing, peers tried).
-    pub fn mark_abandoned(
-        &mut self,
-        root: &[u8; 32],
-        peers_tried: &[String],
-    ) {
+    pub fn mark_abandoned(&mut self, root: &[u8; 32], peers_tried: &[String]) {
         self.maybe_record_deferred(root);
         let (slot, missing) = {
             let Some(task) = self.tasks.get_mut(root) else {
@@ -567,19 +560,14 @@ impl SamplingTracker {
                 return;
             }
             // Incomplete with a known non-empty required set → deferred once.
-            if task.header_seen
-                && !task.required.is_empty()
-                && task.verified != task.required
-            {
+            if task.header_seen && !task.required.is_empty() && task.verified != task.required {
                 task.deferred_recorded = true;
                 true
             } else {
                 false
             }
         };
-        if record
-            && let Some(m) = &self.metrics
-        {
+        if record && let Some(m) = &self.metrics {
             m.inc_da_outcome(DaOutcome::Deferred);
         }
     }
@@ -753,10 +741,7 @@ mod tests {
             t.on_column(r, 5, col, ColumnSource::Gossip);
         }
         let task = t.get(&r).unwrap();
-        assert!(
-            task.verified.is_empty(),
-            "out-of-set columns ignored"
-        );
+        assert!(task.verified.is_empty(), "out-of-set columns ignored");
         assert!(!task.is_complete());
     }
 
@@ -794,10 +779,7 @@ mod tests {
         let r = root(5);
         t1.on_column(r, 7, 1, ColumnSource::Gossip);
         t2.on_block(r, 7, 2);
-        assert_eq!(
-            t1.get(&r).unwrap().required,
-            t2.get(&r).unwrap().required
-        );
+        assert_eq!(t1.get(&r).unwrap().required, t2.get(&r).unwrap().required);
     }
 
     #[test]
@@ -836,7 +818,11 @@ mod tests {
         let task = t.get(&r).unwrap();
         assert!(!task.zero_blob, "partial samples ⇒ not rebranded zero-blob");
         assert_eq!(task.verified, before, "verified must be preserved (H1)");
-        assert_eq!(task.required, required_eight(), "required must stay sampled set");
+        assert_eq!(
+            task.required,
+            required_eight(),
+            "required must stay sampled set"
+        );
         assert!(!task.is_complete());
         assert!(rx.try_recv().is_err(), "no false zero-blob DataAvailable");
         assert_eq!(metrics.da_outcome(DaOutcome::Imported), 0);
@@ -990,12 +976,8 @@ mod tests {
         let mut registry = Registry::default();
         let metrics = P2pMetrics::register(&mut registry);
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut t = SamplingTracker::new(
-            required_eight(),
-            Arc::new(clock),
-            Some(metrics),
-            Some(tx),
-        );
+        let mut t =
+            SamplingTracker::new(required_eight(), Arc::new(clock), Some(metrics), Some(tx));
         let r = root(10);
         // Create with a past slot so end_of_slot is ≤ now → deadline ≈ Instant::now().
         t.on_block(r, 0, 1);

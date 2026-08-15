@@ -14,9 +14,7 @@ pub const FETCH_HINT: &str = "run scripts/fetch-spec-vectors.sh";
 #[derive(Debug)]
 pub enum Error {
     /// Cache missing, incomplete, or digests do not match the lockfile.
-    CacheNotReady {
-        detail: String,
-    },
+    CacheNotReady { detail: String },
     /// A `.complete-<artifact>` marker is wrong.
     MarkerMismatch {
         artifact: String,
@@ -24,49 +22,28 @@ pub enum Error {
         found: String,
     },
     /// Marker file is absent.
-    MarkerMissing {
-        artifact: String,
-        path: PathBuf,
-    },
+    MarkerMissing { artifact: String, path: PathBuf },
     /// `tests/` tree missing under the tag directory.
-    TestsTreeMissing {
-        path: PathBuf,
-    },
+    TestsTreeMissing { path: PathBuf },
     /// Failed to read the environment (`HOME` / `SPEC_VECTORS_CACHE`).
     Env(String),
     /// Filesystem I/O.
-    Io {
-        path: PathBuf,
-        source: io::Error,
-    },
+    Io { path: PathBuf, source: io::Error },
     /// Snappy block decompression failed.
-    Snappy {
-        path: PathBuf,
-        detail: String,
-    },
+    Snappy { path: PathBuf, detail: String },
     /// YAML parse failure.
-    Yaml {
-        path: PathBuf,
-        detail: String,
-    },
+    Yaml { path: PathBuf, detail: String },
     /// SSZ decode failure (after snappy decompress).
-    Ssz {
-        path: PathBuf,
-        detail: String,
-    },
+    Ssz { path: PathBuf, detail: String },
     /// Path component rejected (traversal / absolute).
-    InvalidPath {
-        detail: String,
-    },
+    InvalidPath { detail: String },
     /// Handler coverage mismatch (missing and/or extra names).
     Coverage {
         missing: Vec<String>,
         extra: Vec<String>,
     },
     /// Skip-list parse or validation failure.
-    Skiplist {
-        detail: String,
-    },
+    Skiplist { detail: String },
     /// Lockfile embedded at compile time could not be parsed.
     Lockfile(String),
 }
@@ -102,11 +79,9 @@ impl fmt::Display for Error {
                 "missing readiness marker for {artifact} at {}; {FETCH_HINT}",
                 path.display()
             ),
-            Self::TestsTreeMissing { path } => write!(
-                f,
-                "tests tree missing at {}; {FETCH_HINT}",
-                path.display()
-            ),
+            Self::TestsTreeMissing { path } => {
+                write!(f, "tests tree missing at {}; {FETCH_HINT}", path.display())
+            }
             Self::Env(msg) => write!(f, "environment: {msg}; {FETCH_HINT}"),
             Self::Io { path, source } => write!(f, "I/O error at {}: {source}", path.display()),
             Self::Snappy { path, detail } => {

@@ -7,9 +7,7 @@
 use cc_types::ForkDigest;
 use discv5::Enr;
 
-use super::enr::{
-    attnets_has, enr_custody_groups, read_eth2, syncnets_has,
-};
+use super::enr::{attnets_has, enr_custody_groups, read_eth2, syncnets_has};
 
 /// Extract the advertised fork digest from an ENR's `eth2` field, if present.
 #[must_use]
@@ -32,12 +30,8 @@ pub fn digest_matches(enr: &Enr, current: ForkDigest) -> bool {
 /// `{current, next}` during Overlap — built by
 /// [`crate::fork_digest::discovery_allowed_digests`] / CC-2A).
 #[must_use]
-pub fn generic_peer_predicate(
-    allowed: Vec<ForkDigest>,
-) -> Box<dyn Fn(&Enr) -> bool + Send> {
-    Box::new(move |enr: &Enr| {
-        enr_fork_digest(enr).is_some_and(|d| allowed.contains(&d))
-    })
+pub fn generic_peer_predicate(allowed: Vec<ForkDigest>) -> Box<dyn Fn(&Enr) -> bool + Send> {
+    Box::new(move |enr: &Enr| enr_fork_digest(enr).is_some_and(|d| allowed.contains(&d)))
 }
 
 /// Attestation subnet *s*: digest match and `enr.attnets()[s]`.
@@ -68,10 +62,7 @@ pub fn sync_subnet_predicate(
 /// `get_custody_groups(node_id, cgc.unwrap_or(CUSTODY_REQUIREMENT))` — no
 /// handshake required (Architecture §6.4).
 #[must_use]
-pub fn column_predicate(
-    allowed: Vec<ForkDigest>,
-    column: u64,
-) -> Box<dyn Fn(&Enr) -> bool + Send> {
+pub fn column_predicate(allowed: Vec<ForkDigest>, column: u64) -> Box<dyn Fn(&Enr) -> bool + Send> {
     Box::new(move |enr: &Enr| {
         if !enr_fork_digest(enr).is_some_and(|d| allowed.contains(&d)) {
             return false;
@@ -87,8 +78,8 @@ mod tests {
     use super::*;
     use crate::discovery::enr::{
         ENR_KEY_ATTNETS, ENR_KEY_CGC, ENR_KEY_ETH2, ENR_KEY_SYNCNETS, EnrFieldChange, EnrManager,
-        EnrSeqStrategy, encode_attnets, encode_cgc, encode_eth2, encode_syncnets, enr_custody_groups,
-        node_id_as_u256,
+        EnrSeqStrategy, encode_attnets, encode_cgc, encode_eth2, encode_syncnets,
+        enr_custody_groups, node_id_as_u256,
     };
     use crate::fork_digest::EnrForkId;
     use cc_types::{
@@ -178,7 +169,8 @@ mod tests {
         assert!(!pred_miss(&full));
 
         // Sanity: defaulted groups match get_custody_groups(node_id, CUSTODY_REQUIREMENT).
-        let expected = get_custody_groups(node_id_as_u256(defaulted.node_id()), CUSTODY_REQUIREMENT);
+        let expected =
+            get_custody_groups(node_id_as_u256(defaulted.node_id()), CUSTODY_REQUIREMENT);
         assert_eq!(enr_custody_groups(&defaulted), expected);
 
         // Keep CombinedKey import honest (identity coupling).

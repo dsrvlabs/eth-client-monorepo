@@ -2,10 +2,10 @@
 //!
 //! **Invalid requests are no-ops** — early `Ok(())` without state mutation.
 
+use cc_types::BeaconState;
 use cc_types::operations::{ConsolidationRequest, PendingConsolidation};
 use cc_types::preset::Preset;
 use cc_types::primitives::Epoch;
-use cc_types::BeaconState;
 
 use crate::error::BlockError;
 use crate::helpers::accessors::{
@@ -13,7 +13,7 @@ use crate::helpers::accessors::{
     get_validator_index_by_pubkey,
 };
 use crate::helpers::constants::{
-    network, FAR_FUTURE_EPOCH, MIN_ACTIVATION_BALANCE, MIN_VALIDATOR_WITHDRAWABILITY_DELAY,
+    FAR_FUTURE_EPOCH, MIN_ACTIVATION_BALANCE, MIN_VALIDATOR_WITHDRAWABILITY_DELAY, network,
 };
 use crate::helpers::misc::execution_address_from_credentials;
 use crate::helpers::mutators::{
@@ -112,9 +112,9 @@ pub fn process_consolidation_request<P: Preset>(
     };
 
     let has_correct_credential = has_execution_withdrawal_credential(&source_validator);
-    let is_correct_source_address = execution_address_from_credentials(
-        &source_validator.withdrawal_credentials,
-    ) == consolidation_request.source_address;
+    let is_correct_source_address =
+        execution_address_from_credentials(&source_validator.withdrawal_credentials)
+            == consolidation_request.source_address;
     if !(has_correct_credential && is_correct_source_address) {
         return Ok(());
     }
@@ -148,10 +148,8 @@ pub fn process_consolidation_request<P: Preset>(
     }
 
     // Initiate source validator exit via consolidation churn and append pending.
-    let exit_epoch = compute_consolidation_epoch_and_update_churn(
-        state,
-        source_validator.effective_balance,
-    )?;
+    let exit_epoch =
+        compute_consolidation_epoch_and_update_churn(state, source_validator.effective_balance)?;
     let withdrawable_epoch = Epoch::new(
         exit_epoch
             .as_u64()

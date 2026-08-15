@@ -274,9 +274,7 @@ Append-only within named sections.
 
     #[test]
     fn stale_entry_fails_validation() {
-        let text = format!(
-            "{HEADER}\n- `mainnet/fulu/no/such/case` -- deferred -- CC-12c\n"
-        );
+        let text = format!("{HEADER}\n- `mainnet/fulu/no/such/case` -- deferred -- CC-12c\n");
         let list = SkipList::parse(&text).expect("parse");
         let cases: BTreeSet<String> = ["mainnet/fulu/operations/attestation/pyspec_tests/a"]
             .into_iter()
@@ -290,9 +288,7 @@ Append-only within named sections.
 
     #[test]
     fn prefix_match_is_not_stale() {
-        let text = format!(
-            "{HEADER}\n- `mainnet/fulu/operations/attestation` -- wip -- CC-12c\n"
-        );
+        let text = format!("{HEADER}\n- `mainnet/fulu/operations/attestation` -- wip -- CC-12c\n");
         let list = SkipList::parse(&text).expect("parse");
         let cases: BTreeSet<String> =
             ["mainnet/fulu/operations/attestation/pyspec_tests/one_basic"]

@@ -23,11 +23,9 @@ use cc_types::{ForkDigest, NUMBER_OF_CUSTODY_GROUPS};
 use thiserror::Error;
 
 use crate::das::CustodyManager;
-use crate::discovery::enr::{
-    encode_cgc, EnrApplyError, EnrFieldChange, EnrManager, ENR_KEY_CGC,
-};
+use crate::discovery::enr::{ENR_KEY_CGC, EnrApplyError, EnrFieldChange, EnrManager, encode_cgc};
 use crate::gossip::{
-    column_topic_weight, GossipsubControl, RegistryError, TopicParams, TopicRegistry,
+    GossipsubControl, RegistryError, TopicParams, TopicRegistry, column_topic_weight,
 };
 use crate::reqresp::LocalMetaData;
 
@@ -267,16 +265,16 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use crate::discovery::enr::{read_cgc, EnrSeqStrategy};
+    use crate::discovery::enr::{EnrSeqStrategy, read_cgc};
     use crate::fork_digest::ForkContext;
     use crate::gossip::{
-        format_topic_string, GossipCall, RecordingGossipsub, SubnetCounts, TopicName, TopicRegistry,
+        GossipCall, RecordingGossipsub, SubnetCounts, TopicName, TopicRegistry, format_topic_string,
     };
     use crate::reqresp::LocalMetaData;
     use cc_types::{
-        get_custody_groups, sampling_size as types_sampling_size, BlobParameters, BlobSchedule,
-        ChainConfig, Epoch, ForkVersion, PresetName, Root, CUSTODY_REQUIREMENT,
-        DATA_COLUMN_SIDECAR_SUBNET_COUNT, NUMBER_OF_CUSTODY_GROUPS, SAMPLES_PER_SLOT,
+        BlobParameters, BlobSchedule, CUSTODY_REQUIREMENT, ChainConfig,
+        DATA_COLUMN_SIDECAR_SUBNET_COUNT, Epoch, ForkVersion, NUMBER_OF_CUSTODY_GROUPS, PresetName,
+        Root, SAMPLES_PER_SLOT, get_custody_groups, sampling_size as types_sampling_size,
     };
     use discv5::enr::NodeId;
     use std::collections::HashSet;
@@ -428,11 +426,9 @@ mod tests {
         );
         // Sampled re-derived via get_custody_groups(node, 8) — same size as
         // before (also sampling_size 8); membership is the helper's set.
-        let expected_sampled =
-            get_custody_groups(crate::discovery::enr::node_id_as_u256(node), 8);
+        let expected_sampled = get_custody_groups(crate::discovery::enr::node_id_as_u256(node), 8);
         assert_eq!(fx.custody.sampled().as_set(), &expected_sampled);
-        let expected_custody =
-            get_custody_groups(crate::discovery::enr::node_id_as_u256(node), 8);
+        let expected_custody = get_custody_groups(crate::discovery::enr::node_id_as_u256(node), 8);
         assert_eq!(fx.custody.custodied().as_set(), &expected_custody);
         // Document whether sampled membership moved (node-dependent).
         let _ = before_sampled;
@@ -534,7 +530,10 @@ mod tests {
 
         assert_eq!(fx.custody.cgc(), NUMBER_OF_CUSTODY_GROUPS);
         assert_eq!(fx.custody.sampling_size(), NUMBER_OF_CUSTODY_GROUPS);
-        assert_eq!(fx.custody.custodied().len() as u64, NUMBER_OF_CUSTODY_GROUPS);
+        assert_eq!(
+            fx.custody.custodied().len() as u64,
+            NUMBER_OF_CUSTODY_GROUPS
+        );
         assert_eq!(fx.custody.sampled().len() as u64, NUMBER_OF_CUSTODY_GROUPS);
         assert_ne!(fx.custody.custodied().as_set(), &before_custody);
         assert_ne!(fx.custody.sampled().as_set(), &before_sampled);
@@ -564,9 +563,15 @@ mod tests {
         assert!(out.effects.contains(&CgcEffectKind::ColumnSubscribe));
         assert!(out.order_is_valid(), "{:?}", out.effects);
 
-        assert_eq!(read_cgc(&fx.enr.local_enr()), Some(NUMBER_OF_CUSTODY_GROUPS));
+        assert_eq!(
+            read_cgc(&fx.enr.local_enr()),
+            Some(NUMBER_OF_CUSTODY_GROUPS)
+        );
         assert_eq!(out.enr_seq_after, enr_seq0 + 1);
-        assert_eq!(fx.metadata.load().custody_group_count, NUMBER_OF_CUSTODY_GROUPS);
+        assert_eq!(
+            fx.metadata.load().custody_group_count,
+            NUMBER_OF_CUSTODY_GROUPS
+        );
     }
 
     /// Shrink 8 → 4: sampling_size floors at 8; sampled/custodied diverge.

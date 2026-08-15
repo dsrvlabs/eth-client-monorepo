@@ -22,17 +22,12 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use cc_types::config::{
-    BlobParameters, BlobSchedule, BlobScheduleError, ChainConfig, ConfigError,
-};
+use cc_types::config::{BlobParameters, BlobSchedule, BlobScheduleError, ChainConfig, ConfigError};
 use cc_types::preset::Mainnet;
 use cc_types::primitives::Epoch;
 
 fn fixture(name: &str) -> String {
-    format!(
-        "{}/tests/fixtures/{name}",
-        env!("CARGO_MANIFEST_DIR")
-    )
+    format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
 }
 
 fn entry(epoch: u64, max: u64) -> BlobParameters {
@@ -136,8 +131,7 @@ fn assert_boundary_table(cfg: &ChainConfig, rows: &[(u64, u64, u64)], label: &st
 #[test]
 fn boundary_plus_minus_one_both_networks_both_sources() {
     // File source
-    let hoodi_file =
-        ChainConfig::from_yaml_file(fixture("hoodi-config.yaml")).expect("hoodi file");
+    let hoodi_file = ChainConfig::from_yaml_file(fixture("hoodi-config.yaml")).expect("hoodi file");
     let mainnet_file =
         ChainConfig::from_yaml_file(fixture("mainnet-config.yaml")).expect("mainnet file");
     assert_boundary_table(&hoodi_file, &hoodi_boundary_rows(), "hoodi/file");
@@ -155,7 +149,11 @@ fn boundary_plus_minus_one_both_networks_both_sources() {
     assert_eq!(hoodi_api.blob_schedule, hoodi_file.blob_schedule);
     assert_eq!(mainnet_api.blob_schedule, mainnet_file.blob_schedule);
     assert_boundary_table(&hoodi_api, &hoodi_boundary_rows(), "hoodi/api-normalised");
-    assert_boundary_table(&mainnet_api, &mainnet_boundary_rows(), "mainnet/api-normalised");
+    assert_boundary_table(
+        &mainnet_api,
+        &mainnet_boundary_rows(),
+        "mainnet/api-normalised",
+    );
 }
 
 // ── CC-1G/3: pre-first fallback + reject malformed / non-monotonic ──────────
@@ -168,7 +166,7 @@ fn pre_first_entry_falls_back_to_electra_base() {
         before,
         BlobParameters {
             epoch: Epoch::new(2_048), // ELECTRA_FORK_EPOCH
-            max_blobs_per_block: 9, // Electra-era base (preset fallback)
+            max_blobs_per_block: 9,   // Electra-era base (preset fallback)
         }
     );
 
@@ -227,7 +225,10 @@ BLOB_SCHEDULE:
 "#;
     let err = ChainConfig::from_yaml_str(bad_yaml).unwrap_err();
     assert!(
-        matches!(err, ConfigError::BlobSchedule(BlobScheduleError::Unsorted { .. })),
+        matches!(
+            err,
+            ConfigError::BlobSchedule(BlobScheduleError::Unsorted { .. })
+        ),
         "file source must reject non-monotonic at config load: {err:?}"
     );
 

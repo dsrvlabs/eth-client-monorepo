@@ -1,7 +1,7 @@
 //! Spec `process_eth1_data_reset`.
 
-use cc_types::preset::Preset;
 use cc_types::BeaconState;
+use cc_types::preset::Preset;
 
 use crate::error::EpochError;
 use crate::helpers::accessors::get_current_epoch;

@@ -9,23 +9,17 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cc_proto::p2p::{
-    EngineToP2p, P2pToEngine, engine_to_p2p, p2p_to_engine,
-};
+use cc_proto::p2p::{EngineToP2p, P2pToEngine, engine_to_p2p, p2p_to_engine};
 use discv5::enr::NodeId;
 use futures::Stream;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, info, warn};
 
-use super::inject::{
-    ColumnPublisher, InjectPipeline, NoopPublisher, SamplingSink,
-};
-use super::subscription::{
-    subscription_to_wire, LocalSubscription, SubscriptionHandle,
-};
+use super::inject::{ColumnPublisher, InjectPipeline, NoopPublisher, SamplingSink};
+use super::subscription::{LocalSubscription, SubscriptionHandle, subscription_to_wire};
 use crate::das::{CustodyManager, FixedDeadline, SamplingHandle, SamplingTracker};
 use crate::gossip::seen::SeenSets;
 use crate::metrics::P2pMetrics;
@@ -122,7 +116,8 @@ pub struct EngineStreamService {
 
 impl std::fmt::Debug for EngineStreamService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EngineStreamService").finish_non_exhaustive()
+        f.debug_struct("EngineStreamService")
+            .finish_non_exhaustive()
     }
 }
 
@@ -159,9 +154,7 @@ impl EngineStreamService {
         });
 
         let stream = ReceiverStream::new(out_rx);
-        Ok(Response::new(
-            Box::pin(stream) as BoxStreamP2pToEngine
-        ))
+        Ok(Response::new(Box::pin(stream) as BoxStreamP2pToEngine))
     }
 }
 
@@ -237,10 +230,7 @@ async fn handle_inbound(
 ) -> Result<(), SessionError> {
     match msg.msg {
         Some(engine_to_p2p::Msg::Hello(hello)) => {
-            info!(
-                session_id = hello.session_id,
-                "engine stream: EngineHello"
-            );
+            info!(session_id = hello.session_id, "engine stream: EngineHello");
             *hello_seen = true;
             // Reset is a no-op for the shared seen set (global anti-equivocation);
             // session_id is logged for correlation with engine reconnects.
@@ -326,8 +316,8 @@ impl std::error::Error for SessionError {}
 mod tests {
     use super::*;
     use crate::engine_stream::inject::{
-        minimal_sidecar_ssz, ColumnPublisher, InjectPipeline, MockSamplingSink, RecordingPublisher,
-        SamplingSink,
+        ColumnPublisher, InjectPipeline, MockSamplingSink, RecordingPublisher, SamplingSink,
+        minimal_sidecar_ssz,
     };
     use crate::engine_stream::subscription::{LocalSubscription, SubscriptionHandle};
     use crate::gossip::seen::SeenSets;
@@ -400,7 +390,11 @@ mod tests {
         let second = out_rx.recv().await.unwrap().unwrap();
         match second.msg {
             Some(p2p_to_engine::Msg::Subscriptions(s)) => {
-                assert_eq!(s.column_indices.len(), 16, "column_indices.len() matches subscribed");
+                assert_eq!(
+                    s.column_indices.len(),
+                    16,
+                    "column_indices.len() matches subscribed"
+                );
                 assert_eq!(s.cgc, 8, "cgc matches the hook's value");
             }
             other => panic!("expected SubscriptionSet on cgc change, got {other:?}"),

@@ -14,10 +14,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use cc_crypto::kzg::setup::{TrustedSetupBytes, NUM_G1_POINTS, NUM_G2_POINTS};
-use cc_crypto::{Blob, CellKzg, KzgError, BYTES_PER_BLOB};
+use cc_crypto::kzg::setup::{NUM_G1_POINTS, NUM_G2_POINTS, TrustedSetupBytes};
+use cc_crypto::{BYTES_PER_BLOB, Blob, CellKzg, KzgError};
 use cc_types::{
-    Cell, KzgCommitment, KzgProof, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL, NUMBER_OF_COLUMNS,
+    CELLS_PER_EXT_BLOB, Cell, FIELD_ELEMENTS_PER_CELL, KzgCommitment, KzgProof, NUMBER_OF_COLUMNS,
 };
 
 /// Known-blob commitment (CC-11/5). Both backends must produce this identical
@@ -30,8 +30,7 @@ fn known_blob() -> Blob {
 }
 
 /// Commitment for [`known_blob`] under the committed mainnet setup.
-const KNOWN_BLOB_COMMITMENT_HEX: &str =
-    "aa1a1c26055a329817a5759d877a2795f9499b97d6056edde0eea39512f24e8bc874b4471f0501127abb1ea0d9f68ac1";
+const KNOWN_BLOB_COMMITMENT_HEX: &str = "aa1a1c26055a329817a5759d877a2795f9499b97d6056edde0eea39512f24e8bc874b4471f0501127abb1ea0d9f68ac1";
 
 fn parse_commitment_hex(hex: &str) -> KzgCommitment {
     let mut out = [0u8; 48];

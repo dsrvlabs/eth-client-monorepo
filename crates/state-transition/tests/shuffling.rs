@@ -17,9 +17,7 @@ use cc_state_transition::{
 };
 use cc_types::containers::Validator;
 use cc_types::preset::{Mainnet, Minimal, Preset};
-use cc_types::primitives::{
-    BlsPublicKey, CommitteeIndex, Epoch, Gwei, Root, Slot, ValidatorIndex,
-};
+use cc_types::primitives::{BlsPublicKey, CommitteeIndex, Epoch, Gwei, Root, Slot, ValidatorIndex};
 use cc_types::{
     BeaconState, SHUFFLING_CACHE_DEFAULT_CAPACITY, ShuffledCommitteeEpoch, ShufflingCache,
     ShufflingCacheKey,
@@ -218,7 +216,10 @@ fn state_with_validators<P: Preset>(n: usize, slot: Slot) -> BeaconState<P> {
         state.randao_mixes_set(i, Root::from_array(mix)).unwrap();
     }
     // Fill block roots so decision_root_for_epoch works for epoch >= 1.
-    for i in 0..state.block_roots_len().min(P::SLOTS_PER_HISTORICAL_ROOT as usize) {
+    for i in 0..state
+        .block_roots_len()
+        .min(P::SLOTS_PER_HISTORICAL_ROOT as usize)
+    {
         let mut r = [0u8; 32];
         r[0] = 0xde;
         r[1] = 0xad;
@@ -248,7 +249,10 @@ fn shuffling_cache_compute_once_for_same_key() {
     let _ = state.caches().committees.take_compute_count();
     let c1 = get_beacon_committee(&state, slot, CommitteeIndex::new(0)).unwrap();
     let after_first = state.caches().committees.compute_count();
-    assert_eq!(after_first, 1, "first committee lookup fills the cache once");
+    assert_eq!(
+        after_first, 1,
+        "first committee lookup fills the cache once"
+    );
 
     let c2 = get_beacon_committee(&state, slot, CommitteeIndex::new(0)).unwrap();
     assert_eq!(c1, c2);
@@ -259,8 +263,8 @@ fn shuffling_cache_compute_once_for_same_key() {
     );
 
     // Another committee index in the same epoch reuses the same shuffling.
-    let _ = get_beacon_committee(&state, Slot::new(slot.as_u64() + 1), CommitteeIndex::new(0))
-        .unwrap();
+    let _ =
+        get_beacon_committee(&state, Slot::new(slot.as_u64() + 1), CommitteeIndex::new(0)).unwrap();
     assert_eq!(
         state.caches().committees.compute_count(),
         1,
@@ -368,7 +372,11 @@ fn shuffling_cache_different_decision_roots_same_epoch() {
     );
     shared.insert(key_a, shuffle_a.clone());
     shared.insert(key_b, shuffle_b.clone());
-    assert_eq!(shared.len(), 2, "same epoch + different decision roots → 2 entries");
+    assert_eq!(
+        shared.len(),
+        2,
+        "same epoch + different decision roots → 2 entries"
+    );
 
     let c_a = get_beacon_committee(&state_a, slot, CommitteeIndex::new(0)).unwrap();
     let c_b = get_beacon_committee(&state_b, slot, CommitteeIndex::new(0)).unwrap();
@@ -459,10 +467,7 @@ fn epoch_cache_invalidated_by_effective_balance_change() {
     // Rebuild after the change reflects the new total.
     rebuild_epoch_cache(&mut state).unwrap();
     let expected = 7 * MAX_EFFECTIVE_BALANCE.as_u64() + 31_000_000_000;
-    assert_eq!(
-        state.caches().epoch.total_active_balance,
-        Some(expected)
-    );
+    assert_eq!(state.caches().epoch.total_active_balance, Some(expected));
 }
 
 // ---------------------------------------------------------------------------
@@ -493,5 +498,3 @@ fn cold_shuffling_cost_hoodi_scale_mainnet_rounds() {
         elapsed.as_secs_f64() * 1000.0
     );
 }
-
-

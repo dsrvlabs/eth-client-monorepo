@@ -36,13 +36,11 @@ use discv5::enr::NodeId;
 use thiserror::Error;
 
 use crate::discovery::enr::{
-    encode_attnets, encode_syncnets, node_id_as_u256, read_attnets, read_syncnets,
-    EnrApplyError, EnrFieldChange, EnrManager, ENR_KEY_ATTNETS, ENR_KEY_SYNCNETS,
+    ENR_KEY_ATTNETS, ENR_KEY_SYNCNETS, EnrApplyError, EnrFieldChange, EnrManager, encode_attnets,
+    encode_syncnets, node_id_as_u256, read_attnets, read_syncnets,
 };
 use crate::gossip::scoring::WEIGHT_SYNC_COMMITTEE;
-use crate::gossip::{
-    GossipsubControl, RegistryError, TopicName, TopicParams, TopicRegistry,
-};
+use crate::gossip::{GossipsubControl, RegistryError, TopicName, TopicParams, TopicRegistry};
 use crate::reqresp::LocalMetaData;
 
 /// Sync-committee subnet count (`BitVector[4]` / `SYNC_COMMITTEE_SUBNET_COUNT`).
@@ -135,7 +133,6 @@ impl fmt::Display for SubnetApplyOutcome {
     }
 }
 
-
 // ── Syncnets effect trace (CC-2D) ───────────────────────────────────────────
 
 /// One effect of [`SubnetManager::subscribe_sync_subnets`] for ordered asserts.
@@ -184,9 +181,8 @@ fn compute_shuffled_index(mut index: u64, index_count: u64, seed: Root, rounds: 
         let mut pivot_input = [0u8; 33];
         pivot_input[..32].copy_from_slice(seed_bytes);
         pivot_input[32] = current_round;
-        let pivot =
-            u64::from_le_bytes(hash_fixed(&pivot_input)[0..8].try_into().unwrap_or([0; 8]))
-                % index_count;
+        let pivot = u64::from_le_bytes(hash_fixed(&pivot_input)[0..8].try_into().unwrap_or([0; 8]))
+            % index_count;
 
         let flip = (pivot.saturating_add(index_count).saturating_sub(index)) % index_count;
         let position = index.max(flip);
@@ -230,10 +226,7 @@ pub fn compute_subscribed_subnet(
     // node_offset = node_id % EPOCHS_PER_SUBNET_SUBSCRIPTION  (offset modulus)
     let node_offset = (node_id % U256::from(epochs_per)).as_limbs()[0];
 
-    let period = epoch
-        .as_u64()
-        .saturating_add(node_offset)
-        / epochs_per;
+    let period = epoch.as_u64().saturating_add(node_offset) / epochs_per;
     // permutation_seed = hash(uint_to_bytes(uint64(period)))
     let seed = Root::from_array(hash_fixed(&period.to_le_bytes()));
 
@@ -451,9 +444,8 @@ impl SubnetManager {
         }
 
         let period = subscription_period(self.node_u256, epoch, &self.cfg);
-        let subnets = compute_subscribed_subnets(self.node_u256, epoch, &self.cfg).ok_or(
-            SubnetManagerError::Compute { index: 0 },
-        )?;
+        let subnets = compute_subscribed_subnets(self.node_u256, epoch, &self.cfg)
+            .ok_or(SubnetManagerError::Compute { index: 0 })?;
         // Spec returns `subnets_per_node` entries; a BTreeSet collapses rare
         // prefix-shuffle collisions so `len` may be smaller — still a valid set.
 
@@ -473,9 +465,10 @@ impl SubnetManager {
         effects.push(SubnetEffectKind::GossipSync);
 
         let enr_seq_before = target.enr.local_enr().seq();
-        target
-            .enr
-            .apply([EnrFieldChange::new(ENR_KEY_ATTNETS, encode_attnets(attnets))])?;
+        target.enr.apply([EnrFieldChange::new(
+            ENR_KEY_ATTNETS,
+            encode_attnets(attnets),
+        )])?;
         let enr_seq_after = target.enr.local_enr().seq();
         effects.push(SubnetEffectKind::EnrApply);
 
@@ -498,7 +491,6 @@ impl SubnetManager {
             rotated,
         }))
     }
-
 
     /// Current authoritative `syncnets` bitmask (low 4 bits).
     #[must_use]
@@ -575,18 +567,14 @@ impl SubnetManager {
 
         // ── 2. ENR syncnets (coalesced single bump when we apply) ───────────
         let enr_seq_before = enr.local_enr().seq();
-        let enr_seq_after = if bits != self.syncnets
-            || read_syncnets(&enr.local_enr()) != Some(bits)
-        {
-            enr.apply([EnrFieldChange::new(
-                ENR_KEY_SYNCNETS,
-                encode_syncnets(bits),
-            )])?;
-            effects.push(SyncSubnetEffect::EnrApply);
-            enr.local_enr().seq()
-        } else {
-            enr_seq_before
-        };
+        let enr_seq_after =
+            if bits != self.syncnets || read_syncnets(&enr.local_enr()) != Some(bits) {
+                enr.apply([EnrFieldChange::new(ENR_KEY_SYNCNETS, encode_syncnets(bits))])?;
+                effects.push(SyncSubnetEffect::EnrApply);
+                enr.local_enr().seq()
+            } else {
+                enr_seq_before
+            };
 
         // ── 3. MetaData v3 ─────────────────────────────────────────────────
         let meta_seq = metadata.set_syncnets(bits);
@@ -650,7 +638,6 @@ impl SubnetManager {
         let live = live_sync_subnets(registry, digest);
         live == self.sync_subscription_set()
     }
-
 }
 
 fn bitset_to_subnets(bits: u8) -> BTreeSet<SubnetId> {
@@ -676,7 +663,6 @@ fn live_sync_subnets<G: GossipsubControl>(
         })
         .collect()
 }
-
 
 // ── tests ───────────────────────────────────────────────────────────────────
 
@@ -782,12 +768,8 @@ mod tests {
         }
 
         fn triple(&self) -> (Option<u64>, u64, u64) {
-            self.mgr.consistency_triple(
-                &self.registry,
-                &self.enr,
-                &self.metadata,
-                self.digest,
-            )
+            self.mgr
+                .consistency_triple(&self.registry, &self.enr, &self.metadata, self.digest)
         }
     }
 
@@ -819,8 +801,7 @@ mod tests {
         // spec for every pair, but true for these fixtures and guards against
         // a constant stub).
         let other = node_id_from_u64(0xBEEF);
-        let c =
-            compute_subscribed_subnets(node_id_as_u256(other), Epoch::new(0), &cfg).unwrap();
+        let c = compute_subscribed_subnets(node_id_as_u256(other), Epoch::new(0), &cfg).unwrap();
         assert_eq!(c.len() as u64, cfg.subnets_per_node);
     }
 
@@ -837,7 +818,9 @@ mod tests {
         // period = (epoch + node_offset) // epochs_per
         // Choose epoch such that (epoch + node_offset) % epochs_per == epochs_per - 1
         // → next epoch crosses the boundary.
-        let within = epochs_per.saturating_sub(1).saturating_sub(node_offset % epochs_per);
+        let within = epochs_per
+            .saturating_sub(1)
+            .saturating_sub(node_offset % epochs_per);
         // Ensure within + node_offset ends just before a multiple of epochs_per.
         let base = if (within + node_offset) % epochs_per == epochs_per - 1 {
             within
@@ -853,16 +836,13 @@ mod tests {
             }
         };
 
-        let at_end =
-            compute_subscribed_subnets(n, Epoch::new(base), &cfg).unwrap();
-        let still_same =
-            compute_subscribed_subnets(n, Epoch::new(base), &cfg).unwrap();
+        let at_end = compute_subscribed_subnets(n, Epoch::new(base), &cfg).unwrap();
+        let still_same = compute_subscribed_subnets(n, Epoch::new(base), &cfg).unwrap();
         assert_eq!(at_end, still_same);
 
         // One epoch earlier is the same period (when base > 0).
         if base > 0 {
-            let earlier =
-                compute_subscribed_subnets(n, Epoch::new(base - 1), &cfg).unwrap();
+            let earlier = compute_subscribed_subnets(n, Epoch::new(base - 1), &cfg).unwrap();
             assert_eq!(
                 earlier, at_end,
                 "set must not change before the period boundary"
@@ -870,8 +850,7 @@ mod tests {
         }
 
         // Crossing the boundary must recompute for a new period.
-        let after =
-            compute_subscribed_subnets(n, Epoch::new(base + 1), &cfg).unwrap();
+        let after = compute_subscribed_subnets(n, Epoch::new(base + 1), &cfg).unwrap();
         let p0 = subscription_period(n, Epoch::new(base), &cfg);
         let p1 = subscription_period(n, Epoch::new(base + 1), &cfg);
         assert_eq!(p1, p0 + 1, "epoch+1 must enter the next period");
@@ -1030,7 +1009,10 @@ mod tests {
         s.insert(0);
         s.insert(3);
         s.insert(63);
-        assert_eq!(attnets_bitvector(&s), (1u64 << 0) | (1u64 << 3) | (1u64 << 63));
+        assert_eq!(
+            attnets_bitvector(&s),
+            (1u64 << 0) | (1u64 << 3) | (1u64 << 63)
+        );
     }
 
     // ── CC-2D syncnets ────────────────────────────────────────────────────
@@ -1060,11 +1042,8 @@ mod tests {
             }
             let enr = EnrManager::new_ephemeral(EnrSeqStrategy::EnrInsert).expect("enr");
             // Ensure empty syncnets present so three-way can read.
-            enr.apply([EnrFieldChange::new(
-                ENR_KEY_SYNCNETS,
-                encode_syncnets(0),
-            )])
-            .expect("seed syncnets");
+            enr.apply([EnrFieldChange::new(ENR_KEY_SYNCNETS, encode_syncnets(0))])
+                .expect("seed syncnets");
             let metadata = LocalMetaData::default();
             Self {
                 mgr,
@@ -1163,5 +1142,4 @@ mod tests {
         assert!(!second.effects.contains(&SyncSubnetEffect::EnrApply));
         f.assert_three_way();
     }
-
 }

@@ -57,7 +57,6 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
     }
 }
 
-
 const HEALTH_SERVICE_NAME: &str = "eth.chain.v1.ChainService";
 
 fn ephemeral() -> SocketAddr {

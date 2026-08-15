@@ -19,13 +19,12 @@ use anyhow::{Context, Result, bail};
 use cc_bootstrap::{PeerSpec, SignalTrigger, TelemetrySettings};
 use cc_config::ServiceConfig;
 use cc_p2p::clock::ClockConfig;
+use cc_p2p::engine_stream::build_minimal_engine_stream;
 use cc_p2p::fault_mode::{
     BootnodeSpec, DEFAULT_RELEASE_FLAG_PATH, DEFAULT_WITHHOLD_TARGET_ROLE, DevnetRole,
     DevnetRuntimeConfig, FaultMode, default_bootnode_specs, emit_bootnodes, parse_listen,
     parse_socket_addr, read_multiaddrs_file, run_devnet,
 };
-use cc_types::CUSTODY_REQUIREMENT;
-use cc_p2p::engine_stream::build_minimal_engine_stream;
 use cc_p2p::identity::{self, DEFAULT_NODE_KEY_PATH};
 use cc_p2p::metrics::P2pMetrics;
 use cc_p2p::service::{
@@ -33,6 +32,7 @@ use cc_p2p::service::{
     service_spec,
 };
 use cc_proto::p2p::p2p_service_server::P2pServiceServer;
+use cc_types::CUSTODY_REQUIREMENT;
 use clap::Parser;
 use serde::Deserialize;
 use tonic::service::Routes;
@@ -592,9 +592,7 @@ async fn run_devnet_mode(cli: Cli, fault: FaultMode) -> Result<()> {
         cli.disable_dial || (role == DevnetRole::Publisher && static_peers.is_empty());
 
     let fault_flag_path = match (&fault, cli.fault_flag_path) {
-        (FaultMode::WithholdColumn { .. }, None) => {
-            Some(PathBuf::from(DEFAULT_RELEASE_FLAG_PATH))
-        }
+        (FaultMode::WithholdColumn { .. }, None) => Some(PathBuf::from(DEFAULT_RELEASE_FLAG_PATH)),
         (_, path) => path,
     };
 

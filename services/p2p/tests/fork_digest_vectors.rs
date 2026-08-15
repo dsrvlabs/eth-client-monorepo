@@ -243,17 +243,15 @@ fn fork_context_cache_matches_uncached_across_hoodi_ranges() {
 
     // 100 pseudo-random epochs spanning pre-Fulu, fallback, BPO1, BPO2.
     let ranges = [
-        (0u64, 50_687u64),     // pre-Fulu
-        (50_688, 52_479),      // Fulu fallback
-        (52_480, 54_015),      // BPO1
-        (54_016, 120_000),     // BPO2+
+        (0u64, 50_687u64), // pre-Fulu
+        (50_688, 52_479),  // Fulu fallback
+        (52_480, 54_015),  // BPO1
+        (54_016, 120_000), // BPO2+
     ];
     let mut epochs = Vec::with_capacity(100);
     let mut seed = 0xC0FFEE_u64;
     for i in 0..100 {
-        seed = seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
         let (lo, hi) = ranges[i % ranges.len()];
         let span = hi - lo + 1;
         epochs.push(Epoch::new(lo + (seed % span)));
@@ -273,10 +271,7 @@ fn fork_context_on_epoch_refreshes_next_and_enr() {
     let cfg = hoodi_config();
     let gvr = hoodi_gvr();
     let mut ctx = ForkContext::new(cfg.clone(), gvr, Epoch::new(EPOCH_FULU_FALLBACK));
-    assert_eq!(
-        ctx.next().map(|(e, _, _)| e),
-        Some(Epoch::new(EPOCH_BPO1))
-    );
+    assert_eq!(ctx.next().map(|(e, _, _)| e), Some(Epoch::new(EPOCH_BPO1)));
     assert_eq!(ctx.enr_fork_id().next_fork_epoch, Epoch::new(EPOCH_BPO1));
     assert_eq!(ctx.enr_fork_id().next_fork_version, cfg.fulu_fork_version);
 
@@ -286,10 +281,7 @@ fn fork_context_on_epoch_refreshes_next_and_enr() {
         ctx.current_digest(),
         compute_fork_digest(&cfg, gvr, Epoch::new(EPOCH_BPO1))
     );
-    assert_eq!(
-        ctx.next().map(|(e, _, _)| e),
-        Some(Epoch::new(EPOCH_BPO2))
-    );
+    assert_eq!(ctx.next().map(|(e, _, _)| e), Some(Epoch::new(EPOCH_BPO2)));
 
     ctx.on_epoch(Epoch::new(EPOCH_BPO2));
     assert!(ctx.next().is_none());
@@ -302,10 +294,7 @@ fn fork_digest_module_has_no_network_imports() {
     // Structural guard on the *use* block: only cc-types, cc-crypto, and std.
     // Doc comments may mention forbidden crates by name ("no libp2p") — strip
     // line comments / block docs before scanning for real imports.
-    let src = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/fork_digest.rs"
-    ));
+    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/fork_digest.rs"));
     let code_only: String = src
         .lines()
         .filter(|l| {
@@ -359,11 +348,7 @@ fn four_hoodi_digests_are_unique_set() {
     let gvr = hoodi_gvr();
     let mut set = HashSet::new();
     for e in [EPOCH_PRE_FULU, EPOCH_FULU_FALLBACK, EPOCH_BPO1, EPOCH_BPO2] {
-        set.insert(digest_bytes(compute_fork_digest(
-            &cfg,
-            gvr,
-            Epoch::new(e),
-        )));
+        set.insert(digest_bytes(compute_fork_digest(&cfg, gvr, Epoch::new(e))));
     }
     assert_eq!(set.len(), 4);
 }

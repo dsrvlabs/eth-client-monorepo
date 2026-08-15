@@ -66,22 +66,22 @@ fn on_tick_per_slot<P: Preset>(store: &mut Store<P>, time: u64) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-/// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
-#[derive(Debug, Default, Clone, Copy)]
-struct AcceptEngine;
+    /// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
+    #[derive(Debug, Default, Clone, Copy)]
+    struct AcceptEngine;
 
-impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
-    fn verify_and_notify_new_payload(
-        &self,
-        _request: cc_state_transition::NewPayloadRequest<'_, P>,
-    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
-        Ok(cc_state_transition::PayloadStatus::Valid)
+    impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+        fn verify_and_notify_new_payload(
+            &self,
+            _request: cc_state_transition::NewPayloadRequest<'_, P>,
+        ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+            Ok(cc_state_transition::PayloadStatus::Valid)
+        }
     }
-}
 
     use std::sync::Arc;
 
-        use cc_types::containers::Checkpoint;
+    use cc_types::containers::Checkpoint;
     use cc_types::preset::Minimal;
     use cc_types::primitives::{Epoch, Root};
 

@@ -142,9 +142,7 @@ impl EngineServiceImpl {
         };
         if let EngineError::Http401 { body } | EngineError::Http403 { body } = err {
             let _ = state
-                .apply(UpcheckOutcome::AuthRejected {
-                    body: body.clone(),
-                })
+                .apply(UpcheckOutcome::AuthRejected { body: body.clone() })
                 .await;
         }
     }
@@ -242,9 +240,9 @@ impl EngineService for EngineServiceImpl {
                     payload_id: None,
                 }))
             }
-            Err(FcuGatedError::DroppedStale(d)) => Err(Status::aborted(format!(
-                "{REASON_FCU_DROPPED_STALE}: {d}"
-            ))),
+            Err(FcuGatedError::DroppedStale(d)) => {
+                Err(Status::aborted(format!("{REASON_FCU_DROPPED_STALE}: {d}")))
+            }
             Err(FcuGatedError::Engine(e)) => {
                 self.note_ordered_lane_error(&e).await;
                 Err(engine_err_to_status(e))

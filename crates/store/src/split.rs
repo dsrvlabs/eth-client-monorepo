@@ -31,7 +31,7 @@ use crate::blocks::{
     TABLE_BLOCK_SLOT_BY_ROOT, TABLE_BLOCKS_HOT, TABLE_STATE_ROOTS, get_block, state_root_at_offset,
 };
 use crate::canonical::get_canonical;
-use crate::columns::{TABLE_COLUMNS_HOT, TABLE_COLUMN_SLOT_BY_ROOT};
+use crate::columns::{TABLE_COLUMN_SLOT_BY_ROOT, TABLE_COLUMNS_HOT};
 use crate::engine::{Batch, Engine, ReadTxn, StoreError};
 use crate::keys::{
     BlockRegion, block_shard_id, blocks_shard_table, column_shard_id, columns_shard_table,
@@ -40,7 +40,7 @@ use crate::keys::{
     encode_hot_block_key, encode_hot_column_key, encode_root_key, encode_root_value,
     hot_block_slot_upper_bound, hot_column_slot_upper_bound,
 };
-use crate::meta::{KEY_SPLIT, TABLE_META, Split};
+use crate::meta::{KEY_SPLIT, Split, TABLE_META};
 
 /// Meta key for the [`Split`] singleton (Architecture §2.5 / AC `SPLIT_KEY`).
 pub const SPLIT_KEY: &str = KEY_SPLIT;
@@ -197,10 +197,7 @@ pub fn stage_migration(
         if let Some(ssz) = get_block(rt, slot, &root, BlockRegion::Hot)? {
             let cold_table = blocks_shard_table(block_shard_id(slot));
             batch.put(&cold_table, &encode_cold_block_key(slot), &ssz);
-            batch.delete(
-                TABLE_BLOCKS_HOT,
-                &encode_hot_block_key(slot, &root),
-            );
+            batch.delete(TABLE_BLOCKS_HOT, &encode_hot_block_key(slot, &root));
             batch.put(
                 TABLE_BLOCK_SLOT_BY_ROOT,
                 &encode_root_key(&root),
@@ -485,8 +482,8 @@ mod tests {
     };
     use crate::canonical::put_canonical;
     use crate::columns::{
-        COLUMN_HEADER_SLOT_SSZ_OFFSET, COLUMN_INDEX_SSZ_OFFSET, MIN_COLUMN_SSZ_LEN, columns_by_range,
-        get_cold_column, put_column,
+        COLUMN_HEADER_SLOT_SSZ_OFFSET, COLUMN_INDEX_SSZ_OFFSET, MIN_COLUMN_SSZ_LEN,
+        columns_by_range, get_cold_column, put_column,
     };
     use crate::engine::{Durability, EngineOptions};
     use crate::keys::{block_shard_id, blocks_shard_table, column_shard_id, columns_shard_table};
@@ -538,10 +535,7 @@ mod tests {
         v
     }
 
-    fn seed_hot_chain(
-        eng: &Engine,
-        slots: impl IntoIterator<Item = (u64, Root, Option<Root>)>,
-    ) {
+    fn seed_hot_chain(eng: &Engine, slots: impl IntoIterator<Item = (u64, Root, Option<Root>)>) {
         // (slot, root, optional fork sibling root)
         let mut batch = eng.batch();
         {
@@ -564,8 +558,7 @@ mod tests {
                     put_block(&rt, &mut batch, slot, &sib, &ssz_s, BlockRegion::Hot, false)
                         .unwrap();
                     let col_s = synth_column(s, 0);
-                    put_column(&rt, &mut batch, slot, &sib, 0, &col_s, BlockRegion::Hot)
-                        .unwrap();
+                    put_column(&rt, &mut batch, slot, &sib, 0, &col_s, BlockRegion::Hot).unwrap();
                 }
             }
         }
@@ -583,11 +576,7 @@ mod tests {
         let mut rows = Vec::new();
         for s in 1u64..=32 {
             let root = root_n((s as u8).max(1));
-            let sib = if s == 16 {
-                Some(root_n(0xAA))
-            } else {
-                None
-            };
+            let sib = if s == 16 { Some(root_n(0xAA)) } else { None };
             rows.push((s, root, sib));
         }
         seed_hot_chain(&eng, rows);
@@ -601,10 +590,7 @@ mod tests {
 
         // Injected commit failure: nothing moves, split stays default.
         let err = migrate_with_commit_fault(&eng, &old, &new, true).unwrap_err();
-        assert!(
-            err.to_string().contains("injected commit failure"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("injected commit failure"), "{err}");
         {
             let rt = eng.read().unwrap();
             assert!(load_split(&rt).unwrap().is_none());
@@ -675,9 +661,11 @@ mod tests {
         assert!(src.contains(
             "race migration takes `split.read_recursive()` before opening its ReadTxn, and"
         ));
-        assert!(src.contains(
-            "holds it for the lifetime of the key materialisation (§7.2) — NOT for the"
-        ));
+        assert!(
+            src.contains(
+                "holds it for the lifetime of the key materialisation (§7.2) — NOT for the"
+            )
+        );
         assert!(src.contains("lifetime of the response."));
         // AC grep surface: every split-racing read uses read_recursive first.
         assert!(src.contains("read_recursive"));
@@ -939,10 +927,7 @@ mod tests {
                         3 => 16,
                         _ => 24,
                     };
-                    old.slot
-                        .as_u64()
-                        .saturating_add(step)
-                        .min(SEED_HI)
+                    old.slot.as_u64().saturating_add(step).min(SEED_HI)
                 } else {
                     old.slot.as_u64()
                 };

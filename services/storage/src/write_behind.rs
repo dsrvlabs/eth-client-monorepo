@@ -217,13 +217,7 @@ async fn supervise_write_behind(
         let replayer_i = replayer.clone();
         let inner = tokio::spawn(async move {
             run_write_behind(
-                cfg_i,
-                writer_i,
-                metrics_i,
-                cursor_i,
-                shutdown_i,
-                migrator_i,
-                replayer_i,
+                cfg_i, writer_i, metrics_i, cursor_i, shutdown_i, migrator_i, replayer_i,
             )
             .await;
         });
@@ -435,7 +429,9 @@ pub(crate) fn session_end_for_recovery(
     durable_cursor: Option<&WriteCursor>,
 ) -> SessionEnd {
     match recovery {
-        SubscribeRecovery::UnknownSession | SubscribeRecovery::TooOld => SessionEnd::SetCursor(None),
+        SubscribeRecovery::UnknownSession | SubscribeRecovery::TooOld => {
+            SessionEnd::SetCursor(None)
+        }
         SubscribeRecovery::ResourceExhausted => SessionEnd::Reconnect {
             reason: None, // already counted in plan_and_attribute
             cursor: durable_cursor.filter(|c| is_resumable(c)).cloned(),
@@ -551,7 +547,11 @@ async fn run_session(
     // Live session_id from response metadata (chain CC-44b seam). Fallback:
     // durable resume cursor's session, else 0 (= not resume-valid).
     let mut session_id = session_from_metadata(response.metadata())
-        .or_else(|| durable_cursor.filter(|c| is_resumable(c)).map(|c| c.session_id))
+        .or_else(|| {
+            durable_cursor
+                .filter(|c| is_resumable(c))
+                .map(|c| c.session_id)
+        })
         .unwrap_or(0);
     if session_id == 0 {
         debug!(
@@ -565,8 +565,7 @@ async fn run_session(
     let mut flush_tick = interval(Duration::from_millis(100));
     flush_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     // Only resumable cursors ride across reconnect (SEC-44b + O1).
-    let mut last_flushed: Option<WriteCursor> =
-        durable_cursor.filter(|c| is_resumable(c)).cloned();
+    let mut last_flushed: Option<WriteCursor> = durable_cursor.filter(|c| is_resumable(c)).cloned();
 
     loop {
         if *shutdown.borrow() {
@@ -1543,7 +1542,10 @@ mod tests {
             "12345".parse().expect("ascii digits"),
         );
         assert_eq!(session_from_metadata(&md), Some(12345));
-        assert_eq!(session_from_metadata(&tonic::metadata::MetadataMap::new()), None);
+        assert_eq!(
+            session_from_metadata(&tonic::metadata::MetadataMap::new()),
+            None
+        );
     }
 
     /// SEC-44b: failed P0 commit does not advance last_flushed.
@@ -1597,7 +1599,10 @@ mod tests {
         )
         .await;
         assert!(err.is_err());
-        assert_eq!(last, prior, "must not advance resume cursor without commit ack");
+        assert_eq!(
+            last, prior,
+            "must not advance resume cursor without commit ack"
+        );
         let _ = shutdown_tx.send(true);
     }
 

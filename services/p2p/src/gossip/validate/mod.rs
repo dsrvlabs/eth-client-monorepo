@@ -28,33 +28,33 @@ pub mod pipeline;
 pub mod sync;
 
 pub use block::{
-    note_accepted_block, validate_beacon_block_local, BlockForward, BlockOutcome,
-    BlockValidateInput,
+    BlockForward, BlockOutcome, BlockValidateInput, note_accepted_block,
+    validate_beacon_block_local,
 };
 pub use column::{
-    decide_column_publish, production_kzg_verify, validate_data_column_sidecar,
-    verify_inclusion_proof, AlwaysValidKzg, CellKzgVerifier, ColumnOutcome,
+    AlwaysValidKzg, BLOB_KZG_COMMITMENTS_FIELD_INDEX, CellKzgVerifier, ColumnOutcome,
     ColumnPublishDecision, ColumnStep, ColumnValidateInput, ColumnValidatorState, FailClosedKzg,
-    InclusionProofCache, InclusionProofKey, KzgVerify, NoopSamplingFeed, SamplingFeed,
-    StepCounters, BLOB_KZG_COMMITMENTS_FIELD_INDEX, INCLUSION_PROOF_CACHE_BOUND,
+    INCLUSION_PROOF_CACHE_BOUND, InclusionProofCache, InclusionProofKey, KzgVerify,
+    NoopSamplingFeed, SamplingFeed, StepCounters, decide_column_publish, production_kzg_verify,
+    validate_data_column_sidecar, verify_inclusion_proof,
 };
 pub use operations::{
-    epoch_from_view, validate_attester_slashing, validate_bls_to_execution_change,
-    validate_operation, validate_proposer_slashing, validate_voluntary_exit, BoundedIndexSet,
-    OpStepCounters, OperationOccupancy, OperationSeenSets, OperationValidateInput,
-    OperationValidatorState, OPERATION_SEEN_BOUND,
+    BoundedIndexSet, OPERATION_SEEN_BOUND, OpStepCounters, OperationOccupancy, OperationSeenSets,
+    OperationValidateInput, OperationValidatorState, epoch_from_view, validate_attester_slashing,
+    validate_bls_to_execution_change, validate_operation, validate_proposer_slashing,
+    validate_voluntary_exit,
 };
 pub use pipeline::{
-    all_topics_have_validators, apply_late_chain_verdict, parse_topic_name, run_chain_in_late_verdicts,
-    run_validation_pool, validator_kind, ReportedEntry, ValidationPool, ValidationPoolState,
-    ValidatorKind, IN_FLIGHT_VALIDATION_CAP, REPORTED_ACCEPT_BOUND,
+    IN_FLIGHT_VALIDATION_CAP, REPORTED_ACCEPT_BOUND, ReportedEntry, ValidationPool,
+    ValidationPoolState, ValidatorKind, all_topics_have_validators, apply_late_chain_verdict,
+    parse_topic_name, run_chain_in_late_verdicts, run_validation_pool, validator_kind,
 };
 pub use sync::{
-    is_sync_committee_aggregator, validate_sync_committee_message,
-    validate_sync_contribution_and_proof, NoopSyncSource, SyncCommitteeSource, SyncContribSeenKey,
-    SyncContribValidateInput, SyncMessageStep, SyncMessageStepCounters, SyncMessageValidateInput,
-    SyncOutcome, SyncSeenKey, SyncSeenSets, SYNC_CONTRIB_SEEN_BOUND, SYNC_SEEN_BOUND,
-    TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE,
+    NoopSyncSource, SYNC_CONTRIB_SEEN_BOUND, SYNC_SEEN_BOUND, SyncCommitteeSource,
+    SyncContribSeenKey, SyncContribValidateInput, SyncMessageStep, SyncMessageStepCounters,
+    SyncMessageValidateInput, SyncOutcome, SyncSeenKey, SyncSeenSets,
+    TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE, is_sync_committee_aggregator,
+    validate_sync_committee_message, validate_sync_contribution_and_proof,
 };
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -84,10 +84,10 @@ const KZG_INCLUSION_PROOF_DEPTH: usize = 4;
 /// SSZ size of `Checkpoint` (epoch + root).
 const SSZ_CHECKPOINT: usize = BYTES_U64 + BYTES_ROOT;
 /// SSZ size of `AttestationData`.
-const SSZ_ATTESTATION_DATA: usize = BYTES_U64 + BYTES_U64 + BYTES_ROOT + SSZ_CHECKPOINT + SSZ_CHECKPOINT;
+const SSZ_ATTESTATION_DATA: usize =
+    BYTES_U64 + BYTES_U64 + BYTES_ROOT + SSZ_CHECKPOINT + SSZ_CHECKPOINT;
 /// SSZ size of `BeaconBlockHeader`.
-const SSZ_BEACON_BLOCK_HEADER: usize =
-    BYTES_U64 + BYTES_U64 + BYTES_ROOT + BYTES_ROOT + BYTES_ROOT;
+const SSZ_BEACON_BLOCK_HEADER: usize = BYTES_U64 + BYTES_U64 + BYTES_ROOT + BYTES_ROOT + BYTES_ROOT;
 /// SSZ size of `SignedBeaconBlockHeader`.
 const SSZ_SIGNED_BEACON_BLOCK_HEADER: usize = SSZ_BEACON_BLOCK_HEADER + BYTES_BLS_SIG;
 /// SSZ size of `VoluntaryExit`.
@@ -97,21 +97,17 @@ const SSZ_SIGNED_VOLUNTARY_EXIT: usize = SSZ_VOLUNTARY_EXIT + BYTES_BLS_SIG;
 /// SSZ size of `ProposerSlashing`.
 const SSZ_PROPOSER_SLASHING: usize = SSZ_SIGNED_BEACON_BLOCK_HEADER * 2;
 /// SSZ size of `BlsToExecutionChange`.
-const SSZ_BLS_TO_EXECUTION_CHANGE: usize =
-    BYTES_U64 + BYTES_BLS_PUBKEY + BYTES_EXECUTION_ADDRESS;
+const SSZ_BLS_TO_EXECUTION_CHANGE: usize = BYTES_U64 + BYTES_BLS_PUBKEY + BYTES_EXECUTION_ADDRESS;
 /// SSZ size of `SignedBlsToExecutionChange`.
 const SSZ_SIGNED_BLS_TO_EXECUTION_CHANGE: usize = SSZ_BLS_TO_EXECUTION_CHANGE + BYTES_BLS_SIG;
 /// SSZ size of `SyncCommitteeMessage`.
-const SSZ_SYNC_COMMITTEE_MESSAGE: usize =
-    BYTES_U64 + BYTES_ROOT + BYTES_U64 + BYTES_BLS_SIG;
+const SSZ_SYNC_COMMITTEE_MESSAGE: usize = BYTES_U64 + BYTES_ROOT + BYTES_U64 + BYTES_BLS_SIG;
 
 /// Errors from the pre-decode length check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum SizeError {
     /// Payload length exceeds the container's SSZ maximum for the active preset.
-    #[error(
-        "gossip payload len {len} exceeds ssz max {max} for topic family {topic}"
-    )]
+    #[error("gossip payload len {len} exceeds ssz max {max} for topic family {topic}")]
     OverBound {
         /// Observed payload length (decompressed).
         len: usize,
@@ -162,10 +158,7 @@ pub fn ssz_max<P: Preset>(name: TopicName) -> usize {
 ///
 /// Returns [`SizeError::OverBound`] when `payload_len` exceeds
 /// [`max_container_bytes`] for `name` under preset `P`.
-pub fn check_payload_len<P: Preset>(
-    name: TopicName,
-    payload_len: usize,
-) -> Result<(), SizeError> {
+pub fn check_payload_len<P: Preset>(name: TopicName, payload_len: usize) -> Result<(), SizeError> {
     let max = max_container_bytes::<P>(name);
     if payload_len > max {
         return Err(SizeError::OverBound {
@@ -231,8 +224,7 @@ fn ssz_max_attestation<P: Preset>() -> usize {
     let max_validators = usize_from_u64(P::MAX_VALIDATORS_PER_SLOT);
     let max_committees = usize_from_u64(P::MAX_COMMITTEES_PER_SLOT);
     // Variable BitList: offset + max bit-bytes + length-delimiting bit byte.
-    let aggregation_bits = BYTES_OFFSET
-        .saturating_add(bitlist_max_bytes(max_validators));
+    let aggregation_bits = BYTES_OFFSET.saturating_add(bitlist_max_bytes(max_validators));
     let committee_bits = bitvector_bytes(max_committees);
     aggregation_bits
         .saturating_add(SSZ_ATTESTATION_DATA)
@@ -257,8 +249,7 @@ fn ssz_max_attester_slashing<P: Preset>() -> usize {
 /// `IndexedAttestation`: VariableList[ValidatorIndex, max_validators_per_slot] + data + sig.
 fn ssz_max_indexed_attestation<P: Preset>() -> usize {
     let max_validators = usize_from_u64(P::MAX_VALIDATORS_PER_SLOT);
-    let indices = BYTES_OFFSET
-        .saturating_add(max_validators.saturating_mul(BYTES_U64));
+    let indices = BYTES_OFFSET.saturating_add(max_validators.saturating_mul(BYTES_U64));
     indices
         .saturating_add(SSZ_ATTESTATION_DATA)
         .saturating_add(BYTES_BLS_SIG)
@@ -304,8 +295,8 @@ fn ssz_max_data_column_sidecar<P: Preset>() -> usize {
 fn ssz_max_beacon_block<P: Preset>() -> usize {
     let tx_ceiling = usize_from_u64(P::MAX_TRANSACTIONS_PER_PAYLOAD)
         .saturating_mul(usize_from_u64(P::MAX_BYTES_PER_TRANSACTION));
-    let blob_term = usize_from_u64(P::MAX_BLOB_COMMITMENTS_PER_BLOCK)
-        .saturating_mul(BYTES_KZG_COMMITMENT);
+    let blob_term =
+        usize_from_u64(P::MAX_BLOB_COMMITMENTS_PER_BLOCK).saturating_mul(BYTES_KZG_COMMITMENT);
     // Cap applied by `max_container_bytes` via `.min(GOSSIP_MAX_SIZE)`.
     tx_ceiling.saturating_add(blob_term).max(GOSSIP_MAX_SIZE)
 }
@@ -474,8 +465,6 @@ mod tests {
             max_container_bytes::<Mainnet>(TopicName::BeaconBlock),
             GOSSIP_MAX_SIZE
         );
-        assert!(
-            max_container_bytes::<Mainnet>(TopicName::DataColumnSidecar(0)) <= GOSSIP_MAX_SIZE
-        );
+        assert!(max_container_bytes::<Mainnet>(TopicName::DataColumnSidecar(0)) <= GOSSIP_MAX_SIZE);
     }
 }

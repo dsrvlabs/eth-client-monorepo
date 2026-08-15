@@ -1,9 +1,9 @@
 //! Spec `process_proposer_slashing`.
 
-use cc_crypto::{compute_signing_root, verify, DOMAIN_BEACON_PROPOSER};
+use cc_crypto::{DOMAIN_BEACON_PROPOSER, compute_signing_root, verify};
+use cc_types::BeaconState;
 use cc_types::operations::ProposerSlashing;
 use cc_types::preset::Preset;
-use cc_types::BeaconState;
 
 use crate::error::{BlockError, OperationError};
 use crate::helpers::accessors::{get_current_epoch, state_get_domain};
@@ -41,7 +41,12 @@ pub fn process_proposer_slashing<P: Preset>(
     let proposer_index = header_1.proposer_index;
     let proposer = state
         .validators_get(proposer_index.as_u64() as usize)
-        .ok_or_else(|| invalid(format!("proposer index {} unknown", proposer_index.as_u64())))?;
+        .ok_or_else(|| {
+            invalid(format!(
+                "proposer index {} unknown",
+                proposer_index.as_u64()
+            ))
+        })?;
 
     if !is_slashable_validator(proposer, get_current_epoch(state)) {
         return Err(invalid("proposer is not slashable"));

@@ -19,8 +19,8 @@
 
 #![allow(dead_code)]
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cc_store::engine::Engine;
 use cc_store::meta::Split;
@@ -76,7 +76,9 @@ impl Migrator {
         metrics: StorageMetrics,
     ) -> Self {
         let slot = split.snapshot().slot.as_u64();
-        metrics.split_slot.set(i64::try_from(slot).unwrap_or(i64::MAX));
+        metrics
+            .split_slot
+            .set(i64::try_from(slot).unwrap_or(i64::MAX));
         Self {
             split,
             engine,
@@ -198,7 +200,9 @@ impl Migrator {
                 .set(i64::try_from(slot).unwrap_or(i64::MAX));
             self.invocations.fetch_add(1, Ordering::SeqCst);
             total.blocks_moved = total.blocks_moved.saturating_add(window_stats.blocks_moved);
-            total.columns_moved = total.columns_moved.saturating_add(window_stats.columns_moved);
+            total.columns_moved = total
+                .columns_moved
+                .saturating_add(window_stats.columns_moved);
             total.blocks_unfinalized_deleted = total
                 .blocks_unfinalized_deleted
                 .saturating_add(window_stats.blocks_unfinalized_deleted);
@@ -307,6 +311,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+    use crate::writer::{WriterBounds, WriterFaults, spawn_writer};
     use cc_store::blocks::{
         MIN_BLOCK_SSZ_LEN, PARENT_ROOT_SSZ_OFFSET, SLOT_SSZ_OFFSET, STATE_ROOT_SSZ_OFFSET,
         measure_class_stats, put_block,
@@ -319,7 +324,6 @@ mod tests {
     use cc_store::engine::{Durability, EngineOptions};
     use cc_store::keys::BlockRegion;
     use cc_store::{Slot, SplitLock, epoch_of_slot, load_split};
-    use crate::writer::{WriterBounds, WriterFaults, spawn_writer};
     use prometheus_client::registry::Registry;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -390,13 +394,7 @@ mod tests {
             shutdown_rx,
             false, // not process-fatal in tests
         );
-        let mig = Arc::new(Migrator::new(
-            split,
-            engine,
-            writer,
-            cfg,
-            m,
-        ));
+        let mig = Arc::new(Migrator::new(split, engine, writer, cfg, m));
         (mig, shutdown_tx)
     }
 
@@ -428,8 +426,7 @@ mod tests {
     /// CC-41/3: two-branch fork — non-descendant blocks **and** columns gone.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_branch_fork_deletes_unfinalized_siblings() {
-        let (m, shutdown) =
-            migrator_with_writer("fork", MigrationConfig::default());
+        let (m, shutdown) = migrator_with_writer("fork", MigrationConfig::default());
 
         {
             let mut batch = m.engine.batch();
@@ -494,8 +491,7 @@ mod tests {
     /// CC-41/6: `cc_storage_split_slot` advances across two finalizations.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn split_slot_gauge_advances_across_two_finalizations() {
-        let (m, shutdown) =
-            migrator_with_writer("gauge", MigrationConfig::default());
+        let (m, shutdown) = migrator_with_writer("gauge", MigrationConfig::default());
         {
             let mut batch = m.engine.batch();
             let rt = m.engine.read().unwrap();
@@ -530,7 +526,9 @@ mod tests {
     fn migrator_source_uses_writer_p1_not_engine_commit() {
         let src = include_str!("migrate.rs");
         // Production path names.
-        assert!(src.contains("submit_p1_committed") || src.contains("blocking_submit_p1_committed"));
+        assert!(
+            src.contains("submit_p1_committed") || src.contains("blocking_submit_p1_committed")
+        );
         assert!(src.contains("plan_migration"));
         // Migrator must not call Engine::commit for the migration batch.
         // (engine.commit may appear in tests for seeding only.)
@@ -540,7 +538,9 @@ mod tests {
             "production migrate.rs must submit via writer, not Engine::commit"
         );
         assert!(src.contains("read_recursive"));
-        assert!(src.contains("MAX_MIGRATION_SLOTS_PER_BATCH") || src.contains("migration_window_end"));
+        assert!(
+            src.contains("MAX_MIGRATION_SLOTS_PER_BATCH") || src.contains("migration_window_end")
+        );
     }
 
     #[test]

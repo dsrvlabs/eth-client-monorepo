@@ -55,7 +55,6 @@ impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for Ac
     }
 }
 
-
 fn minimal_config() -> ChainConfig {
     ChainConfig {
         preset_base: PresetName::Minimal,

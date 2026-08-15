@@ -39,8 +39,7 @@ pub async fn eth_syncing(
         )
         .await;
     if let Some(m) = metrics {
-        m.upcheck_seconds
-            .observe(started.elapsed().as_secs_f64());
+        m.upcheck_seconds.observe(started.elapsed().as_secs_f64());
     }
     let value = result?;
     Ok(classify_eth_syncing_result(&value))
@@ -85,7 +84,9 @@ mod tests {
             EthSyncingResult::Syncing(_)
         ));
         assert!(matches!(
-            classify_eth_syncing_result(&json!({"startingBlock":"0x0","currentBlock":"0x1","highestBlock":"0x2"})),
+            classify_eth_syncing_result(
+                &json!({"startingBlock":"0x0","currentBlock":"0x1","highestBlock":"0x2"})
+            ),
             EthSyncingResult::Syncing(_)
         ));
     }
@@ -163,7 +164,10 @@ mod tests {
             )
             .await;
         let elapsed = started.elapsed();
-        assert!(np.is_ok(), "newPayload must complete during eth_syncing stall: {np:?}");
+        assert!(
+            np.is_ok(),
+            "newPayload must complete during eth_syncing stall: {np:?}"
+        );
         assert!(
             elapsed < Duration::from_secs(5),
             "ordered lane blocked by upcheck stall: {elapsed:?}"
@@ -192,13 +196,8 @@ mod tests {
             eth_syncing_ms: 500,
             ..TimeoutKnobs::default()
         });
-        let t = EngineTransport::from_parts(
-            server.uri(),
-            jwt,
-            timeouts,
-            Duration::from_secs(4),
-            None,
-        );
+        let t =
+            EngineTransport::from_parts(server.uri(), jwt, timeouts, Duration::from_secs(4), None);
         let handle = EngineStateHandle::new(
             Arc::new(CapabilityCache::new()),
             None,
@@ -225,7 +224,10 @@ mod tests {
                     && tr.to == EngineStateInternal::Offline),
             "AuthFailed must not back off into Offline"
         );
-        assert!(!handle.admits_el_call().await, "fail-closed while AuthFailed");
+        assert!(
+            !handle.admits_el_call().await,
+            "fail-closed while AuthFailed"
+        );
     }
 
     /// ADR P3-09: `newPayload` is never retried inside `engine`.
@@ -256,13 +258,8 @@ mod tests {
 
         let jwt = JwtSecret::from_bytes([0x22; 32]);
         let timeouts = TransportTimeouts::from_knobs(&TimeoutKnobs::default());
-        let t = EngineTransport::from_parts(
-            server.uri(),
-            jwt,
-            timeouts,
-            Duration::from_secs(4),
-            None,
-        );
+        let t =
+            EngineTransport::from_parts(server.uri(), jwt, timeouts, Duration::from_secs(4), None);
         // Transport path that newPayload uses once — no nested retry.
         let err = t
             .call(

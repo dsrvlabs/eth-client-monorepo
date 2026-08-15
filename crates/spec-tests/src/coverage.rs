@@ -15,10 +15,7 @@ use crate::error::Error;
 ///
 /// [`Error::Coverage`] listing every missing name (declared but not on disk)
 /// and every extra name (on disk but not declared).
-pub fn assert_handler_coverage(
-    declared: &[&str],
-    on_disk: &BTreeSet<String>,
-) -> Result<(), Error> {
+pub fn assert_handler_coverage(declared: &[&str], on_disk: &BTreeSet<String>) -> Result<(), Error> {
     let declared_set: BTreeSet<&str> = declared.iter().copied().collect();
     let on_disk_set: BTreeSet<&str> = on_disk.iter().map(String::as_str).collect();
 

@@ -53,7 +53,7 @@ use cc_types::{Root, Slot};
 
 use crate::engine::{Batch, Engine, ReadTxn, StoreError};
 use crate::keys::{
-    COLUMN_SHARD_EPOCHS, SLOTS_PER_EPOCH, BlockRegion, cold_column_slot_range, column_shard_id,
+    BlockRegion, COLUMN_SHARD_EPOCHS, SLOTS_PER_EPOCH, cold_column_slot_range, column_shard_id,
     columns_shard_table, decode_cold_column_key, decode_column_slot_by_root_value,
     decode_hot_column_key, encode_cold_column_key, encode_column_slot_by_root_key,
     encode_column_slot_by_root_value, encode_hot_column_key, encode_root_key,
@@ -475,7 +475,11 @@ pub fn get_column(
 }
 
 /// Load a cold-region column by `(slot, index)` alone (root not in the key).
-pub fn get_cold_column(rt: &ReadTxn, slot: Slot, index: u16) -> Result<Option<Vec<u8>>, StoreError> {
+pub fn get_cold_column(
+    rt: &ReadTxn,
+    slot: Slot,
+    index: u16,
+) -> Result<Option<Vec<u8>>, StoreError> {
     let table = columns_shard_table(column_shard_id(slot));
     rt.get(&table, &encode_cold_column_key(slot, index))
 }
@@ -776,7 +780,12 @@ pub fn measure_column_class_stats(engine: &Engine) -> Result<ColumnClassStats, S
 
     for name in engine.table_names()? {
         if crate::schema::parse_shard_table(&name).is_some_and(|(c, _)| c == "columns") {
-            accumulate_table(&rt, &name, &mut stats.columns_rows, &mut stats.columns_bytes)?;
+            accumulate_table(
+                &rt,
+                &name,
+                &mut stats.columns_rows,
+                &mut stats.columns_bytes,
+            )?;
         }
     }
 
@@ -1031,7 +1040,10 @@ mod tests {
         }
         let mut expected = pairs.clone();
         expected.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-        assert_eq!(emitted, expected, "forward scan must be (slot, index) order");
+        assert_eq!(
+            emitted, expected,
+            "forward scan must be (slot, index) order"
+        );
 
         // Range API over the same set also emits ascending order.
         let rows = columns_by_range(
@@ -1124,8 +1136,7 @@ mod tests {
         eng.commit(b).unwrap();
 
         let rt = eng.read().unwrap();
-        let res =
-            columns_for_block(&rt, slot, &root, &[0, 1, 2, 3], BlockRegion::Hot).unwrap();
+        let res = columns_for_block(&rt, slot, &root, &[0, 1, 2, 3], BlockRegion::Hot).unwrap();
         assert_eq!(res.held.len(), 2);
         assert_eq!(res.held[0].0, 0);
         assert_eq!(res.held[1].0, 1);
@@ -1173,9 +1184,7 @@ mod tests {
         let mut b = eng.batch();
         put_da_status(&rt, &mut b, &root, DaStatus::Available, slot).unwrap();
         eng.commit(b).unwrap();
-        let (st, _) = get_da_status(&eng.read().unwrap(), &root)
-            .unwrap()
-            .unwrap();
+        let (st, _) = get_da_status(&eng.read().unwrap(), &root).unwrap().unwrap();
         assert_eq!(st, DaStatus::Available);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1205,9 +1214,7 @@ mod tests {
             "{msg}"
         );
         // Row unchanged.
-        let (st, s) = get_da_status(&eng.read().unwrap(), &root)
-            .unwrap()
-            .unwrap();
+        let (st, s) = get_da_status(&eng.read().unwrap(), &root).unwrap().unwrap();
         assert_eq!(st, DaStatus::Available);
         assert_eq!(s, slot);
         assert!(b.is_empty(), "failed demotion must not stage a put");
@@ -1242,10 +1249,7 @@ mod tests {
         let mut b = eng.batch();
         put_column(&rt, &mut b, slot, &root, 0, &at_cap, BlockRegion::Hot).unwrap();
         eng.commit(b).unwrap();
-        assert_eq!(
-            measure_column_class_stats(&eng).unwrap().columns_rows,
-            1
-        );
+        assert_eq!(measure_column_class_stats(&eng).unwrap().columns_rows, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1277,9 +1281,11 @@ mod tests {
         eng.commit(b).unwrap();
 
         let rt = eng.read().unwrap();
-        let res =
-            columns_for_block(&rt, slot, &wrong_root, &[0, 1, 2], BlockRegion::Cold).unwrap();
-        assert_eq!(res.held.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0, 2]);
+        let res = columns_for_block(&rt, slot, &wrong_root, &[0, 1, 2], BlockRegion::Cold).unwrap();
+        assert_eq!(
+            res.held.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            vec![0, 2]
+        );
         assert_eq!(res.missing, vec![1]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1317,11 +1323,7 @@ mod tests {
         assert_eq!(after.columns_rows, 10);
         assert!(after.columns_bytes > 0);
         // Prometheus names the storage service exposes (documentation anchor):
-        let _ = (
-            "cc_storage_bytes_total",
-            "cc_storage_rows_total",
-            "columns",
-        );
+        let _ = ("cc_storage_bytes_total", "cc_storage_rows_total", "columns");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1338,7 +1340,9 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, StoreError::Limit(_)), "got {err:?}");
-        assert!(columns_by_range(&rt, Slot::new(0), MAX_COLUMNS_BY_RANGE_SLOTS, None, None).is_ok());
+        assert!(
+            columns_by_range(&rt, Slot::new(0), MAX_COLUMNS_BY_RANGE_SLOTS, None, None).is_ok()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1398,9 +1402,14 @@ mod tests {
         assert!(names.iter().any(|n| n == &columns_shard_table(1)));
 
         let rt = eng.read().unwrap();
-        let rows =
-            columns_by_range(&rt, Slot::new(start), count, Some(Slot::new(u64::MAX)), None)
-                .unwrap();
+        let rows = columns_by_range(
+            &rt,
+            Slot::new(start),
+            count,
+            Some(Slot::new(u64::MAX)),
+            None,
+        )
+        .unwrap();
         assert_eq!(rows.len(), 8);
         assert_eq!(column_shard_of(rows[0].slot), 0);
         assert_eq!(column_shard_of(rows[7].slot), 1);

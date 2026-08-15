@@ -2,9 +2,9 @@
 //!
 //! Queues a [`PendingDeposit`]; application is epoch processing (CC-13c).
 
+use cc_types::BeaconState;
 use cc_types::operations::{DepositRequest, PendingDeposit};
 use cc_types::preset::Preset;
-use cc_types::BeaconState;
 
 use crate::error::BlockError;
 use crate::helpers::constants::UNSET_DEPOSIT_REQUESTS_START_INDEX;

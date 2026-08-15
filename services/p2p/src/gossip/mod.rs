@@ -31,8 +31,8 @@ pub mod topics;
 pub mod validate;
 
 pub use pending::{
-    BoundedQueue, PendingBlock, PendingQueues, PendingSidecar, PendingSidecarReason,
-    PENDING_BLOCK_BOUND, PENDING_SIDECAR_BOUND,
+    BoundedQueue, PENDING_BLOCK_BOUND, PENDING_SIDECAR_BOUND, PendingBlock, PendingQueues,
+    PendingSidecar, PendingSidecarReason,
 };
 pub use registry::{
     GossipCall, GossipControlError, GossipsubControl, RecordingGossipsub, RegistryError,
@@ -43,7 +43,7 @@ pub use scoring::{
     column_topic_weight, render_scoring_doc, to_libp2p_scoring_config,
 };
 pub use seen::{
-    BlockSeenKey, BoundedSeenSet, ColumnSeenKey, SeenSets, BLOCK_SEEN_BOUND, COLUMN_SEEN_BOUND,
+    BLOCK_SEEN_BOUND, BlockSeenKey, BoundedSeenSet, COLUMN_SEEN_BOUND, ColumnSeenKey, SeenSets,
 };
 pub use topics::{
     MESSAGE_DOMAIN_INVALID_SNAPPY, MESSAGE_DOMAIN_VALID_SNAPPY, MESSAGE_ID_SIZE, SubnetCounts,
@@ -52,10 +52,10 @@ pub use topics::{
     message_id_invalid_snappy, message_id_valid_snappy,
 };
 pub use validate::{
+    DecodeCounter, IN_FLIGHT_VALIDATION_CAP, SizeError, ValidationPool, ValidatorKind,
     all_topics_have_validators, check_payload_len, check_payload_len_counted, max_container_bytes,
     parse_topic_name, production_kzg_verify, run_chain_in_late_verdicts, run_validation_pool,
-    ssz_max, validator_kind, DecodeCounter, SizeError, ValidationPool, ValidatorKind,
-    IN_FLIGHT_VALIDATION_CAP,
+    ssz_max, validator_kind,
 };
 
 /// Mainnet / Hoodi `ATTESTATION_SUBNET_COUNT` (phase0 networking config).

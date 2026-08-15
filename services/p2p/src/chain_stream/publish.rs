@@ -73,10 +73,7 @@ pub async fn run_publish_dispatch(
                 Ok(()) => {
                     pending.pop_front();
                     let d = metrics.queue_depth(QueueName::Publish);
-                    metrics.set_queue_depth(
-                        QueueName::Publish,
-                        (d + 1).min(PUBLISH_BOUND as i64),
-                    );
+                    metrics.set_queue_depth(QueueName::Publish, (d + 1).min(PUBLISH_BOUND as i64));
                 }
                 Err(mpsc::error::TrySendError::Full(_)) => break,
                 Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -133,7 +130,11 @@ pub async fn run_publish_dispatch(
     }
 }
 
-fn enqueue(pending: &mut VecDeque<PublishRequest>, req: PublishRequest, drops: &PublishDropCounter) {
+fn enqueue(
+    pending: &mut VecDeque<PublishRequest>,
+    req: PublishRequest,
+    drops: &PublishDropCounter,
+) {
     if pending.len() >= PUBLISH_BOUND {
         let _ = pending.pop_front();
         let n = drops.inc();

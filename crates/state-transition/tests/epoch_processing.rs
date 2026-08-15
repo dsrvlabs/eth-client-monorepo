@@ -11,12 +11,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cc_state_transition::{
-    process_effective_balance_updates, process_eth1_data_reset,
+    EpochError, process_effective_balance_updates, process_eth1_data_reset,
     process_historical_summaries_update, process_inactivity_updates,
     process_justification_and_finalization, process_participation_flag_updates,
     process_pending_consolidations, process_pending_deposits, process_proposer_lookahead,
     process_randao_mixes_reset, process_registry_updates, process_rewards_and_penalties,
-    process_slashings, process_slashings_reset, process_sync_committee_updates, EpochError,
+    process_slashings, process_slashings_reset, process_sync_committee_updates,
 };
 use cc_types::preset::{Mainnet, Minimal, Preset};
 use cc_types::{BeaconState, ForkName};
@@ -177,7 +177,12 @@ fn rebuild_pubkey_cache<P: Preset>(state: &mut BeaconState<P>) {
     let pk_entries: Vec<_> = state
         .validators_iter()
         .enumerate()
-        .map(|(i, v)| (v.pubkey, cc_types::primitives::ValidatorIndex::new(i as u64)))
+        .map(|(i, v)| {
+            (
+                v.pubkey,
+                cc_types::primitives::ValidatorIndex::new(i as u64),
+            )
+        })
         .collect();
     for (pk, idx) in pk_entries {
         state.caches_mut().pubkeys.insert(pk, idx);
@@ -274,14 +279,7 @@ fn handler_coverage() {
         // for this preset (mainnet omits sync_committee_updates).
         let expected: BTreeSet<_> = declared
             .iter()
-            .filter(|h| {
-                tests
-                    .join(preset)
-                    .join(FORK)
-                    .join(RUNNER)
-                    .join(h)
-                    .is_dir()
-            })
+            .filter(|h| tests.join(preset).join(FORK).join(RUNNER).join(h).is_dir())
             .cloned()
             .collect();
         assert_eq!(

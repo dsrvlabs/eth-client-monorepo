@@ -4,9 +4,9 @@
 
 use std::collections::HashSet;
 
+use cc_types::BeaconState;
 use cc_types::preset::Preset;
 use cc_types::primitives::ValidatorIndex;
-use cc_types::BeaconState;
 
 use crate::error::{BlockError, EpochError};
 use crate::helpers::accessors::{
@@ -18,23 +18,18 @@ use crate::helpers::constants::{
 };
 
 /// Spec `process_inactivity_updates`.
-pub fn process_inactivity_updates<P: Preset>(
-    state: &mut BeaconState<P>,
-) -> Result<(), EpochError> {
+pub fn process_inactivity_updates<P: Preset>(state: &mut BeaconState<P>) -> Result<(), EpochError> {
     // Skip the genesis epoch — scores are based on previous-epoch participation.
     if get_current_epoch(state) == GENESIS_EPOCH {
         return Ok(());
     }
 
     let previous_epoch = get_previous_epoch(state);
-    let matching_target: HashSet<ValidatorIndex> = get_unslashed_participating_indices(
-        state,
-        TIMELY_TARGET_FLAG_INDEX,
-        previous_epoch,
-    )
-    .map_err(block_to_epoch)?
-    .into_iter()
-    .collect();
+    let matching_target: HashSet<ValidatorIndex> =
+        get_unslashed_participating_indices(state, TIMELY_TARGET_FLAG_INDEX, previous_epoch)
+            .map_err(block_to_epoch)?
+            .into_iter()
+            .collect();
 
     let eligible = get_eligible_validator_indices(state);
     let not_leaking = !is_in_inactivity_leak(state);

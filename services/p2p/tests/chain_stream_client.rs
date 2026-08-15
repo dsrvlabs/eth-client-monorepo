@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use cc_p2p::chain_stream::{
     ChainStreamConfig, ChainStreamHandle, OUTSTANDING_CAP, OutstandingMap, PublishDropCounter,
-    run_chain_stream_client, run_publish_dispatch, stall_max_from_heartbeat, wait_reconnect_backoff,
+    run_chain_stream_client, run_publish_dispatch, stall_max_from_heartbeat,
+    wait_reconnect_backoff,
 };
 use cc_p2p::channels::{CHAIN_OUT_BOUND, ChainOutbound, VerdictResolution};
 use cc_p2p::metrics::P2pMetrics;
@@ -460,10 +461,7 @@ async fn outstanding_depth_metric_and_cap() {
     assert_eq!(OUTSTANDING_CAP, 1024);
     let m = metrics();
     m.set_queue_depth(cc_p2p::metrics::QueueName::Outstanding, 1024);
-    assert_eq!(
-        m.queue_depth(cc_p2p::metrics::QueueName::Outstanding),
-        1024
-    );
+    assert_eq!(m.queue_depth(cc_p2p::metrics::QueueName::Outstanding), 1024);
     m.set_saturation_ratio(1.0);
     assert_eq!(m.saturation_ratio_milli(), 1000);
 }

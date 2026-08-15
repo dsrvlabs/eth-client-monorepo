@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 /// Default reference slot time used to scale gossip clock disparity (mainnet).
@@ -97,8 +97,8 @@ impl DevnetParams {
     /// Load and validate a TOML parameter file.
     pub fn from_toml_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         let params: Self = toml::from_str(&text).context("parse devnet.toml")?;
         params.validate()?;
         Ok(params)

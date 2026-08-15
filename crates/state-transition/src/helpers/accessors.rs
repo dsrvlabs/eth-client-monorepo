@@ -5,22 +5,20 @@
 //! re-exported here so existing call sites keep the same import path.
 
 use cc_crypto::{
-    compute_domain, compute_signing_root, fast_aggregate_verify, get_domain, DOMAIN_BEACON_ATTESTER,
+    DOMAIN_BEACON_ATTESTER, compute_domain, compute_signing_root, fast_aggregate_verify, get_domain,
 };
+use cc_types::BeaconState;
 use cc_types::containers::{AttestationData, Checkpoint, Validator};
 use cc_types::operations::{Attestation, IndexedAttestation};
 use cc_types::preset::Preset;
-use cc_types::primitives::{
-    CommitteeIndex, DomainType, Epoch, Gwei, Root, Slot, ValidatorIndex,
-};
-use cc_types::BeaconState;
+use cc_types::primitives::{CommitteeIndex, DomainType, Epoch, Gwei, Root, Slot, ValidatorIndex};
 use ssz_types::BitVector;
 
 use crate::error::BlockError;
 use crate::helpers::constants::{
-    network, BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, GENESIS_EPOCH,
+    BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, GENESIS_EPOCH,
     MIN_ATTESTATION_INCLUSION_DELAY, MIN_EPOCHS_TO_INACTIVITY_PENALTY, PARTICIPATION_FLAG_WEIGHTS,
-    TIMELY_HEAD_FLAG_INDEX, TIMELY_SOURCE_FLAG_INDEX, TIMELY_TARGET_FLAG_INDEX,
+    TIMELY_HEAD_FLAG_INDEX, TIMELY_SOURCE_FLAG_INDEX, TIMELY_TARGET_FLAG_INDEX, network,
 };
 use crate::helpers::misc::{
     compute_epoch_at_slot, compute_start_slot_at_epoch, integer_squareroot, u64_to_bytes_le,
@@ -72,11 +70,7 @@ pub fn get_randao_mix<P: Preset>(state: &BeaconState<P>, epoch: Epoch) -> Result
 
 /// Spec `compute_time_at_slot(state, slot)` with runtime `seconds_per_slot`.
 #[inline]
-pub fn compute_time_at_slot(
-    genesis_time: u64,
-    slot: Slot,
-    seconds_per_slot: u64,
-) -> u64 {
+pub fn compute_time_at_slot(genesis_time: u64, slot: Slot, seconds_per_slot: u64) -> u64 {
     genesis_time.saturating_add(slot.as_u64().saturating_mul(seconds_per_slot))
 }
 
@@ -100,10 +94,7 @@ pub fn get_block_root_at_slot<P: Preset>(
 }
 
 /// Spec `get_block_root(state, epoch)`.
-pub fn get_block_root<P: Preset>(
-    state: &BeaconState<P>,
-    epoch: Epoch,
-) -> Result<Root, BlockError> {
+pub fn get_block_root<P: Preset>(state: &BeaconState<P>, epoch: Epoch) -> Result<Root, BlockError> {
     get_block_root_at_slot(state, compute_start_slot_at_epoch::<P>(epoch))
 }
 
@@ -242,7 +233,10 @@ pub fn get_indexed_attestation<P: Preset>(
     indices.sort_by_key(|i| i.as_u64());
     indices.dedup();
     let attesting_indices = ssz_types::VariableList::new(indices).map_err(|_| {
-        invalid_op("attestation", "attesting_indices exceeds MaxValidatorsPerSlot")
+        invalid_op(
+            "attestation",
+            "attesting_indices exceeds MaxValidatorsPerSlot",
+        )
     })?;
     Ok(IndexedAttestation {
         attesting_indices,
@@ -352,9 +346,7 @@ pub fn is_in_inactivity_leak<P: Preset>(state: &BeaconState<P>) -> bool {
 }
 
 /// Spec `get_eligible_validator_indices`.
-pub fn get_eligible_validator_indices<P: Preset>(
-    state: &BeaconState<P>,
-) -> Vec<ValidatorIndex> {
+pub fn get_eligible_validator_indices<P: Preset>(state: &BeaconState<P>) -> Vec<ValidatorIndex> {
     let previous_epoch = get_previous_epoch(state);
     state
         .validators_iter()
@@ -483,11 +475,9 @@ pub fn get_activation_exit_churn_limit<P: Preset>(
     state: &BeaconState<P>,
 ) -> Result<Gwei, BlockError> {
     let balance_churn = get_balance_churn_limit(state)?;
-    Ok(Gwei::new(
-        balance_churn
-            .as_u64()
-            .min(network::max_per_epoch_activation_exit_churn_limit::<P>().as_u64()),
-    ))
+    Ok(Gwei::new(balance_churn.as_u64().min(
+        network::max_per_epoch_activation_exit_churn_limit::<P>().as_u64(),
+    )))
 }
 
 /// Spec `get_consolidation_churn_limit`.
@@ -567,7 +557,12 @@ pub fn validator_at<'a, P: Preset>(
 ) -> Result<&'a Validator, BlockError> {
     state
         .validators_get(index.as_u64() as usize)
-        .ok_or_else(|| invalid_op(op, format!("validator index {} out of range", index.as_u64())))
+        .ok_or_else(|| {
+            invalid_op(
+                op,
+                format!("validator index {} out of range", index.as_u64()),
+            )
+        })
 }
 
 /// Mutable validator borrow.
@@ -584,7 +579,10 @@ pub fn validator_at_mut<'a, P: Preset>(
             format!("validator index {} out of range", index.as_u64()),
         ));
     }
-    state
-        .validators_get_mut(i)
-        .ok_or_else(|| invalid_op(op, format!("validator index {} out of range", index.as_u64())))
+    state.validators_get_mut(i).ok_or_else(|| {
+        invalid_op(
+            op,
+            format!("validator index {} out of range", index.as_u64()),
+        )
+    })
 }

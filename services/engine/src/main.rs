@@ -15,10 +15,10 @@ use std::sync::Arc;
 
 use cc_bootstrap::{PeerSpec, ServiceSpec, TelemetrySettings};
 use cc_config::ServiceConfig;
+use cc_engine::SubscriptionSet;
 use cc_engine::capabilities::CapabilityCache;
 use cc_engine::config::EngineTransportConfig;
 use cc_engine::fastpath::{FastpathLane, hoodi_blob_bound};
-use cc_engine::SubscriptionSet;
 use cc_engine::inject::{INJECT_QUEUE_BOUND, InjectStreamConfig, run_inject_stream_client};
 use cc_engine::jwt::JwtSecret;
 use cc_engine::metrics::EngineMetrics;
@@ -110,12 +110,15 @@ async fn main() -> anyhow::Result<()> {
         Some(engine_metrics.clone()),
         slot_duration,
     );
-    let schedule = cfg.transport.el_fork_schedule().unwrap_or(cc_engine::version::ElForkSchedule {
-        osaka_time: 0,
-        bpo1_time: None,
-        bpo2_time: None,
-        amsterdam_time: None,
-    });
+    let schedule = cfg
+        .transport
+        .el_fork_schedule()
+        .unwrap_or(cc_engine::version::ElForkSchedule {
+            osaka_time: 0,
+            bpo1_time: None,
+            bpo2_time: None,
+            amsterdam_time: None,
+        });
     let _upcheck = spawn_upcheck_driver(
         state.clone(),
         Arc::clone(&transport),

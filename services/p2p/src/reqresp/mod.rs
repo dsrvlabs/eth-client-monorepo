@@ -23,52 +23,52 @@ pub mod server;
 pub mod status;
 
 pub use blocks::{
+    BlockServeCtx, BlockServeError, BlocksByHeadRequest, BlocksByRangeRequest, BlocksByRootRequest,
+    MAX_REQUEST_BLOCKS_DENEB, MIN_EPOCHS_FOR_BLOCK_REQUESTS, PlannedBlocks,
     compute_min_epochs_for_block_requests, plan_block_response, serve_blocks_by_head,
     serve_blocks_by_range, serve_blocks_by_root, validate_block_count, validate_root_list_len,
-    BlockServeCtx, BlockServeError, BlocksByHeadRequest, BlocksByRangeRequest, BlocksByRootRequest,
-    PlannedBlocks, MAX_REQUEST_BLOCKS_DENEB, MIN_EPOCHS_FOR_BLOCK_REQUESTS,
+};
+pub use client::{
+    DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_PEERS, Exhausted, PeerPredicate, Priority, RequestPayload,
+    RequestScheduler, RequestSpec, ScheduleError, SchedulerConfig,
+};
+pub use codec::{
+    CONTEXT_BYTES_LEN, MAX_ERROR_MESSAGE, MAX_PAYLOAD_SIZE, RESP_TIMEOUT, ResponseChunk,
+    ResponseCode, SszLimits, SszSnappyFraming, TTFB_TIMEOUT,
 };
 pub use columns::{
+    ByRootFaultPolicy, ByRootServeDecision, ColumnServeCtx, ColumnsByRangeRequest,
+    ColumnsByRootRequest, MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS,
     compute_max_request_data_column_sidecars, decide_by_root_column_serve, make_by_root_identifier,
     min_epochs_for_data_column_sidecars_requests, plan_column_response, serve_columns_by_range,
     serve_columns_by_root, stall_first_byte_delay, validate_identifier_list_len,
-    validate_range_sidecar_budget, ByRootFaultPolicy, ByRootServeDecision, ColumnServeCtx,
-    ColumnsByRangeRequest, ColumnsByRootRequest, MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS,
-};
-pub use client::{
-    Exhausted, PeerPredicate, Priority, RequestPayload, RequestScheduler, RequestSpec,
-    ScheduleError, SchedulerConfig, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_PEERS,
-};
-pub use codec::{
-    ResponseChunk, ResponseCode, SszLimits, SszSnappyFraming, CONTEXT_BYTES_LEN, MAX_ERROR_MESSAGE,
-    MAX_PAYLOAD_SIZE, RESP_TIMEOUT, TTFB_TIMEOUT,
+    validate_range_sidecar_budget,
 };
 pub use handshake::{
-    decode_goodbye_ssz, encode_goodbye_ssz, handle_inbound_goodbye, GoodbyeReceipt, HandshakeBook,
-    HandshakeDeps, InboundStatusResult, OutboundAction, PeerHandshakeState,
+    GoodbyeReceipt, HandshakeBook, HandshakeDeps, InboundStatusResult, OutboundAction,
+    PeerHandshakeState, decode_goodbye_ssz, encode_goodbye_ssz, handle_inbound_goodbye,
 };
 pub use limits::{
-    InboundRateLimiter, OutboundLimiter, RateLimitKind, RateLimitOutcome, TokenBucket,
     GLOBAL_MULTIPLIER, INBOUND_BLOCKS_CAPACITY, INBOUND_COLUMNS_CAPACITY, INBOUND_WINDOW,
-    OUTBOUND_MAX_IN_FLIGHT_PER_PEER, OUTBOUND_MAX_IN_FLIGHT_PER_PROTOCOL,
-    RATE_LIMIT_ERROR_MESSAGE,
+    InboundRateLimiter, OUTBOUND_MAX_IN_FLIGHT_PER_PEER, OUTBOUND_MAX_IN_FLIGHT_PER_PROTOCOL,
+    OutboundLimiter, RATE_LIMIT_ERROR_MESSAGE, RateLimitKind, RateLimitOutcome, TokenBucket,
 };
 pub use metadata::{
+    CgcEval, CgcPolicy, LocalMetaData, METADATA_V3_SSZ_LEN, MetaDataV3,
     decode_metadata_response_framed, decode_metadata_ssz, encode_metadata_request,
-    encode_metadata_response, evaluate_peer_cgc, CgcEval, CgcPolicy, LocalMetaData, MetaDataV3,
-    METADATA_V3_SSZ_LEN,
+    encode_metadata_response, evaluate_peer_cgc,
 };
 pub use ping::{
-    decode_ping_response_framed, decode_ping_ssz, encode_ping_request, encode_ping_response,
-    seq_mismatch, Ping, PING_SSZ_LEN,
+    PING_SSZ_LEN, Ping, decode_ping_response_framed, decode_ping_ssz, encode_ping_request,
+    encode_ping_response, seq_mismatch,
 };
 pub use server::{
-    is_block_serve_protocol, is_column_serve_protocol, serve_block_protocol,
-    serve_column_protocol, BlockServeState, FramedServe, ServeResultLabel,
+    BlockServeState, FramedServe, ServeResultLabel, is_block_serve_protocol,
+    is_column_serve_protocol, serve_block_protocol, serve_column_protocol,
 };
 pub use status::{
-    build_local_status, decode_status_response_framed, decode_status_ssz, encode_status_request,
-    encode_status_response, evaluate_peer_status, StatusEval, StatusV2, STATUS_V2_SSZ_LEN,
+    STATUS_V2_SSZ_LEN, StatusEval, StatusV2, build_local_status, decode_status_response_framed,
+    decode_status_ssz, encode_status_request, encode_status_response, evaluate_peer_status,
 };
 
 use cc_libp2p::reexport::{ProtocolSupport, StreamProtocol};
@@ -173,9 +173,7 @@ impl Protocol {
     pub const fn is_block_protocol(self) -> bool {
         matches!(
             self,
-            Self::BeaconBlocksByRangeV2
-                | Self::BeaconBlocksByRootV2
-                | Self::BeaconBlocksByHeadV1
+            Self::BeaconBlocksByRangeV2 | Self::BeaconBlocksByRootV2 | Self::BeaconBlocksByHeadV1
         )
     }
 
@@ -230,10 +228,7 @@ impl Protocol {
             Self::GoodbyeV1 => SszLimits { min: 0, max: 0 },
             Self::PingV1 => SszLimits { min: 8, max: 8 },
             // MetaData v3: seq + attnets(8) + syncnets(1) + cgc ≈ 8+8+1+8 + bitvector packing.
-            Self::MetaDataV3 => SszLimits {
-                min: 8,
-                max: 256,
-            },
+            Self::MetaDataV3 => SszLimits { min: 8, max: 256 },
             Self::BeaconBlocksByRangeV2
             | Self::BeaconBlocksByRootV2
             | Self::BeaconBlocksByHeadV1
@@ -248,9 +243,7 @@ impl Protocol {
     /// Parse a negotiated protocol ID string.
     #[must_use]
     pub fn from_protocol_id(id: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|p| p.protocol_id() == id)
+        Self::ALL.into_iter().find(|p| p.protocol_id() == id)
     }
 }
 
@@ -331,10 +324,7 @@ mod tests {
             .into_iter()
             .map(|(p, _)| p.to_string())
             .collect();
-        let expected: BTreeSet<String> = ALL_PROTOCOL_IDS
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
+        let expected: BTreeSet<String> = ALL_PROTOCOL_IDS.into_iter().map(str::to_owned).collect();
         assert_eq!(
             registered, expected,
             "registered protocol-ID set must exactly equal the nine"

@@ -82,9 +82,9 @@ impl LatestValidHash {
     pub fn from_optional_bytes(field: Option<&[u8]>) -> Result<Self, InvalidationError> {
         match field {
             None => Ok(Self::Null),
-            Some(bytes) if bytes.len() != 32 => Err(InvalidationError::BadLatestValidHashLen {
-                got: bytes.len(),
-            }),
+            Some(bytes) if bytes.len() != 32 => {
+                Err(InvalidationError::BadLatestValidHashLen { got: bytes.len() })
+            }
             Some(bytes) if bytes.iter().all(|&b| b == 0) => Ok(Self::Zero),
             Some(bytes) => {
                 let mut arr = [0u8; 32];
@@ -168,7 +168,10 @@ pub fn select_invalid_block(
 
     match latest_valid_hash {
         LatestValidHash::Null => Ok(block_in_question),
-        LatestValidHash::Zero => Ok(first_non_irrelevant_ancestor(proto_array, block_in_question)),
+        LatestValidHash::Zero => Ok(first_non_irrelevant_ancestor(
+            proto_array,
+            block_in_question,
+        )),
         LatestValidHash::Hash(hash) => {
             // Linear scan keyed on ProtoNode.execution_block_hash (§12/9, ≠13/3).
             // No HashMap index — see module docs (CC-3C may justify a derivation later).
@@ -382,14 +385,7 @@ mod tests {
     fn snapshot(pa: &ProtoArray) -> Vec<(Root, ExecutionStatus, i64, Hash256)> {
         pa.nodes()
             .iter()
-            .map(|n| {
-                (
-                    n.root,
-                    n.execution_status,
-                    n.weight,
-                    n.execution_block_hash,
-                )
-            })
+            .map(|n| (n.root, n.execution_status, n.weight, n.execution_block_hash))
             .collect()
     }
 
@@ -502,16 +498,10 @@ mod tests {
             hash(0x44),
         );
 
-        let inv_null =
-            select_invalid_block(&pa, root(4), LatestValidHash::Null).unwrap();
-        let inv_zero =
-            select_invalid_block(&pa, root(4), LatestValidHash::Zero).unwrap();
+        let inv_null = select_invalid_block(&pa, root(4), LatestValidHash::Null).unwrap();
+        let inv_zero = select_invalid_block(&pa, root(4), LatestValidHash::Zero).unwrap();
         assert_eq!(inv_null, root(4), "null → only the payload block");
-        assert_eq!(
-            inv_zero,
-            root(3),
-            "zero → first non-Irrelevant ancestor"
-        );
+        assert_eq!(inv_zero, root(3), "zero → first non-Irrelevant ancestor");
         assert_ne!(
             inv_null, inv_zero,
             "absent and all-zeros must select different invalidBlocks"
@@ -531,11 +521,17 @@ mod tests {
         assert_eq!(pa.get(&root(2)).unwrap().execution_block_hash, hash(0x22));
         assert_eq!(pa.get(&root(3)).unwrap().execution_block_hash, hash(0x33));
 
-        let (invalid, n) =
-            invalidate_from_latest_valid_hash(&mut pa, root(4), lvh).unwrap();
-        assert_eq!(invalid, root(3), "invalidBlock is child of match (C), not B");
+        let (invalid, n) = invalidate_from_latest_valid_hash(&mut pa, root(4), lvh).unwrap();
+        assert_eq!(
+            invalid,
+            root(3),
+            "invalidBlock is child of match (C), not B"
+        );
         // B (match) untouched.
-        assert_eq!(pa.get(&root(2)).unwrap().execution_status, ExecutionStatus::Optimistic);
+        assert_eq!(
+            pa.get(&root(2)).unwrap().execution_status,
+            ExecutionStatus::Optimistic
+        );
         assert!(!pa.get(&root(2)).unwrap().execution_status.is_invalidated());
         // C and D invalidated; A untouched.
         assert!(pa.get(&root(3)).unwrap().execution_status.is_invalidated());
@@ -597,12 +593,8 @@ mod tests {
             }
         }
 
-        let (invalid, n) = invalidate_from_latest_valid_hash(
-            &mut pa,
-            root(5),
-            LatestValidHash::Zero,
-        )
-        .unwrap();
+        let (invalid, n) =
+            invalidate_from_latest_valid_hash(&mut pa, root(5), LatestValidHash::Zero).unwrap();
         assert_eq!(
             invalid,
             root(3),
@@ -715,12 +707,9 @@ mod tests {
         );
 
         let before = chain_invalidated_nodes_total();
-        let (inv_null, n_null) = invalidate_from_latest_valid_hash(
-            &mut pa_null,
-            root(4),
-            LatestValidHash::Null,
-        )
-        .unwrap();
+        let (inv_null, n_null) =
+            invalidate_from_latest_valid_hash(&mut pa_null, root(4), LatestValidHash::Null)
+                .unwrap();
         let (inv_miss, n_miss) = invalidate_from_latest_valid_hash(
             &mut pa_missing,
             root(4),
@@ -825,12 +814,9 @@ mod tests {
             .collect::<Vec<_>>();
 
         // Invalidate B (as if LVH pointed at A's exec hash → child B).
-        let (invalid, n) = invalidate_from_latest_valid_hash(
-            &mut pa,
-            root(4),
-            LatestValidHash::Hash(hash(0x11)),
-        )
-        .unwrap();
+        let (invalid, n) =
+            invalidate_from_latest_valid_hash(&mut pa, root(4), LatestValidHash::Hash(hash(0x11)))
+                .unwrap();
         assert_eq!(invalid, root(2), "child of A on the chain is B");
         // Subtree of B: {B, C, D, E} = 4
         assert_eq!(n, 4);
@@ -854,7 +840,10 @@ mod tests {
         assert!(!pa.get(&root(6)).unwrap().execution_status.is_invalidated());
         assert!(!pa.get(&root(7)).unwrap().execution_status.is_invalidated());
         // Parent A still Valid (weight reduced by subtree total).
-        assert_eq!(pa.get(&root(1)).unwrap().execution_status, ExecutionStatus::Valid);
+        assert_eq!(
+            pa.get(&root(1)).unwrap().execution_status,
+            ExecutionStatus::Valid
+        );
         assert_eq!(pa.get(&root(1)).unwrap().weight, 50); // 100 − 50
         assert_eq!(chain_invalidated_nodes_total(), before + 4);
     }

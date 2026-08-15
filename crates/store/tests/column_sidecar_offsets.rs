@@ -13,16 +13,16 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use cc_store::{
-    BlockRegion, Durability, Engine, EngineOptions, BYTES_PER_BLOB_IN_SIDECAR,
-    COLUMN_HEADER_SLOT_SSZ_OFFSET, COLUMN_INDEX_SSZ_OFFSET, DATA_COLUMN_SIDECAR_FIXED_BYTES,
-    column_index_at_offset, column_slot_at_offset, columns_for_block, data_column_sidecar_size,
-    get_column_by_root, put_column,
+    BYTES_PER_BLOB_IN_SIDECAR, BlockRegion, COLUMN_HEADER_SLOT_SSZ_OFFSET, COLUMN_INDEX_SSZ_OFFSET,
+    DATA_COLUMN_SIDECAR_FIXED_BYTES, Durability, Engine, EngineOptions, column_index_at_offset,
+    column_slot_at_offset, columns_for_block, data_column_sidecar_size, get_column_by_root,
+    put_column,
 };
+use cc_types::NUMBER_OF_COLUMNS;
 use cc_types::containers::{BeaconBlockHeader, SignedBeaconBlockHeader};
 use cc_types::preset::Mainnet;
 use cc_types::primitives::{Cell, KzgCommitment, KzgProof, Root, Slot, ValidatorIndex};
 use cc_types::sidecar::DataColumnSidecar;
-use cc_types::NUMBER_OF_COLUMNS;
 use ssz::{Decode, Encode};
 use ssz_types::{FixedVector, VariableList};
 
@@ -108,12 +108,12 @@ fn index_at_0_and_header_slot_at_20_match_full_ssz_decode() {
     let decoded = DataColumnSidecar::<Mainnet>::from_ssz_bytes(&bytes)
         .unwrap_or_else(|e| panic!("full SSZ decode failed: {e:?}"));
     assert_eq!(decoded.index, sc.index);
-    assert_eq!(decoded.signed_block_header.message.slot, sc.signed_block_header.message.slot);
-    assert_eq!(from_offset_index as u64, decoded.index);
     assert_eq!(
-        from_offset_slot,
-        decoded.signed_block_header.message.slot
+        decoded.signed_block_header.message.slot,
+        sc.signed_block_header.message.slot
     );
+    assert_eq!(from_offset_index as u64, decoded.index);
+    assert_eq!(from_offset_slot, decoded.signed_block_header.message.slot);
 
     // Constants as documented.
     assert_eq!(COLUMN_INDEX_SSZ_OFFSET, 0);
@@ -149,16 +149,7 @@ fn real_sidecar_byte_identical_store_roundtrip() {
     let mut b = eng.batch();
     {
         let rt = eng.read().unwrap();
-        put_column(
-            &rt,
-            &mut b,
-            slot,
-            &root,
-            index,
-            &bytes,
-            BlockRegion::Hot,
-        )
-        .unwrap();
+        put_column(&rt, &mut b, slot, &root, index, &bytes, BlockRegion::Hot).unwrap();
     }
     eng.commit(b).unwrap();
     let got = get_column_by_root(&eng.read().unwrap(), &root, index, Some(BlockRegion::Hot))

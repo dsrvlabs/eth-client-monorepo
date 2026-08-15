@@ -21,11 +21,11 @@ use std::time::Duration;
 use cc_libp2p::reexport::{ProtocolSupport, StreamProtocol};
 use cc_libp2p::{BehaviourConfig, CcBehaviour, Keypair};
 use cc_p2p::reqresp::{
-    ethereum_behaviour_config, ethereum_reqresp_protocols, ALL_PROTOCOL_IDS, Protocol,
-    RESP_TIMEOUT, TTFB_TIMEOUT,
+    ALL_PROTOCOL_IDS, Protocol, RESP_TIMEOUT, TTFB_TIMEOUT, ethereum_behaviour_config,
+    ethereum_reqresp_protocols,
 };
 use futures::AsyncRead;
-use tokio::time::{timeout, Instant};
+use tokio::time::{Instant, timeout};
 
 /// Exact-set registration on the production behaviour config (CC-23/1).
 #[test]
@@ -50,10 +50,7 @@ fn behaviour_registers_exactly_nine_protocols() {
             p.to_string()
         })
         .collect();
-    let expected: BTreeSet<String> = ALL_PROTOCOL_IDS
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+    let expected: BTreeSet<String> = ALL_PROTOCOL_IDS.into_iter().map(str::to_owned).collect();
     assert_eq!(registered, expected);
     assert!(
         registered
@@ -72,10 +69,7 @@ fn ethereum_reqresp_protocols_helper_matches_constant() {
         .into_iter()
         .map(|(p, _)| p.to_string())
         .collect();
-    let from_const: BTreeSet<String> = ALL_PROTOCOL_IDS
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+    let from_const: BTreeSet<String> = ALL_PROTOCOL_IDS.into_iter().map(str::to_owned).collect();
     assert_eq!(from_helper, from_const);
     assert_eq!(Protocol::ALL.len(), 9);
 }
@@ -197,12 +191,12 @@ fn behaviour_config_builder_accepts_custom_protocol_list() {
 /// (dedicated behaviours), not Status-for-everything.
 #[tokio::test]
 async fn dual_swarm_status_and_goodbye_negotiate_control_protocols() {
-    use cc_libp2p::reexport::{PeerId, Swarm, SwarmEvent};
-    use cc_libp2p::{CcBehaviourEvent, ReqRespRequest, ReqRespResponse, build_swarm, SwarmConfig};
     use cc_libp2p::reexport::request_response::{Event as RREvent, Message as RRMessage};
+    use cc_libp2p::reexport::{PeerId, Swarm, SwarmEvent};
+    use cc_libp2p::{CcBehaviourEvent, ReqRespRequest, ReqRespResponse, SwarmConfig, build_swarm};
     use cc_p2p::channels::GoodbyeReason;
     use cc_p2p::reqresp::{
-        encode_goodbye_ssz, encode_status_response, StatusV2, STATUS_V2_SSZ_LEN,
+        STATUS_V2_SSZ_LEN, StatusV2, encode_goodbye_ssz, encode_status_response,
     };
     use cc_types::{Epoch, ForkDigest, Root, Slot};
     use futures::StreamExt;
@@ -210,8 +204,7 @@ async fn dual_swarm_status_and_goodbye_negotiate_control_protocols() {
     fn make_swarm() -> (PeerId, Swarm<CcBehaviour>) {
         let keypair = Keypair::generate_secp256k1();
         let peer_id = PeerId::from_public_key(&keypair.public());
-        let behaviour =
-            CcBehaviour::new(&keypair, ethereum_behaviour_config()).expect("behaviour");
+        let behaviour = CcBehaviour::new(&keypair, ethereum_behaviour_config()).expect("behaviour");
         let swarm = build_swarm(keypair, behaviour, &SwarmConfig::default()).expect("swarm");
         (peer_id, swarm)
     }
@@ -352,7 +345,10 @@ async fn dual_swarm_status_and_goodbye_negotiate_control_protocols() {
     .expect("dual-swarm control protocol timeout");
 
     assert!(status_ok, "Status must round-trip on dedicated behaviour");
-    assert!(goodbye_ok, "Goodbye must negotiate goodbye protocol, not status");
+    assert!(
+        goodbye_ok,
+        "Goodbye must negotiate goodbye protocol, not status"
+    );
 }
 
 // Silence unused-import lint if Instant is only used in async tests under cfg.

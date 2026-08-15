@@ -133,10 +133,7 @@ impl ProbeReport {
         let _ = fs::remove_file(&tmp);
 
         {
-            let mut f = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&tmp)?;
+            let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
             f.write_all(&body)?;
             f.sync_all()?;
         }

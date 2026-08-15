@@ -135,8 +135,12 @@ async fn inbound_and_outbound_caps_independent() {
     // A can still dial outbound even with inbound full.
     let (_id3, mut third) = make_swarm(connection_limits(Some(10), Some(10), Some(10)));
     let addr_third = listen(&mut third).await;
-    a.dial(DialOpts::unknown_peer_id().address(addr_third.clone()).build())
-        .expect("a dials third");
+    a.dial(
+        DialOpts::unknown_peer_id()
+            .address(addr_third.clone())
+            .build(),
+    )
+    .expect("a dials third");
 
     let mut a_outbound_ok = false;
     timeout(Duration::from_secs(15), async {

@@ -12,8 +12,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
-use cc_libp2p::reexport::identity::{self, Keypair};
 use cc_libp2p::PeerId;
+use cc_libp2p::reexport::identity::{self, Keypair};
 use discv5::enr::{CombinedKey, Enr, NodeId};
 use thiserror::Error;
 
@@ -196,10 +196,11 @@ fn create_new(path: &Path) -> Result<NodeIdentity, IdentityError> {
     }
 
     let keypair = Keypair::generate_secp256k1();
-    let secret = secret_bytes_from_keypair(&keypair).map_err(|source| IdentityError::InvalidSecret {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let secret =
+        secret_bytes_from_keypair(&keypair).map_err(|source| IdentityError::InvalidSecret {
+            path: path.to_path_buf(),
+            source,
+        })?;
 
     write_secret_file(path, &secret)?;
     // Re-check what landed on disk (mode must be 0600).
@@ -234,10 +235,11 @@ fn keypair_from_secret(path: &Path, secret: [u8; 32]) -> Result<Keypair, Identit
 
 fn node_id_from_secret(path: &Path, secret: [u8; 32]) -> Result<NodeId, IdentityError> {
     let mut bytes = secret;
-    let combined = CombinedKey::secp256k1_from_bytes(&mut bytes).map_err(|e| IdentityError::Discv5 {
-        path: path.to_path_buf(),
-        message: format!("CombinedKey::secp256k1_from_bytes: {e}"),
-    })?;
+    let combined =
+        CombinedKey::secp256k1_from_bytes(&mut bytes).map_err(|e| IdentityError::Discv5 {
+            path: path.to_path_buf(),
+            message: format!("CombinedKey::secp256k1_from_bytes: {e}"),
+        })?;
     let enr = Enr::empty(&combined).map_err(|e| IdentityError::Discv5 {
         path: path.to_path_buf(),
         message: format!("Enr::empty: {e}"),
@@ -301,10 +303,13 @@ fn write_secret_file(path: &Path, secret: &[u8; 32]) -> Result<(), IdentityError
             path: path.to_path_buf(),
             source,
         })?;
-        let mut perms = f.metadata().map_err(|source| IdentityError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?.permissions();
+        let mut perms = f
+            .metadata()
+            .map_err(|source| IdentityError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?
+            .permissions();
         perms.set_mode(NODE_KEY_MODE);
         fs::set_permissions(path, perms).map_err(|source| IdentityError::Io {
             path: path.to_path_buf(),

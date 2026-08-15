@@ -93,7 +93,10 @@ pub fn require_devnet_gvr(
     knob: &str,
     genesis_validators_root: Option<&str>,
 ) -> Result<(), DangerousKnobError> {
-    let Some(raw) = genesis_validators_root.map(str::trim).filter(|s| !s.is_empty()) else {
+    let Some(raw) = genesis_validators_root
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
         return Err(DangerousKnobError {
             knob: knob.to_owned(),
             genesis_validators_root: String::new(),
@@ -187,8 +190,8 @@ mod tests {
 
     fn load_retention_profile() -> RetentionProfile {
         let path = workspace_devnet_retention();
-        let text = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let text =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         toml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
     }
 
@@ -205,13 +208,8 @@ mod tests {
         assert_eq!(ro.columns_epochs, 64);
         assert_eq!(ro.blocks_epochs, 256);
 
-        let err = check_dangerous_knobs(
-            Some(HOODI_GENESIS_VALIDATORS_ROOT),
-            true,
-            None,
-            None,
-        )
-        .expect_err("Hoodi + retention_override must refuse");
+        let err = check_dangerous_knobs(Some(HOODI_GENESIS_VALIDATORS_ROOT), true, None, None)
+            .expect_err("Hoodi + retention_override must refuse");
         assert_eq!(err.knob, KNOB_RETENTION_OVERRIDE);
         assert!(
             err.to_string().contains("storage.retention_override"),
@@ -303,8 +301,11 @@ mod tests {
 
     #[test]
     fn mainnet_gvr_also_refused() {
-        let err = require_devnet_gvr(KNOB_RETENTION_OVERRIDE, Some(MAINNET_GENESIS_VALIDATORS_ROOT))
-            .expect_err("mainnet must refuse");
+        let err = require_devnet_gvr(
+            KNOB_RETENTION_OVERRIDE,
+            Some(MAINNET_GENESIS_VALIDATORS_ROOT),
+        )
+        .expect_err("mainnet must refuse");
         assert!(err.to_string().contains("mainnet"), "got: {err}");
     }
 

@@ -369,7 +369,10 @@ fn next_regular_fork_version(cfg: &ChainConfig, epoch: Epoch) -> ForkVersion {
     // Ascending regular-fork table: (epoch, version).
     let schedule: [(u64, ForkVersion); 6] = [
         (cfg.altair_fork_epoch.as_u64(), cfg.altair_fork_version),
-        (cfg.bellatrix_fork_epoch.as_u64(), cfg.bellatrix_fork_version),
+        (
+            cfg.bellatrix_fork_epoch.as_u64(),
+            cfg.bellatrix_fork_version,
+        ),
         (cfg.capella_fork_epoch.as_u64(), cfg.capella_fork_version),
         (cfg.deneb_fork_epoch.as_u64(), cfg.deneb_fork_version),
         (cfg.electra_fork_epoch.as_u64(), cfg.electra_fork_version),

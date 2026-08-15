@@ -119,8 +119,7 @@ pub async fn run_probe(cfg: &ProbeConfig) -> Result<ProbeOutcome, ProbeError> {
         Some(ProbeClient::dial_columns(&cfg.peer, cfg.fork_digest).await?)
     };
 
-    let positive =
-        run_positive(&mut blocks, columns_client.as_mut(), eas, head, cfg).await?;
+    let positive = run_positive(&mut blocks, columns_client.as_mut(), eas, head, cfg).await?;
     let negative = run_negative(&mut blocks, columns_client.as_mut(), eas, cfg).await;
 
     Ok(ProbeOutcome {

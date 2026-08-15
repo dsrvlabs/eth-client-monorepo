@@ -72,45 +72,39 @@ use std::time::{Duration, Instant};
 use cc_proto::common::BuildInfo;
 use cc_proto::storage::storage_service_server::StorageService;
 use cc_proto::storage::{
-    BackfillProgress as ProtoBackfillProgress, FinalizedCheckpoint, GetBlocksByRangeRequest,
-    GetBlocksByRootRequest, GetBlocksResponse, GetColumnsByRangeRequest, GetColumnsByRootRequest,
-    GetColumnsResponse, GetFinalizedCheckpointHistoryRequest,
+    BackfillProgress as ProtoBackfillProgress, BlockSsz, ColumnSsz, FinalizedCheckpoint,
+    GetBlocksByRangeRequest, GetBlocksByRootRequest, GetBlocksResponse, GetColumnsByRangeRequest,
+    GetColumnsByRootRequest, GetColumnsResponse, GetFinalizedCheckpointHistoryRequest,
     GetFinalizedCheckpointHistoryResponse, GetHistoricalBlockRequest, GetHistoricalBlockResponse,
     GetInfoRequest, GetInfoResponse, GetSnapshotStateRequest, PutBackfillBatchRequest,
     PutBackfillBatchResponse, ServeWindow, SlotRange as ProtoSlotRange, StateChunk,
-    WatchServeWindowRequest, BlockSsz, ColumnSsz,
-    get_historical_block_request::Id as HistoricalBlockId,
+    WatchServeWindowRequest, get_historical_block_request::Id as HistoricalBlockId,
 };
 use cc_store::canonical::put_canonical;
 use cc_store::engine::Engine;
 use cc_store::keys::BlockRegion;
-use cc_store::meta::{
-    BackfillProgress, KEY_BACKFILL_PROG, KEY_SERVE_WINDOW, TABLE_META,
-};
+use cc_store::meta::{BackfillProgress, KEY_BACKFILL_PROG, KEY_SERVE_WINDOW, TABLE_META};
 use cc_store::{
-    blocks_by_range, columns_by_range, columns_for_block, get_block_by_root, get_column_by_root,
-    load_split, put_block, put_column, Root, Slot, SszDecode, SszEncode, StoreError,
-    MAX_BLOCKS_BY_RANGE, MAX_COLUMNS_BY_RANGE_SLOTS, MAX_SNAPSHOT_BYTES,
+    MAX_BLOCKS_BY_RANGE, MAX_COLUMNS_BY_RANGE_SLOTS, MAX_SNAPSHOT_BYTES, Root, Slot, SszDecode,
+    SszEncode, StoreError, blocks_by_range, columns_by_range, columns_for_block, get_block_by_root,
+    get_column_by_root, load_split, put_block, put_column,
 };
 use futures::Stream;
 use futures::StreamExt;
-use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio_stream::wrappers::WatchStream;
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status};
 
-use crate::history::{
-    finalized_checkpoint_history, historical_block_by_root, historical_block_by_slot,
-    not_available_status, snapshot_state_at, SnapshotLookup, DEFAULT_STATE_CHUNK_BYTES,
-};
 use crate::backfill::{
-    admit_descending_contiguous, admit_progress_bound_to_batch, admit_progress_monotone,
-    observe_put_backfill_batch, proto_progress_to_store,
-    BackfillBlockRow, BatchAdmitError,
+    BackfillBlockRow, BatchAdmitError, admit_descending_contiguous, admit_progress_bound_to_batch,
+    admit_progress_monotone, observe_put_backfill_batch, proto_progress_to_store,
 };
-use crate::metrics::{
-    ProtocolLabels, ServeLabels, ServeProtocol, ServeResult, StorageMetrics,
+use crate::history::{
+    DEFAULT_STATE_CHUNK_BYTES, SnapshotLookup, finalized_checkpoint_history,
+    historical_block_by_root, historical_block_by_slot, not_available_status, snapshot_state_at,
 };
+use crate::metrics::{ProtocolLabels, ServeLabels, ServeProtocol, ServeResult, StorageMetrics};
 use crate::writer::{MetaUpdate, WriterError, WriterHandle};
 
 /// Default per-response buffer ceiling (64 MiB).
@@ -620,7 +614,10 @@ impl StorageService for StorageServer {
             Some(
                 req.column_indices
                     .iter()
-                    .map(|&i| u16::try_from(i).map_err(|_| Status::invalid_argument("column index > u16::MAX")))
+                    .map(|&i| {
+                        u16::try_from(i)
+                            .map_err(|_| Status::invalid_argument("column index > u16::MAX"))
+                    })
                     .collect::<Result<Vec<_>, _>>()?,
             )
         };
@@ -692,7 +689,8 @@ impl StorageService for StorageServer {
                 for &idx in &indices {
                     match get_column_by_root(&rt, &root, idx, None).map_err(store_status)? {
                         Some(ssz) => {
-                            let slot = cc_store::column_slot_at_offset(&ssz).map_err(store_status)?;
+                            let slot =
+                                cc_store::column_slot_at_offset(&ssz).map_err(store_status)?;
                             if slot.as_u64() < eas {
                                 // Whole block below window — refuse the block unit.
                                 continue 'ids;
@@ -866,12 +864,7 @@ impl StorageService for StorageServer {
         commit_backfill(engine, self.writer.as_ref(), batch).await?;
 
         // Metrics only after a successful commit (CC-47 /8).
-        observe_put_backfill_batch(
-            &self.metrics,
-            progress.as_ref(),
-            block_bytes,
-            column_bytes,
-        );
+        observe_put_backfill_batch(&self.metrics, progress.as_ref(), block_bytes, column_bytes);
 
         Ok(Response::new(PutBackfillBatchResponse {
             blocks_written,
@@ -887,9 +880,7 @@ impl StorageService for StorageServer {
         // value then subsequent changes (watch::Receiver starts at current).
         let rx = self.window_tx.subscribe();
         let stream = WatchStream::new(rx).map(Ok);
-        Ok(Response::new(
-            Box::pin(stream) as BoxStream<ServeWindow>
-        ))
+        Ok(Response::new(Box::pin(stream) as BoxStream<ServeWindow>))
     }
 
     async fn get_historical_block(
@@ -1167,14 +1158,8 @@ fn materialise_blocks_for_request(
             // One read txn at admission — full key set under MVCC snapshot.
             let rt = engine.read().map_err(store_status)?;
             let split = load_split(&rt).map_err(store_status)?.map(|s| s.slot);
-            let blocks = materialise_blocks_capped(
-                &rt,
-                start_slot,
-                count,
-                split,
-                buffer_bytes,
-                mid_hook,
-            )?;
+            let blocks =
+                materialise_blocks_capped(&rt, start_slot, count, split, buffer_bytes, mid_hook)?;
             // `rt` drops here — before any byte leaves this process.
             Ok(blocks)
         }
@@ -1272,8 +1257,7 @@ fn materialise_columns_capped(
     let start = start_slot.as_u64();
     let end = start.saturating_add(count);
     for s in start..end {
-        let rows =
-            columns_by_range(rt, Slot::new(s), 1, split, columns).map_err(store_status)?;
+        let rows = columns_by_range(rt, Slot::new(s), 1, split, columns).map_err(store_status)?;
         if rows.is_empty() {
             continue;
         }
@@ -1352,9 +1336,7 @@ async fn commit_backfill(
             deletes: drained.deletes,
             done: None,
         };
-        w.submit_p1_committed(update)
-            .await
-            .map_err(writer_status)?;
+        w.submit_p1_committed(update).await.map_err(writer_status)?;
         Ok(())
     } else {
         engine.commit(batch).map_err(store_status)
@@ -1681,10 +1663,12 @@ mod tests {
 
         // Same body under the default budget (MAX_SNAPSHOT_BYTES) streams fine.
         let srv_ok = server_with(Arc::clone(&eng), ServeConfig::default());
-        assert!(srv_ok
-            .get_snapshot_state(Request::new(GetSnapshotStateRequest { slot: 32 }))
-            .await
-            .is_ok());
+        assert!(
+            srv_ok
+                .get_snapshot_state(Request::new(GetSnapshotStateRequest { slot: 32 }))
+                .await
+                .is_ok()
+        );
         assert_eq!(
             ServeConfig::default().snapshot_buffer_bytes,
             MAX_SNAPSHOT_BYTES,
@@ -1695,8 +1679,8 @@ mod tests {
 
     #[tokio::test]
     async fn finalized_checkpoint_history_rpc_returns_seeded() {
-        use cc_store::meta::{ForkChoiceScalars, KEY_FC_SCALARS, TABLE_META};
         use cc_store::SszEncode;
+        use cc_store::meta::{ForkChoiceScalars, KEY_FC_SCALARS, TABLE_META};
         use cc_types::{Checkpoint, Epoch};
 
         let (dir, eng) = open_engine("hist-rpc-fc");
@@ -1720,9 +1704,7 @@ mod tests {
 
         let srv = server_with(Arc::clone(&eng), ServeConfig::default());
         let resp = srv
-            .get_finalized_checkpoint_history(Request::new(
-                GetFinalizedCheckpointHistoryRequest {},
-            ))
+            .get_finalized_checkpoint_history(Request::new(GetFinalizedCheckpointHistoryRequest {}))
             .await
             .unwrap()
             .into_inner();
@@ -1813,7 +1795,10 @@ mod tests {
             .into_inner();
         assert!(!resp.columns.is_empty());
         for c in &resp.columns {
-            assert_eq!(sha256(&c.ssz), sha256(&synth_column(c.slot, c.index as u16)));
+            assert_eq!(
+                sha256(&c.ssz),
+                sha256(&synth_column(c.slot, c.index as u16))
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2003,10 +1988,11 @@ mod tests {
         let rt = eng.read().unwrap();
         assert!(get_block_by_root(&rt, &root).unwrap().is_none());
         assert!(get_column_by_root(&rt, &root, 0, None).unwrap().is_none());
-        assert!(rt
-            .get(TABLE_META, KEY_BACKFILL_PROG.as_bytes())
-            .unwrap()
-            .is_none());
+        assert!(
+            rt.get(TABLE_META, KEY_BACKFILL_PROG.as_bytes())
+                .unwrap()
+                .is_none()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2046,11 +2032,15 @@ mod tests {
 
         let rt = eng.read().unwrap();
         assert_eq!(get_block_by_root(&rt, &root).unwrap().unwrap(), ssz);
-        assert_eq!(get_column_by_root(&rt, &root, 1, None).unwrap().unwrap(), col);
-        assert!(rt
-            .get(TABLE_META, KEY_BACKFILL_PROG.as_bytes())
-            .unwrap()
-            .is_some());
+        assert_eq!(
+            get_column_by_root(&rt, &root, 1, None).unwrap().unwrap(),
+            col
+        );
+        assert!(
+            rt.get(TABLE_META, KEY_BACKFILL_PROG.as_bytes())
+                .unwrap()
+                .is_some()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2165,7 +2155,10 @@ mod tests {
             .into_inner();
 
         // First item is the current window.
-        let first = futures::StreamExt::next(&mut stream).await.unwrap().unwrap();
+        let first = futures::StreamExt::next(&mut stream)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(first.earliest_available_slot, 0);
 
         srv.publish_window(ServeWindow {
@@ -2177,7 +2170,10 @@ mod tests {
             branch: 1,
             holes: vec![],
         });
-        let second = futures::StreamExt::next(&mut stream).await.unwrap().unwrap();
+        let second = futures::StreamExt::next(&mut stream)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(second.earliest_available_slot, 42);
         assert_eq!(second.cgc, 8);
         let _ = std::fs::remove_dir_all(&dir);
@@ -2345,8 +2341,14 @@ mod tests {
     fn known_rpc_count_ten() {
         // CC-4F declared nine; CC-4I appends GetFinalizedCheckpointHistory → 10.
         let proto = include_str!("../../../proto/eth/storage/v1/storage.proto");
-        let count = proto.lines().filter(|l| l.trim_start().starts_with("rpc ")).count();
-        assert_eq!(count, 10, "storage.proto must declare 10 RPCs (9 + CC-4I history)");
+        let count = proto
+            .lines()
+            .filter(|l| l.trim_start().starts_with("rpc "))
+            .count();
+        assert_eq!(
+            count, 10,
+            "storage.proto must declare 10 RPCs (9 + CC-4I history)"
+        );
         assert!(proto.contains("stream ServeWindow"));
         assert!(proto.contains("GetFinalizedCheckpointHistory"));
         assert!(proto.contains("stream StateChunk"));
@@ -2364,7 +2366,7 @@ mod tests {
     /// `mid_serve_prune_hook`.
     fn force_delete_block_range(eng: &Engine, start: u64, count: u64) {
         use cc_store::keys::{encode_cold_block_key, encode_hot_block_key, encode_root_key};
-        use cc_store::{TABLE_BLOCKS_HOT, TABLE_BLOCK_SLOT_BY_ROOT, TABLE_CANONICAL};
+        use cc_store::{TABLE_BLOCK_SLOT_BY_ROOT, TABLE_BLOCKS_HOT, TABLE_CANONICAL};
         let mut b = eng.batch();
         for i in 0..count {
             let slot = Slot::new(start + i);
@@ -2389,12 +2391,13 @@ mod tests {
         let watermark = 1_000u64;
         seed_blocks(&eng, watermark, 128);
         let eng_hook = Arc::clone(&eng);
-        let srv = server_with(Arc::clone(&eng), ServeConfig::default())
-            .with_mid_serve_prune_hook(Arc::new(move || {
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default()).with_mid_serve_prune_hook(
+            Arc::new(move || {
                 // Forcing mechanism: mid_serve_prune_hook — prune pass driven
                 // from inside serve after the first slot is materialised.
                 force_delete_block_range(&eng_hook, watermark, 128);
-            }));
+            }),
+        );
         srv.publish_window(ServeWindow {
             earliest_available_slot: watermark,
             cgc: 4,
@@ -2522,8 +2525,7 @@ mod tests {
             "module doc must state margin cost (6.9 MiB columns, 0.7 MiB blocks)"
         );
         assert!(
-            prod.contains("do not copy that default")
-                || prod.contains("not copy that default"),
+            prod.contains("do not copy that default") || prod.contains("not copy that default"),
             "module doc must state Lighthouse's default of 0 was not copied"
         );
         assert!(

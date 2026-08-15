@@ -389,8 +389,8 @@ async fn occupancy_syncs_into_event_buffer_gauges() {
         ring_capacity: 8,
         subscriber_queue_capacity: 4,
         session_id: Some(7),
-            ring_bytes: usize::MAX,
-        });
+        ring_bytes: usize::MAX,
+    });
     let _sub = h.subscribe(None).await.unwrap();
     h.publish(EventInput::block_imported(
         1,

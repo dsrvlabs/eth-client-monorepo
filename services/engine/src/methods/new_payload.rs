@@ -94,10 +94,7 @@ pub fn build_new_payload_v4_params<P: Preset>(
     for (i, h) in versioned_hashes.iter().enumerate() {
         if h.len() != 32 {
             return Err(EngineError::Decode {
-                reason: format!(
-                    "versioned_hashes[{i}] must be 32 bytes, got {}",
-                    h.len()
-                ),
+                reason: format!("versioned_hashes[{i}] must be 32 bytes, got {}", h.len()),
             });
         }
     }

@@ -21,8 +21,9 @@ use std::collections::BTreeSet;
 use std::ops::Deref;
 
 use cc_types::{
+    CUSTODY_REQUIREMENT, CustodyIndex, ForkDigest, NUMBER_OF_CUSTODY_GROUPS, SubnetId,
     compute_columns_for_custody_group, compute_subnet_for_data_column_sidecar, get_custody_groups,
-    sampling_size, CustodyIndex, ForkDigest, NUMBER_OF_CUSTODY_GROUPS, SubnetId, CUSTODY_REQUIREMENT,
+    sampling_size,
 };
 use discv5::enr::NodeId;
 
@@ -275,10 +276,7 @@ impl CustodyManager {
     ///
     /// Feeds `cc_p2p_peers_custody_compatible` (clause 1's "≥ 8 custody-compatible").
     #[must_use]
-    pub fn count_compatible_peers(
-        &self,
-        peers: impl IntoIterator<Item = (NodeId, u64)>,
-    ) -> usize {
+    pub fn count_compatible_peers(&self, peers: impl IntoIterator<Item = (NodeId, u64)>) -> usize {
         count_custody_compatible_peers(&self.sampled, peers)
     }
 
@@ -355,9 +353,9 @@ mod tests {
     use crate::metrics::P2pMetrics;
     use alloy_primitives::U256;
     use cc_types::{
-        sampling_size as types_sampling_size, BlobParameters, BlobSchedule, ChainConfig, Epoch,
-        ForkVersion, PresetName, Root, SAMPLES_PER_SLOT, DATA_COLUMN_SIDECAR_SUBNET_COUNT,
-        NUMBER_OF_COLUMNS,
+        BlobParameters, BlobSchedule, ChainConfig, DATA_COLUMN_SIDECAR_SUBNET_COUNT, Epoch,
+        ForkVersion, NUMBER_OF_COLUMNS, PresetName, Root, SAMPLES_PER_SLOT,
+        sampling_size as types_sampling_size,
     };
     use std::collections::HashSet;
 
@@ -424,9 +422,7 @@ mod tests {
         // Fill to ≥ 100 with random node ids and cgc in 0..=NUMBER_OF_CUSTODY_GROUPS.
         let mut seed = 0xC0FFEE_u64;
         while pairs.len() < 100 {
-            seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1);
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
             let node = node_id_from_u64(seed);
             let cgc = seed % (NUMBER_OF_CUSTODY_GROUPS + 1);
             pairs.push((node, cgc));
@@ -446,7 +442,10 @@ mod tests {
                 "custody ⊈ sampled for node_id={:?} cgc={cgc}",
                 node_id.raw()
             );
-            assert_eq!(mgr.custodied().len() as u64, cgc.min(NUMBER_OF_CUSTODY_GROUPS));
+            assert_eq!(
+                mgr.custodied().len() as u64,
+                cgc.min(NUMBER_OF_CUSTODY_GROUPS)
+            );
             assert_eq!(
                 mgr.sampled().len() as u64,
                 types_sampling_size(cgc.min(NUMBER_OF_CUSTODY_GROUPS))
@@ -604,9 +603,7 @@ mod tests {
                         "unexpected topic {t_params}"
                     );
                 }
-                other => panic!(
-                    "expected (SetTopicParams, Subscribe) pair at {i}, got {other:?}"
-                ),
+                other => panic!("expected (SetTopicParams, Subscribe) pair at {i}, got {other:?}"),
             }
             i += 2;
         }
@@ -619,7 +616,11 @@ mod tests {
 
         // Peer with full custody covers everything → compatible.
         let full = node_id_from_u64(0x1111);
-        assert!(is_peer_custody_compatible(&sampled, full, NUMBER_OF_CUSTODY_GROUPS));
+        assert!(is_peer_custody_compatible(
+            &sampled,
+            full,
+            NUMBER_OF_CUSTODY_GROUPS
+        ));
 
         // Peer with cgc=0 covers nothing → incompatible.
         let empty = node_id_from_u64(0x2222);
@@ -627,7 +628,11 @@ mod tests {
 
         // Peer with same node_id and default cgc custodies a subset of sampled → compatible.
         let same = node_id_from_u64(0xBEEF);
-        assert!(is_peer_custody_compatible(&sampled, same, CUSTODY_REQUIREMENT));
+        assert!(is_peer_custody_compatible(
+            &sampled,
+            same,
+            CUSTODY_REQUIREMENT
+        ));
 
         // Construct a peer whose groups are known to miss our sampled set:
         // search a few random ids for a non-intersecting cgc=4 peer, or use cgc=0.
@@ -638,7 +643,10 @@ mod tests {
             (node_id_from_u64(0x3333), 0),
         ];
         let count = count_custody_compatible_peers(&sampled, peers);
-        assert_eq!(count, 2, "full + same should be compatible; two cgc=0 are not");
+        assert_eq!(
+            count, 2,
+            "full + same should be compatible; two cgc=0 are not"
+        );
 
         // Metric surface: export the count.
         let mut registry = prometheus_client::registry::Registry::default();

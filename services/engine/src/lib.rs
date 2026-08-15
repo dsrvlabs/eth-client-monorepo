@@ -39,10 +39,6 @@ pub mod state;
 pub mod transport;
 pub mod version;
 
-pub use fastpath::{
-    COMPLETED_LOG_BOUND, EnqueueOutcome, FASTPATH_QUEUE_BOUND, FastpathLane, InjectItem, Trigger,
-    TriggerOwner, hoodi_blob_bound, reconstruct_and_filter, template_from_commitments,
-};
 pub use fastpath::cells::{
     CellsError, ZippedBlobMaterial, compute_cells_zipped_with_el_proofs, parse_el_proofs,
 };
@@ -51,15 +47,19 @@ pub use fastpath::fetch::{
     SamplingTrackerProbe, assert_request_length_within_bound, epoch_at_slot, fetch_blobs,
 };
 pub use fastpath::filter::{
-    FILTERED_PAYLOAD_SOFT_MAX_BYTES, FilterOutcome, SubscriptionSet, UNFILTERED_PAYLOAD_ORDER_BYTES,
-    filter_subscribed,
+    FILTERED_PAYLOAD_SOFT_MAX_BYTES, FilterOutcome, SubscriptionSet,
+    UNFILTERED_PAYLOAD_ORDER_BYTES, filter_subscribed,
 };
 pub use fastpath::sidecars::{AssembleError, SidecarTemplate, transpose_to_sidecars};
+pub use fastpath::{
+    COMPLETED_LOG_BOUND, EnqueueOutcome, FASTPATH_QUEUE_BOUND, FastpathLane, InjectItem, Trigger,
+    TriggerOwner, hoodi_blob_bound, reconstruct_and_filter, template_from_commitments,
+};
 pub use inject::{
-    BACKOFF_CAP, BACKOFF_INITIAL, INBOUND_QUEUE_BOUND, INJECT_QUEUE_BOUND,
-    SIDECAR_TEMPLATE_SIZE_SOFT_MAX, DecodedFetch, InjectQueue, InjectStreamConfig,
-    decode_fetch_blobs_request, decode_wire_template, encode_fetch_blobs_request,
-    encode_wire_template, fetch_blobs_request_wire_size, full_jitter, new_session_id, next_backoff,
+    BACKOFF_CAP, BACKOFF_INITIAL, DecodedFetch, INBOUND_QUEUE_BOUND, INJECT_QUEUE_BOUND,
+    InjectQueue, InjectStreamConfig, SIDECAR_TEMPLATE_SIZE_SOFT_MAX, decode_fetch_blobs_request,
+    decode_wire_template, encode_fetch_blobs_request, encode_wire_template,
+    fetch_blobs_request_wire_size, full_jitter, new_session_id, next_backoff,
     run_inject_stream_client, sidecar_template_within_size_budget, subscription_from_wire,
     subscription_to_wire, wait_reconnect_backoff,
 };

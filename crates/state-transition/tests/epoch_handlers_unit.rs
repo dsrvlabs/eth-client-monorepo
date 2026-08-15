@@ -2,9 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use cc_state_transition::helpers::accessors::{
-    get_activation_exit_churn_limit, get_current_epoch,
-};
+use cc_state_transition::helpers::accessors::{get_activation_exit_churn_limit, get_current_epoch};
 use cc_state_transition::helpers::constants::{
     EFFECTIVE_BALANCE_INCREMENT, EJECTION_BALANCE, FAR_FUTURE_EPOCH, GENESIS_SLOT,
     HYSTERESIS_QUOTIENT, HYSTERESIS_UPWARD_MULTIPLIER, MAX_EFFECTIVE_BALANCE,
@@ -15,11 +13,11 @@ use cc_state_transition::{
     process_pending_deposits, process_proposer_lookahead, process_registry_updates,
     process_sync_committee_updates,
 };
+use cc_types::BeaconState;
 use cc_types::containers::{Checkpoint, Validator};
 use cc_types::operations::{PendingConsolidation, PendingDeposit};
 use cc_types::preset::{Minimal, Preset};
 use cc_types::primitives::{BlsPublicKey, BlsSignature, Epoch, Gwei, Root, Slot, ValidatorIndex};
-use cc_types::BeaconState;
 
 fn active_validator(i: u64, valid_bls: bool) -> Validator {
     let pubkey = if valid_bls {
@@ -125,7 +123,9 @@ fn proposer_lookahead_shifts_and_appends() {
     // Tail matches get_beacon_proposer_indices.
     for (j, expected) in expected_tail.iter().enumerate() {
         assert_eq!(
-            state.proposer_lookahead_get(before.len() - spe + j).unwrap(),
+            state
+                .proposer_lookahead_get(before.len() - spe + j)
+                .unwrap(),
             *expected,
             "tail mismatch at {j}"
         );
@@ -183,7 +183,8 @@ fn registry_updates_uses_balance_based_exit_churn() {
     );
     // Exit epoch accounting used balance churn (earliest_exit_epoch advanced).
     assert!(
-        state.earliest_exit_epoch().as_u64() > 0 || v.exit_epoch.as_u64() > get_current_epoch(&state).as_u64(),
+        state.earliest_exit_epoch().as_u64() > 0
+            || v.exit_epoch.as_u64() > get_current_epoch(&state).as_u64(),
         "balance-based exit path should set exit epoch"
     );
 }
@@ -290,9 +291,7 @@ fn effective_balance_hysteresis_thresholds() {
     );
 
     // Push one Gwei past the threshold.
-    state
-        .balances_set(0, Gwei::new(eb + upward + 1))
-        .unwrap();
+    state.balances_set(0, Gwei::new(eb + upward + 1)).unwrap();
     process_effective_balance_updates(&mut state).unwrap();
     // Still capped at MIN_ACTIVATION_BALANCE for eth1 credentials, and
     // balance floors to increment — both are still 32 ETH, so no change
@@ -302,9 +301,7 @@ fn effective_balance_hysteresis_thresholds() {
         v.effective_balance = Gwei::new(eb - EFFECTIVE_BALANCE_INCREMENT.as_u64()); // 31 ETH
     }
     // balance = 32 ETH + upward + 1 → should raise toward 32 ETH.
-    state
-        .balances_set(0, Gwei::new(eb + upward + 1))
-        .unwrap();
+    state.balances_set(0, Gwei::new(eb + upward + 1)).unwrap();
     process_effective_balance_updates(&mut state).unwrap();
     assert_eq!(
         state.validators_get(0).unwrap().effective_balance.as_u64(),
@@ -368,7 +365,9 @@ fn sync_committee_updates_noop_off_boundary() {
         .is_multiple_of(Minimal::EPOCHS_PER_SYNC_COMMITTEE_PERIOD)
     {
         // Pick a safer epoch.
-        state.set_slot(Slot::new(Minimal::SLOTS_PER_EPOCH * 2 + Minimal::SLOTS_PER_EPOCH - 1));
+        state.set_slot(Slot::new(
+            Minimal::SLOTS_PER_EPOCH * 2 + Minimal::SLOTS_PER_EPOCH - 1,
+        ));
     }
     let cur = state.current_sync_committee().clone();
     let next = state.next_sync_committee().clone();

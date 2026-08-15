@@ -16,8 +16,8 @@
 //! (`cc_p2p_window_collapsed_total`). Reconnect reverses the collapse
 //! automatically when the next stream message arrives.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use cc_proto::storage::storage_service_client::StorageServiceClient;
@@ -32,7 +32,7 @@ use tonic::transport::{Channel, Endpoint};
 use tonic::{Code, Status};
 use tracing::{debug, info, warn};
 
-use crate::backfill::{ServeWindow, EMPTY_WINDOW_SLOT};
+use crate::backfill::{EMPTY_WINDOW_SLOT, ServeWindow};
 use crate::metrics::P2pMetrics;
 
 /// Initial reconnect backoff for `WatchServeWindow`.
@@ -295,12 +295,12 @@ impl StorageClient {
     }
 
     /// `GetBlocksByRoot`.
-    pub async fn get_blocks_by_root(&self, roots: Vec<Vec<u8>>) -> Result<GetBlocksResponse, Status> {
+    pub async fn get_blocks_by_root(
+        &self,
+        roots: Vec<Vec<u8>>,
+    ) -> Result<GetBlocksResponse, Status> {
         let mut c = self.client().await?;
-        match c
-            .get_blocks_by_root(GetBlocksByRootRequest { roots })
-            .await
-        {
+        match c.get_blocks_by_root(GetBlocksByRootRequest { roots }).await {
             Ok(r) => Ok(r.into_inner()),
             Err(status) => {
                 if is_transport_down(&status) {
@@ -480,10 +480,7 @@ async fn run_watch_once(
         }
     };
     let mut client = StorageServiceClient::new(channel);
-    let mut stream = match client
-        .watch_serve_window(WatchServeWindowRequest {})
-        .await
-    {
+    let mut stream = match client.watch_serve_window(WatchServeWindowRequest {}).await {
         Ok(r) => r.into_inner(),
         Err(e) => {
             debug!(target: "cc_p2p::storage_client", error = %e, "WatchServeWindow open failed");
@@ -549,11 +546,7 @@ async fn dial(cfg: &StorageClientConfig) -> Result<Channel, tonic::transport::Er
 
 fn next_backoff(current: Duration, cap: Duration) -> Duration {
     let doubled = current.saturating_mul(2);
-    if doubled > cap {
-        cap
-    } else {
-        doubled
-    }
+    if doubled > cap { cap } else { doubled }
 }
 
 fn is_transport_down(status: &Status) -> bool {

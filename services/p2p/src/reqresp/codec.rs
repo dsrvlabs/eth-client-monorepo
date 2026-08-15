@@ -135,10 +135,7 @@ impl ResponseChunk {
     /// Build a success chunk without context bytes (status/ping/metadata).
     #[must_use]
     pub fn success(ssz: Vec<u8>) -> Self {
-        Self::Success {
-            context: None,
-            ssz,
-        }
+        Self::Success { context: None, ssz }
     }
 
     /// Build a rate-limit / server-error chunk (code 2).
@@ -340,10 +337,7 @@ impl SszSnappyFraming {
     }
 
     /// Encode one response chunk (result + optional context + payload).
-    pub fn encode_response_chunk(
-        chunk: &ResponseChunk,
-        protocol: Protocol,
-    ) -> io::Result<Vec<u8>> {
+    pub fn encode_response_chunk(chunk: &ResponseChunk, protocol: Protocol) -> io::Result<Vec<u8>> {
         match chunk {
             ResponseChunk::Success { context, ssz } => {
                 let mut out = vec![ResponseCode::Success.as_u8()];
@@ -428,10 +422,7 @@ impl SszSnappyFraming {
     }
 
     /// Encode zero or more response chunks into a single stream body.
-    pub fn encode_response(
-        chunks: &[ResponseChunk],
-        protocol: Protocol,
-    ) -> io::Result<Vec<u8>> {
+    pub fn encode_response(chunks: &[ResponseChunk], protocol: Protocol) -> io::Result<Vec<u8>> {
         let mut out = Vec::new();
         for c in chunks {
             out.extend(Self::encode_response_chunk(c, protocol)?);
@@ -440,10 +431,7 @@ impl SszSnappyFraming {
     }
 
     /// Decode a multi-chunk response stream (until buffer exhausted).
-    pub fn decode_response(
-        buf: &[u8],
-        protocol: Protocol,
-    ) -> io::Result<Vec<ResponseChunk>> {
+    pub fn decode_response(buf: &[u8], protocol: Protocol) -> io::Result<Vec<ResponseChunk>> {
         let mut offset = 0;
         let mut chunks = Vec::new();
         while offset < buf.len() {
@@ -508,7 +496,17 @@ mod tests {
 
     #[test]
     fn varint_roundtrip() {
-        for n in [0u64, 1, 127, 128, 255, 300, 16_384, u32::MAX as u64, u64::MAX] {
+        for n in [
+            0u64,
+            1,
+            127,
+            128,
+            255,
+            300,
+            16_384,
+            u32::MAX as u64,
+            u64::MAX,
+        ] {
             let enc = SszSnappyFraming::encode_varint(n);
             let (dec, consumed) = SszSnappyFraming::decode_varint(&enc).unwrap();
             assert_eq!(dec, n);
@@ -591,12 +589,10 @@ mod tests {
     fn response_chunk_with_context_roundtrip() {
         let ctx = [0x11, 0x22, 0x33, 0x44];
         let chunk = ResponseChunk::success_with_context(ctx, b"block-ssz".to_vec());
-        let enc =
-            SszSnappyFraming::encode_response_chunk(&chunk, Protocol::BeaconBlocksByRangeV2)
-                .unwrap();
+        let enc = SszSnappyFraming::encode_response_chunk(&chunk, Protocol::BeaconBlocksByRangeV2)
+            .unwrap();
         let (dec, n) =
-            SszSnappyFraming::decode_response_chunk(&enc, Protocol::BeaconBlocksByRangeV2)
-                .unwrap();
+            SszSnappyFraming::decode_response_chunk(&enc, Protocol::BeaconBlocksByRangeV2).unwrap();
         assert_eq!(n, enc.len());
         match dec {
             ResponseChunk::Success { context, ssz } => {
@@ -610,14 +606,12 @@ mod tests {
     #[test]
     fn error_chunk_no_context() {
         let chunk = ResponseChunk::server_error(b"rate limited".as_slice());
-        let enc =
-            SszSnappyFraming::encode_response_chunk(&chunk, Protocol::BeaconBlocksByRangeV2)
-                .unwrap();
+        let enc = SszSnappyFraming::encode_response_chunk(&chunk, Protocol::BeaconBlocksByRangeV2)
+            .unwrap();
         // result byte + varint + frame — no 4-byte context after result.
         assert_eq!(enc[0], ResponseCode::ServerError.as_u8());
         let (dec, _) =
-            SszSnappyFraming::decode_response_chunk(&enc, Protocol::BeaconBlocksByRangeV2)
-                .unwrap();
+            SszSnappyFraming::decode_response_chunk(&enc, Protocol::BeaconBlocksByRangeV2).unwrap();
         match dec {
             ResponseChunk::Error { code, message } => {
                 assert_eq!(code, 2);
@@ -635,8 +629,7 @@ mod tests {
         ];
         let enc =
             SszSnappyFraming::encode_response(&chunks, Protocol::BeaconBlocksByRootV2).unwrap();
-        let dec =
-            SszSnappyFraming::decode_response(&enc, Protocol::BeaconBlocksByRootV2).unwrap();
+        let dec = SszSnappyFraming::decode_response(&enc, Protocol::BeaconBlocksByRootV2).unwrap();
         assert_eq!(dec.len(), 2);
         assert_eq!(dec, chunks);
     }
@@ -661,21 +654,12 @@ mod tests {
             "synthetic chunks across epochs must have different digests"
         );
 
-        let c1 = success_chunk_for_slot(
-            &mut fork_ctx,
-            slot_a,
-            slots_per_epoch,
-            b"chunk-a".to_vec(),
-        );
-        let c2 = success_chunk_for_slot(
-            &mut fork_ctx,
-            slot_b,
-            slots_per_epoch,
-            b"chunk-b".to_vec(),
-        );
+        let c1 =
+            success_chunk_for_slot(&mut fork_ctx, slot_a, slots_per_epoch, b"chunk-a".to_vec());
+        let c2 =
+            success_chunk_for_slot(&mut fork_ctx, slot_b, slots_per_epoch, b"chunk-b".to_vec());
         let encoded =
-            SszSnappyFraming::encode_response(&[c1, c2], Protocol::BeaconBlocksByRangeV2)
-                .unwrap();
+            SszSnappyFraming::encode_response(&[c1, c2], Protocol::BeaconBlocksByRangeV2).unwrap();
         let decoded =
             SszSnappyFraming::decode_response(&encoded, Protocol::BeaconBlocksByRangeV2).unwrap();
         assert_eq!(decoded.len(), 2);

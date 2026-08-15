@@ -87,9 +87,8 @@ impl TrustedSetupBytes {
 fn decode_point_list(points: &[String], expected_len: usize) -> Result<Vec<u8>, KzgError> {
     let mut out = Vec::with_capacity(points.len() * expected_len);
     for (i, hex_str) in points.iter().enumerate() {
-        let bytes = decode_hex(hex_str).map_err(|e| {
-            KzgError::TrustedSetup(format!("point {i}: {e}"))
-        })?;
+        let bytes =
+            decode_hex(hex_str).map_err(|e| KzgError::TrustedSetup(format!("point {i}: {e}")))?;
         if bytes.len() != expected_len {
             return Err(KzgError::TrustedSetup(format!(
                 "point {i}: expected {expected_len} bytes, got {}",
@@ -130,7 +129,7 @@ fn hex_nibble(b: u8) -> Result<u8, String> {
 
 #[cfg(feature = "kzg-c-kzg")]
 mod c_kzg_load {
-    use super::{TrustedSetupBytes, DEFAULT_PRECOMPUTE};
+    use super::{DEFAULT_PRECOMPUTE, TrustedSetupBytes};
     use crate::kzg::KzgError;
     use c_kzg::KzgSettings;
 

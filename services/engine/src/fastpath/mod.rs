@@ -36,9 +36,7 @@ use cc_crypto::CellKzg;
 use cc_types::primitives::{KzgCommitment, Root};
 use tokio::sync::{Mutex, Notify, mpsc};
 
-use crate::methods::get_blobs::{
-    GetBlobsOutcome, NullContext, versioned_hashes_from_commitments,
-};
+use crate::methods::get_blobs::{GetBlobsOutcome, NullContext, versioned_hashes_from_commitments};
 use crate::metrics::EngineMetrics;
 use crate::transport::SharedTransport;
 
@@ -393,12 +391,8 @@ impl FastpathLane {
             return EnqueueOutcome::SkippedNoCommitments;
         }
         let epoch = epoch_at_slot(trigger.slot);
-        if assert_request_length_within_bound(
-            &trigger.versioned_hashes,
-            &self.inner.bound,
-            epoch,
-        )
-        .is_err()
+        if assert_request_length_within_bound(&trigger.versioned_hashes, &self.inner.bound, epoch)
+            .is_err()
         {
             tracing::warn!(
                 n = trigger.versioned_hashes.len(),
@@ -468,7 +462,8 @@ pub async fn reconstruct_and_filter(
     )
     .await
     .map_err(|e| e.to_string())?;
-    let assembled = transpose_to_sidecars(&material, template, metrics).map_err(|e| e.to_string())?;
+    let assembled =
+        transpose_to_sidecars(&material, template, metrics).map_err(|e| e.to_string())?;
     debug_assert_eq!(assembled.len(), 128);
     let _ = n_blobs;
     // Filter reads subscription **before** outbound construction (ADR P3-07).
@@ -620,9 +615,9 @@ mod tests {
     use crate::jwt::JwtSecret;
     use crate::methods::get_blobs::VERSIONED_HASH_VERSION_KZG;
     use crate::methods::names;
+    use crate::metrics::EngineMethod;
     use crate::metrics::{EngineMetrics, GetBlobsResultLabels, MethodLabels};
     use crate::transport::{EngineTransport, Lane};
-    use crate::metrics::EngineMethod;
     use prometheus_client::registry::Registry;
     use serde_json::{Value, json};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -707,12 +702,7 @@ mod tests {
 
         let root = [0xabu8; 32];
         let outcome = lane
-            .trigger_from_block(
-                root,
-                54_016 * 32,
-                &[commitment(1)],
-                NullContext::PrunedPool,
-            )
+            .trigger_from_block(root, 54_016 * 32, &[commitment(1)], NullContext::PrunedPool)
             .await;
         assert_eq!(outcome, EnqueueOutcome::Enqueued);
 
@@ -905,7 +895,14 @@ mod tests {
             Duration::from_secs(60),
             Some(m.clone()),
         ));
-        let lane = FastpathLane::new(t, Some(m.clone()), hoodi_blob_bound(), None, None, SubscriptionSet::empty());
+        let lane = FastpathLane::new(
+            t,
+            Some(m.clone()),
+            hoodi_blob_bound(),
+            None,
+            None,
+            SubscriptionSet::empty(),
+        );
         let mut rx = lane.subscribe_completions().await;
         let worker = lane.spawn_worker();
 
@@ -933,7 +930,10 @@ mod tests {
                 method: "getBlobsV2".into(),
             })
             .get();
-        assert!(to >= 1, "cc_engine_transport_timeout_total{{method=getBlobsV2}}");
+        assert!(
+            to >= 1,
+            "cc_engine_transport_timeout_total{{method=getBlobsV2}}"
+        );
         let err = m
             .getblobs_total
             .get_or_create(&GetBlobsResultLabels {
@@ -967,7 +967,14 @@ mod tests {
             .await;
 
         let t = transport(&server.uri(), None);
-        let lane = FastpathLane::new(Arc::clone(&t), None, hoodi_blob_bound(), None, None, SubscriptionSet::empty());
+        let lane = FastpathLane::new(
+            Arc::clone(&t),
+            None,
+            hoodi_blob_bound(),
+            None,
+            None,
+            SubscriptionSet::empty(),
+        );
         let worker = lane.spawn_worker();
         let _ = lane
             .trigger_from_block([9u8; 32], 100, &[commitment(1)], NullContext::PrunedPool)
@@ -1026,7 +1033,12 @@ mod tests {
         let slot_electra = 50_688 * 32;
         let commits: Vec<[u8; 48]> = (0..10).map(|i| commitment(i as u8)).collect();
         let outcome = lane
-            .trigger_from_block([0xee_u8; 32], slot_electra, &commits, NullContext::PrunedPool)
+            .trigger_from_block(
+                [0xee_u8; 32],
+                slot_electra,
+                &commits,
+                NullContext::PrunedPool,
+            )
             .await;
         assert_eq!(outcome, EnqueueOutcome::SkippedExceedsBound);
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1087,7 +1099,12 @@ mod tests {
         // One more newest root: must be Enqueued (kept), not a "dropped" outcome.
         let newest = [0xff_u8; 32];
         let outcome = lane
-            .trigger_from_block(newest, 54_016 * 32, &[commitment(2)], NullContext::PrunedPool)
+            .trigger_from_block(
+                newest,
+                54_016 * 32,
+                &[commitment(2)],
+                NullContext::PrunedPool,
+            )
             .await;
         assert_eq!(
             outcome,
@@ -1157,33 +1174,39 @@ mod tests {
         let epoch_electra = Epoch::new(50_688);
         let p_electra = bound.get_blob_parameters(epoch_electra);
         assert_eq!(p_electra.max_blobs_per_block, 9);
-        let hashes_electra: Vec<[u8; 32]> = (0..9).map(|i| {
-            let mut h = [0u8; 32];
-            h[0] = VERSIONED_HASH_VERSION_KZG;
-            h[31] = i as u8;
-            h
-        }).collect();
+        let hashes_electra: Vec<[u8; 32]> = (0..9)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[0] = VERSIONED_HASH_VERSION_KZG;
+                h[31] = i as u8;
+                h
+            })
+            .collect();
         assert!(assert_request_length_within_bound(&hashes_electra, &bound, epoch_electra).is_ok());
 
         // Post-BPO2: max = 21.
         let epoch_bpo2 = Epoch::new(54_016);
         let p_bpo2 = bound.get_blob_parameters(epoch_bpo2);
         assert_eq!(p_bpo2.max_blobs_per_block, 21);
-        let hashes_bpo2: Vec<[u8; 32]> = (0..21).map(|i| {
-            let mut h = [0u8; 32];
-            h[0] = VERSIONED_HASH_VERSION_KZG;
-            h[31] = i as u8;
-            h
-        }).collect();
+        let hashes_bpo2: Vec<[u8; 32]> = (0..21)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[0] = VERSIONED_HASH_VERSION_KZG;
+                h[31] = i as u8;
+                h
+            })
+            .collect();
         assert!(assert_request_length_within_bound(&hashes_bpo2, &bound, epoch_bpo2).is_ok());
 
         // One over the electra max must fail the soft gate.
-        let too_many: Vec<[u8; 32]> = (0..10).map(|i| {
-            let mut h = [0u8; 32];
-            h[0] = VERSIONED_HASH_VERSION_KZG;
-            h[31] = i as u8;
-            h
-        }).collect();
+        let too_many: Vec<[u8; 32]> = (0..10)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[0] = VERSIONED_HASH_VERSION_KZG;
+                h[31] = i as u8;
+                h
+            })
+            .collect();
         assert!(assert_request_length_within_bound(&too_many, &bound, epoch_electra).is_err());
 
         assert_eq!(GET_BLOBS_V2_MAX_HASHES, 128);
@@ -1430,7 +1453,7 @@ mod tests {
     #[tokio::test]
     async fn worker_composes_reconstruction_on_complete() {
         use crate::methods::get_blobs::{BYTES_PER_BLOB, CELL_PROOFS_PER_BLOB};
-        use cc_crypto::{Blob, CellKzg, CKzgBackend};
+        use cc_crypto::{Blob, CKzgBackend, CellKzg};
         use cc_types::primitives::KzgCommitment;
         use hex;
 
@@ -1526,7 +1549,7 @@ mod tests {
     #[tokio::test]
     async fn empty_subscription_publishes_nothing() {
         use crate::methods::get_blobs::{BYTES_PER_BLOB, CELL_PROOFS_PER_BLOB};
-        use cc_crypto::{Blob, CellKzg, CKzgBackend};
+        use cc_crypto::{Blob, CKzgBackend, CellKzg};
 
         let kzg: Arc<dyn CellKzg> = Arc::new(CKzgBackend::load_default().expect("kzg"));
         let mut blob_bytes = vec![0u8; BYTES_PER_BLOB];
@@ -1578,9 +1601,7 @@ mod tests {
             .expect("closed");
         match result {
             FetchResult::Assembled {
-                published,
-                dropped,
-                ..
+                published, dropped, ..
             } => {
                 assert!(published.is_empty());
                 assert_eq!(dropped, 128);

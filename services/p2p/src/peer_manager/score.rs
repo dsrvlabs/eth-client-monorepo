@@ -391,11 +391,7 @@ mod tests {
     fn r3_early_warning_metrics_populated() {
         let mut reg = Registry::default();
         let m = P2pMetrics::register(&mut reg);
-        observe_score_snapshot(
-            &m,
-            [-5000.0, -100.0, 5.0],
-            [-1.0, 0.0, 2.0],
-        );
+        observe_score_snapshot(&m, [-5000.0, -100.0, 5.0], [-1.0, 0.0, 2.0]);
         // One peer below GossipThreshold (−4000).
         assert_eq!(m.peers_below_threshold("gossip"), 1);
 

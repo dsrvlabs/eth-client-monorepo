@@ -23,7 +23,7 @@ use cc_store::engine::{Engine, StoreError};
 use cc_store::get_block_by_root;
 use cc_store::meta::{ForkChoiceScalars, KEY_FC_SCALARS, TABLE_META};
 use cc_store::snapshots::{get_snapshot, list_snapshot_slots};
-use cc_store::{epoch_of_slot, Root, Slot, SszDecode};
+use cc_store::{Root, Slot, SszDecode, epoch_of_slot};
 use tonic::{Code, Status};
 
 /// gRPC `ErrorInfo.reason` when a requested snapshot slot is outside the ring.
@@ -155,10 +155,7 @@ pub(crate) fn historical_block_by_slot(
 /// Load snapshot SSZ at `slot`, or a typed not-available when outside the ring.
 ///
 /// **Never** calls `process_slots` / replay on a miss (CC-4I /2).
-pub(crate) fn snapshot_state_at(
-    engine: &Engine,
-    slot: Slot,
-) -> Result<SnapshotLookup, StoreError> {
+pub(crate) fn snapshot_state_at(engine: &Engine, slot: Slot) -> Result<SnapshotLookup, StoreError> {
     let rt = engine.read()?;
     let ring = list_snapshot_slots(&rt)?;
     if let Some(ssz) = get_snapshot(&rt, slot)? {
@@ -233,7 +230,11 @@ pub(crate) fn chunk_state_ssz(ssz: &[u8], chunk_bytes: usize) -> Vec<StateChunk>
 pub(crate) fn reassemble_chunks(chunks: &[StateChunk]) -> Vec<u8> {
     let mut out = Vec::new();
     for c in chunks {
-        assert_eq!(c.offset as usize, out.len(), "chunk offset must be contiguous");
+        assert_eq!(
+            c.offset as usize,
+            out.len(),
+            "chunk offset must be contiguous"
+        );
         out.extend_from_slice(&c.data);
         if c.last {
             break;
@@ -411,7 +412,10 @@ mod tests {
             let body = format!("snapshot-fixture-{i}-slot-{s}").into_bytes();
             // Pad so chunks exercise multi-chunk reassembly.
             let mut ssz = body;
-            ssz.resize(DEFAULT_STATE_CHUNK_BYTES + 17 + i * 3, (i as u8).wrapping_add(1));
+            ssz.resize(
+                DEFAULT_STATE_CHUNK_BYTES + 17 + i * 3,
+                (i as u8).wrapping_add(1),
+            );
             put_snapshot(&eng, Slot::new(s), &ssz, 4).unwrap();
             fixtures.push((s, ssz));
         }

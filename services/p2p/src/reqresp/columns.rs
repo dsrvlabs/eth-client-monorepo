@@ -21,17 +21,17 @@ use std::io;
 
 use cc_types::primitives::{Epoch, Root, Slot};
 use cc_types::sidecar::DataColumnsByRootIdentifier;
-use cc_types::{Mainnet, Preset, NUMBER_OF_COLUMNS};
+use cc_types::{Mainnet, NUMBER_OF_COLUMNS, Preset};
 use ssz::{Decode, Encode};
 use ssz_types::VariableList;
 
 use crate::backfill::{BackfillCache, EMPTY_WINDOW_SLOT};
 use crate::fork_digest::ForkContext;
-use crate::reqresp::blocks::{
-    epoch_start_slot, BlockServeError, PlannedBlocks, WindowDeny, MAX_REQUEST_BLOCKS_DENEB,
-};
-use crate::reqresp::codec::{success_chunk_for_slot, ResponseChunk, CONTEXT_BYTES_LEN};
 use crate::reqresp::Protocol;
+use crate::reqresp::blocks::{
+    BlockServeError, MAX_REQUEST_BLOCKS_DENEB, PlannedBlocks, WindowDeny, epoch_start_slot,
+};
+use crate::reqresp::codec::{CONTEXT_BYTES_LEN, ResponseChunk, success_chunk_for_slot};
 
 // ── Spec / config constants ─────────────────────────────────────────────────
 
@@ -93,15 +93,21 @@ impl ColumnsByRangeRequest {
                 ),
             ));
         }
-        let start = u64::from_le_bytes(bytes[0..8].try_into().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "start_slot")
-        })?);
-        let count = u64::from_le_bytes(bytes[8..16].try_into().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "count")
-        })?);
-        let offset = u32::from_le_bytes(bytes[16..20].try_into().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "columns offset")
-        })?) as usize;
+        let start = u64::from_le_bytes(
+            bytes[0..8]
+                .try_into()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "start_slot"))?,
+        );
+        let count = u64::from_le_bytes(
+            bytes[8..16]
+                .try_into()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "count"))?,
+        );
+        let offset = u32::from_le_bytes(
+            bytes[16..20]
+                .try_into()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "columns offset"))?,
+        ) as usize;
         if offset != BY_RANGE_FIXED_PREFIX {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -126,9 +132,11 @@ impl ColumnsByRangeRequest {
         }
         let mut columns = Vec::with_capacity(n);
         for i in 0..n {
-            let c = u64::from_le_bytes(rest[i * 8..(i + 1) * 8].try_into().map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "column index")
-            })?);
+            let c = u64::from_le_bytes(
+                rest[i * 8..(i + 1) * 8]
+                    .try_into()
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "column index"))?,
+            );
             columns.push(c);
         }
         Ok(Self {
@@ -153,11 +161,7 @@ impl ColumnsByRootRequest {
         if self.identifiers.is_empty() {
             return Vec::new();
         }
-        let items: Vec<Vec<u8>> = self
-            .identifiers
-            .iter()
-            .map(Encode::as_ssz_bytes)
-            .collect();
+        let items: Vec<Vec<u8>> = self.identifiers.iter().map(Encode::as_ssz_bytes).collect();
         // Variable-size list: offsets then concatenated items.
         let mut out = Vec::new();
         let mut offset = (self.identifiers.len() * 4) as u32;
@@ -188,9 +192,11 @@ impl ColumnsByRootRequest {
             ));
         }
         // First offset reveals element count: first_offset / 4.
-        let first_offset = u32::from_le_bytes(bytes[0..4].try_into().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "list first offset")
-        })?) as usize;
+        let first_offset = u32::from_le_bytes(
+            bytes[0..4]
+                .try_into()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "list first offset"))?,
+        ) as usize;
         if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > bytes.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -229,14 +235,13 @@ impl ColumnsByRootRequest {
                     "by_root identifier offset out of range",
                 ));
             }
-            let id = DataColumnsByRootIdentifier::from_ssz_bytes(&bytes[start..end]).map_err(
-                |e| {
+            let id =
+                DataColumnsByRootIdentifier::from_ssz_bytes(&bytes[start..end]).map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("by_root identifier decode: {e:?}"),
                     )
-                },
-            )?;
+                })?;
             identifiers.push(id);
         }
         Ok(Self { identifiers })
@@ -288,10 +293,7 @@ pub fn validate_by_root_sidecar_budget(req: &ColumnsByRootRequest) -> Result<(),
 /// Validate a by-range request's projected response ≤ 16 384 and count > 0.
 ///
 /// Enforced **before** any proportional allocation.
-pub fn validate_range_sidecar_budget(
-    count: u64,
-    n_columns: usize,
-) -> Result<(), BlockServeError> {
+pub fn validate_range_sidecar_budget(count: u64, n_columns: usize) -> Result<(), BlockServeError> {
     if count == 0 {
         return Err(BlockServeError::InvalidRequest("count must be > 0"));
     }
@@ -652,9 +654,8 @@ pub fn plan_column_response<P: Preset>(
             serve_columns_by_range(ctx, &req)
         }
         Protocol::DataColumnSidecarsByRootV1 => {
-            let req = ColumnsByRootRequest::from_ssz_bytes(ssz).map_err(|_| {
-                BlockServeError::InvalidRequest("malformed column by_root request")
-            })?;
+            let req = ColumnsByRootRequest::from_ssz_bytes(ssz)
+                .map_err(|_| BlockServeError::InvalidRequest("malformed column by_root request"))?;
             serve_columns_by_root(ctx, &req)
         }
         _ => Err(BlockServeError::InvalidRequest("not a column protocol")),
@@ -687,7 +688,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use crate::fork_digest::{compute_fork_digest, ForkContext};
+    use crate::fork_digest::{ForkContext, compute_fork_digest};
     use crate::reqresp::codec::{ResponseCode, SszSnappyFraming};
     use cc_types::sidecar::DataColumnSidecar;
     use cc_types::{ChainConfig, Mainnet, Preset, Root, SignedBeaconBlock};
@@ -695,8 +696,7 @@ mod tests {
     use ssz::Encode;
     use std::sync::Arc;
 
-    const HOODI: &str =
-        include_str!("../../../../crates/types/tests/fixtures/hoodi-config.yaml");
+    const HOODI: &str = include_str!("../../../../crates/types/tests/fixtures/hoodi-config.yaml");
 
     fn hoodi_cfg() -> ChainConfig {
         ChainConfig::from_yaml_str(HOODI).expect("hoodi")
@@ -734,14 +734,8 @@ mod tests {
 
     /// Cache with complete slots `[lo, hi]`, custodied columns `{0,1,2,3}`.
     fn filled_cache(lo: u64, hi: u64, cols: &[u64]) -> BackfillCache<Mainnet> {
-        let mut cache = BackfillCache::with_bounds(
-            Slot::new(0),
-            0u64..8,
-            0u64..4,
-            1 << 30,
-            2048,
-            2048 * 8,
-        );
+        let mut cache =
+            BackfillCache::with_bounds(Slot::new(0), 0u64..8, 0u64..4, 1 << 30, 2048, 2048 * 8);
         let mut parent = Root::ZERO;
         for s in lo..=hi {
             let block = block_at(s, parent);
@@ -960,14 +954,8 @@ mod tests {
     fn below_minimum_request_epoch_refused() {
         let fulu_epoch = hoodi_cfg().fulu_fork_epoch.as_u64();
         let spe = Mainnet::SLOTS_PER_EPOCH;
-        let mut cache = BackfillCache::with_bounds(
-            Slot::new(0),
-            0u64..8,
-            0u64..4,
-            1 << 20,
-            64,
-            64 * 8,
-        );
+        let mut cache =
+            BackfillCache::with_bounds(Slot::new(0), 0u64..8, 0u64..4, 1 << 20, 64, 64 * 8);
         let low_slot = 10u64;
         let block = block_at(low_slot, Root::ZERO);
         let root = Root::from(block.canonical_root());
@@ -1117,9 +1105,7 @@ mod tests {
 
     #[test]
     fn by_root_withhold_seam_refuses_until_flag() {
-        use crate::fault_mode::{
-            clear_active_fault, install_active_fault, FaultMode,
-        };
+        use crate::fault_mode::{FaultMode, clear_active_fault, install_active_fault};
         use std::fs;
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1131,9 +1117,7 @@ mod tests {
         let flag = std::env::temp_dir().join(format!("cc-2jb-flag-{stamp}"));
         let _ = fs::remove_file(&flag);
         install_active_fault(
-            FaultMode::WithholdColumn {
-                columns: vec![7],
-            },
+            FaultMode::WithholdColumn { columns: vec![7] },
             Some(flag.clone()),
         );
         // Held but withheld → refuse.
@@ -1188,14 +1172,8 @@ mod tests {
         let slot_a = epoch_a * spe;
         let slot_b = epoch_b * spe;
 
-        let mut cache = BackfillCache::with_bounds(
-            Slot::new(0),
-            0u64..8,
-            0u64..4,
-            1 << 30,
-            2048,
-            2048 * 8,
-        );
+        let mut cache =
+            BackfillCache::with_bounds(Slot::new(0), 0u64..8, 0u64..4, 1 << 30, 2048, 2048 * 8);
         let mut parent = Root::ZERO;
         for s in slot_a..=slot_b {
             let block = block_at(s, parent);
@@ -1243,11 +1221,8 @@ mod tests {
             Protocol::DataColumnSidecarsByRangeV1,
         )
         .unwrap();
-        let dec = SszSnappyFraming::decode_response(
-            &enc,
-            Protocol::DataColumnSidecarsByRangeV1,
-        )
-        .unwrap();
+        let dec =
+            SszSnappyFraming::decode_response(&enc, Protocol::DataColumnSidecarsByRangeV1).unwrap();
         assert_eq!(chunk_context(&dec[0]), Some(ctx_a));
         assert_eq!(chunk_context(dec.last().unwrap()), Some(ctx_b));
     }
@@ -1286,7 +1261,10 @@ mod tests {
         let cache = filled_cache(50, 60, &[0, 1, 2, 3]);
         let mut fork_ctx = fork_ctx_at(60_000);
         let ctx = serve_ctx(&cache, &mut fork_ctx);
-        assert_eq!(ctx.earliest_available_slot(), cache.earliest_available_slot());
+        assert_eq!(
+            ctx.earliest_available_slot(),
+            cache.earliest_available_slot()
+        );
         let _ = Registry::default();
     }
 

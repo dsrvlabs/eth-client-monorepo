@@ -1,11 +1,13 @@
 //! Spec `process_bls_to_execution_change` (Capella / Electra).
 
-use cc_crypto::{compute_domain, compute_signing_root, hash_fixed, verify, DOMAIN_BLS_TO_EXECUTION_CHANGE};
+use cc_crypto::{
+    DOMAIN_BLS_TO_EXECUTION_CHANGE, compute_domain, compute_signing_root, hash_fixed, verify,
+};
+use cc_types::BeaconState;
 use cc_types::config::ChainConfig;
 use cc_types::operations::SignedBlsToExecutionChange;
 use cc_types::preset::Preset;
 use cc_types::primitives::Root;
-use cc_types::BeaconState;
 
 use crate::error::{BlockError, OperationError};
 use crate::helpers::constants::{BLS_WITHDRAWAL_PREFIX, ETH1_ADDRESS_WITHDRAWAL_PREFIX};

@@ -32,9 +32,7 @@ use std::time::Instant;
 
 use cc_store::engine::Engine;
 use cc_store::keys::BlockRegion;
-use cc_store::meta::{
-    KEY_FC_SCALARS, KEY_WRITE_CURSOR, TABLE_META, WriteCursor,
-};
+use cc_store::meta::{KEY_FC_SCALARS, KEY_WRITE_CURSOR, TABLE_META, WriteCursor};
 use cc_store::{
     DaStatus, PutBlockOutcome, PutColumnOutcome, StoreError, get_block_by_root, put_block,
     put_block_and_update_head, put_column, put_da_status,
@@ -187,15 +185,14 @@ pub(crate) struct WriterHandle {
 impl WriterHandle {
     /// Submit a P0 commit unit. **Blocks** when the 32-slot queue is full (never drop).
     pub(crate) async fn submit_p0(&self, unit: CommitUnit) -> Result<(), WriterError> {
-        self.p0
-            .send(unit)
-            .await
-            .map_err(|_| WriterError::ShutDown)
+        self.p0.send(unit).await.map_err(|_| WriterError::ShutDown)
     }
 
     /// Blocking submit for non-async producers (tests).
     pub(crate) fn blocking_submit_p0(&self, unit: CommitUnit) -> Result<(), WriterError> {
-        self.p0.blocking_send(unit).map_err(|_| WriterError::ShutDown)
+        self.p0
+            .blocking_send(unit)
+            .map_err(|_| WriterError::ShutDown)
     }
 
     /// Submit a P1 meta update. **Blocks** when full.
@@ -208,7 +205,9 @@ impl WriterHandle {
 
     /// Blocking P1 submit (non-async producers / tests).
     pub(crate) fn blocking_submit_p1(&self, update: MetaUpdate) -> Result<(), WriterError> {
-        self.p1.blocking_send(update).map_err(|_| WriterError::ShutDown)
+        self.p1
+            .blocking_send(update)
+            .map_err(|_| WriterError::ShutDown)
     }
 
     /// Submit P1 and wait for the writer to **commit** (or fail).
@@ -232,9 +231,7 @@ impl WriterHandle {
         let (done_tx, done_rx) = oneshot::channel();
         update.done = Some(done_tx);
         self.blocking_submit_p1(update)?;
-        done_rx
-            .blocking_recv()
-            .map_err(|_| WriterError::ShutDown)?
+        done_rx.blocking_recv().map_err(|_| WriterError::ShutDown)?
     }
 
     /// Submit a P2 background chunk. On full: **drop newest** and count.
@@ -261,13 +258,14 @@ impl WriterHandle {
     ///
     /// SEC-44b: durable resume cursor advances only after this returns `Ok`.
     /// Queue acceptance alone is not enough.
-    pub(crate) async fn submit_p0_committed(&self, mut unit: CommitUnit) -> Result<(), WriterError> {
+    pub(crate) async fn submit_p0_committed(
+        &self,
+        mut unit: CommitUnit,
+    ) -> Result<(), WriterError> {
         let (done_tx, done_rx) = oneshot::channel();
         unit.done = Some(done_tx);
         self.submit_p0(unit).await?;
-        done_rx
-            .await
-            .map_err(|_| WriterError::ShutDown)?
+        done_rx.await.map_err(|_| WriterError::ShutDown)?
     }
 
     /// Current approximate P0 queue depth (for metrics scrape).

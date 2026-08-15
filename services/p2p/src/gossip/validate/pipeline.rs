@@ -31,32 +31,31 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
 use super::block::{
-    note_accepted_block, validate_beacon_block_local, BlockOutcome, BlockValidateInput,
+    BlockOutcome, BlockValidateInput, note_accepted_block, validate_beacon_block_local,
 };
 use super::column::{
-    production_kzg_verify, validate_data_column_sidecar, ColumnOutcome, ColumnValidateInput,
-    ColumnValidatorState, KzgVerify, NoopSamplingFeed, SamplingFeed,
-};
-use super::sync::{
-    validate_sync_committee_message, validate_sync_contribution_and_proof, NoopSyncSource,
-    SyncCommitteeSource, SyncContribValidateInput, SyncMessageValidateInput, SyncOutcome,
-    SyncSeenSets,
+    ColumnOutcome, ColumnValidateInput, ColumnValidatorState, KzgVerify, NoopSamplingFeed,
+    SamplingFeed, production_kzg_verify, validate_data_column_sidecar,
 };
 use super::operations::{
-    epoch_from_view, validate_operation, OperationValidateInput, OperationValidatorState,
+    OperationValidateInput, OperationValidatorState, epoch_from_view, validate_operation,
+};
+use super::sync::{
+    NoopSyncSource, SyncCommitteeSource, SyncContribValidateInput, SyncMessageValidateInput,
+    SyncOutcome, SyncSeenSets, validate_sync_committee_message,
+    validate_sync_contribution_and_proof,
 };
 use crate::chain_stream::records::{
-    MapValidatorRecordSource, RpcValidatorRecordSource, ValidatorRecordCache,
-    ValidatorRecordSource,
+    MapValidatorRecordSource, RpcValidatorRecordSource, ValidatorRecordCache, ValidatorRecordSource,
 };
 use crate::channels::{
-    ChainInbound, ChainOutbound, GossipWork, PeerPenaltyCmd, SwarmCommand, VerdictResolution,
-    GOSSIP_BOUND,
+    ChainInbound, ChainOutbound, GOSSIP_BOUND, GossipWork, PeerPenaltyCmd, SwarmCommand,
+    VerdictResolution,
 };
 use crate::clock::SlotClock;
 use crate::gossip::topics::TopicName;
 use crate::metrics::{P2pMetrics, PeerPenaltyReason, QueueName};
-use crate::verdict::{is_late_import_reject, Verdict};
+use crate::verdict::{Verdict, is_late_import_reject};
 
 /// Max tracked ACCEPTed correlation ids for late-import penalties (M2).
 pub const REPORTED_ACCEPT_BOUND: usize = 1_024;
@@ -383,10 +382,7 @@ impl ValidationPool {
 }
 
 /// Worker loop: receive [`GossipWork`], validate, send [`SwarmCommand::ReportValidation`].
-pub async fn run_validation_pool(
-    pool: ValidationPool,
-    mut gossip_rx: mpsc::Receiver<GossipWork>,
-) {
+pub async fn run_validation_pool(pool: ValidationPool, mut gossip_rx: mpsc::Receiver<GossipWork>) {
     while let Some(work) = gossip_rx.recv().await {
         let depth = pool.metrics.queue_depth(QueueName::Gossip);
         if depth > 0 {
@@ -618,20 +614,16 @@ async fn validate_one(pool: &ValidationPool, work: &GossipWork) -> Verdict {
                     if pool.chain_out_tx.send(outbound).await.is_err() {
                         return Verdict::internal(fwd.block_root.to_vec());
                     }
-                    let resolution = match tokio::time::timeout(
-                        Duration::from_secs(12),
-                        reply_rx,
-                    )
-                    .await
-                    {
-                        Ok(Ok(r)) => r,
-                        Ok(Err(_)) => {
-                            return Verdict::internal(fwd.block_root.to_vec());
-                        }
-                        Err(_) => {
-                            return Verdict::ignore(Reason::Internal, fwd.block_root.to_vec());
-                        }
-                    };
+                    let resolution =
+                        match tokio::time::timeout(Duration::from_secs(12), reply_rx).await {
+                            Ok(Ok(r)) => r,
+                            Ok(Err(_)) => {
+                                return Verdict::internal(fwd.block_root.to_vec());
+                            }
+                            Err(_) => {
+                                return Verdict::ignore(Reason::Internal, fwd.block_root.to_vec());
+                            }
+                        };
                     let verdict = match resolution {
                         VerdictResolution::FromChain(proto) => Verdict::from_proto(&proto),
                         VerdictResolution::Timeout => {
@@ -844,12 +836,10 @@ async fn report(pool: &ValidationPool, work: &GossipWork, verdict: Verdict) {
 
     // Gossip REJECT → app-score path (M6 policy).
     if matches!(verdict.acceptance, Acceptance::Reject) {
-        let _ = pool
-            .penalty_tx
-            .try_send(PeerPenaltyCmd {
-                peer_id: work.peer_id,
-                reason: PeerPenaltyReason::GossipInvalid,
-            });
+        let _ = pool.penalty_tx.try_send(PeerPenaltyCmd {
+            peer_id: work.peer_id,
+            reason: PeerPenaltyReason::GossipInvalid,
+        });
     }
 
     pool.metrics

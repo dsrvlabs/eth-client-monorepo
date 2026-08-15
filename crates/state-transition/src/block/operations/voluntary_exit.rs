@@ -1,14 +1,14 @@
 //! Spec `process_voluntary_exit` (Electra).
 
-use cc_crypto::{compute_domain, compute_signing_root, verify, DOMAIN_VOLUNTARY_EXIT};
+use cc_crypto::{DOMAIN_VOLUNTARY_EXIT, compute_domain, compute_signing_root, verify};
+use cc_types::BeaconState;
 use cc_types::config::ChainConfig;
 use cc_types::operations::SignedVoluntaryExit;
 use cc_types::preset::Preset;
-use cc_types::BeaconState;
 
 use crate::error::{BlockError, OperationError};
 use crate::helpers::accessors::{get_current_epoch, get_pending_balance_to_withdraw};
-use crate::helpers::constants::{network, FAR_FUTURE_EPOCH};
+use crate::helpers::constants::{FAR_FUTURE_EPOCH, network};
 use crate::helpers::mutators::initiate_validator_exit;
 use crate::helpers::predicates::is_active_validator;
 use crate::signatures::{decode_signature, decode_state_pubkey};

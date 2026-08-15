@@ -1,9 +1,9 @@
 //! Cell-KZG column material for fixture sidecars.
 
 use anyhow::{Context, Result};
-use cc_crypto::{Blob, CellKzg, CKzgBackend, BYTES_PER_BLOB};
-use cc_types::primitives::{Cell, KzgCommitment, KzgProof};
+use cc_crypto::{BYTES_PER_BLOB, Blob, CKzgBackend, CellKzg};
 use cc_types::NUMBER_OF_COLUMNS;
+use cc_types::primitives::{Cell, KzgCommitment, KzgProof};
 
 /// Per-blob cells + proofs + commitment.
 #[derive(Debug, Clone)]
@@ -102,10 +102,7 @@ pub fn columns_from_materials(materials: &[BlobColumnMaterial]) -> Vec<ColumnBun
 }
 
 /// Verify all cells of a column bundle (AC three-step cell path).
-pub fn verify_column_cells(
-    kzg: &impl CellKzg,
-    bundle: &ColumnBundle,
-) -> Result<bool> {
+pub fn verify_column_cells(kzg: &impl CellKzg, bundle: &ColumnBundle) -> Result<bool> {
     if bundle.cells.is_empty() {
         return Ok(true);
     }

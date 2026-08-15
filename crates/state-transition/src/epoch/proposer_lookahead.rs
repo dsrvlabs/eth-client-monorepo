@@ -2,9 +2,9 @@
 //!
 //! **Sole writer** of `BeaconState.proposer_lookahead` in the transition.
 
+use cc_types::BeaconState;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, ValidatorIndex};
-use cc_types::BeaconState;
 
 use crate::error::EpochError;
 use crate::helpers::accessors::get_current_epoch;
@@ -16,9 +16,7 @@ use super::block_to_epoch;
 ///
 /// Shift the lookahead left by `SLOTS_PER_EPOCH` and append
 /// `get_beacon_proposer_indices(state, current_epoch + MIN_SEED_LOOKAHEAD + 1)`.
-pub fn process_proposer_lookahead<P: Preset>(
-    state: &mut BeaconState<P>,
-) -> Result<(), EpochError> {
+pub fn process_proposer_lookahead<P: Preset>(state: &mut BeaconState<P>) -> Result<(), EpochError> {
     let len = state.proposer_lookahead_len();
     let slots_per_epoch = P::SLOTS_PER_EPOCH as usize;
     if len < slots_per_epoch {

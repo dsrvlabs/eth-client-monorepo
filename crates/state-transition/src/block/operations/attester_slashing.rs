@@ -1,9 +1,9 @@
 //! Spec `process_attester_slashing`.
 
+use cc_types::BeaconState;
 use cc_types::operations::AttesterSlashing;
 use cc_types::preset::Preset;
 use cc_types::primitives::ValidatorIndex;
-use cc_types::BeaconState;
 
 use crate::error::{BlockError, OperationError};
 use crate::helpers::accessors::{get_current_epoch, is_valid_indexed_attestation};

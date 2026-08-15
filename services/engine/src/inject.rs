@@ -18,9 +18,9 @@ use cc_proto::p2p::{
     EngineHello, EngineToP2p, InjectColumns, P2pToEngine, SubscriptionSet as WireSubscriptionSet,
     engine_to_p2p, p2p_to_engine,
 };
+use cc_types::KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH;
 use cc_types::containers::SignedBeaconBlockHeader;
 use cc_types::primitives::{KzgCommitment, Root};
-use cc_types::KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH;
 use futures::StreamExt;
 use ssz::{Decode, Encode};
 use tokio::sync::{mpsc, watch};
@@ -153,9 +153,8 @@ impl InjectQueue {
 /// Fresh random session id (reconnect must not reuse the previous incarnation).
 #[must_use]
 pub fn new_session_id() -> u64 {
-    getrandom::u64().unwrap_or_else(|_| {
-        Instant::now().elapsed().as_nanos() as u64 ^ std::process::id() as u64
-    })
+    getrandom::u64()
+        .unwrap_or_else(|_| Instant::now().elapsed().as_nanos() as u64 ^ std::process::id() as u64)
 }
 
 /// Full-jitter sleep duration in `[0, backoff]` (AWS full jitter / Phase 2 §10.6).
@@ -226,8 +225,7 @@ pub fn decode_wire_template(wire: &WireSidecarTemplate) -> Option<SidecarTemplat
         let arr = <[u8; 48]>::try_from(c.as_slice()).ok()?;
         kzg_commitments.push(KzgCommitment::from_array(arr));
     }
-    if wire.kzg_commitments_inclusion_proof.len()
-        != KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH as usize
+    if wire.kzg_commitments_inclusion_proof.len() != KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH as usize
     {
         return None;
     }
@@ -476,7 +474,10 @@ async fn connect_and_run_session(
     // Healthy open: reset backoff so a later blip does not stay at the cap.
     *backoff = cfg.backoff_initial;
     set_stream_state(metrics, true);
-    info!(session_id, "inject stream session opened (EngineHello sent)");
+    info!(
+        session_id,
+        "inject stream session opened (EngineHello sent)"
+    );
 
     // Flush pending inject items first.
     while let Some(item) = pending.pop_front() {
@@ -989,23 +990,22 @@ mod tests {
 
         // The column branch was admitted: either still in flight or completed.
         let completed = lane.completed().await;
-        let admitted = !completed.is_empty()
-            || {
-                // Single-flight may still hold the root; force by second enqueue.
-                let o = lane
-                    .trigger_from_column_with_template(
-                        root,
-                        100,
-                        template_from_commitments(&commits),
-                        STREAM_NULL_CTX,
-                    )
-                    .await;
-                matches!(
-                    o,
-                    crate::fastpath::EnqueueOutcome::DroppedSingleFlight
-                        | crate::fastpath::EnqueueOutcome::Enqueued
-                ) || !completed.is_empty()
-            };
+        let admitted = !completed.is_empty() || {
+            // Single-flight may still hold the root; force by second enqueue.
+            let o = lane
+                .trigger_from_column_with_template(
+                    root,
+                    100,
+                    template_from_commitments(&commits),
+                    STREAM_NULL_CTX,
+                )
+                .await;
+            matches!(
+                o,
+                crate::fastpath::EnqueueOutcome::DroppedSingleFlight
+                    | crate::fastpath::EnqueueOutcome::Enqueued
+            ) || !completed.is_empty()
+        };
         assert!(
             admitted || mock.hellos.load(Ordering::SeqCst) > 0,
             "column-branch fetch must reach engine without chain"

@@ -409,6 +409,10 @@ mod tests {
         );
         assert!(peers.contains_key("chain"), "chain remains the health peer");
         // Default constructor also carries the URI.
-        assert!(EngineTransportConfig::default().p2p_uri.starts_with("http://"));
+        assert!(
+            EngineTransportConfig::default()
+                .p2p_uri
+                .starts_with("http://")
+        );
     }
 }

@@ -23,11 +23,11 @@ use cc_proto::chain::{
     restore_chunk::Body as RestoreBody,
 };
 use cc_state_transition::BlockSignatureStrategy;
+use cc_types::BeaconState;
 use cc_types::config::ChainConfig;
 use cc_types::containers::Checkpoint;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Root, Slot};
-use cc_types::BeaconState;
 use ssz::Decode;
 use tokio::sync::Notify;
 use tonic::{Request, Response, Status, Streaming};
@@ -281,9 +281,9 @@ pub async fn accumulate_restore_stream(
 ) -> Result<AccumulatedRestore, Status> {
     let mut acc = AccumulatedRestore::default();
     while let Some(frame) = stream.message().await? {
-        let body = frame.body.ok_or_else(|| {
-            Status::invalid_argument("RestoreChunk missing body oneof")
-        })?;
+        let body = frame
+            .body
+            .ok_or_else(|| Status::invalid_argument("RestoreChunk missing body oneof"))?;
         match body {
             RestoreBody::Empty(_) => {
                 if acc.header.is_some() || !acc.blocks.is_empty() || acc.footer.is_some() {
@@ -297,9 +297,7 @@ pub async fn accumulate_restore_stream(
             }
             RestoreBody::Header(h) => {
                 if acc.empty {
-                    return Err(Status::invalid_argument(
-                        "RestoreChunk header after empty",
-                    ));
+                    return Err(Status::invalid_argument("RestoreChunk header after empty"));
                 }
                 if acc.header.is_some() {
                     return Err(Status::invalid_argument(
@@ -340,9 +338,7 @@ pub async fn accumulate_restore_stream(
             }
             RestoreBody::Block(b) => {
                 if acc.header.is_none() {
-                    return Err(Status::invalid_argument(
-                        "RestoreChunk block before header",
-                    ));
+                    return Err(Status::invalid_argument("RestoreChunk block before header"));
                 }
                 if acc.blocks.len() >= MAX_RESTORE_BLOCKS {
                     return Err(Status::resource_exhausted(format!(
@@ -434,26 +430,27 @@ pub fn apply_restore_set<P: Preset + 'static>(
     input: RestoreApplyInput<'_, P>,
 ) -> Result<RestoreApplyResult<P>, Status> {
     // Decode snapshot state.
-    let state = BeaconState::<P>::from_ssz_bytes(input.state_ssz).map_err(|e| {
-        Status::invalid_argument(format!("restore state SSZ decode failed: {e:?}"))
-    })?;
+    let state = BeaconState::<P>::from_ssz_bytes(input.state_ssz)
+        .map_err(|e| Status::invalid_argument(format!("restore state SSZ decode failed: {e:?}")))?;
 
     // Anchor block: real stored SSZ only — never invent a Default body (SEC).
-    let anchor_ssz = input.anchor_block_ssz.filter(|s| !s.is_empty()).ok_or_else(|| {
-        Status::invalid_argument(
-            "RestoreHeader.anchor_block_ssz is required (real stored anchor block; \
+    let anchor_ssz = input
+        .anchor_block_ssz
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            Status::invalid_argument(
+                "RestoreHeader.anchor_block_ssz is required (real stored anchor block; \
              empty Default body is refused)",
-        )
-    })?;
+            )
+        })?;
     let signed_anchor = decode_signed_block::<P>(anchor_ssz, input.anchor_block_fork)?;
     let anchor_block = signed_anchor.message;
 
     let peer_das = Arc::new(PeerDasAvailability::new());
     let da_for_store: Arc<dyn cc_fork_choice::DataAvailability> = peer_das.clone();
     let engine = Arc::new(
-        crate::engine_client::EngineApiClient::new(input.engine_uri.clone()).map_err(|e| {
-            Status::internal(format!("restore engine client: {e}"))
-        })?,
+        crate::engine_client::EngineApiClient::new(input.engine_uri.clone())
+            .map_err(|e| Status::internal(format!("restore engine client: {e}")))?,
     );
 
     let mut store: Store<P> = get_forkchoice_store(
@@ -483,9 +480,8 @@ pub fn apply_restore_set<P: Preset + 'static>(
     // Signatures: NoVerification (reason: verified at first import; CC-45 /5).
     // DA: applied from stored da_status as a verdict; gate not re-run.
     for (i, rb) in input.blocks.iter().enumerate() {
-        let root = parse_root(&rb.root).map_err(|e| {
-            Status::invalid_argument(format!("restore block[{i}] root: {e}"))
-        })?;
+        let root = parse_root(&rb.root)
+            .map_err(|e| Status::invalid_argument(format!("restore block[{i}] root: {e}")))?;
         let signed = decode_signed_block::<P>(&rb.ssz, rb.fork)?;
         let true_root = Root::from_hash256(tree_hash::TreeHash::tree_hash_root(&signed.message));
         if true_root != root {
@@ -515,7 +511,11 @@ pub fn apply_restore_set<P: Preset + 'static>(
 
         // Advance store time if needed so the block is not FutureSlot.
         let block_time = store.genesis_time()
-            + signed.message.slot.as_u64().saturating_mul(store.seconds_per_slot());
+            + signed
+                .message
+                .slot
+                .as_u64()
+                .saturating_mul(store.seconds_per_slot());
         if store.time() < block_time
             && let Err(e) = on_tick(&mut store, block_time)
         {
@@ -797,9 +797,7 @@ mod tests {
 
     use super::*;
     use cc_crypto::{bls_verify_count, take_bls_verify_count};
-    use cc_fork_choice::{
-        DataAvailability, ExecutionStatus, HarnessAvailability, ProtoNodeBlock,
-    };
+    use cc_fork_choice::{DataAvailability, ExecutionStatus, HarnessAvailability, ProtoNodeBlock};
     use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
     use cc_types::containers::BeaconBlockHeader;
     use cc_types::preset::Minimal;

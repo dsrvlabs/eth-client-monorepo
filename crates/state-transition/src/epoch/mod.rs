@@ -19,8 +19,8 @@ pub mod slashings;
 pub mod slashings_reset;
 pub mod sync_committee_updates;
 
-use cc_types::preset::Preset;
 use cc_types::BeaconState;
+use cc_types::preset::Preset;
 
 use crate::error::{BlockError, EpochError};
 
@@ -38,8 +38,8 @@ pub use proposer_lookahead::process_proposer_lookahead;
 pub use randao_mixes_reset::process_randao_mixes_reset;
 pub use registry_updates::process_registry_updates;
 pub use rewards_and_penalties::{
-    get_flag_index_deltas, get_inactivity_penalty_deltas, process_rewards_and_penalties,
-    RewardPenalties,
+    RewardPenalties, get_flag_index_deltas, get_inactivity_penalty_deltas,
+    process_rewards_and_penalties,
 };
 pub use slashings::process_slashings;
 pub use slashings_reset::process_slashings_reset;

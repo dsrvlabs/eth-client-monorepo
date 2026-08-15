@@ -7,15 +7,13 @@
 //!   at epoch boundaries (consumed by CC-13c's `process_proposer_lookahead`).
 
 use cc_crypto::{
-    aggregate_public_keys, hash_fixed, DOMAIN_BEACON_ATTESTER, DOMAIN_BEACON_PROPOSER,
-    DOMAIN_SYNC_COMMITTEE,
+    DOMAIN_BEACON_ATTESTER, DOMAIN_BEACON_PROPOSER, DOMAIN_SYNC_COMMITTEE, aggregate_public_keys,
+    hash_fixed,
 };
 use cc_types::containers::SyncCommittee;
 use cc_types::preset::Preset;
 use cc_types::primitives::{BlsPublicKey, CommitteeIndex, Epoch, Root, Slot, ValidatorIndex};
-use cc_types::{
-    BeaconState, ShuffledCommitteeEpoch, ShufflingCacheKey,
-};
+use cc_types::{BeaconState, ShuffledCommitteeEpoch, ShufflingCacheKey};
 use ssz_types::FixedVector;
 
 use crate::error::BlockError;
@@ -148,8 +146,8 @@ pub fn compute_proposer_index<P: Preset>(
         input[32..].copy_from_slice(&u64_to_bytes_le(i / 16));
         let random_bytes = hash_fixed(&input);
         let offset = ((i % 16) * 2) as usize;
-        let random_value = u64::from(random_bytes[offset])
-            | (u64::from(random_bytes[offset + 1]) << 8);
+        let random_value =
+            u64::from(random_bytes[offset]) | (u64::from(random_bytes[offset + 1]) << 8);
         let effective_balance = state
             .validators_get(candidate_index.as_u64() as usize)
             .ok_or(BlockError::ArithmeticOverflow)?
@@ -224,8 +222,8 @@ pub fn get_next_sync_committee_indices<P: Preset>(
         input[32..].copy_from_slice(&u64_to_bytes_le(i / 16));
         let random_bytes = hash_fixed(&input);
         let offset = ((i % 16) * 2) as usize;
-        let random_value = u64::from(random_bytes[offset])
-            | (u64::from(random_bytes[offset + 1]) << 8);
+        let random_value =
+            u64::from(random_bytes[offset]) | (u64::from(random_bytes[offset + 1]) << 8);
         let effective_balance = state
             .validators_get(candidate_index.as_u64() as usize)
             .ok_or(BlockError::ArithmeticOverflow)?
