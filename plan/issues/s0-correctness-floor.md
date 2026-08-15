@@ -804,6 +804,8 @@ fix does not wait for S2, and S2 does not excuse skipping the port fix.
 
 **Acceptance** — `S0-B-20` (the off-host scan). A compose diff is not evidence.
 
+- [x] Evidence is the recorded `--live` scan of the running stack (`S0-B-20`, `docs/s0-e08-offhost-port-scan.txt`), not this compose diff and not alpine `--scan`.
+
 ---
 
 ### `S0-B-02` · P0-07 + P1-A/27 — the three missing URI overrides and the identity mount
@@ -1163,6 +1165,20 @@ criterion but not the work**) · **Deps** `S0-B-01` · **Discharges** M4's verif
 **Acceptance** — a scan **from a second host** reaches none of `9001`–`9006`, and `9101`–`9106` answer
 on `127.0.0.1` only. Recorded in the exit note with the scanning host's address and the raw output.
 Without this check S0 ships the security fix with nothing asserting it.
+
+- [x] `scripts/offhost-port-scan.sh`: `--policy` in lint (no docker). `--scan`
+      is alpine compose-flag replay and never prints `M4=0`. `--live` is E0.8
+      (real stack + `cc_*` `/metrics` fingerprint). `--remote` rejects loopback.
+- [x] Fixture self-test plus live `docker-compose.yml` policy in `make lint`.
+- [x] Recorded `--live` run against the running six-service stack: scanner
+      `172.22.0.2` on `s0b20-*-scan` (not `cc`, not host loopback netns) →
+      host `172.30.1.69` (canary `:19191` open; `9001`–`9006` and `9101`–`9106`
+      closed). Loopback `127.0.0.1:9101`–`9106` open with `cc_*` series;
+      `9001`–`9006` closed. Raw output:
+      [`docs/s0-e08-offhost-port-scan.txt`](../../docs/s0-e08-offhost-port-scan.txt).
+      `make compose-proof` / `check-offhost-scan-live` is the E0.8 record.
+
+- [x] Isolated-scanner `--live` scan: 9001–9106 closed on LAN; 9101–9106 open on loopback.
 
 ---
 

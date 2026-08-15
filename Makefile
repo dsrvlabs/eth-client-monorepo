@@ -146,7 +146,7 @@ clippy: ## Clippy with -D warnings (CI: clippy job)
 	$(CARGO) clippy $(CLIPPY_FLAGS) -- -D warnings
 
 .PHONY: lint
-lint: fmt-check clippy check-dag check-env check-http check-gha-pins check-ci-jobs check-compose-uris check-fork-schedule ## Local lint suite (fmt + clippy + guards)
+lint: fmt-check clippy check-dag check-env check-http check-gha-pins check-ci-jobs check-compose-uris check-fork-schedule check-offhost-policy ## Local lint suite (fmt + clippy + guards)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Policy guards (scripts/ — wired into the matching CI job and `make ci`)
@@ -183,6 +183,14 @@ check-compose-uris: ## P0-07 / P1-A/27 compose URI overrides + identity mount
 .PHONY: check-fork-schedule
 check-fork-schedule: ## One fork-schedule walk outside cc-types (S0-A-12)
 	bash $(SCRIPTS)/check-fork-schedule-walks.sh
+
+.PHONY: check-offhost-policy
+check-offhost-policy: ## S0-B-20 compose host-publish policy (fixtures + live file; not E0.8)
+	bash $(SCRIPTS)/offhost-port-scan.sh --policy
+
+.PHONY: check-offhost-scan
+check-offhost-scan: ## compose-flag alpine replay (not E0.8 / not M4)
+	bash $(SCRIPTS)/offhost-port-scan.sh --scan
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Proto (required CI: proto job)
@@ -273,8 +281,12 @@ compose: compose-build compose-up wait-healthy ## Build, up, and wait-healthy
 check-compose-uris-runtime: ## P0-07 keys + identity mount inside a running stack
 	bash $(SCRIPTS)/check-compose-uri-overrides.sh --runtime
 
+.PHONY: check-offhost-scan-live
+check-offhost-scan-live: ## S0-B-20 / E0.8 live-stack scan (the M4 record)
+	bash $(SCRIPTS)/offhost-port-scan.sh --live
+
 .PHONY: compose-proof
-compose-proof: compose check-compose-uris-runtime prove-health ## Full mutual-health proof (compose CI path)
+compose-proof: compose check-compose-uris-runtime prove-health check-offhost-scan-live ## Full mutual-health proof (compose CI path)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Meta

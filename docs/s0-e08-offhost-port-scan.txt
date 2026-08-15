@@ -1,0 +1,82 @@
+# S0-B-20 / E0.8 record (M4).
+# This is --live against the real compose stack, not alpine --scan.
+# What was run: bash scripts/offhost-port-scan.sh --live --record docs/s0-e08-offhost-port-scan.txt
+# COMPOSE_PROJECT_NAME=eth-client-monorepo
+#   attestation  eth-client-monorepo-attestation  healthy
+#   beacon-api   eth-client-monorepo-beacon-api   healthy
+#   chain        eth-client-monorepo-chain        healthy
+#   engine       eth-client-monorepo-engine       healthy
+#   p2p          eth-client-monorepo-p2p          healthy
+#   storage      eth-client-monorepo-storage      healthy
+#   el           ethereum/client-go:v1.17.5       started (not in the six)
+# 127.0.0.1:9101–9106 served cc_* /metrics (live_fingerprint below).
+# Scanner 172.22.0.2 on s0b20-*-scan — not compose cc, not host loopback netns.
+#
+s0-b-20 / E0.8 off-host port scan
+date_utc:    2026-08-15T16:28:23Z
+uname:       Darwin nil.local 25.6.0 Darwin Kernel Version 25.6.0: Sat Jul 11 15:27:27 PDT 2026; root:xnu-12377.161.13~4/RELEASE_ARM64_T6041 arm64
+hostname:    nil.local
+cwd:         /Users/nil/.grok/worktrees/dsrv-eth-client-monorepo/subagent-01a00621-a81b-7c02-93d0-11811c3eb5be
+mode:        live
+command:     bash scripts/offhost-port-scan.sh --live --record docs/s0-e08-offhost-port-scan.txt
+compose:     /Users/nil/.grok/worktrees/dsrv-eth-client-monorepo/subagent-01a00621-a81b-7c02-93d0-11811c3eb5be/docker-compose.yml
+
+ok: self-test metrics-unbound is red
+ok: self-test missing-metrics is red
+ok: self-test published-grpc is red
+ok: self-test loopback-metrics is green
+ok: off-host port-scan fixtures
+ok: docker-compose.yml publishes 9101–9106 on 127.0.0.1 and no 9001–9006
+live_fingerprint: 127.0.0.1:9101/metrics has cc_* series
+live_fingerprint: 127.0.0.1:9102/metrics has cc_* series
+live_fingerprint: 127.0.0.1:9103/metrics has cc_* series
+live_fingerprint: 127.0.0.1:9104/metrics has cc_* series
+live_fingerprint: 127.0.0.1:9105/metrics has cc_* series
+live_fingerprint: 127.0.0.1:9106/metrics has cc_* series
+scan_mode: live
+image:     alpine:3.20
+canary:    0.0.0.0:19191 (path-liveness publish)
+host_ips:     172.30.1.69
+host_gateway: 192.168.65.254
+targets:      172.30.1.69
+scanner_container: s0b20-87960-24760-scan
+scanner_ip:        172.22.0.2
+scanner_network:   s0b20-87960-24760-scan (isolated from s0b20-87960-24760-target and host loopback netns)
+scanner_hostname:  f12d0b58966e
+
+== canary (must be open off-host, else the scan path is blind) ==
+  offhost probe 172.30.1.69:19191 open
+ok: scanner on s0b20-87960-24760-scan (172.22.0.2) can see a 0.0.0.0 host publish via 172.30.1.69:19191
+
+== off-host (scanner netns s0b20-87960-24760-scan → host non-loopback) ==
+  offhost probe 172.30.1.69:9001 closed ConnectionRefusedError
+  offhost probe 172.30.1.69:9002 closed ConnectionRefusedError
+  offhost probe 172.30.1.69:9003 closed ConnectionRefusedError
+  offhost probe 172.30.1.69:9004 closed ConnectionRefusedError
+  offhost probe 172.30.1.69:9005 closed ConnectionRefusedError
+  offhost probe 172.30.1.69:9006 closed ConnectionRefusedError
+  offhost probe 172.30.1.69:9101 closed ConnectionRefusedError
+  offhost probe 172.30.1.69:9102 closed ConnectionRefusedError
+  offhost probe 172.30.1.69:9103 closed ConnectionRefusedError
+  offhost probe 172.30.1.69:9104 closed ConnectionRefusedError
+  offhost probe 172.30.1.69:9105 closed ConnectionRefusedError
+  offhost probe 172.30.1.69:9106 closed ConnectionRefusedError
+
+== loopback (host netns; 910N must answer, 900N must not) ==
+  loopback probe 127.0.0.1:9101 open
+  loopback probe 127.0.0.1:9102 open
+  loopback probe 127.0.0.1:9103 open
+  loopback probe 127.0.0.1:9104 open
+  loopback probe 127.0.0.1:9105 open
+  loopback probe 127.0.0.1:9106 open
+  loopback probe 127.0.0.1:9001 closed ConnectionRefusedError
+  loopback probe 127.0.0.1:9002 closed ConnectionRefusedError
+  loopback probe 127.0.0.1:9003 closed ConnectionRefusedError
+  loopback probe 127.0.0.1:9004 closed ConnectionRefusedError
+  loopback probe 127.0.0.1:9005 closed ConnectionRefusedError
+  loopback probe 127.0.0.1:9006 closed ConnectionRefusedError
+
+verdict: PASS  M4=0  (live compose stack; E0.8)
+ok: off-host scan from 172.22.0.2 on s0b20-87960-24760-scan (not cc, not host loopback netns) reaches none of 9001–9006 or 9101–9106
+ok: 9101–9106 answer on 127.0.0.1 with cc_* /metrics; 9001–9006 unpublished on the host
+record: docs/s0-e08-offhost-port-scan.txt

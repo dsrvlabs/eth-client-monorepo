@@ -109,6 +109,11 @@ jobs:
       - name: check fork-schedule walks
         run: bash scripts/check-fork-schedule-walks.sh
 
+      # S0-B-20: compose host-publish policy only (no docker pull).
+      # E0.8 / M4 is `--live` on the compose job against a running stack.
+      - name: check compose host-publish policy
+        run: bash scripts/offhost-port-scan.sh --policy
+
   # CC-10h — unit tests + all minimal-preset suites; keep inside Phase 0's 10-minute
   # CC-07/4 budget. Mainnet + general suites move to the sharded `vectors` job.
   test:
@@ -439,7 +444,7 @@ jobs:
           base="${{ github.event.pull_request.base.sha }}"
           head="${{ github.sha }}"
           if git diff --name-only "${base}" "${head}" | grep -qE \
-            '^(Dockerfile|docker-compose\.yml|crates/bootstrap/|scripts/(wait-healthy|prove-mutual-health|check-compose-uri-overrides)\.sh)'; then
+            '^(Dockerfile|docker-compose\.yml|crates/bootstrap/|scripts/(wait-healthy|prove-mutual-health|check-compose-uri-overrides|offhost-port-scan)\.sh)'; then
             echo "run=true" >> "${GITHUB_OUTPUT}"
           else
             echo "run=false" >> "${GITHUB_OUTPUT}"
@@ -460,3 +465,4 @@ jobs:
           bash scripts/wait-healthy.sh
           bash scripts/check-compose-uri-overrides.sh --runtime
           bash scripts/prove-mutual-health.sh
+          bash scripts/offhost-port-scan.sh --live

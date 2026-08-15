@@ -1,0 +1,12 @@
+# Negative: 9103 never published to loopback.
+services:
+  chain:
+    ports: ["127.0.0.1:9101:9101"]
+  p2p:
+    ports: ["127.0.0.1:9102:9102"]
+  engine:
+    ports: ["127.0.0.1:9104:9104"]
+  beacon-api:
+    ports: ["127.0.0.1:9105:9105"]
+  storage:
+    ports: ["127.0.0.1:9106:9106"]

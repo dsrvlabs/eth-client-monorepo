@@ -1,0 +1,14 @@
+# Negative: metrics published on 0.0.0.0 (J-9 / SEC-H1 miss).
+services:
+  chain:
+    ports: ["9101:9101"]
+  p2p:
+    ports: ["127.0.0.1:9102:9102"]
+  attestation:
+    ports: ["127.0.0.1:9103:9103"]
+  engine:
+    ports: ["127.0.0.1:9104:9104"]
+  beacon-api:
+    ports: ["127.0.0.1:9105:9105"]
+  storage:
+    ports: ["127.0.0.1:9106:9106"]

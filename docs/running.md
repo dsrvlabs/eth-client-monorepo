@@ -93,6 +93,45 @@ docker compose exec -T chain /usr/local/bin/grpc-health-probe -addr=:9001
 docker compose down                                 # no containers left
 ```
 
+## Off-host port scan (E0.8 / S0-B-20)
+
+M4 is not discharged by a compose diff, and not by an alpine dummy that
+replays `ports:`. The instrument is a scan of a **running** compose stack
+from a scanner that is **not** on host loopback and **not** on the compose
+`cc` network: `9001`–`9006` closed, `9101`–`9106` closed on the LAN IP,
+`9101`–`9106` open on `127.0.0.1` with `cc_*` `/metrics`.
+
+```bash
+# Static policy (fixtures + live docker-compose.yml). In `make lint`. Not E0.8.
+bash scripts/offhost-port-scan.sh --policy
+
+# E0.8 record: running stack, scanner off loopback / off `cc`.
+# make compose-proof / check-offhost-scan-live
+bash scripts/offhost-port-scan.sh --live
+
+# Physical second host (this machine is the scanner; rejects 127.0.0.1):
+bash scripts/offhost-port-scan.sh --remote "$LAN_IP"
+
+# Compose-flag alpine replay only (never prints M4=0):
+bash scripts/offhost-port-scan.sh --scan
+```
+
+`--live` publishes a short-lived `0.0.0.0` canary so an all-closed result
+cannot be a blind scanner. Captured `--live` run:
+[`docs/s0-e08-offhost-port-scan.txt`](s0-e08-offhost-port-scan.txt).
+
+Two-host / netns procedure (CI substitute is `--live`):
+
+1. On the compose host, bring the stack up (`docker compose up -d` +
+   `wait-healthy.sh`) and note a non-loopback IPv4 (`LAN_IP`).
+2. From a second host, a netns with a veth onto that LAN, or a container
+   **not** on the compose `cc` network:
+   `for p in 9001 9002 9003 9004 9005 9006 9101 9102 9103 9104 9105 9106;
+   do nc -z -w 1 "$LAN_IP" "$p" && echo OPEN $p || echo CLOSED $p; done`
+   — all twelve **CLOSED**.
+3. On the compose host: `127.0.0.1:9101`–`9106` **OPEN** (`cc_*` metrics);
+   `127.0.0.1:9001`–`9006` **CLOSED**.
+
 ## Mutual-health proof
 
 Success-metric clause 2 is automated by `scripts/prove-mutual-health.sh`
@@ -124,12 +163,16 @@ docker compose build
 docker compose up -d
 bash scripts/wait-healthy.sh
 bash scripts/prove-mutual-health.sh
+bash scripts/offhost-port-scan.sh --live
 ```
 
 The `compose` job in `.github/workflows/ci.yml` is **not** a required status
 check (deliberately outside the warm-CI ten-minute budget). It runs on push to
 `main`/`develop` and on PRs that touch `Dockerfile`, `docker-compose.yml`,
-`crates/bootstrap/**`, or `scripts/{wait-healthy,prove-mutual-health}.sh`.
+`crates/bootstrap/**`, or
+`scripts/{wait-healthy,prove-mutual-health,check-compose-uri-overrides,offhost-port-scan}.sh`.
+The clippy job runs only `--policy` (no docker pull). E0.8 is `--live` on
+`compose-proof`.
 
 ## Persistence
 
