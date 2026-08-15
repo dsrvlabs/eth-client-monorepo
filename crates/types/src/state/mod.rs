@@ -228,6 +228,23 @@ impl<P: Preset> BeaconState<P> {
             ))),
         }
     }
+
+    /// Fill `caches.pubkeys` from the validator registry.
+    ///
+    /// Append-only and idempotent. Required after SSZ decode: `caches` is
+    /// `skip_deserializing`, so every decoded state starts with an empty map.
+    pub fn top_up_pubkey_cache(&mut self) {
+        let len = self.validators_len();
+        for i in 0..len {
+            let Some(v) = self.validators_get(i) else {
+                continue;
+            };
+            let pk = v.pubkey;
+            self.caches_mut()
+                .pubkeys
+                .insert(pk, ValidatorIndex::new(i as u64));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -235,7 +252,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+    use crate::containers::Validator;
     use crate::preset::{Mainnet, Minimal};
+    use crate::primitives::BlsPublicKey;
     use ssz::{Decode, Encode};
     use tree_hash::TreeHash;
     use typenum::Unsigned;
@@ -360,5 +379,66 @@ mod tests {
         assert!(state.caches().list_hashes[list_id::VALIDATORS].is_some());
         let cloned = state.clone();
         assert!(cloned.caches().list_hashes[list_id::VALIDATORS].is_some());
+    }
+
+    fn registry_state(n: usize) -> BeaconState<Minimal> {
+        let mut state = BeaconState::<Minimal>::default();
+        for i in 0..n {
+            let mut raw = [0u8; 48];
+            raw[0] = (i as u8).saturating_add(1);
+            state
+                .validators_push(Validator {
+                    pubkey: BlsPublicKey::from_array(raw),
+                    ..Validator::default()
+                })
+                .unwrap();
+        }
+        state
+    }
+
+    fn cache_mappings(state: &BeaconState<Minimal>) -> Vec<Option<ValidatorIndex>> {
+        (0..state.validators_len())
+            .map(|i| {
+                let pk = state.validators_get(i).unwrap().pubkey;
+                state.caches().pubkeys.get(&pk)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn top_up_pubkey_cache_fills_after_ssz_decode() {
+        let state = registry_state(4);
+        assert!(state.caches().pubkeys.is_empty());
+        let bytes = state.as_ssz_bytes();
+        let mut decoded =
+            BeaconState::<Minimal>::from_ssz_bytes(&bytes).unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(
+            decoded.caches().pubkeys.is_empty(),
+            "SSZ decode must leave caches.pubkeys empty"
+        );
+        decoded.top_up_pubkey_cache();
+        assert_eq!(decoded.caches().pubkeys.len(), decoded.validators_len());
+        for i in 0..4 {
+            let pk = decoded.validators_get(i).unwrap().pubkey;
+            assert_eq!(
+                decoded.caches().pubkeys.get(&pk),
+                Some(ValidatorIndex::new(i as u64))
+            );
+        }
+    }
+
+    #[test]
+    fn top_up_pubkey_cache_is_idempotent() {
+        let state = registry_state(3);
+        let bytes = state.as_ssz_bytes();
+        let mut decoded =
+            BeaconState::<Minimal>::from_ssz_bytes(&bytes).unwrap_or_else(|e| panic!("{e:?}"));
+        decoded.top_up_pubkey_cache();
+        let first_len = decoded.caches().pubkeys.len();
+        let first = cache_mappings(&decoded);
+        decoded.top_up_pubkey_cache();
+        decoded.top_up_pubkey_cache();
+        assert_eq!(decoded.caches().pubkeys.len(), first_len);
+        assert_eq!(cache_mappings(&decoded), first);
     }
 }

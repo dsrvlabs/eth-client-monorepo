@@ -429,9 +429,10 @@ pub struct RestoreApplyResult<P: Preset> {
 pub fn apply_restore_set<P: Preset + 'static>(
     input: RestoreApplyInput<'_, P>,
 ) -> Result<RestoreApplyResult<P>, Status> {
-    // Decode snapshot state.
-    let state = BeaconState::<P>::from_ssz_bytes(input.state_ssz)
+    // Decode snapshot state. Caches are SSZ-skipped; fill before on_block.
+    let mut state = BeaconState::<P>::from_ssz_bytes(input.state_ssz)
         .map_err(|e| Status::invalid_argument(format!("restore state SSZ decode failed: {e:?}")))?;
+    state.top_up_pubkey_cache();
 
     // Anchor block: real stored SSZ only — never invent a Default body (SEC).
     let anchor_ssz = input
@@ -1221,5 +1222,24 @@ mod tests {
         let n = s.as_ssz_bytes().len();
         assert_eq!(n, FORK_CHOICE_SCALARS_SSZ_LEN);
         assert!(n < 300, "scalars must stay well under 300 B, got {n}");
+    }
+
+    #[test]
+    fn restore_decode_tops_up_pubkey_cache_before_on_block() {
+        let src = include_str!("restore.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap();
+        let decode = production
+            .find("from_ssz_bytes(input.state_ssz)")
+            .expect("restore decode site");
+        let top_up = production
+            .find("top_up_pubkey_cache")
+            .expect("restore must call top_up_pubkey_cache");
+        let on_block = production
+            .find("match on_block(")
+            .expect("restore on_block site");
+        assert!(
+            decode < top_up && top_up < on_block,
+            "top-up must sit between SSZ decode and on_block"
+        );
     }
 }

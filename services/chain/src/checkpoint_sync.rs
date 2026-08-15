@@ -1020,7 +1020,7 @@ async fn fetch_and_verify_triple<P: Preset>(
         Err(e) => return Err(e),
     };
     require_fulu(&state_version, provider)?;
-    let state = BeaconState::<P>::from_ssz_bytes_with(ForkName::Fulu, &state_bytes)
+    let mut state = BeaconState::<P>::from_ssz_bytes_with(ForkName::Fulu, &state_bytes)
         .map_err(|e| CheckpointError::Decode(format!("BeaconState SSZ: {e:?}")))?;
 
     // Genesis endpoint is the bootstrap source of record for signature domains.
@@ -1048,6 +1048,9 @@ async fn fetch_and_verify_triple<P: Preset>(
             state_root: computed_state_root,
         });
     }
+
+    // Caches are SSZ-skipped; fill after the state is proven, before store seed.
+    state.top_up_pubkey_cache();
 
     let block_root = verify_checkpoint(&signed_block, &state, cfg.expected_checkpoint_root)?;
 
@@ -2273,5 +2276,28 @@ mod tests {
             .try_into()
             .map_err(|_| "pubkey slice".to_owned())?;
         PublicKey::deserialize(&pk_bytes).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn checkpoint_decode_tops_up_pubkey_cache_after_state_root_check() {
+        let src = include_str!("checkpoint_sync.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap();
+        let fn_start = production
+            .find("async fn fetch_and_verify_triple")
+            .expect("fetch_and_verify_triple");
+        let body = &production[fn_start..];
+        let decode = body
+            .find("from_ssz_bytes_with(ForkName::Fulu, &state_bytes)")
+            .expect("checkpoint state decode");
+        let mismatch = body
+            .find("CheckpointError::StateRootMismatch")
+            .expect("state-root check");
+        let top_up = body
+            .find("top_up_pubkey_cache")
+            .expect("checkpoint must call top_up_pubkey_cache");
+        assert!(
+            decode < mismatch && mismatch < top_up,
+            "top-up must run after the proven state-root check"
+        );
     }
 }

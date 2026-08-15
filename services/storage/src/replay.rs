@@ -623,8 +623,11 @@ fn resolve_expected_root(engine: &Engine, slot: Slot, fallback: Root) -> Result<
 }
 
 fn decode_mainnet_state(ssz: &[u8]) -> Result<BeaconState<Mainnet>, ReplayError> {
-    BeaconState::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, ssz)
-        .map_err(|e| ReplayError::Ssz(format!("BeaconState decode failed: {e:?}")))
+    let mut state = BeaconState::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, ssz)
+        .map_err(|e| ReplayError::Ssz(format!("BeaconState decode failed: {e:?}")))?;
+    // Caches are SSZ-skipped; fill before any state_transition on this state.
+    state.top_up_pubkey_cache();
+    Ok(state)
 }
 
 fn observe_phase(metrics: &StorageMetrics, phase: SnapshotPhase, secs: f64) {
@@ -1344,5 +1347,30 @@ mod tests {
         for needle in [a.as_str(), b.as_str(), c.as_str()] {
             assert!(!production.contains(needle), "found {needle}");
         }
+    }
+
+    #[test]
+    fn decode_mainnet_state_tops_up_pubkey_cache_before_transition() {
+        let src = include_str!("replay.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap();
+        let decode_fn = production
+            .find("fn decode_mainnet_state")
+            .expect("decode_mainnet_state");
+        let decode_body = &production[decode_fn..];
+        let fn_end = decode_body.find("\n}").expect("decode_mainnet_state body");
+        assert!(
+            decode_body[..fn_end].contains("top_up_pubkey_cache"),
+            "decode_mainnet_state must top up before returning"
+        );
+        let decode_use = production
+            .find("decode_mainnet_state(&base_ssz)")
+            .expect("production decode");
+        let transition = production
+            .find("replay_state_to_slot")
+            .expect("replay_state_to_slot");
+        assert!(
+            decode_use < transition,
+            "own-replay must decode (and top up) before state_transition"
+        );
     }
 }
