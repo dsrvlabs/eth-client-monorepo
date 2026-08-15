@@ -436,20 +436,9 @@ jobs:
             echo "Skipping compose proof — no in-scope paths changed on this PR."
           fi
 
-      # Same pin as Dockerfile HEALTH_PROBE_VERSION / HEALTH_PROBE_SHA256_AMD64 (ubuntu-latest = amd64).
-      - name: Install grpc-health-probe
-        if: steps.paths.outputs.run == 'true'
-        env:
-          HEALTH_PROBE_VERSION: v0.4.54
-          HEALTH_PROBE_SHA256_AMD64: e25b2f7e50176a909b9036e2c7598d8997b524a87d24af81d92b796e6dfb4897
-        run: |
-          set -euo pipefail
-          curl -fsSL -o /tmp/grpc-health-probe \
-            "https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/${HEALTH_PROBE_VERSION}/grpc_health_probe-linux-amd64"
-          echo "${HEALTH_PROBE_SHA256_AMD64}  /tmp/grpc-health-probe" | sha256sum -c -
-          chmod +x /tmp/grpc-health-probe
-          sudo mv /tmp/grpc-health-probe /usr/local/bin/grpc-health-probe
-
+      # gRPC 9001–9006 is unpublished (P0-01). prove-mutual-health.sh probes
+      # via `docker compose exec` + the image's /usr/local/bin/grpc-health-probe;
+      # wait-healthy.sh reads compose Health. No host-side probe install.
       - name: Compose build, wait-healthy, prove-mutual-health
         if: steps.paths.outputs.run == 'true'
         env:

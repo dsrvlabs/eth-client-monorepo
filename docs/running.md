@@ -69,9 +69,6 @@ only.
 
 - Docker with Compose v2 (`docker compose`)
 - `jq` (used by `scripts/wait-healthy.sh`)
-- Host-side `grpc-health-probe` (or `grpc_health_probe`) on `PATH` for
-  `scripts/prove-mutual-health.sh` — same tool the images embed at
-  `/usr/local/bin/grpc-health-probe` (pin: Dockerfile `HEALTH_PROBE_VERSION`)
 - Optional: free disk for the spec-vector cache (order **8–10 GB**; see
   [Disk budget](#disk-budget) under Spec vectors)
 
@@ -84,14 +81,15 @@ docker compose up -d
 bash scripts/wait-healthy.sh                        # all six healthy within 90 s
 ```
 
-Published host ports follow Architecture §6.3 (gRPC `9001`–`9006`, metrics
-gRPC+100 → `9101`–`9106`). Services address each other by compose DNS name
-inside the `cc` network; host ports exist only for operator probes and the
-proof scripts.
+CC host publishes are metrics only, bound to loopback (`127.0.0.1:9101`–`9106`).
+The gRPC bus `9001`–`9006` stays on the compose network (P0-01 / SEC-H1) and is
+not published to the host. Services address each other by compose DNS name
+inside the `cc` network. Operator health is `docker compose ps` or
+`docker compose exec` + the image `grpc-health-probe` (same as the healthcheck).
 
 ```bash
 curl -s localhost:9101/metrics | head
-grpc-health-probe -addr=127.0.0.1:9001              # aggregate "" health
+docker compose exec -T chain /usr/local/bin/grpc-health-probe -addr=:9001
 docker compose down                                 # no containers left
 ```
 
@@ -108,10 +106,10 @@ The script:
 
 1. Delegates the “all six healthy” precondition to `wait-healthy.sh`.
 2. Runs `docker compose stop chain`.
-3. Polls each of the five dependents from the **host** with
-   `grpc-health-probe` (aggregate `""`) and asserts **NOT_SERVING** within
-   **15 s**, cross-checking `cc_peer_health{peer="chain"} == 0` on each
-   service’s `/metrics`.
+3. Polls each of the five dependents via `docker compose exec` with
+   `grpc-health-probe` (aggregate `""` on `:900N` inside the container) and
+   asserts **NOT_SERVING** within **15 s**, cross-checking
+   `cc_peer_health{peer="chain"} == 0` on each service’s loopback `/metrics`.
 4. Runs `docker compose start chain` and asserts all six **SERVING** and every
    `cc_peer_health` gauge back to **1** within **30 s**.
 5. On any failure, exits non-zero and names the offending service and its

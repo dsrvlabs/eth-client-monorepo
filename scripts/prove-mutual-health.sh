@@ -5,14 +5,16 @@
 #   1. Assert all six healthy (delegates to wait-healthy.sh).
 #   2. docker compose stop chain.
 #   3. Within 15 s: all five dependents report aggregate "" = NOT_SERVING via
-#      grpc-health-probe from the host, and each dependent's
-#      cc_peer_health{peer="chain"} == 0 on /metrics.
+#      in-container grpc-health-probe (`docker compose exec`; gRPC 9001–9006
+#      is not published to the host — P0-01 / SEC-H1), and each dependent's
+#      cc_peer_health{peer="chain"} == 0 on loopback /metrics (9101–9106).
 #   4. docker compose start chain; within 30 s all six SERVING and every
 #      cc_peer_health gauge is 1.
 #   5. Non-zero exit names the offending service and its observed state.
 #
-# Requires: bash, docker compose, curl, jq (via wait-healthy.sh), grpc-health-probe
-#           (or grpc_health_probe) on the host PATH.
+# Requires: bash, docker compose, curl, jq (via wait-healthy.sh).
+# Aggregate health is probed inside each container (image path
+# /usr/local/bin/grpc-health-probe). Metrics stay on 127.0.0.1:910N.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -61,19 +63,6 @@ die() {
   exit 1
 }
 
-# Resolve host-side grpc-health-probe (Dockerfile installs as grpc-health-probe).
-resolve_probe() {
-  if command -v grpc-health-probe >/dev/null 2>&1; then
-    echo "grpc-health-probe"
-  elif command -v grpc_health_probe >/dev/null 2>&1; then
-    echo "grpc_health_probe"
-  else
-    die "grpc-health-probe (or grpc_health_probe) is required on PATH (host-side probe per Architecture §6.5)"
-  fi
-}
-
-PROBE="$(resolve_probe)"
-
 if ! command -v curl >/dev/null 2>&1; then
   die "curl is required"
 fi
@@ -84,12 +73,13 @@ fi
 
 # Probe aggregate health "" (no -service flag). Prints SERVING | NOT_SERVING | OTHER:<detail>.
 # grpc-health-probe: exit 0 ⇒ SERVING; non-zero with "status: NOT_SERVING" ⇒ NOT_SERVING.
+# Runs in the service netns — host 127.0.0.1:900N is unpublished (P0-01).
 aggregate_health() {
   local svc="$1"
   local port out rc
   port="$(grpc_port "${svc}")"
   set +e
-  out="$("${PROBE}" -addr="127.0.0.1:${port}" 2>&1)"
+  out="$(docker compose exec -T "${svc}" /usr/local/bin/grpc-health-probe -addr=":${port}" 2>&1)"
   rc=$?
   set -e
   if [[ "${rc}" -eq 0 ]]; then

@@ -1,5 +1,9 @@
 # Six-service topology (Architecture §6.2–§6.3, CC-04).
 # Configuration via CC_<SERVICE>_<FIELD> env vars; config/*.toml is local-dev only.
+#
+# SEC-H1: CC host publishes bind 127.0.0.1 only (metrics). The gRPC bus
+# 9001–9006 is not published to the host — peers stay on the compose network.
+# EL host ports (8545/6060/30303) are out of this bind policy.
 
 x-cc-env: &cc-env
   RUST_LOG: ${RUST_LOG:-info}
@@ -29,7 +33,7 @@ services:
       <<: *cc-env
       CC_CHAIN_GRPC_ADDR: 0.0.0.0:9001
       CC_CHAIN_METRICS_ADDR: 0.0.0.0:9101
-    ports: ["9001:9001", "9101:9101"]
+    ports: ["127.0.0.1:9101:9101"]
     healthcheck:
       <<: *hc
       test: ["CMD", "/usr/local/bin/grpc-health-probe", "-addr=:9001"]
@@ -50,7 +54,7 @@ services:
       CC_P2P_NODE_KEY_PATH: /app/data/node_key
     volumes:
       - cc-p2p-identity:/app/data
-    ports: ["9002:9002", "9102:9102"]
+    ports: ["127.0.0.1:9102:9102"]
     depends_on:
       chain:
         condition: service_healthy
@@ -70,7 +74,7 @@ services:
       CC_ATTESTATION_GRPC_ADDR: 0.0.0.0:9003
       CC_ATTESTATION_METRICS_ADDR: 0.0.0.0:9103
       CC_ATTESTATION_PEERS__CHAIN: http://chain:9001
-    ports: ["9003:9003", "9103:9103"]
+    ports: ["127.0.0.1:9103:9103"]
     depends_on:
       chain:
         condition: service_healthy
@@ -96,7 +100,7 @@ services:
       CC_ENGINE_JWT_SECRET_PATH: /jwt/jwt.hex
     volumes:
       - ./secrets:/jwt:ro                 # same secret as el; never COPY'd into image
-    ports: ["9004:9004", "9104:9104"]
+    ports: ["127.0.0.1:9104:9104"]
     depends_on:
       chain:
         condition: service_healthy
@@ -125,7 +129,7 @@ services:
       CC_STORAGE_DATA_DIR: /app/data
     volumes:
       - cc-store-data:/app/data
-    ports: ["9006:9006", "9106:9106"]
+    ports: ["127.0.0.1:9106:9106"]
     depends_on:
       chain:
         condition: service_healthy
@@ -147,7 +151,7 @@ services:
       CC_BEACON_API_PEERS__CHAIN: http://chain:9001
       CC_BEACON_API_PEERS__ATTESTATION: http://attestation:9003
       CC_BEACON_API_PEERS__STORAGE: http://storage:9006
-    ports: ["9005:9005", "9105:9105"]
+    ports: ["127.0.0.1:9105:9105"]
     depends_on:
       chain:
         condition: service_healthy
