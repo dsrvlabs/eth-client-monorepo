@@ -196,6 +196,8 @@ impl Codec for SszSnappyCodec {
 }
 
 // ── protocol-aware limits (mirror services/p2p::reqresp::Protocol; no cc-* deps) ─
+// Keep this table equal to `Protocol::request_limits` and
+// `bin/serve-probe` `Protocol::request_limits` (S0-B-06). Dedup is S3a-A-03.
 
 /// Request `(min, max)` SSZ bounds for a negotiated protocol ID.
 #[must_use]
@@ -205,15 +207,16 @@ pub fn request_limits(protocol: &str, global_max: usize) -> (usize, usize) {
         "/eth2/beacon_chain/req/goodbye/1/ssz_snappy"
         | "/eth2/beacon_chain/req/ping/1/ssz_snappy" => (8, 8),
         "/eth2/beacon_chain/req/metadata/3/ssz_snappy" => (0, 0),
+        // (start_slot, count, step) — three uint64s.
         "/eth2/beacon_chain/req/beacon_blocks_by_range/2/ssz_snappy" => (24, 24),
         // List[Root, 1024] of fixed-size elements: bare 32*n = 32768.
         "/eth2/beacon_chain/req/beacon_blocks_by_root/2/ssz_snappy" => (0, 1024 * 32),
         "/eth2/beacon_chain/req/beacon_blocks_by_head/1/ssz_snappy" => (40, 40),
-        // Column range/root: keep global max until Fulu list maxima land in CC-23d,
-        // but never above global_max.
-        "/eth2/beacon_chain/req/data_column_sidecars_by_range/1/ssz_snappy"
-        | "/eth2/beacon_chain/req/data_column_sidecars_by_root/1/ssz_snappy" => {
-            (4, global_max.min(REQRESP_MAX_PAYLOAD_SIZE))
+        // (start_slot, count, columns offset) + up to 128×u64 column indices.
+        "/eth2/beacon_chain/req/data_column_sidecars_by_range/1/ssz_snappy" => (20, 20 + 128 * 8),
+        // List[DataColumnsByRootIdentifier, 1024] framing max; semantic bound is 128.
+        "/eth2/beacon_chain/req/data_column_sidecars_by_root/1/ssz_snappy" => {
+            (0, REQRESP_MAX_PAYLOAD_SIZE)
         }
         _ => (0, global_max.min(REQRESP_MAX_PAYLOAD_SIZE)),
     }
@@ -482,6 +485,24 @@ mod tests {
         );
         assert_eq!(max, 1024 * 32);
         assert!(max < 100_000);
+    }
+
+    #[test]
+    fn column_request_limits_match_protocol_table() {
+        assert_eq!(
+            request_limits(
+                "/eth2/beacon_chain/req/data_column_sidecars_by_range/1/ssz_snappy",
+                REQRESP_MAX_PAYLOAD_SIZE,
+            ),
+            (20, 20 + 128 * 8)
+        );
+        assert_eq!(
+            request_limits(
+                "/eth2/beacon_chain/req/data_column_sidecars_by_root/1/ssz_snappy",
+                REQRESP_MAX_PAYLOAD_SIZE,
+            ),
+            (0, REQRESP_MAX_PAYLOAD_SIZE)
+        );
     }
 
     #[test]

@@ -66,19 +66,27 @@ impl Protocol {
     }
 
     /// Protocol-declared SSZ size bounds for requests.
+    ///
+    /// Mirrored in `cc_p2p::reqresp::Protocol::request_limits` and
+    /// `cc_libp2p::request_limits` (S0-B-06). Values are copied, not shared —
+    /// the encoder below stays independent (S0-B-07 / ADR-P4-12).
     #[must_use]
     pub const fn request_limits(self) -> SszLimits {
         match self {
             Self::StatusV2 => SszLimits { min: 92, max: 92 },
-            Self::BeaconBlocksByRangeV2 => SszLimits { min: 16, max: 16 },
+            // (start_slot, count, step) — three uint64s.
+            Self::BeaconBlocksByRangeV2 => SszLimits { min: 24, max: 24 },
+            // List[Root, 1024] of fixed-size elements: bare 32×n (not 10 MiB).
             Self::BeaconBlocksByRootV2 => SszLimits {
-                min: 4,
-                max: 4 + 1024 * 32,
+                min: 0,
+                max: 1024 * 32,
             },
+            // (start_slot, count, columns offset) + up to 128×u64 column indices.
             Self::DataColumnSidecarsByRangeV1 => SszLimits {
                 min: 20,
                 max: 20 + 128 * 8,
             },
+            // List[DataColumnsByRootIdentifier, 1024] framing max; semantic bound is 128.
             Self::DataColumnSidecarsByRootV1 => SszLimits {
                 min: 0,
                 max: crate::codec::MAX_PAYLOAD_SIZE,
@@ -502,6 +510,23 @@ mod tests {
             assert!(
                 p.protocol_id().ends_with("/ssz_snappy"),
                 "{}",
+                p.protocol_id()
+            );
+        }
+    }
+
+    /// S0-B-06: probe request-limit table equals the live libp2p codec table
+    /// on the five overlapping protocol IDs.
+    #[test]
+    fn request_limits_match_libp2p_codec() {
+        const GLOBAL: usize = cc_libp2p::REQRESP_MAX_PAYLOAD_SIZE;
+        for p in Protocol::ALL {
+            let proto = p.request_limits();
+            let codec = cc_libp2p::request_limits(p.protocol_id(), GLOBAL);
+            assert_eq!(
+                (proto.min, proto.max),
+                codec,
+                "{}: probe Protocol::request_limits != cc_libp2p::request_limits",
                 p.protocol_id()
             );
         }

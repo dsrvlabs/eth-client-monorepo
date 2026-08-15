@@ -187,6 +187,10 @@ impl Protocol {
     }
 
     /// Protocol-declared SSZ size bounds for requests (pre-decompress check).
+    ///
+    /// Mirrored in `cc_libp2p::request_limits` and
+    /// `cc_serve_probe::protocols::Protocol::request_limits` (S0-B-06).
+    /// Dedup is S3a-A-03 / P1-B/6 — do not extract a shared module here.
     #[must_use]
     pub const fn request_limits(self) -> SszLimits {
         match self {
@@ -340,5 +344,71 @@ mod tests {
         assert!(Protocol::BeaconBlocksByRangeV2.has_context_bytes());
         assert!(Protocol::BeaconBlocksByHeadV1.has_context_bytes());
         assert!(Protocol::DataColumnSidecarsByRootV1.has_context_bytes());
+    }
+
+    /// S0-B-06: the three request-limit tables must stay equal. Dedup is S3a-A-03.
+    ///
+    /// 1. `Protocol::request_limits` (this module)
+    /// 2. `cc_libp2p::request_limits` (live codec)
+    /// 3. the explicit expected table below (same numbers as
+    ///    `cc_serve_probe::protocols::Protocol::request_limits` on the five
+    ///    overlapping IDs — that crate must not depend on `cc-p2p`)
+    #[test]
+    fn request_limit_tables_agree() {
+        const GLOBAL: usize = cc_libp2p::REQRESP_MAX_PAYLOAD_SIZE;
+        // Third copy: expected (protocol_id, min, max). Keep in lockstep with
+        // `bin/serve-probe/src/protocols.rs` `Protocol::request_limits`.
+        let expected: &[(&str, usize, usize)] = &[
+            ("/eth2/beacon_chain/req/status/2/ssz_snappy", 92, 92),
+            ("/eth2/beacon_chain/req/goodbye/1/ssz_snappy", 8, 8),
+            ("/eth2/beacon_chain/req/ping/1/ssz_snappy", 8, 8),
+            ("/eth2/beacon_chain/req/metadata/3/ssz_snappy", 0, 0),
+            (
+                "/eth2/beacon_chain/req/beacon_blocks_by_range/2/ssz_snappy",
+                24,
+                24,
+            ),
+            (
+                "/eth2/beacon_chain/req/beacon_blocks_by_root/2/ssz_snappy",
+                0,
+                1024 * 32,
+            ),
+            (
+                "/eth2/beacon_chain/req/beacon_blocks_by_head/1/ssz_snappy",
+                40,
+                40,
+            ),
+            (
+                "/eth2/beacon_chain/req/data_column_sidecars_by_range/1/ssz_snappy",
+                20,
+                20 + 128 * 8,
+            ),
+            (
+                "/eth2/beacon_chain/req/data_column_sidecars_by_root/1/ssz_snappy",
+                0,
+                MAX_PAYLOAD_SIZE,
+            ),
+        ];
+        assert_eq!(expected.len(), Protocol::ALL.len());
+        for (id, min, max) in expected {
+            let p = Protocol::from_protocol_id(id).expect(id);
+            let proto = p.request_limits();
+            let codec = cc_libp2p::request_limits(id, GLOBAL);
+            assert_eq!(
+                (proto.min, proto.max),
+                (*min, *max),
+                "Protocol::request_limits drifted on {id}"
+            );
+            assert_eq!(
+                codec,
+                (*min, *max),
+                "cc_libp2p::request_limits drifted on {id}"
+            );
+            assert_eq!(
+                (proto.min, proto.max),
+                codec,
+                "{id}: Protocol::request_limits != cc_libp2p::request_limits"
+            );
+        }
     }
 }
