@@ -61,10 +61,11 @@ row does not say. Decide per site, and record the split in the PR description â€
 allowlist" is a policy choice, not a mechanical one.
 
 **Acceptance (falsifiable)**
-1. `scripts/check-no-env-reads.sh` exits **0** on `HEAD`.
-2. Every site not routed through `cc-config` carries an inline allowlist annotation naming *why*, and
+1. [x] `scripts/check-no-env-reads.sh` exits **0** on `HEAD`.
+2. [x] Every site not routed through `cc-config` carries an inline allowlist annotation naming *why*, and
    the annotation is the mechanism the script recognises â€” not a pattern exclusion in the script.
-3. `cargo test` compiles all three touched crates.
+   (Vacuous: all four production reads are routed; `bin/cc-store` has no `env::var`.)
+3. [x] `cargo test` compiles all three touched crates.
 
 ---
 

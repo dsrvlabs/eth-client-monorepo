@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use cc_bootstrap::{PeerSpec, SignalTrigger, TelemetrySettings};
-use cc_config::ServiceConfig;
+use cc_config::{EnvTelemetry, ServiceConfig};
 use cc_p2p::clock::ClockConfig;
 use cc_p2p::engine_stream::build_minimal_engine_stream;
 use cc_p2p::fault_mode::{
@@ -532,9 +532,10 @@ async fn main() -> Result<()> {
 
 async fn run_devnet_mode(cli: Cli, fault: FaultMode) -> Result<()> {
     // Minimal telemetry without full ServiceConfig file (compose injects env).
+    let env = EnvTelemetry::from_env();
     let telemetry = TelemetrySettings {
-        log_format: std::env::var("LOG_FORMAT").unwrap_or_else(|_| "json".into()),
-        log_filter: std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
+        log_format: env.log_format,
+        log_filter: env.log_filter,
     };
     let mut bs = cc_bootstrap::init(SERVICE, telemetry)?;
     let metrics = P2pMetrics::register(&mut bs.registry);

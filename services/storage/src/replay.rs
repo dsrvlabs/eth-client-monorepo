@@ -802,17 +802,11 @@ pub(crate) enum ReplayError {
 
 // ── Hoodi fixture helpers (measurement / soak) ──────────────────────────────
 
-const HOODI_CACHE_ENV: &str = "HOODI_FIXTURES_CACHE";
 const HOODI_ANCHOR_SLOT: u64 = 3649472;
 
 /// Resolve the Hoodi fixture cache root (env or `~/.cache/cc-hoodi-fixtures`).
 pub(crate) fn hoodi_cache_root() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var(HOODI_CACHE_ENV) {
-        return Some(PathBuf::from(p));
-    }
-    let home = std::env::var("HOME").ok()?;
-    let p = PathBuf::from(home).join(".cache/cc-hoodi-fixtures");
-    if p.is_dir() { Some(p) } else { None }
+    cc_config::hoodi_fixtures_cache_root()
 }
 
 /// Path to the anchor `beacon_state.ssz` when the cache is present.

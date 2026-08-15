@@ -67,6 +67,30 @@ pub struct ServiceConfig {
     pub log_filter: String,
 }
 
+/// Telemetry resolved from bare `RUST_LOG` / `LOG_FORMAT` (D-2).
+///
+/// [`load`] applies the same vars after the TOML and `CC_*` layers. Slim
+/// process paths that do not load a [`ServiceConfig`] call [`Self::from_env`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvTelemetry {
+    /// Log format: `"json"` (default) or `"pretty"`. Resolved from `LOG_FORMAT`.
+    pub log_format: String,
+    /// Tracing filter directive string. Resolved from `RUST_LOG`.
+    pub log_filter: String,
+}
+
+impl EnvTelemetry {
+    /// Resolve `RUST_LOG` and `LOG_FORMAT`, matching [`load`] defaults (`info` / `json`).
+    pub fn from_env() -> Self {
+        Self {
+            log_filter: std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| TelemetryDefaults::default().log_filter.to_string()),
+            log_format: std::env::var("LOG_FORMAT")
+                .unwrap_or_else(|_| TelemetryDefaults::default().log_format.to_string()),
+        }
+    }
+}
+
 /// Configuration load error. Display includes the offending key and provenance
 /// (CC-09/2): file path and/or `CC_<SERVICE>_<FIELD>` for missing required fields;
 /// figment source metadata for malformed values.
@@ -181,6 +205,22 @@ pub fn env_var_name(service: &str, field_path: &str) -> String {
         .collect::<Vec<_>>()
         .join("__");
     format!("CC_{}_{}", env_prefix(service), rest)
+}
+
+/// Env var that overrides the Hoodi fixture cache directory.
+pub const HOODI_FIXTURES_CACHE_ENV: &str = "HOODI_FIXTURES_CACHE";
+
+/// Resolve the Hoodi fixture cache root.
+///
+/// `HOODI_FIXTURES_CACHE` wins when set; otherwise `$HOME/.cache/cc-hoodi-fixtures`
+/// when that directory exists.
+pub fn hoodi_fixtures_cache_root() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var(HOODI_FIXTURES_CACHE_ENV) {
+        return Some(PathBuf::from(p));
+    }
+    let home = std::env::var("HOME").ok()?;
+    let p = PathBuf::from(home).join(".cache/cc-hoodi-fixtures");
+    if p.is_dir() { Some(p) } else { None }
 }
 
 /// Build the layered [`Figment`] for `service` without extracting.
@@ -664,6 +704,53 @@ log_filter = "info"
         assert_eq!(cfg.log_filter, "cc_chain=debug,info");
         assert_eq!(cfg.log_format, "pretty");
 
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn env_telemetry_defaults_when_bare_env_absent() {
+        let _lock = env_lock();
+        let _rust_log = EnvGuard::clear("RUST_LOG");
+        let _log_format = EnvGuard::clear("LOG_FORMAT");
+        let t = EnvTelemetry::from_env();
+        assert_eq!(t.log_filter, "info");
+        assert_eq!(t.log_format, "json");
+    }
+
+    #[test]
+    fn env_telemetry_reads_rust_log_and_log_format() {
+        let _lock = env_lock();
+        let _rust_log = EnvGuard::set("RUST_LOG", "cc_p2p=debug");
+        let _log_format = EnvGuard::set("LOG_FORMAT", "pretty");
+        let t = EnvTelemetry::from_env();
+        assert_eq!(t.log_filter, "cc_p2p=debug");
+        assert_eq!(t.log_format, "pretty");
+    }
+
+    #[test]
+    fn hoodi_cache_prefers_env_over_home() {
+        let _lock = env_lock();
+        let dir = temp_dir("hoodi-env");
+        let _cache = EnvGuard::set(HOODI_FIXTURES_CACHE_ENV, dir.to_str().unwrap());
+        let _home = EnvGuard::set("HOME", "/tmp/not-used-hoodi-home");
+        assert_eq!(hoodi_fixtures_cache_root().as_deref(), Some(dir.as_path()));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hoodi_cache_home_fallback_requires_existing_dir() {
+        let _lock = env_lock();
+        let dir = temp_dir("hoodi-home");
+        let cache = dir.join(".cache/cc-hoodi-fixtures");
+        fs::create_dir_all(&cache).unwrap();
+        let _env = EnvGuard::clear(HOODI_FIXTURES_CACHE_ENV);
+        let _home = EnvGuard::set("HOME", dir.to_str().unwrap());
+        assert_eq!(
+            hoodi_fixtures_cache_root().as_deref(),
+            Some(cache.as_path())
+        );
+        fs::remove_dir_all(&cache).unwrap();
+        assert_eq!(hoodi_fixtures_cache_root(), None);
         fs::remove_dir_all(&dir).ok();
     }
 
