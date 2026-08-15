@@ -32,6 +32,10 @@ use cc_types::primitives::{Hash256, Root, Slot};
 use tokio::runtime::Handle;
 use tonic::transport::Channel;
 
+use cc_state_transition::EngineError;
+
+use crate::engine_client::{EngineRpcDeadlines, block_on_deadline};
+
 /// One `ForkchoiceStateV1` emission built from proto-array execution hashes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ForkchoiceState {
@@ -126,6 +130,7 @@ pub struct GrpcFcuSink {
     uri: String,
     /// Process/session id; engine resets high-water when this changes (§3.8/2).
     session_id: u64,
+    deadlines: EngineRpcDeadlines,
 }
 
 impl GrpcFcuSink {
@@ -141,12 +146,24 @@ impl GrpcFcuSink {
     /// Construct with an explicit session id (tests).
     #[must_use]
     pub fn with_session(handle: Handle, uri: impl Into<String>, session_id: u64) -> Self {
+        Self::with_session_and_deadlines(handle, uri, session_id, EngineRpcDeadlines::default())
+    }
+
+    /// Construct with explicit session id and RPC deadlines (injected-timeout tests).
+    #[must_use]
+    pub fn with_session_and_deadlines(
+        handle: Handle,
+        uri: impl Into<String>,
+        session_id: u64,
+        deadlines: EngineRpcDeadlines,
+    ) -> Self {
         Self {
             handle,
             client: std::sync::Mutex::new(None),
             emit_lock: std::sync::Mutex::new(()),
             uri: uri.into(),
             session_id,
+            deadlines,
         }
     }
 
@@ -163,10 +180,13 @@ impl GrpcFcuSink {
             .map_err(|_| "fcu client mutex poisoned".to_owned())?;
         if guard.is_none() {
             let uri = self.uri.clone();
-            let c = self
-                .handle
-                .block_on(async { EngineServiceClient::connect(uri).await })
-                .map_err(|e| format!("engine connect: {e}"))?;
+            let timeout = self.deadlines.connect;
+            let c = block_on_deadline(&self.handle, timeout, async {
+                EngineServiceClient::connect(uri)
+                    .await
+                    .map_err(|e| EngineError::Transport(format!("engine connect: {e}")))
+            })
+            .map_err(|e| e.to_string())?;
             *guard = Some(c);
         }
         guard
@@ -191,16 +211,23 @@ impl FcuSink for GrpcFcuSink {
             session_id: self.session_id,
             head_slot: state.head_slot.as_u64(),
         };
-        self.handle
-            .block_on(async { client.forkchoice_updated(req).await })
-            .map_err(|e| {
-                let msg = e.message().to_string();
-                if msg.contains("FCU_DROPPED_STALE") {
-                    format!("ForkchoiceUpdated dropped stale: {msg}")
-                } else {
-                    format!("ForkchoiceUpdated: {e}")
+        let timeout = self.deadlines.forkchoice_updated;
+        block_on_deadline(&self.handle, timeout, async {
+            match client.forkchoice_updated(req).await {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    let msg = e.message().to_string();
+                    if msg.contains("FCU_DROPPED_STALE") {
+                        Err(EngineError::Transport(format!(
+                            "ForkchoiceUpdated dropped stale: {msg}"
+                        )))
+                    } else {
+                        Err(EngineError::Transport(format!("ForkchoiceUpdated: {e}")))
+                    }
                 }
-            })?;
+            }
+        })
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 }

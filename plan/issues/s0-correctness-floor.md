@@ -594,6 +594,10 @@ today.
 3. A test with an injected black-holed engine shows the block **deferred**, not parked. This is the
    same assertion `S1-A-18` re-runs post-move; write it once here.
 
+- [x] Every production `block_on` (engine client + fcU) has an explicit Duration.
+- [x] Timeout maps to Transport and the existing pending-engine deferral.
+- [x] Black-holed engine test shows the block deferred, not parked.
+
 ---
 
 ### `S0-A-28` · ⟡ D-5 — the restore-path `block_on` panic

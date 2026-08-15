@@ -71,7 +71,10 @@ pub use da::{
     versioned_hashes_from_commitments,
 };
 pub use engine_client::{
-    DEFAULT_ENGINE_URI, EngineApiClient, fire_fetch_blobs, poll_engine_online,
+    DEFAULT_ENGINE_CONNECT_TIMEOUT, DEFAULT_ENGINE_FETCH_BLOBS_TIMEOUT,
+    DEFAULT_ENGINE_FORKCHOICE_UPDATED_TIMEOUT, DEFAULT_ENGINE_GET_STATE_TIMEOUT,
+    DEFAULT_ENGINE_NEW_PAYLOAD_TIMEOUT, DEFAULT_ENGINE_URI, EngineApiClient, EngineRpcDeadlines,
+    fire_fetch_blobs, fire_fetch_blobs_with, poll_engine_online, poll_engine_online_with,
 };
 pub use epoch_context::{EpochContext, EpochContextStore};
 pub use events::{
