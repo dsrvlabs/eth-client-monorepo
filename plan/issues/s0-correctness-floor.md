@@ -548,6 +548,9 @@ A branch with no spec basis that bypasses the spec's safety conditions.
 fork-choice spec vectors are green (and, if any were skiplisted for this, the skiplist entry is
 removed — which interacts with `S0a-B-07`'s Q-9 finding).
 
+- [x] Invented equivocation branch deleted; spec safety conditions are the only reorg path.
+- [x] Fork-choice `get_proposer_head` vectors green.
+
 ---
 
 ### `S0-A-25` · P0-03 — `CoreConfig::default()` must not ship `NoVerification`

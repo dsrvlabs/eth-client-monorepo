@@ -129,13 +129,9 @@ pub fn get_proposer_head<P: Preset>(store: &mut Store<P>, head_root: Root, slot:
     let head_weak = head_weight < head_threshold;
     let parent_strong = parent_weight > parent_threshold;
 
-    // Proposer equivocation branch (simplified): any other block same slot+proposer.
-    let proposer_equivocation = store.blocks().iter().any(|(r, h)| {
-        *r != head_root
-            && h.slot == head_header.slot
-            && h.proposer_index == head_header.proposer_index
-    });
-
+    // Reorg only when every safety condition holds. The pyspec `elif`
+    // (`head_weak && current_time_ok && is_proposer_equivocation`) is
+    // omitted: it bypasses the gates above (P1-A/21 / S0-A-24).
     if head_late
         && not_epoch_boundary
         && ffg_competitive
@@ -146,9 +142,6 @@ pub fn get_proposer_head<P: Preset>(store: &mut Store<P>, head_root: Root, slot:
         && head_weak
         && parent_strong
     {
-        return parent_root;
-    }
-    if head_weak && current_time_ok && proposer_equivocation {
         return parent_root;
     }
     head_root
@@ -724,5 +717,25 @@ mod tests {
         assert_eq!(reorg.old_head, a);
         assert_eq!(reorg.new_head, b);
         assert_eq!(reorg.depth, 1, "siblings reorg at depth 1");
+    }
+
+    /// P1-A/21: a same-slot/same-proposer sibling must not reorg on its own.
+    /// The deleted `elif` fired on `head_weak && current_time_ok && equivocation`
+    /// and skipped the spec safety gates (timely head, parent not strong, …).
+    #[test]
+    fn proposer_equivocation_alone_does_not_reorg() {
+        let (mut store, anchor) = seeded_store(2);
+        // Slot 2 start: current_time_ok for a slot-1 head.
+        store.set_time(12);
+        let head = root(0xA1);
+        let sibling = root(0xB1);
+        insert_child(&mut store, anchor, head, 1);
+        insert_child(&mut store, anchor, sibling, 1);
+
+        let got = get_proposer_head(&mut store, head, Slot::new(2));
+        assert_eq!(
+            got, head,
+            "equivocation + weak head must not bypass the spec safety conditions"
+        );
     }
 }
