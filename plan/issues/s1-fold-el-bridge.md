@@ -458,9 +458,29 @@ them.
 
 ---
 
-### `S1-B-11` … `S1-B-16` · Gate (b) — the 12 that need a decision recorded
+### `S1-B-11` · Gate (b) — `ADR-P3-16` → **ADR-R-03**
 
-**Combined** 6.75–9.5 pd / **17 pts** · ⌂ `[ARCH]` §10.4, `[PLAN]` §4 sizes each 0.5–1 d
+**Stream** B · **Est** 1–1.5 pd / **3 pts** · ⌂ `[ARCH]` §6.2 / §10.4 / §10.5 · **Deps** `S1-A-01` ·
+**Highest-priority (b) row**
+
+`ADR-P3-16` as written (*only `cc-engine` may declare an HTTP client or JWT signer*) is
+**falsified** now that `cc-engine-api` is the named crate. The dag rule landed in `S1-A-01`;
+this issue is the record.
+
+**Out of scope.** `ADR-P3-02` (engine is not a health peer) is `S1-B-12` and waits on
+`S1-A-16`. This record does not partially supersede it.
+
+- [x] `docs/adr/ADR-R-03.md` in house MADR; Status: accepted; supersedes `ADR-P3-16`.
+- [x] Decision matches the landed rule: `cc-engine-api` (and transitional `cc-engine` until
+      `S1-A-06`) may declare HTTP/JWT; `cc-chain` is **not** grandfathered for JWT.
+- [x] `docs/adr/reconciliation.md` `ADR-P3-16` row is `superseded; superseded-by ADR-R-03` →
+      `docs/adr/ADR-R-03.md`.
+
+---
+
+### `S1-B-12` … `S1-B-16` · Gate (b) — the remaining 11 that need a decision recorded
+
+**Combined** 5.75–8 pd / **14 pts** · ⌂ `[ARCH]` §10.4, `[PLAN]` §4 sizes each 0.5–1 d
 
 **These do not parallelise onto one writer.** `[PLAN]` §9: *"They look like 12 documents one writer
 can produce. Each records a decision whose owner is the person who made it; they parallelise across
@@ -468,7 +488,6 @@ can produce. Each records a decision whose owner is the person who made it; they
 
 | Id | ADR | Why it needs a decision | Coupling |
 |---|---|---|---|
-| `S1-B-11` | `ADR-P3-16` → **ADR-R-03** | *only `cc-engine` may declare an HTTP client or JWT signer* — **S1 falsifies it as written** (`[ARCH]` §6.2). **The highest-priority (b) row in the table.** | **must land with `S1-A-01`'s dag rule** |
 | `S1-B-12` | `ADR-P3-02` → ADR-R-03 | *engine dials p2p; engine is deliberately not a health peer* — §7.1 shows **this is why a parked core reports green**. Defensible for a separate engine process; **void once the engine is in-process** | **must land with `S1-A-16`'s probe** |
 | `S1-B-13` | `ADR-P3-15` | `verify_cell_kzg_proof_batch` runs **only under `cfg(test)`** in the fastpath ✓ (`fastpath/filter.rs:346`) — this is the `trusted_local` KZG-skip. S1 makes the caller the process, which changes the trust argument but **does not automatically make skipping correct** | with `S1-B-01` |
 | `S1-B-14` | `ADR-P4-03` | *chain relays column SSZ without decoding* — right for a relay, wrong for an owner. S2 replaces it with a typed ingest | records the change S2 makes |

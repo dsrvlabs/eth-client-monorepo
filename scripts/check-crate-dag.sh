@@ -26,6 +26,7 @@ if [[ -n "$ARG" && "$ARG" != "--self-test" ]]; then
 fi
 
 # --- ADR P3-16 / [ARCH] §6.2: Engine API HTTP client + JWT signer isolation ---
+# Decision recorded as ADR-R-03 (supersedes ADR-P3-16).
 # Same shape as the libp2p rule: the project's first real credential and its
 # Engine API transport live in exactly one crate, so a JWT signer appearing
 # outside that crate is a build failure, not a review comment.
