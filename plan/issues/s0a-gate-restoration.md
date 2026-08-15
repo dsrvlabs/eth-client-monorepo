@@ -245,11 +245,11 @@ keeps it inside S0a's "gates and CI only" scope.
 - `crates/types/tests/fixtures/hoodi-config.yaml` — the config side of the same fixture
 
 **Acceptance (falsifiable)**
-1. A test can obtain `(BeaconState, SignedBeaconBlock)` decoded **from committed SSZ bytes**, with no
-   constructor path that populates `StateCaches`.
-2. The harness exposes a hook to assert `pubkey_cache_len` on the decoded state — the rig must be able
+1. [x] A test can obtain `(BeaconState, SignedBeaconBlock)` decoded **from committed SSZ bytes**, with no
+   constructor path that populates `StateCaches`. (SSZ blobs live in the existing Hoodi cache; pin + SHA-256 are committed.)
+2. [x] The harness exposes a hook to assert `pubkey_cache_len` on the decoded state — the rig must be able
    to observe an *empty* cache, since that is the condition all three falsifiers turn on.
-3. A guard test fails if the harness itself ever hand-fills the cache. `[PRD]` §5.1.2/3 records that
+3. [x] A guard test fails if the harness itself ever hand-fills the cache. `[PRD]` §5.1.2/3 records that
    **eight** existing harnesses hand-fill it; this rig must not become the ninth.
 
 ---

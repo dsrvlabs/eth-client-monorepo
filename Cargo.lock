@@ -1229,6 +1229,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.10.9",
  "snap",
  "ssz_types",
  "thiserror 2.0.19",
