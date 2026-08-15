@@ -762,6 +762,8 @@ surfaces with its own variant.
 **Acceptance** — batch verification increments the instrumentation by the number of signatures
 verified; a test asserts batch and individual paths report the same count for the same set.
 
+- [x] Batch and individual BLS paths report the same verify count.
+
 ---
 
 ## Stream B issues

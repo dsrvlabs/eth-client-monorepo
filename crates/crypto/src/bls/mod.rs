@@ -242,8 +242,9 @@ pub fn aggregate_signatures(sigs: &[&Signature]) -> Result<Signature, BlsError> 
 }
 
 // Thread-local BLS verification counter (CC-45b /5: restore asserts zero).
-// Incremented by every public verify path. Restore uses NoVerification so this
-// stays flat across a 32-epoch replay. Thread-local like root_measure.
+// Incremented by every public verify path, including SignatureSet batch
+// (one per triple). Restore uses NoVerification so this stays flat across a
+// 32-epoch replay. Thread-local like root_measure.
 thread_local! {
     static BLS_VERIFY_COUNT: Cell<u64> = const { Cell::new(0) };
 }
@@ -262,7 +263,12 @@ pub fn bls_verify_count() -> u64 {
 
 #[inline]
 fn record_bls_verify() {
-    BLS_VERIFY_COUNT.with(|c| c.set(c.get().saturating_add(1)));
+    record_bls_verify_n(1);
+}
+
+#[inline]
+fn record_bls_verify_n(n: u64) {
+    BLS_VERIFY_COUNT.with(|c| c.set(c.get().saturating_add(n)));
 }
 
 /// Single signature verification over a 32-byte message (signing root).

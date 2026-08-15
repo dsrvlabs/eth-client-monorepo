@@ -175,6 +175,8 @@ impl SignatureSet {
             &rands,
             64,
         );
+        // One pairing-product check still verifies `len` signatures.
+        super::record_bls_verify_n(self.entries.len() as u64);
         Ok((err == BLST_ERROR::BLST_SUCCESS, coeffs))
     }
 }
@@ -183,7 +185,10 @@ impl SignatureSet {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use super::super::{AggregateSignature, Signature};
+    use super::super::{
+        AggregateSignature, Signature, aggregate_signatures, fast_aggregate_verify,
+        take_bls_verify_count, verify,
+    };
     use super::*;
     use crate::bls::test_utils::SecretKey;
 
@@ -293,5 +298,48 @@ mod tests {
         // Wrong signature for the second entry.
         set.push(sk2.public_key(), m2, sk1.sign(&m2));
         assert!(!set.verify());
+    }
+
+    #[test]
+    fn batch_and_individual_report_the_same_verify_count() {
+        let sk1 = SecretKey::from_ikm(&[51u8; 32]).unwrap();
+        let sk2 = SecretKey::from_ikm(&[52u8; 32]).unwrap();
+        let sk3 = SecretKey::from_ikm(&[53u8; 32]).unwrap();
+        let m1 = [61u8; 32];
+        let m2 = [62u8; 32];
+        let m3 = [63u8; 32];
+        let pk1 = sk1.public_key();
+        let pk2 = sk2.public_key();
+        let pk3 = sk3.public_key();
+        let s1 = sk1.sign(&m1);
+        let s2 = sk2.sign(&m2);
+        let agg = aggregate_signatures(&[&sk2.sign(&m3), &sk3.sign(&m3)]).unwrap();
+
+        let mut set = SignatureSet::new();
+        set.push(pk1, m1, s1);
+        set.push(pk2, m2, s2);
+        set.push_aggregate(vec![pk2, pk3], m3, agg);
+
+        let _ = take_bls_verify_count();
+        assert!(verify(&pk1, &m1, &s1));
+        assert!(verify(&pk2, &m2, &s2));
+        assert!(fast_aggregate_verify(&[pk2, pk3], &m3, &agg));
+        let individual = take_bls_verify_count();
+
+        assert!(set.verify());
+        let batch = take_bls_verify_count();
+
+        assert_eq!(individual, 3, "two singles + one aggregate");
+        assert_eq!(
+            batch, individual,
+            "batch must count each verified signature, not one pairing"
+        );
+
+        assert!(SignatureSet::new().verify());
+        assert_eq!(
+            take_bls_verify_count(),
+            0,
+            "empty batch verifies no signatures"
+        );
     }
 }
