@@ -149,3 +149,93 @@ in `engine/redb.rs`; this spike is the **cross-process** writer-vs-writer case Q
 `crates/store/src/engine/redb.rs:476-493`. Q-2 was only the exclusive-open question.
 
 **Verdict for `S0-B-14`'s backend clause: `redb` (fail-fast confirmed).**
+
+## Q-7
+
+**Answer: no.** The only `preset.rs` constant that is config-scoped in the spec and preset-resolved in code is the already-known `MAX_BLOBS_PER_BLOCK_BASE` (`MAX_BLOBS_PER_BLOCK_ELECTRA`). Nothing else in `Preset` is the P0-02 / P2-A/8 mistake. **`S0-A-07` gains no new fields; its 2–3 pd / 5 pts estimate is unchanged.**
+
+**Issue** `S0-A-05` · **first task of P0-02** (R-9) · **blocks** `S0-A-07` · **date** 2026-08-15
+
+**Question.** `crates/types/src/preset.rs` was never audited. P0-02's class is the *mismatch* between a value's spec scope (`config`) and its resolution key (compile-time preset). Are there **other** values that landed in the preset by the same mistake?
+
+**Method.** Every `const` on the `Preset` trait ([`crates/types/src/preset.rs:31-196`](../../crates/types/src/preset.rs)) was checked against upstream `ethereum/consensus-specs` `master` (fetched 2026-08-15):
+
+- [`configs/mainnet.yaml`](https://github.com/ethereum/consensus-specs/blob/master/configs/mainnet.yaml) and [`configs/minimal.yaml`](https://github.com/ethereum/consensus-specs/blob/master/configs/minimal.yaml)
+- [`presets/mainnet/{phase0,altair,bellatrix,capella,deneb,electra}.yaml`](https://github.com/ethereum/consensus-specs/tree/master/presets/mainnet) (minimal altair checked for the same keys)
+- [`specs/altair/validator.md` Constants](https://github.com/ethereum/consensus-specs/blob/master/specs/altair/validator.md#constants) for the one const that is in neither YAML tree
+- [`ChainConfig` / `RawChainConfig`](../../crates/types/src/config.rs) (`config.rs:138-177`, `:288-309`) for the parse column
+
+Typenum associated types (`type SlotsPerEpoch`, …) are compile-time mirrors of the scalar consts already in the table; they are not independent spec keys and are omitted as rows.
+
+The five `pub mod network` functions ([Q5] §1 / P0-02) live in `constants.rs`, **not** in `preset.rs`. They stay on `S0-A-07`'s existing field list and are not re-litigated here.
+
+### Every `Preset` const
+
+| `preset.rs` const | Spec home | Spec key | `ChainConfig` parses? |
+|---|---|---|:--:|
+| `NAME` | n/a — compile-time identifier; config `PRESET_BASE` *selects* the preset | — | ✅ as `preset_base` (`PRESET_BASE`), not this const |
+| `SLOTS_PER_EPOCH` | `presets/*/phase0.yaml` | `SLOTS_PER_EPOCH` | ❌ |
+| `MAX_COMMITTEES_PER_SLOT` | `presets/*/phase0.yaml` | `MAX_COMMITTEES_PER_SLOT` | ❌ |
+| `TARGET_COMMITTEE_SIZE` | `presets/*/phase0.yaml` | `TARGET_COMMITTEE_SIZE` | ❌ |
+| `MAX_VALIDATORS_PER_COMMITTEE` | `presets/*/phase0.yaml` | `MAX_VALIDATORS_PER_COMMITTEE` | ❌ |
+| `SHUFFLE_ROUND_COUNT` | `presets/*/phase0.yaml` | `SHUFFLE_ROUND_COUNT` | ❌ |
+| `MIN_SEED_LOOKAHEAD` | `presets/*/phase0.yaml` | `MIN_SEED_LOOKAHEAD` | ❌ |
+| `MAX_SEED_LOOKAHEAD` | `presets/*/phase0.yaml` | `MAX_SEED_LOOKAHEAD` | ❌ |
+| `EPOCHS_PER_ETH1_VOTING_PERIOD` | `presets/*/phase0.yaml` | `EPOCHS_PER_ETH1_VOTING_PERIOD` | ❌ |
+| `SLOTS_PER_HISTORICAL_ROOT` | `presets/*/phase0.yaml` | `SLOTS_PER_HISTORICAL_ROOT` | ❌ |
+| `EPOCHS_PER_HISTORICAL_VECTOR` | `presets/*/phase0.yaml` | `EPOCHS_PER_HISTORICAL_VECTOR` | ❌ |
+| `EPOCHS_PER_SLASHINGS_VECTOR` | `presets/*/phase0.yaml` | `EPOCHS_PER_SLASHINGS_VECTOR` | ❌ |
+| `HISTORICAL_ROOTS_LIMIT` | `presets/*/phase0.yaml` | `HISTORICAL_ROOTS_LIMIT` | ❌ |
+| `VALIDATOR_REGISTRY_LIMIT` | `presets/*/phase0.yaml` | `VALIDATOR_REGISTRY_LIMIT` | ❌ |
+| `SYNC_COMMITTEE_SIZE` | `presets/*/altair.yaml` | `SYNC_COMMITTEE_SIZE` | ❌ |
+| `EPOCHS_PER_SYNC_COMMITTEE_PERIOD` | `presets/*/altair.yaml` | `EPOCHS_PER_SYNC_COMMITTEE_PERIOD` | ❌ |
+| `MAX_BLOB_COMMITMENTS_PER_BLOCK` | `presets/*/deneb.yaml` | `MAX_BLOB_COMMITMENTS_PER_BLOCK` | ❌ |
+| `MAX_PROPOSER_SLASHINGS` | `presets/*/phase0.yaml` | `MAX_PROPOSER_SLASHINGS` | ❌ |
+| `MAX_ATTESTER_SLASHINGS` | `presets/*/phase0.yaml` | `MAX_ATTESTER_SLASHINGS` | ❌ |
+| `MAX_ATTESTER_SLASHINGS_ELECTRA` | `presets/*/electra.yaml` | `MAX_ATTESTER_SLASHINGS_ELECTRA` | ❌ |
+| `MAX_ATTESTATIONS` | `presets/*/phase0.yaml` | `MAX_ATTESTATIONS` | ❌ |
+| `MAX_ATTESTATIONS_ELECTRA` | `presets/*/electra.yaml` | `MAX_ATTESTATIONS_ELECTRA` | ❌ |
+| `MAX_DEPOSITS` | `presets/*/phase0.yaml` | `MAX_DEPOSITS` | ❌ |
+| `MAX_VOLUNTARY_EXITS` | `presets/*/phase0.yaml` | `MAX_VOLUNTARY_EXITS` | ❌ |
+| `MAX_BLS_TO_EXECUTION_CHANGES` | `presets/*/capella.yaml` | `MAX_BLS_TO_EXECUTION_CHANGES` | ❌ |
+| `MAX_WITHDRAWALS_PER_PAYLOAD` | `presets/*/capella.yaml` | `MAX_WITHDRAWALS_PER_PAYLOAD` | ❌ |
+| `MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP` | `presets/*/capella.yaml` | `MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP` | ❌ |
+| `MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP` | `presets/*/electra.yaml` | `MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP` | ❌ |
+| `MAX_BYTES_PER_TRANSACTION` | `presets/*/bellatrix.yaml` | `MAX_BYTES_PER_TRANSACTION` | ❌ |
+| `MAX_TRANSACTIONS_PER_PAYLOAD` | `presets/*/bellatrix.yaml` | `MAX_TRANSACTIONS_PER_PAYLOAD` | ❌ |
+| `BYTES_PER_LOGS_BLOOM` | `presets/*/bellatrix.yaml` | `BYTES_PER_LOGS_BLOOM` | ❌ |
+| `MAX_EXTRA_DATA_BYTES` | `presets/*/bellatrix.yaml` | `MAX_EXTRA_DATA_BYTES` | ❌ |
+| `PENDING_DEPOSITS_LIMIT` | `presets/*/electra.yaml` | `PENDING_DEPOSITS_LIMIT` | ❌ |
+| `PENDING_PARTIAL_WITHDRAWALS_LIMIT` | `presets/*/electra.yaml` | `PENDING_PARTIAL_WITHDRAWALS_LIMIT` | ❌ |
+| `PENDING_CONSOLIDATIONS_LIMIT` | `presets/*/electra.yaml` | `PENDING_CONSOLIDATIONS_LIMIT` | ❌ |
+| `MAX_DEPOSIT_REQUESTS_PER_PAYLOAD` | `presets/*/electra.yaml` | `MAX_DEPOSIT_REQUESTS_PER_PAYLOAD` | ❌ |
+| `MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD` | `presets/*/electra.yaml` | `MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD` | ❌ |
+| `MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD` | `presets/*/electra.yaml` | `MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD` | ❌ |
+| **`MAX_BLOBS_PER_BLOCK_BASE`** | **`configs/*.yaml`** | **`MAX_BLOBS_PER_BLOCK_ELECTRA`** | **❌** (YAML key discarded; fallback reads `P::MAX_BLOBS_PER_BLOCK_BASE` at `config.rs:101`) |
+| `SYNC_COMMITTEE_SUBNET_COUNT` | neither YAML tree — Altair validator **Constants** (`Uint64(2**2)` = 4), not Configuration | `SYNC_COMMITTEE_SUBNET_COUNT` | ❌ |
+| `MAX_VALIDATORS_PER_SLOT` | derived: `MAX_VALIDATORS_PER_COMMITTEE × MAX_COMMITTEES_PER_SLOT` | — | ❌ |
+| `PROPOSER_LOOKAHEAD_LEN` | derived: `(MIN_SEED_LOOKAHEAD + 1) × SLOTS_PER_EPOCH` | — | ❌ |
+| `ETH1_DATA_VOTES_LENGTH` | derived: `EPOCHS_PER_ETH1_VOTING_PERIOD × SLOTS_PER_EPOCH` | — | ❌ |
+| `SYNC_SUBCOMMITTEE_SIZE` | derived: `SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT` | — | ❌ |
+
+### Config-scoped and preset-resolved
+
+One row.
+
+| Spec key | `preset.rs` name | Already on `S0-A-07`? | Add to `S0-A-07`? |
+|---|---|:--:|---|
+| `MAX_BLOBS_PER_BLOCK_ELECTRA` | `MAX_BLOBS_PER_BLOCK_BASE` | yes — `max_blobs_per_block_electra` (P2-A/8 / [PRD] J-11) | **no — already listed** |
+
+`preset.rs:246` already admits the mis-home: *"Electra base (`MAX_BLOBS_PER_BLOCK_ELECTRA` in network config.yaml)"*. Mainnet and minimal configs both ship `9`; Hoodi's fixture does too (`crates/types/tests/fixtures/hoodi-config.yaml:47`). Same latency shape as the four unparsed `pub mod network` churn/exit keys: Hoodi agrees with mainnet, a customising devnet diverges silently because `RawChainConfig` has no field and serde drops the key.
+
+`MAX_BLOBS_PER_BLOCK` (Deneb, `6`) is also config-scoped and also unparsed. It is **not** a `Preset` const — only the Electra base is. Out of this audit's scope; the Fulu `BLOB_SCHEDULE` path already covers post-Electra bounds.
+
+`SYNC_COMMITTEE_SUBNET_COUNT` is a protocol constant (always 4, identical on mainnet and minimal). Parking it on `Preset` is organisation, not the config-vs-preset class. Do not add it to `ChainConfig`.
+
+### Estimate (in writing)
+
+- **`S0-A-05`:** 1–2 pd / 3 pts. No extra rows to chase. Unchanged.
+- **`S0-A-07` field list:** still the four missing `pub mod network` fields + `max_blobs_per_block_electra`. **Q-7 adds zero.**
+- **`S0-A-07` estimate:** remains **2–3 pd / 5 pts**. Unchanged.
+
+Do not implement `S0-A-07` from this spike. No `ChainConfig` fields were added.

@@ -198,6 +198,11 @@ there **other** values that landed in the preset by the same mistake? Completene
 `presets/*/*.yaml`), and whether `ChainConfig` parses it. Any row that is config-scoped and
 preset-resolved is added to `S0-A-07`'s field list **and to this issue's estimate**, in writing.
 
+**Answered 2026-08-15** in [`spike-notes.md` § Q-7](spike-notes.md). Only
+`MAX_BLOBS_PER_BLOCK_BASE` is config-scoped and preset-resolved; it is already
+`S0-A-07`'s `max_blobs_per_block_electra`. **No additional fields. This issue's
+estimate stays 1–2 pd / 3 pts.**
+
 ---
 
 ### `S0-A-06` · Q-6 — `SECONDS_PER_SLOT` vs `SLOT_DURATION_MS`
@@ -245,7 +250,9 @@ preset** key `P::NAME`. `ChainConfig` parses exactly one of the five.
   `P::MAX_BLOBS_PER_BLOCK_BASE`. **This is P2-A/8, the same class by a different mechanism**, and
   `[Q5]` §1.5 step 1 lists `max_blobs_per_block_electra` among the fields P0-02 must add anyway.
   Adding it here discharges P2-A/8.
-- plus any row `S0-A-05` surfaced
+- **Q-7 (`S0-A-05`, 2026-08-15):** every other `Preset` const is preset-scoped, derived, or an
+  Altair protocol constant (`SYNC_COMMITTEE_SUBNET_COUNT`). **No additional fields.** Estimate
+  stays **2–3 pd / 5 pts**. Table: [`spike-notes.md` § Q-7](spike-notes.md).
 
 **Acceptance**
 1. Each new field carries `#[serde(default = …)]` at the **mainnet** value, so no existing fixture
