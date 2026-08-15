@@ -499,7 +499,7 @@ duplicates: a cross-cutting program and one of its constituent line items are di
 | **P2-B** | 8 | [RV] low quality — **enumerated in §5.3.1** | opportunistic |
 | **P2-C** | 1 | [RV] convention: `services/p2p/src/fault_mode.rs:16` — file-wide `#![allow(clippy::unwrap_used, expect_used)]` exempts ~1,600 lines of **production** code, far beyond the test-module allowance in `docs/dev-conventions.md` | with P1-D/18 |
 | **P2-D** | 2 | [AS] §4 Low: **19** engine policy edges (fail-open fork-schedule default `osaka_time=0`; gate-bypassing Synced-edge fcU resend; terminal `AuthFailed` with no operator escape) · **20** brittle self-referential tests and observability smells ✳ (tests that grep their own source; 1,600-line god-metric facades; racy hand-rolled gauges; a lag metric that never emits — that last one is P1-B/1) | 19 `patch @ S1`; 20 opportunistic |
-| **P2-E** | 35 | [RV] §4 unverified — **enumerated in §5.3.2** | **triage pass first** |
+| **P2-E** | 35 | [RV] §4 unverified — **enumerated in §5.3.2** | **triage pass first** — 5 judged at `S0-B-17` (2026-08-16); 30 pending `S1-B-19`/`S1-B-20` |
 
 **Total: 8 + 8 + 1 + 2 + 35 = 54.**
 
@@ -524,14 +524,14 @@ dismissed (with a reason) by R-P2-triage. `C` = correctness · `Q` = quality · 
 
 | # | Location | Kind | Issue as-found |
 |---|---|---|---|
-| 1 | `services/chain/src/core.rs:776` | C | `CanonicalRoots` fabricates the head root for slots where `get_ancestor` fails |
+| 1 | `services/chain/src/core.rs:776` | C | `CanonicalRoots` fabricates the head root for slots where `get_ancestor` fails. **`S0-B-17`: promoted P1 `patch @ S0`** (live site `:1031-1034`) |
 | 2 | `services/engine/src/capabilities.rs:25` | C | `ADVERTISED_CAPABILITIES` includes unimplemented `eth_chainId` and non-Engine `eth_syncing` |
 | 3 | `crates/state-transition/src/helpers/mutators.rs:152` | Q | Consolidation churn uses saturating arithmetic where the exit twin deliberately uses checked |
 | 4 | `crates/types/src/state/caches.rs:492` | Q | Container-root computation swallows hasher errors into an all-zero state root |
 | 5 | `crates/types/src/state/accessors.rs:65` | Q | `StateAccessError::from` maps unrelated `ssz_types` errors to `OutOfBounds { index: 0, len: 0 }` |
-| 6 | `crates/types/src/config.rs:58` | C | Empty `BLOB_SCHEDULE` (spec-legal) rejected at load; `serde(default)` guarantees the confusing error |
+| 6 | `crates/types/src/config.rs:58` | C | Empty `BLOB_SCHEDULE` (spec-legal) rejected at load; `serde(default)` guarantees the confusing error. **`S0-B-17`: promoted P1 `patch @ S0`** |
 | 7 | `crates/state-transition/src/signatures.rs:205` | Q | `push_randao_signature` swallows proposer-lookahead failure with `unwrap_or` |
-| 8 | `crates/state-transition/src/helpers/accessors.rs:545` | Q | Unused helpers; `deposit_domain()` disagrees with the real deposit-domain computation — **check against P0-02 before dismissing** |
+| 8 | `crates/state-transition/src/helpers/accessors.rs:545` | Q | Unused helpers; `deposit_domain()` disagrees with the real deposit-domain computation — **`S0-B-17`: dismissed** (P0-02/`S0-A-09` closed the live path; helper has zero callers) |
 | 9 | `crates/state-transition/src/shuffling.rs:271` | Q | `committee_from_shuffling` has no callers; duplicates `get_beacon_committee` with a weaker bounds check |
 | 10 | `crates/state-transition/src/epoch/justification_and_finalization.rs:157` | Q | Private `block_to_epoch` copies shadow the shared `pub(crate)` helper |
 | 11 | `crates/state-transition/src/epoch/proposer_lookahead.rs:54` | Q | Vestigial `last_epoch_start` suppressed with `let _` in the write loop |
@@ -544,7 +544,7 @@ dismissed (with a reason) by R-P2-triage. `C` = correctness · `Q` = quality · 
 | 18 | `services/storage/src/durable_set.rs:440` | Q | Snapshot degradation fallback can pick a **newer** ring member while reporting next-older |
 | 19 | `services/storage/src/serve.rs:557` | Q | Serve error paths bypass `record_serve`, so `serve_total`/`serve_seconds` undercount failures |
 | 20 | `services/storage/src/restore_client.rs:96` | Q | `push_restore_with_retry` retries non-retryable RPC failures for the full budget |
-| 21 | `services/storage/src/prune/mod.rs:155` | Q | `PruneConfig::default` maps a failed floor computation to 0 — **maximally destructive retention** |
+| 21 | `services/storage/src/prune/mod.rs:155` | Q | `PruneConfig::default` maps a failed floor computation to 0 — **maximally destructive retention**. **`S0-B-17`: dismissed** (`Default` cannot produce 0 from `(256, 65_536)`; production 0-floor is P1-A/5) |
 | 22 | `services/storage/src/prune/mod.rs:57` | V | Blanket `#![allow(dead_code)]` on three production modules masks real dead code |
 | 23 | `services/storage/src/columns.rs` / `crates/store/src/columns.rs:517` | Q | `columns_for_block` carries a dead `seen` bitmap |
 | 24 | `services/p2p/src/reqresp/columns.rs:549` | Q | Dead requested/returned index tracking with a false comment, plus doc-comment debris |
@@ -554,7 +554,7 @@ dismissed (with a reason) by R-P2-triage. `C` = correctness · `Q` = quality · 
 | 28 | `services/p2p/src/chain_stream/client.rs:715` | Q | Publish forward drop is silent; the comment describes retry/accounting logic that does not exist |
 | 29 | `services/p2p/src/das/custody.rs:171` | Q | `CustodyManager::new` `# Panics` doc contradicts the silent `min()` clamp |
 | 30 | `services/p2p/src/das/sampling.rs:679` | V | Test modules use outer `#[allow]` instead of inner `#![allow]` (`sampling.rs`, `inject.rs`, `server.rs`) |
-| 31 | `bin/serve-probe/src/protocols.rs:429` | C | Empty `ColumnsByRootRequest` encodes 4 bytes instead of zero — **same class as P0-06; check before dismissing** |
+| 31 | `bin/serve-probe/src/protocols.rs:429` | C | Empty `ColumnsByRootRequest` encodes 4 bytes instead of zero — **same class as P0-06**. **`S0-B-17`: promoted P0-class, discharged by `S0-B-07` (`5eebbbb`)** |
 | 32 | `bin/serve-probe/src/probe.rs:407` | Q | `negative_verdict` labels a non-empty success chunk as "empty success" |
 | 33 | `crates/bootstrap/Cargo.toml:34` | V | Dev-dependency `serde_json` pinned inline instead of `workspace = true` |
 | 34 | `bin/devnet-gen/src/genesis.rs:167` | Q | GVR helper swallows list-overflow into an empty-list root; dead BLS-creds block above |
@@ -563,7 +563,25 @@ dismissed (with a reason) by R-P2-triage. `C` = correctness · `Q` = quality · 
 **P2 requirement R-P2-triage:** run one adversarial verification pass over all 35 rows above **before
 Stage 2 opens**; each is promoted to P0/P1 with a disposition or dismissed with a recorded reason. No
 unverified finding is silently dropped and none is scheduled as work until it is promoted. Rows **1,
-6, 8, 21, 31** are the ones most likely to promote — 8 and 31 bear directly on P0-02 and P0-06.
+6, 8, 21, 31** were pulled into S0 (`S0-B-17`) because 8 and 31 bear on P0-02 and P0-06; the remaining
+30 stay pending `S1-B-19`/`S1-B-20`.
+
+##### S0-B-17 early triage — 2026-08-16 · M12 35 → 30 unknown
+
+Adversarial pass over the five pulled-forward rows. Line numbers below are the live sites on
+`develop` `2fe9d0b` (several have drifted from the [RV] citations). Promoted rows become follow-up
+issues against their owning stage and are **not** added to the P0=19 / P1=58 counts here (same rule
+as `S1-B-19`/`S1-B-20`). This write does not ship those patches.
+
+| # | Live site | Judgement | Tier | Disposition | Reason |
+|---|---|---|---|---|---|
+| **1** | `services/chain/src/core.rs:1031-1034` | **promoted** | P1 (C) | `patch @ S0` | Still `get_ancestor(head, s).unwrap_or(head)`. `ProtoArray::get_ancestor` fails only on `UnknownRoot`. `head_root_of` (`:838-843`) can fall through to `justified_checkpoint().root`. A miss therefore answers every unresolvable slot with that root — a silent lie to API consumers. Gap-fill's *durable* write of those roots is **not live today** (`write_behind.rs:1212-1217` does `let _ =` and comments the hole as later work); S2 deletes that path (`[ARCH]` §4.3) but the RPC survives. Replace the fallback with a typed error (or stop at the first unresolvable slot). Not patched in this PR. |
+| **6** | `crates/types/src/config.rs:58-62` | **promoted** | P1 (C) | `patch @ S0` | Spec is explicit: *"The blob schedule MAY be empty"* ([fulu/beacon-chain.md](https://github.com/ethereum/consensus-specs/blob/master/specs/fulu/beacon-chain.md#blob-schedule)); `get_blob_parameters` already falls through to `(ELECTRA_FORK_EPOCH, MAX_BLOBS_PER_BLOCK_ELECTRA)` on an empty list. The local CC-1G constructor rejects empty; `RawChainConfig.blob_schedule` is `#[serde(default)]`, so an omitted key and an explicit `[]` both fail with `BlobScheduleError::Empty`. Hoodi/mainnet fixtures are non-empty, so this does not fire on shipping networks, but it rejects a spec-legal config. `S0-A-07`/`S0-A-08` did not change this contract and have already shipped — follow-up loader patch, not this PR. Accept empty and use the existing Electra fallback; distinguish omitted-vs-empty only if a later issue wants a clearer error. |
+| **8** | `crates/state-transition/src/helpers/accessors.rs:548-550` | **dismissed** | — | — | Checked against P0-02 after `S0-A-09` (`08e3861`). The live deposit domain is `deposit.rs:43`: `compute_domain(DOMAIN_DEPOSIT, Some(config.genesis_fork_version), None)`. `deposit_domain()` still calls `compute_domain(..., None, None)` (zero fork version) and has **zero callers** (grep). `state_get_domain` is used; only this helper is dead. Not a second P0-02 instance. Residual unused helper is opportunistic dead-code, not scheduled. |
+| **21** | `services/storage/src/prune/mod.rs:148-151` | **dismissed** | — | — | Same *shape* as P1-A/5 (`S0-B-11`), not the same live path. `Default` calls `compute_min_epochs_for_block_requests(&BlockServeWindowCfg::new(256, 65_536)).unwrap_or(0)`. That compute cannot return `Err` on those constants: `checked_div(2)` never fails (divisor is 2) and `256 + 32_768` does not overflow `u64`, so the value stored is always **33_024**, never 0. Every `PruneConfig::default()` site is a `#[cfg(test)]` `..Default` fill in this file. Production builds the struct field-wise in `main.rs::prune_config` (that is P1-A/5). Residual `unwrap_or(0)` is opportunistic hygiene, not a 0-floor. |
+| **31** | `bin/serve-probe/src/protocols.rs:416-418` | **promoted** | P0-class (P0-06 sibling) | **discharged by `S0-B-07`** (`5eebbbb`) | Confirmed the pre-fix shape: empty `ColumnsByRootRequest` wrote a lone `4u32` offset and returned it. Same class as P0-06 (probe encodes the list wrapper the spec does not). `S0-B-07` already shipped the independent fix — empty returns `Vec::new()`, asserted by `columns_by_root_empty_list_is_zero_bytes`; commit subject even names *"Empty ColumnsByRoot is zero bytes."* The issue said *if it promotes, it lands in `S0-B-07`*; that PR already landed, so **this PR does not re-patch**. P0 stays at 19 (J-11 rule: do not double-count a sibling discharged by an existing P0). |
+
+`S1-B-19` covers rows 2–5, 7, 9–20. `S1-B-20` covers rows 22–30, 32–35.
 
 ---
 
@@ -640,7 +658,7 @@ remove `NOT_RUN` without a run is a §7.5 anti-metric violation, not progress.
 | **M9** | Whole-node integration test importing a block from gossip receipt through to durable storage | **not writable** — the path crosses three process boundaries | exists and runs in CI | Engineering |
 | **M10** | Dead internal edges | **4 of 6** dead, **1 of 6** unauthenticated **✓** | 0 dead; every surviving edge authenticated on the Engine-API JWT template | Engineering |
 | **M11** | Unresolvable authority citations | **~745 occurrences** (541 `Architecture §` + ~204 ADR, the latter being 45 hyphenated + 159 spaced) across **~59 distinct ADR ids**, against **0** ADR files ✓ᴸ. *(Revision 1 reported 472 / 13 ids; it counted lines not occurrences and missed the dominant spaced `ADR P3-02` spelling — D-6.)* | every cited id resolves to a committed document **and the reconciliation table has no unclassified rows** — the achievable form of the gate, not "write 59 ADRs" | Engineering |
-| **M12** | Unverified findings in an unknown state | 35 | 0 — each promoted with a disposition or dismissed with a reason | Engineering |
+| **M12** | Unverified findings in an unknown state | 35 | 0 — each promoted with a disposition or dismissed with a reason. **5 judged at `S0-B-17` (2026-08-16); 30 remain for `S1-B-19`/`S1-B-20`.** | Engineering |
 | **M13** | **`pubkey_cache_len` vs `validators_len` gauge** — the honest alarm for P0-19. Same species as M8: a failure the node currently cannot report. Note the existing `linear_scan_count` instrumentation is **silent in exactly this failure mode**, because `process_sync_aggregate` never scans — it errors ([Q3] §5). | does not exist | exists; alerts when `pubkey_cache_len < validators_len` on a state the core is importing against | Operator + correctness owner |
 
 ### 7.5 Explicit anti-metrics

@@ -907,6 +907,10 @@ ADR-P4-12 forbids and that P0-06 exists because of. `[ARCH]` §9.1/S3 additional
    `ColumnsByRootRequest` encodes 4 bytes instead of zero) — **same class as P0-06**; if it promotes,
    it lands in this PR.
 
+   **S0-B-17 (2026-08-16):** row 31 **promoted** as a P0-06 sibling and **already discharged by this
+   commit** (`5eebbbb` — empty list is zero bytes; `columns_by_root_empty_list_is_zero_bytes`). P0
+   stays at 19.
+
 ---
 
 ### `S0-B-08` · P0-13 — end the write-behind session with `Reconnect { cursor: last_flushed }`
@@ -1089,6 +1093,19 @@ The bulk 35-row R-P2-triage runs in S1 (`S1-B-19`, `S1-B-20`). These five are pu
 **Acceptance** — each of the five is **promoted with a tier and disposition** or **dismissed with a
 recorded reason**, written into `[PRD]` §5.3.2. No row is left in an unknown state. `S1-B-19`/`-20`
 then cover the remaining 30.
+
+- [x] Five P2-E rows judged in PRD §5.3.2; none unknown.
+
+
+**Judged 2026-08-16** in `[PRD]` §5.3.2 (S0-B-17 early triage). Line numbers re-verified on
+`develop` `2fe9d0b`. This issue is a triage write: no code patch except recording that row 31
+already landed with `S0-B-07`.
+
+- [x] Row 1 promoted P1 `patch @ S0` — `unwrap_or(head)` still live at `core.rs:1031-1034`; RPC survives S2; durable gap-fill of the fabricated roots is not wired today.
+- [x] Row 6 promoted P1 `patch @ S0` — spec MAY be empty; constructor still rejects; `S0-A-07`/`08` already shipped, follow-up loader patch.
+- [x] Row 8 dismissed — `S0-A-09` closed the live deposit domain; `deposit_domain()` has zero callers.
+- [x] Row 21 dismissed — `Default` cannot produce 0 from `(256, 65_536)`; production 0-floor is P1-A/5.
+- [x] Row 31 promoted as P0-06 sibling, **discharged by `S0-B-07` (`5eebbbb`)** — already shipped; not re-patched here.
 
 ---
 

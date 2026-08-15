@@ -216,8 +216,9 @@ policy B still applies**, because a slow *external* consumer being dropped is co
 is no longer a durability event for anything.
 
 **Gap-fill is deleted** — there is no cursor to lose. `GetCanonicalRoots`'s `unwrap_or(head)`
-fabrication (P2-E row 1, triaged at `S0-B-17`) **must still be handled per its triage outcome**,
-because the RPC survives for API consumers; only its role in durable writes ends.
+fabrication (P2-E row 1, **promoted P1 `patch @ S0` at `S0-B-17`**) **must still be handled per that
+outcome** if the S0 patch has not landed, because the RPC survives for API consumers; only its role
+in durable writes ends.
 
 **Acceptance** — `services/storage/src/write_behind.rs` and `restore_client.rs` no longer exist; the
 `SubscribeEvents` stream still serves an external consumer end to end, asserted by test.
