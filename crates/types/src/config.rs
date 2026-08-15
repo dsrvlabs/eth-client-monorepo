@@ -3,10 +3,12 @@
 //! `BlobSchedule` validates at construction: non-empty, sorted, strictly increasing epochs.
 //! Pre-schedule blob-bound fallback lives solely in [`BlobSchedule::get_blob_parameters`] (§5.6).
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 use crate::preset::Preset;
 use crate::primitives::{Epoch, ExecutionAddress, ForkVersion, HexParseError, parse_hex_bytes};
@@ -199,6 +201,7 @@ impl ChainConfig {
 
     /// Parse and validate YAML text (shipping parse path).
     pub fn from_yaml_str(text: &str) -> Result<Self, ConfigError> {
+        warn_unknown_yaml_keys(text)?;
         let raw: RawChainConfig =
             serde_yaml::from_str(text).map_err(|e| ConfigError::Yaml(e.to_string()))?;
         Self::try_from(raw)
@@ -337,6 +340,51 @@ struct RawChainConfig {
     max_blobs_per_block_electra: u64,
 }
 
+/// Serde names of [`RawChainConfig`] (`rename_all = "SCREAMING_SNAKE_CASE"`).
+fn is_known_chain_config_key(key: &str) -> bool {
+    matches!(
+        key,
+        "PRESET_BASE"
+            | "CONFIG_NAME"
+            | "GENESIS_FORK_VERSION"
+            | "ALTAIR_FORK_VERSION"
+            | "ALTAIR_FORK_EPOCH"
+            | "BELLATRIX_FORK_VERSION"
+            | "BELLATRIX_FORK_EPOCH"
+            | "CAPELLA_FORK_VERSION"
+            | "CAPELLA_FORK_EPOCH"
+            | "DENEB_FORK_VERSION"
+            | "DENEB_FORK_EPOCH"
+            | "ELECTRA_FORK_VERSION"
+            | "ELECTRA_FORK_EPOCH"
+            | "FULU_FORK_VERSION"
+            | "FULU_FORK_EPOCH"
+            | "SECONDS_PER_SLOT"
+            | "BLOB_SCHEDULE"
+            | "DEPOSIT_CHAIN_ID"
+            | "DEPOSIT_CONTRACT_ADDRESS"
+            | "CHURN_LIMIT_QUOTIENT"
+            | "MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA"
+            | "MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT"
+            | "SHARD_COMMITTEE_PERIOD"
+            | "MAX_BLOBS_PER_BLOCK_ELECTRA"
+    )
+}
+
+/// Capture leftover keys and WARN each one. Not `#[serde(flatten)]` onto
+/// `serde_yaml::Value`: serde's flatten `Content` buffer cannot hold the
+/// `u128` mainnet `TERMINAL_TOTAL_DIFFICULTY`.
+fn warn_unknown_yaml_keys(text: &str) -> Result<(), ConfigError> {
+    let keys: BTreeMap<String, IgnoredAny> =
+        serde_yaml::from_str(text).map_err(|e| ConfigError::Yaml(e.to_string()))?;
+    for key in keys.keys() {
+        if !is_known_chain_config_key(key) {
+            tracing::warn!(key = %key, "unknown chain config key");
+        }
+    }
+    Ok(())
+}
+
 /// Mainnet `CHURN_LIMIT_QUOTIENT` (`configs/mainnet.yaml`).
 const fn default_churn_limit_quotient() -> u64 {
     65_536
@@ -372,6 +420,9 @@ struct RawBlobParameters {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
     use crate::preset::Mainnet;
@@ -634,6 +685,106 @@ BLOB_SCHEDULE:
         assert_eq!(
             cfg.get_blob_parameters::<Mainnet>(Epoch::new(100)),
             entry(100, 15)
+        );
+    }
+
+    #[test]
+    fn churn_limit_quotient_from_yaml_is_not_discarded() {
+        let yaml = format!("{}\nCHURN_LIMIT_QUOTIENT: 7\n", minimal_yaml_body());
+        let cfg = ChainConfig::from_yaml_str(&yaml)
+            .unwrap_or_else(|e| panic!("CHURN_LIMIT_QUOTIENT must parse: {e}"));
+        assert_eq!(cfg.churn_limit_quotient, 7);
+    }
+
+    struct TestWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for TestWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn capture_logs<F, T>(f: F) -> (T, String)
+    where
+        F: FnOnce() -> T,
+    {
+        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let make_writer = {
+            let buf = Arc::clone(&buf);
+            move || TestWriter(Arc::clone(&buf))
+        };
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(make_writer)
+            .with_ansi(false)
+            .with_level(true)
+            .finish();
+        let out = tracing::subscriber::with_default(subscriber, f);
+        let logged = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        (out, logged)
+    }
+
+    #[test]
+    fn unknown_key_load_succeeds_and_warns_once_naming_the_key() {
+        let yaml = format!("{}\nHEZE_FORK_EPOCH: 1\n", minimal_yaml_body());
+        let (result, logged) = capture_logs(|| ChainConfig::from_yaml_str(&yaml));
+        let cfg = result.unwrap_or_else(|e| panic!("unknown key must not fail load: {e}"));
+        assert_eq!(cfg.config_name, "defaults");
+        let warn_lines: Vec<&str> = logged
+            .lines()
+            .filter(|line| line.contains("WARN"))
+            .collect();
+        assert_eq!(
+            warn_lines.len(),
+            1,
+            "expected one WARN naming the unknown key; got:\n{logged}"
+        );
+        assert!(
+            logged.contains("HEZE_FORK_EPOCH"),
+            "WARN must name the unknown key; got:\n{logged}"
+        );
+        assert!(
+            logged.contains("unknown chain config key"),
+            "WARN must identify the event; got:\n{logged}"
+        );
+    }
+
+    #[test]
+    fn known_keys_emit_no_unknown_key_warn() {
+        let (_cfg, logged) = capture_logs(|| {
+            ChainConfig::from_yaml_str(minimal_yaml_body())
+                .unwrap_or_else(|e| panic!("known keys must parse: {e}"))
+        });
+        assert!(
+            !logged.contains("WARN"),
+            "known-only YAML must not WARN; got:\n{logged}"
+        );
+    }
+
+    #[test]
+    fn unknown_u128_key_is_warned_not_rejected() {
+        let yaml = format!(
+            "{}\nTERMINAL_TOTAL_DIFFICULTY: 58750000000000000000000\n",
+            minimal_yaml_body()
+        );
+        let (result, logged) = capture_logs(|| ChainConfig::from_yaml_str(&yaml));
+        result.unwrap_or_else(|e| panic!("u128 unknown key must not fail load: {e}"));
+        let warn_lines: Vec<&str> = logged
+            .lines()
+            .filter(|line| line.contains("WARN"))
+            .collect();
+        assert_eq!(
+            warn_lines.len(),
+            1,
+            "expected one WARN for TTD; got:\n{logged}"
+        );
+        assert!(
+            logged.contains("TERMINAL_TOTAL_DIFFICULTY"),
+            "WARN must name the u128 key; got:\n{logged}"
         );
     }
 }
