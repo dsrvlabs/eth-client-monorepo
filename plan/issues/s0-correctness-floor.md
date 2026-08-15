@@ -674,6 +674,8 @@ semantics there — **is a consensus decision, not an implementation choice** (`
 `Status: proposed` + *"revisit at S2"*, since the question is moot once S2 deletes the path. The
 `spawn_blocking` fix (`S0-A-28`) ships regardless and is **not** blocked on this.
 
+- [x] `docs/adr/ADR-R-06.md` in MADR format; Status: proposed, revisit at S2.
+
 ---
 
 ### `S0-A-30` · **E0.4** — R-11 executed
