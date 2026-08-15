@@ -215,9 +215,9 @@ remaining argument for SQLite. If redb blocks, the fix is to wrap the open in
   two-phase-commit surface, which is the evidence redb already exposes what `[Q4]` needs
 
 **Deliverable**
-1. A two-process experiment: process 1 opens, process 2 opens the same path. Record whether process 2
+1. [x] A two-process experiment: process 1 opens, process 2 opens the same path. Record whether process 2
    returns an error or blocks, with the redb version.
-2. A one-line verdict feeding `S0-B-14`'s backend clause: **redb** (fail-fast confirmed), **redb +
+2. [x] A one-line verdict feeding `S0-B-14`'s backend clause: **redb** (fail-fast confirmed), **redb +
    flock** (blocks), or **SQLite as a stated exception** (`[ARCH]` §9.1 requires SQLite be recorded as
    a stated exception, never taken by default).
 

@@ -107,3 +107,45 @@ Same type, new path.
 **S4 implication.** ⟡ D-8 ch.2 holds: milhouse (4a) still reduces the
 four-place schema to two *before* the Gloas superstruct edit (4b). Do not
 invert. No change to `s4-fork-seam.md` dependency tables.
+
+## Q-2
+
+**Issue** `S0a-B-10` · **redb** 4.1.0 (`Cargo.lock` pin; `docs/storage-engine.md` V-4) ·
+**host** macOS (Darwin, rustc 1.97.1) · **date** 2026-08-15
+
+**Question.** A second opener of the slashing-protection DB must **error**, not block — that is what
+catches "operator started two validator clients on one key". If redb blocks, wrap the open in
+`flock(LOCK_EX | LOCK_NB)`. This is the backend tiebreak for `S0-B-14` / ADR-R-05 (`[PRD]` P1-F/1
+says SQLite; `[Q4]` says redb).
+
+**Method.** Two-process experiment, recorded as
+`crates/store/tests/q2_redb_exclusive_open.rs` (re-run: `cargo test -p cc-store --test q2_redb_exclusive_open -- --nocapture`):
+
+1. Process 1 calls `Engine::open` on a temp data dir (redb `Database::create` of `store.redb`) and
+   commits one row under `Durability::Immediate` so the file is a real store.
+2. Process 2 is a re-exec of the same test binary against that dir; the parent kills it if it has
+   not exited within 3 s.
+3. Production `Engine::open` locking policy was **not** changed.
+
+**Result.** Process 2 returned `StoreError::DatabaseLocked` in **12.5 ms** (spawn + open) and
+exited 2. It did not block. `Engine` maps `redb::DatabaseError::DatabaseAlreadyOpen` →
+`StoreError::DatabaseLocked` (`crates/store/src/engine/redb.rs:19-24`).
+
+**Mechanism (redb 4.1.0).** `FileBackend::new_internal` takes a non-blocking exclusive lock:
+
+- `file.try_lock()` (writers) / `file.try_lock_shared()` (read-only)
+- `TryLockError::WouldBlock` → `DatabaseError::DatabaseAlreadyOpen`
+
+Source: `redb-4.1.0/src/tree_store/page_store/file_backend/optimized.rs:27-39`. On macOS / Linux /
+Windows this is the platform file-lock equivalent of `flock(LOCK_EX | LOCK_NB)`. An extra
+`flock` wrapper is not required. Platforms without file locks log and proceed unlocked; they are
+not this workspace's targets.
+
+Same-process writer vs read-only was already covered by `open_read_only_refuses_live_writer_lock`
+in `engine/redb.rs`; this spike is the **cross-process** writer-vs-writer case Q-2 asked for.
+
+**Durability (already present; not this spike).** `[Q4]`'s record→fsync→sign surface is
+`Durability::Immediate` and `Paranoid` (`Immediate` + `set_two_phase_commit(true)`) at
+`crates/store/src/engine/redb.rs:476-493`. Q-2 was only the exclusive-open question.
+
+**Verdict for `S0-B-14`'s backend clause: `redb` (fail-fast confirmed).**
