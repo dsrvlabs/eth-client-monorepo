@@ -24,6 +24,8 @@ members = [
   "bin/serve-probe",
   # CC-4J offline store tool: 19 → 20.
   "bin/cc-store",
+  # S0-A-13 work-scheduler substrate ([ARCH] §3.1): 20 → 21.
+  "crates/scheduler",
 ]
 
 [workspace.package]
@@ -175,6 +177,9 @@ redb = "4.1.0"
 
 # CC-41 split lock (read_recursive) — Architecture §3.1
 parking_lot = "0.12.5"
+
+# S0-A-13 work-scheduler substrate ([ARCH] §3.1). Leaf: no workspace edges.
+cc-scheduler = { path = "crates/scheduler" }
 
 [profile.release]
 opt-level = 3

@@ -1190,6 +1190,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cc-scheduler"
+version = "0.1.0"
+
+[[package]]
 name = "cc-serve-probe"
 version = "0.1.0"
 dependencies = [

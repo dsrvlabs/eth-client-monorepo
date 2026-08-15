@@ -130,6 +130,8 @@ allowed_deps() {
     cc-storage)           echo "cc-bootstrap cc-config cc-proto cc-types cc-state-transition cc-store" ;;
     # CC-4J: offline tool; append-only (Amendment 8) — edge set is cc-store only.
     cc-store-tool)        echo "cc-store" ;;
+    # S0-A-13: leaf crate, no workspace deps ([ARCH] §1.5 / §3.1).
+    cc-scheduler)         echo "" ;;
     *)
       echo "error: unknown workspace member: $1" >&2
       return 1

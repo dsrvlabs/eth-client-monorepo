@@ -1,0 +1,17 @@
+[package]
+name = "cc-scheduler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Leaf crate: no workspace edges and no external crates ([ARCH] §3.1 / §1.5).
+# Tokio is permitted by the architecture bound but unused until a later issue
+# merges inbound channels; the substrate is sync so it stays testable without
+# a runtime, swarm, or gRPC server.
