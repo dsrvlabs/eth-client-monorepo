@@ -63,31 +63,42 @@ impl SamplingTrackerProbe for CountingSamplingTracker {
 
 /// Blob-bound provider: CC-1G `get_blob_parameters(epoch)` over a schedule.
 ///
-/// Preset is hard-wired [`Mainnet`] (≠13/5), matching engine / chain.
-/// Schedule entries come from config (production) or test fixtures constructed
-/// outside this module so blob-count maxima never appear as literals here.
+/// Pre-schedule Electra max comes from the constructor (config
+/// `max_blobs_per_block_electra`). Schedule entries come from config
+/// (production) or test fixtures constructed outside this module so
+/// blob-count maxima never appear as literals here.
 #[derive(Debug, Clone)]
 pub struct BlobBound {
     schedule: BlobSchedule,
     /// Electra fork epoch used as the pre-schedule fallback base epoch.
     electra_fork_epoch: Epoch,
+    /// `MAX_BLOBS_PER_BLOCK_ELECTRA` from the loaded chain config.
+    max_blobs_per_block_electra: u64,
 }
 
 impl BlobBound {
-    /// Construct from a validated schedule + Electra base epoch.
+    /// Construct from a validated schedule + Electra base epoch + Electra max.
     #[must_use]
-    pub fn new(schedule: BlobSchedule, electra_fork_epoch: Epoch) -> Self {
+    pub fn new(
+        schedule: BlobSchedule,
+        electra_fork_epoch: Epoch,
+        max_blobs_per_block_electra: u64,
+    ) -> Self {
         Self {
             schedule,
             electra_fork_epoch,
+            max_blobs_per_block_electra,
         }
     }
 
     /// CC-1G `get_blob_parameters(epoch)`.
     #[must_use]
     pub fn get_blob_parameters(&self, epoch: Epoch) -> BlobParameters {
-        self.schedule
-            .get_blob_parameters::<Mainnet>(epoch, self.electra_fork_epoch)
+        self.schedule.get_blob_parameters(
+            epoch,
+            self.electra_fork_epoch,
+            self.max_blobs_per_block_electra,
+        )
     }
 }
 

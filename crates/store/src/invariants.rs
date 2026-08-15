@@ -868,6 +868,11 @@ mod tests {
             blob_schedule,
             deposit_chain_id: 560_048,
             deposit_contract_address: cc_types::ExecutionAddress::from_array([0u8; 20]),
+            churn_limit_quotient: 65_536,
+            min_per_epoch_churn_limit_electra: 128_000_000_000,
+            max_per_epoch_activation_exit_churn_limit: 256_000_000_000,
+            shard_committee_period: Epoch::new(256),
+            max_blobs_per_block_electra: 9,
         };
         ConfigDigestInput::with_mainnet_scalars(chain, Root::from_array([0xAB; 32]))
     }

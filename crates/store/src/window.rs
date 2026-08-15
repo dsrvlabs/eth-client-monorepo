@@ -57,10 +57,10 @@ use crate::split::SLOTS_PER_EPOCH;
 
 /// Config scalars that enter the block serve-window floor.
 ///
-/// Architecture §5.1 writes these as fields of `ChainConfig`. They are not yet
-/// on [`cc_types::ChainConfig`] (see [`crate::schema::ConfigDigestInput`]), so
-/// this thin view carries exactly what the function needs — including the
-/// optional vestigial `MIN_EPOCHS_FOR_BLOCK_REQUESTS` field for the cross-check.
+/// Architecture §5.1 writes these as fields of `ChainConfig`.
+/// `churn_limit_quotient` is on [`cc_types::ChainConfig`]; this view still
+/// carries the scalars the floor function needs — including the optional
+/// vestigial `MIN_EPOCHS_FOR_BLOCK_REQUESTS` field for the cross-check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockServeWindowCfg {
     /// `MIN_VALIDATOR_WITHDRAWABILITY_DELAY`.

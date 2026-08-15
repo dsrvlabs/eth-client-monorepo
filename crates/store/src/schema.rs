@@ -151,9 +151,9 @@ struct ConfigDigestPayload {
 
 /// Inputs that enter [`compute_config_digest`] — the named §2.5 list only.
 ///
-/// Built from a [`ChainConfig`] plus the three fields that are not (yet) on
-/// that struct: `genesis_validators_root`, `MIN_VALIDATOR_WITHDRAWABILITY_DELAY`,
-/// and `CHURN_LIMIT_QUOTIENT`.
+/// Built from a [`ChainConfig`] plus `genesis_validators_root` and
+/// `MIN_VALIDATOR_WITHDRAWABILITY_DELAY`. `CHURN_LIMIT_QUOTIENT` is also on
+/// [`ChainConfig`] but the digest keeps its own copy (named §2.5 list).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigDigestInput {
     /// Fork epochs + `BLOB_SCHEDULE` + `SECONDS_PER_SLOT` source.
@@ -563,6 +563,11 @@ mod tests {
             blob_schedule,
             deposit_chain_id: 560_048,
             deposit_contract_address: cc_types::ExecutionAddress::from_array([0u8; 20]),
+            churn_limit_quotient: 65_536,
+            min_per_epoch_churn_limit_electra: 128_000_000_000,
+            max_per_epoch_activation_exit_churn_limit: 256_000_000_000,
+            shard_committee_period: Epoch::new(256),
+            max_blobs_per_block_electra: 9,
         }
     }
 

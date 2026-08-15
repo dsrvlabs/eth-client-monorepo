@@ -397,6 +397,11 @@ mod tests {
             blob_schedule: schedule,
             deposit_chain_id: 1,
             deposit_contract_address: Default::default(),
+            churn_limit_quotient: 65_536,
+            min_per_epoch_churn_limit_electra: 128_000_000_000,
+            max_per_epoch_activation_exit_churn_limit: 256_000_000_000,
+            shard_committee_period: Epoch::new(256),
+            max_blobs_per_block_electra: 9,
         };
         let gvr = Root::from_array([0xcc; 32]);
         ForkContext::new(cfg, gvr, Epoch::new(50))

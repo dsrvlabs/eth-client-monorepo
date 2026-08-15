@@ -82,15 +82,15 @@ impl BlobSchedule {
     /// Binary search for the last entry with `entry.epoch <= epoch`.
     ///
     /// Before the first entry, returns Electra-era base parameters per Fulu
-    /// specs: `(base_epoch, preset Electra max blobs)` where `base_epoch` is
-    /// the network's `ELECTRA_FORK_EPOCH` (not genesis). Prefer
-    /// [`ChainConfig::get_blob_parameters`], which supplies
-    /// `electra_fork_epoch` automatically. Sole runtime site for the preset
-    /// base max-blobs associated const lives in this fallback (§5.6).
-    pub fn get_blob_parameters<P: Preset>(
+    /// specs: `(base_epoch, max_blobs_per_block)` where `base_epoch` is the
+    /// network's `ELECTRA_FORK_EPOCH` (not genesis) and `max_blobs_per_block`
+    /// is the caller's `MAX_BLOBS_PER_BLOCK_ELECTRA`. Prefer
+    /// [`ChainConfig::get_blob_parameters`], which supplies both from config.
+    pub fn get_blob_parameters(
         &self,
         epoch: Epoch,
         base_epoch: Epoch,
+        max_blobs_per_block: u64,
     ) -> BlobParameters {
         let idx = self
             .0
@@ -98,7 +98,7 @@ impl BlobSchedule {
         if idx == 0 {
             BlobParameters {
                 epoch: base_epoch,
-                max_blobs_per_block: P::MAX_BLOBS_PER_BLOCK_BASE,
+                max_blobs_per_block,
             }
         } else {
             self.0[idx - 1]
@@ -174,6 +174,16 @@ pub struct ChainConfig {
     pub deposit_chain_id: u64,
     /// Deposit contract address.
     pub deposit_contract_address: ExecutionAddress,
+    /// `CHURN_LIMIT_QUOTIENT` (mainnet 65536).
+    pub churn_limit_quotient: u64,
+    /// `MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA` in Gwei (mainnet 128000000000).
+    pub min_per_epoch_churn_limit_electra: u64,
+    /// `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` in Gwei (mainnet 256000000000).
+    pub max_per_epoch_activation_exit_churn_limit: u64,
+    /// `SHARD_COMMITTEE_PERIOD` (mainnet 256 epochs).
+    pub shard_committee_period: Epoch,
+    /// `MAX_BLOBS_PER_BLOCK_ELECTRA` (mainnet 9). Pre-BPO fallback bound.
+    pub max_blobs_per_block_electra: u64,
 }
 
 impl ChainConfig {
@@ -197,12 +207,15 @@ impl ChainConfig {
     /// Fulu `get_blob_parameters(epoch)` against this network's schedule.
     ///
     /// Pre-schedule fallback is
-    /// `BlobParameters { epoch: self.electra_fork_epoch, max_blobs: Electra base }`
+    /// `BlobParameters { epoch: self.electra_fork_epoch, max_blobs: self.max_blobs_per_block_electra }`
     /// matching consensus-specs
     /// `return BlobParameters(ELECTRA_FORK_EPOCH, MAX_BLOBS_PER_BLOCK_ELECTRA)`.
     pub fn get_blob_parameters<P: Preset>(&self, epoch: Epoch) -> BlobParameters {
-        self.blob_schedule
-            .get_blob_parameters::<P>(epoch, self.electra_fork_epoch)
+        self.blob_schedule.get_blob_parameters(
+            epoch,
+            self.electra_fork_epoch,
+            self.max_blobs_per_block_electra,
+        )
     }
 }
 
@@ -243,6 +256,12 @@ impl TryFrom<RawChainConfig> for ChainConfig {
             blob_schedule,
             deposit_chain_id: raw.deposit_chain_id,
             deposit_contract_address: execution_address(&raw.deposit_contract_address)?,
+            churn_limit_quotient: raw.churn_limit_quotient,
+            min_per_epoch_churn_limit_electra: raw.min_per_epoch_churn_limit_electra,
+            max_per_epoch_activation_exit_churn_limit: raw
+                .max_per_epoch_activation_exit_churn_limit,
+            shard_committee_period: Epoch::new(raw.shard_committee_period),
+            max_blobs_per_block_electra: raw.max_blobs_per_block_electra,
         })
     }
 }
@@ -306,6 +325,41 @@ struct RawChainConfig {
     blob_schedule: Vec<RawBlobParameters>,
     deposit_chain_id: u64,
     deposit_contract_address: String,
+    #[serde(default = "default_churn_limit_quotient")]
+    churn_limit_quotient: u64,
+    #[serde(default = "default_min_per_epoch_churn_limit_electra")]
+    min_per_epoch_churn_limit_electra: u64,
+    #[serde(default = "default_max_per_epoch_activation_exit_churn_limit")]
+    max_per_epoch_activation_exit_churn_limit: u64,
+    #[serde(default = "default_shard_committee_period")]
+    shard_committee_period: u64,
+    #[serde(default = "default_max_blobs_per_block_electra")]
+    max_blobs_per_block_electra: u64,
+}
+
+/// Mainnet `CHURN_LIMIT_QUOTIENT` (`configs/mainnet.yaml`).
+const fn default_churn_limit_quotient() -> u64 {
+    65_536
+}
+
+/// Mainnet `MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA` (`configs/mainnet.yaml`).
+const fn default_min_per_epoch_churn_limit_electra() -> u64 {
+    128_000_000_000
+}
+
+/// Mainnet `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` (`configs/mainnet.yaml`).
+const fn default_max_per_epoch_activation_exit_churn_limit() -> u64 {
+    256_000_000_000
+}
+
+/// Mainnet `SHARD_COMMITTEE_PERIOD` (`configs/mainnet.yaml`).
+const fn default_shard_committee_period() -> u64 {
+    256
+}
+
+/// Mainnet `MAX_BLOBS_PER_BLOCK_ELECTRA` (`configs/mainnet.yaml`).
+const fn default_max_blobs_per_block_electra() -> u64 {
+    9
 }
 
 #[derive(Debug, Deserialize)]
@@ -354,8 +408,8 @@ mod tests {
         let schedule = BlobSchedule::try_from_entries(vec![entry(52_480, 15), entry(54_016, 21)])
             .unwrap_or_else(|e| panic!("{e:?}"));
 
-        // Before first entry → (ELECTRA_FORK_EPOCH, MAX_BLOBS_PER_BLOCK_ELECTRA=9).
-        let before = schedule.get_blob_parameters::<Mainnet>(Epoch::new(52_479), electra);
+        // Before first entry → (ELECTRA_FORK_EPOCH, caller-supplied Electra max).
+        let before = schedule.get_blob_parameters(Epoch::new(52_479), electra, 9);
         assert_eq!(
             before,
             BlobParameters {
@@ -366,33 +420,40 @@ mod tests {
 
         // At / one before / one after first boundary — assert both fields.
         assert_eq!(
-            schedule.get_blob_parameters::<Mainnet>(Epoch::new(52_480), electra),
+            schedule.get_blob_parameters(Epoch::new(52_480), electra, 9),
             entry(52_480, 15)
         );
         assert_eq!(
-            schedule.get_blob_parameters::<Mainnet>(Epoch::new(52_479), electra),
+            schedule.get_blob_parameters(Epoch::new(52_479), electra, 9),
             BlobParameters {
                 epoch: electra,
                 max_blobs_per_block: 9,
             }
         );
         assert_eq!(
-            schedule.get_blob_parameters::<Mainnet>(Epoch::new(52_481), electra),
+            schedule.get_blob_parameters(Epoch::new(52_481), electra, 9),
             entry(52_480, 15)
         );
 
         // At / one before / one after second boundary.
         assert_eq!(
-            schedule.get_blob_parameters::<Mainnet>(Epoch::new(54_016), electra),
+            schedule.get_blob_parameters(Epoch::new(54_016), electra, 9),
             entry(54_016, 21)
         );
         assert_eq!(
-            schedule.get_blob_parameters::<Mainnet>(Epoch::new(54_015), electra),
+            schedule.get_blob_parameters(Epoch::new(54_015), electra, 9),
             entry(52_480, 15)
         );
         assert_eq!(
-            schedule.get_blob_parameters::<Mainnet>(Epoch::new(54_017), electra),
+            schedule.get_blob_parameters(Epoch::new(54_017), electra, 9),
             entry(54_016, 21)
+        );
+        // Parsed Electra max is the fallback — not P::MAX_BLOBS_PER_BLOCK_BASE.
+        assert_eq!(
+            schedule
+                .get_blob_parameters(Epoch::new(52_479), electra, 11)
+                .max_blobs_per_block,
+            11
         );
     }
 
@@ -415,6 +476,14 @@ mod tests {
         assert_eq!(hoodi.blob_schedule.entries()[1].max_blobs_per_block, 21);
         assert_eq!(hoodi.seconds_per_slot, 12);
         assert_eq!(hoodi.deposit_chain_id, 560_048);
+        assert_eq!(hoodi.churn_limit_quotient, 65_536);
+        assert_eq!(hoodi.min_per_epoch_churn_limit_electra, 128_000_000_000);
+        assert_eq!(
+            hoodi.max_per_epoch_activation_exit_churn_limit,
+            256_000_000_000
+        );
+        assert_eq!(hoodi.shard_committee_period, Epoch::new(256));
+        assert_eq!(hoodi.max_blobs_per_block_electra, 9);
 
         let mainnet_path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -438,6 +507,14 @@ mod tests {
         );
         assert_eq!(mainnet.blob_schedule.entries()[1].max_blobs_per_block, 21);
         assert_eq!(mainnet.deposit_chain_id, 1);
+        assert_eq!(mainnet.churn_limit_quotient, 65_536);
+        assert_eq!(mainnet.min_per_epoch_churn_limit_electra, 128_000_000_000);
+        assert_eq!(
+            mainnet.max_per_epoch_activation_exit_churn_limit,
+            256_000_000_000
+        );
+        assert_eq!(mainnet.shard_committee_period, Epoch::new(256));
+        assert_eq!(mainnet.max_blobs_per_block_electra, 9);
 
         // Shipping lookup path: both fields for pre-BPO / at-BPO (F1).
         // Hoodi Fulu window [50688, 52480): Electra base (2048, 9).
@@ -475,6 +552,88 @@ mod tests {
         assert_eq!(
             mainnet.get_blob_parameters::<Mainnet>(Epoch::new(412_672)),
             entry(412_672, 15)
+        );
+    }
+
+    fn minimal_yaml_body() -> &'static str {
+        r#"
+PRESET_BASE: mainnet
+CONFIG_NAME: defaults
+GENESIS_FORK_VERSION: 0x00000000
+ALTAIR_FORK_VERSION: 0x01000000
+ALTAIR_FORK_EPOCH: 0
+BELLATRIX_FORK_VERSION: 0x02000000
+BELLATRIX_FORK_EPOCH: 0
+CAPELLA_FORK_VERSION: 0x03000000
+CAPELLA_FORK_EPOCH: 0
+DENEB_FORK_VERSION: 0x04000000
+DENEB_FORK_EPOCH: 0
+ELECTRA_FORK_VERSION: 0x05000000
+ELECTRA_FORK_EPOCH: 0
+FULU_FORK_VERSION: 0x06000000
+FULU_FORK_EPOCH: 0
+SECONDS_PER_SLOT: 12
+DEPOSIT_CHAIN_ID: 1
+DEPOSIT_CONTRACT_ADDRESS: 0x00000000219ab540356cBB839Cbe05303d7705Fa
+BLOB_SCHEDULE:
+  - EPOCH: 100
+    MAX_BLOBS_PER_BLOCK: 15
+"#
+    }
+
+    #[test]
+    fn omitted_p002_keys_default_to_mainnet() {
+        let cfg = ChainConfig::from_yaml_str(minimal_yaml_body())
+            .unwrap_or_else(|e| panic!("omitted keys must still parse: {e}"));
+        assert_eq!(cfg.churn_limit_quotient, default_churn_limit_quotient());
+        assert_eq!(
+            cfg.min_per_epoch_churn_limit_electra,
+            default_min_per_epoch_churn_limit_electra()
+        );
+        assert_eq!(
+            cfg.max_per_epoch_activation_exit_churn_limit,
+            default_max_per_epoch_activation_exit_churn_limit()
+        );
+        assert_eq!(
+            cfg.shard_committee_period,
+            Epoch::new(default_shard_committee_period())
+        );
+        assert_eq!(
+            cfg.max_blobs_per_block_electra,
+            default_max_blobs_per_block_electra()
+        );
+        assert_eq!(
+            cfg.get_blob_parameters::<Mainnet>(Epoch::new(0))
+                .max_blobs_per_block,
+            9
+        );
+    }
+
+    #[test]
+    fn parsed_p002_keys_override_mainnet_defaults() {
+        let yaml = format!(
+            "{}\nCHURN_LIMIT_QUOTIENT: 7\nMIN_PER_EPOCH_CHURN_LIMIT_ELECTRA: 11\n\
+             MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT: 13\nSHARD_COMMITTEE_PERIOD: 17\n\
+             MAX_BLOBS_PER_BLOCK_ELECTRA: 11\n",
+            minimal_yaml_body()
+        );
+        let cfg = ChainConfig::from_yaml_str(&yaml)
+            .unwrap_or_else(|e| panic!("override keys must parse: {e}"));
+        assert_eq!(cfg.churn_limit_quotient, 7);
+        assert_eq!(cfg.min_per_epoch_churn_limit_electra, 11);
+        assert_eq!(cfg.max_per_epoch_activation_exit_churn_limit, 13);
+        assert_eq!(cfg.shard_committee_period, Epoch::new(17));
+        assert_eq!(cfg.max_blobs_per_block_electra, 11);
+        assert_eq!(
+            cfg.get_blob_parameters::<Mainnet>(Epoch::new(0)),
+            BlobParameters {
+                epoch: Epoch::new(0),
+                max_blobs_per_block: 11,
+            }
+        );
+        assert_eq!(
+            cfg.get_blob_parameters::<Mainnet>(Epoch::new(100)),
+            entry(100, 15)
         );
     }
 }

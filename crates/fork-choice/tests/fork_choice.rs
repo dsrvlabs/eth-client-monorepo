@@ -245,6 +245,23 @@ fn spec_config_for_preset(preset: PresetName) -> ChainConfig {
         .unwrap(),
         deposit_chain_id: 0,
         deposit_contract_address: ExecutionAddress::ZERO,
+        churn_limit_quotient: match preset {
+            PresetName::Mainnet => 65_536,
+            PresetName::Minimal => 32,
+        },
+        min_per_epoch_churn_limit_electra: match preset {
+            PresetName::Mainnet => 128_000_000_000,
+            PresetName::Minimal => 64_000_000_000,
+        },
+        max_per_epoch_activation_exit_churn_limit: match preset {
+            PresetName::Mainnet => 256_000_000_000,
+            PresetName::Minimal => 128_000_000_000,
+        },
+        shard_committee_period: Epoch::new(match preset {
+            PresetName::Mainnet => 256,
+            PresetName::Minimal => 64,
+        }),
+        max_blobs_per_block_electra: 9,
     }
 }
 

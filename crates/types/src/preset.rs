@@ -110,8 +110,8 @@ pub trait Preset:
     const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64;
     /// `MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD`
     const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64;
-    /// Electra-era base blob bound; sole runtime consumer is the pre-schedule
-    /// fallback inside `BlobSchedule::get_blob_parameters` (Architecture §5.6).
+    /// Electra-era base blob bound (preset scalar). Runtime fallback uses
+    /// [`crate::config::ChainConfig::max_blobs_per_block_electra`].
     const MAX_BLOBS_PER_BLOCK_BASE: u64;
     /// `SYNC_COMMITTEE_SUBNET_COUNT` (Altair validator; always 4).
     const SYNC_COMMITTEE_SUBNET_COUNT: u64;

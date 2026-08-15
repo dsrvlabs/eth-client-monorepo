@@ -108,7 +108,7 @@ pub fn hoodi_blob_bound() -> BlobBound {
         },
     ];
     let schedule = BlobSchedule::try_from_entries(entries).expect("hoodi fixture schedule");
-    BlobBound::new(schedule, Epoch::new(2_048))
+    BlobBound::new(schedule, Epoch::new(2_048), 9)
 }
 
 /// Completion notification payload for the fastpath worker (tests / observers).

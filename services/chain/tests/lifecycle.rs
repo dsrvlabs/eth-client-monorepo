@@ -91,6 +91,11 @@ fn minimal_config() -> ChainConfig {
         .unwrap(),
         deposit_chain_id: 0,
         deposit_contract_address: ExecutionAddress::ZERO,
+        churn_limit_quotient: 32,
+        min_per_epoch_churn_limit_electra: 64_000_000_000,
+        max_per_epoch_activation_exit_churn_limit: 128_000_000_000,
+        shard_committee_period: Epoch::new(64),
+        max_blobs_per_block_electra: 9,
     }
 }
 
