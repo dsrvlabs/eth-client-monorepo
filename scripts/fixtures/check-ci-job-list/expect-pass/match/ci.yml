@@ -1,0 +1,18 @@
+# Positive fixture: same job ids as sibling Makefile.
+name: fixture
+on: push
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+  clippy:
+    runs-on: ubuntu-latest
+  test:
+    runs-on: ubuntu-latest
+  proto:
+    runs-on: ubuntu-latest
+  vectors:
+    runs-on: ubuntu-latest
+  deps:
+    runs-on: ubuntu-latest
+  compose:
+    runs-on: ubuntu-latest

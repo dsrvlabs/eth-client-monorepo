@@ -1,6 +1,9 @@
 # eth-client-monorepo — developer entrypoints
-# Mirrors required CI gates (fmt/clippy/test/proto/deps) plus local compose/vectors helpers.
 # Toolchain pin lives only in rust-toolchain.toml; do not hardcode the Rust version here.
+#
+# S0a-B-04: CI_JOBS must match `.github/workflows/ci.yml` `jobs:` keys
+# (scripts/check-ci-job-list.sh). `make ci` runs the local required subset;
+# vectors/compose stay opt-in (spec-vector download / docker proof).
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
@@ -32,6 +35,9 @@ CC_GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 # ── Paths ────────────────────────────────────────────────────────────────────
 SCRIPTS := scripts
 PROTO   := proto
+
+# Job ids — must equal ci.yml `jobs:` keys. Edit both sides together.
+CI_JOBS := fmt clippy test proto vectors deps compose
 
 .PHONY: help
 help: ## Show this help
@@ -140,10 +146,10 @@ clippy: ## Clippy with -D warnings (CI: clippy job)
 	$(CARGO) clippy $(CLIPPY_FLAGS) -- -D warnings
 
 .PHONY: lint
-lint: fmt-check clippy check-dag check-env ## Local lint suite (fmt + clippy + guards)
+lint: fmt-check clippy check-dag check-env check-http check-gha-pins check-ci-jobs ## Local lint suite (fmt + clippy + guards)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Policy guards (scripts/ — also wired into CI)
+# Policy guards (scripts/ — wired into the matching CI job and `make ci`)
 # ══════════════════════════════════════════════════════════════════════════════
 
 .PHONY: check-dag
@@ -154,6 +160,10 @@ check-dag: ## Enforce crate dependency DAG (Architecture §2.2)
 check-env: ## No std::env::var outside crates/config (CC-09/3)
 	bash $(SCRIPTS)/check-no-env-reads.sh
 
+.PHONY: check-http
+check-http: ## No HTTP client on the block-import path (CC-28/2)
+	bash $(SCRIPTS)/check-no-http-import-path.sh
+
 .PHONY: check-remodelling
 check-remodelling: ## No consensus containers remodelled as protos (CC-02/4)
 	bash $(SCRIPTS)/check-no-remodelling.sh
@@ -161,6 +171,10 @@ check-remodelling: ## No consensus containers remodelled as protos (CC-02/4)
 .PHONY: check-gha-pins
 check-gha-pins: ## GitHub Actions pinned to commit SHAs (S0a-B-06)
 	bash $(SCRIPTS)/check-gha-sha-pins.sh
+
+.PHONY: check-ci-jobs
+check-ci-jobs: ## Makefile CI_JOBS matches ci.yml job ids (S0a-B-04)
+	bash $(SCRIPTS)/check-ci-job-list.sh
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Proto (required CI: proto job)
@@ -255,7 +269,7 @@ compose-proof: compose prove-health ## Full mutual-health proof (compose CI path
 # ══════════════════════════════════════════════════════════════════════════════
 
 .PHONY: ci
-ci: fmt-check clippy check-dag check-env test proto deps ## Required local CI gates (no compose/vectors)
+ci: lint test proto deps ## Required local CI gates (no compose/vectors)
 
 .PHONY: clean
 clean: ## cargo clean

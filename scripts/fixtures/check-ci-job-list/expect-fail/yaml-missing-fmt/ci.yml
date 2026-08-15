@@ -1,0 +1,16 @@
+# Negative fixture (AC 2): `fmt` deleted from jobs: without updating Makefile.
+name: fixture
+on: push
+jobs:
+  clippy:
+    runs-on: ubuntu-latest
+  test:
+    runs-on: ubuntu-latest
+  proto:
+    runs-on: ubuntu-latest
+  vectors:
+    runs-on: ubuntu-latest
+  deps:
+    runs-on: ubuntu-latest
+  compose:
+    runs-on: ubuntu-latest

@@ -3,8 +3,8 @@
 # Mutable refs (`@v4`, `@main`, short SHAs) can be retargeted; 40-hex cannot.
 # Line-grep of `@v[0-9]` misses folded `uses: >-` and non-v tags; parse `uses` values.
 #
-# Exit non-zero and print every hit on failure. Standalone so it can later be
-# wired into `make ci` (S0a-B-04); also run from the clippy job.
+# Exit non-zero and print every hit on failure. Wired into `make ci` /
+# `make lint` (S0a-B-04) and the clippy job.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

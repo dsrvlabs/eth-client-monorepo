@@ -95,6 +95,10 @@ jobs:
       - name: check GitHub Actions SHA pins
         run: bash scripts/check-gha-sha-pins.sh
 
+      # S0a-B-04: Makefile CI_JOBS must match this file's job ids.
+      - name: check CI job list mirrors Makefile
+        run: bash scripts/check-ci-job-list.sh
+
   # CC-10h — unit tests + all minimal-preset suites; keep inside Phase 0's 10-minute
   # CC-07/4 budget. Mainnet + general suites move to the sharded `vectors` job.
   test:

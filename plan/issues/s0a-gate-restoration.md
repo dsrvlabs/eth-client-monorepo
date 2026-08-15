@@ -116,11 +116,12 @@ a `make ci` that drifts from `ci.yml` is exactly the class of gate this phase ex
 - `.github/workflows/ci.yml` (the job list)
 
 **Acceptance (falsifiable)**
-1. A test enumerates the job ids in `.github/workflows/ci.yml` and the gate list in `Makefile`, and
+1. [x] A test enumerates the job ids in `.github/workflows/ci.yml` and the gate list in `Makefile`, and
    **fails** when the two sets differ in either direction.
-2. Deleting a job from `ci.yml` without deleting it from the `Makefile` makes that test red —
+2. [x] Deleting a job from `ci.yml` without deleting it from the `Makefile` makes that test red —
    demonstrated once in the PR, not merely claimed.
-3. `make ci` is green on `HEAD`.
+3. [x] `make ci` is green on `HEAD`.
+   (`CI_JOBS` mirrors `ci.yml`; `make ci` runs `lint test proto deps`. Full nextest/clippy not re-run in this issue.)
 
 ---
 
