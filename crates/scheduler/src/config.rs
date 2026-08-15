@@ -104,7 +104,7 @@ pub struct LaneSpec<K> {
     pub queue: QueueKind,
     pub depth: Depth,
     /// When set, a full lane refuses the item instead of applying overflow.
-    /// The tick lane's never-shed producer wiring is S0-A-14.
+    /// The tick lane is never-shed: producers block rather than drop (S0-A-14).
     pub never_shed: bool,
     /// One-line adversarial rationale for this lane's overflow policy.
     pub why: &'static str,

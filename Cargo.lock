@@ -995,6 +995,7 @@ dependencies = [
  "cc-crypto",
  "cc-fork-choice",
  "cc-proto",
+ "cc-scheduler",
  "cc-state-transition",
  "cc-types",
  "ethereum_ssz",

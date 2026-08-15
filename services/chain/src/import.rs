@@ -51,6 +51,7 @@ use crate::events::EventInput;
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
 use crate::metrics::{ChainMetrics, ImportResult, ImportStage};
 use crate::pending_engine::{PendingEngine, PendingEngineEntry};
+use crate::tick::{GossipClock, admit_block_slot_if_within_disparity};
 
 /// First payload byte for `BLOCK_IMPORTED` after a successful import (Architecture §4.2).
 pub const BLOCK_PAYLOAD_VERDICT_IMPORTED: u8 = ImportBlockVerdict::Imported as u8;
@@ -252,6 +253,7 @@ pub fn import_block<P: Preset>(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -273,6 +275,10 @@ pub fn import_block<P: Preset>(
 /// `pending_engine` (CC-36a): when `on_block` returns
 /// `Deferred(ExecutionEngineUnavailable)`, the signed block is parked for
 /// re-drive when the engine returns (separate map, 64 / 8 slots).
+///
+/// `gossip_clock`: when set, a future `block.slot` inside
+/// `MAXIMUM_GOSSIP_CLOCK_DISPARITY` of *that* slot's start is admitted by
+/// ticking the store to that slot start. Current-slot imports do not jump.
 #[allow(clippy::too_many_arguments)]
 pub fn import_block_with_early<P: Preset>(
     store: &mut Store<P>,
@@ -290,6 +296,7 @@ pub fn import_block_with_early<P: Preset>(
     inject_after_early: Option<OnBlockError>,
     pending_da: Option<&mut PendingDa>,
     pending_engine: Option<&mut PendingEngine>,
+    gossip_clock: Option<GossipClock>,
 ) -> Result<ImportOutcome, Status> {
     let gossip_path = early_accept_tx.is_some() || inject_after_early.is_some();
     // --- 1. decode-free dedup probe (ADR-P1-10 / SEC-4) ----------------------
@@ -335,6 +342,7 @@ pub fn import_block_with_early<P: Preset>(
         verify,
         gossip_path,
         metrics,
+        gossip_clock,
     )? {
         return Ok(ImportOutcome {
             response: terminal,
@@ -558,6 +566,7 @@ fn cheap_gossip_terminal<P: Preset>(
     verify: BlockSignatureStrategy,
     gossip_path: bool,
     metrics: &ChainMetrics,
+    gossip_clock: Option<GossipClock>,
 ) -> Result<Option<ImportBlockResponse>, Status> {
     let block = &signed.message;
     let parent_root = block.parent_root;
@@ -581,13 +590,25 @@ fn cheap_gossip_terminal<P: Preset>(
     }
 
     // Future slot relative to store time → IGNORE-class (H3).
+    // Disparity admits *this* block's slot only — never an unconditional
+    // on_tick into whatever slot comes next.
     if store.get_current_slot().as_u64() < block.slot.as_u64() {
-        metrics.inc_import_result(ImportResult::Invalid);
-        return Ok(Some(ImportBlockResponse {
-            // Proto has no FUTURE_SLOT verdict; reason drives stream IGNORE.
-            verdict: ImportBlockVerdict::Invalid as i32,
-            reason: "future_slot".into(),
-        }));
+        let admitted = gossip_clock.is_some_and(|clock| {
+            admit_block_slot_if_within_disparity(
+                store,
+                block.slot.as_u64(),
+                clock.now_millis,
+                clock.disparity,
+            )
+        });
+        if !admitted {
+            metrics.inc_import_result(ImportResult::Invalid);
+            return Ok(Some(ImportBlockResponse {
+                // Proto has no FUTURE_SLOT verdict; reason drives stream IGNORE.
+                verdict: ImportBlockVerdict::Invalid as i32,
+                reason: "future_slot".into(),
+            }));
+        }
     }
 
     // Too old (slot at/before finalized epoch start) → IGNORE-class (H3 / eth2 gossip).

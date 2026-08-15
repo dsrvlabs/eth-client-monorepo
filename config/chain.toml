@@ -65,5 +65,9 @@ engine_uri = "http://127.0.0.1:9004"
 # Override: CC_CHAIN_RESTORE_GRACE_SECONDS=5
 restore_grace_seconds = 30
 
+# MAXIMUM_GOSSIP_CLOCK_DISPARITY (ms). Applied at import so a block this far
+# before its slot start is not IGNOREd as future_slot. Not quantized to a slot.
+maximum_gossip_clock_disparity_ms = 500
+
 # No health peers — chain is the root of the acyclic health DAG.
 [peers]

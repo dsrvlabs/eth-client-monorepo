@@ -116,7 +116,7 @@ allowed_deps() {
     cc-spec-tests)        echo "" ;;
     # Self-devnet generator (CC-2K member; content is CC-2Ja).
     cc-devnet-gen)        echo "cc-types cc-crypto cc-state-transition cc-config" ;;
-    cc-chain)             echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-state-transition cc-fork-choice" ;;
+    cc-chain)             echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-state-transition cc-fork-choice cc-scheduler" ;;
     # Phase 2: services/p2p may take cc-libp2p (CC-2K / Architecture §1.2).
     cc-p2p)               echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-libp2p" ;;
     cc-attestation)       echo "cc-bootstrap cc-config cc-proto" ;;

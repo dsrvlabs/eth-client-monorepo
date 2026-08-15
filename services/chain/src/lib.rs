@@ -43,6 +43,7 @@ pub mod pending_engine;
 pub mod residency;
 pub mod restore;
 pub mod service;
+pub mod tick;
 
 pub use apply_attestations::MAX_APPLY_ATTESTATIONS;
 pub use checkpoint_sync::{
@@ -118,3 +119,4 @@ pub use service::{
     ChainServiceImpl, REASON_BELOW_FINALIZED_RETENTION, REASON_NOT_BOOTSTRAPPED,
     status_below_finalized,
 };
+pub use tick::{DEFAULT_MAXIMUM_GOSSIP_CLOCK_DISPARITY, GossipClock};

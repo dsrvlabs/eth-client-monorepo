@@ -4,6 +4,9 @@
 //! thread side and `oneshot` replies. `ImportBlock` uses `send_timeout(2 s)` →
 //! `RESOURCE_EXHAUSTED` on backpressure.
 //!
+//! `SlotTick` rides a separate never-shed tick lane ([ARCH] §3.2 / S0-A-14)
+//! alongside this channel (the mixed channel is deleted at S0-A-17).
+//!
 //! ```text
 //! loop { recv(); handle(); /* snapshot + events inside import */ }
 //! ```
@@ -23,6 +26,7 @@ use cc_proto::chain::{
     ApplyAttestationsRequest, ApplyAttestationsResponse, ImportBlockRequest, ImportBlockResponse,
 };
 use cc_proto::common::Source;
+use cc_scheduler::{ChainLane, Enqueue, Manager, QueueSizes, TICK_LANE_DEPTH};
 use cc_state_transition::helpers::accessors::get_active_validator_indices;
 use cc_state_transition::helpers::misc::compute_start_slot_at_epoch;
 use cc_state_transition::{
@@ -47,6 +51,10 @@ use crate::import::{ImportCounters, ImportOutcome, import_block_with_early};
 use crate::metrics::ChainMetrics;
 use crate::pending_engine::{DEFAULT_ENGINE_PENDING_TIMEOUT_SLOTS, PendingEngine};
 use crate::residency::{DEFAULT_BODY_RING_CAPACITY, DEFAULT_MAX_RESIDENT_STATES, Residency};
+use crate::tick::{
+    DEFAULT_MAXIMUM_GOSSIP_CLOCK_DISPARITY, GossipClock, TickWork, advance_store_clock,
+    duration_until_next_slot_boundary, unix_now_millis, unix_now_secs,
+};
 
 /// Command channel capacity (Architecture §7.2).
 pub const COMMAND_CHANNEL_CAPACITY: usize = 64;
@@ -125,6 +133,8 @@ pub enum QueryRequest {
     IsOptimistic { root: Option<Root> },
     /// CC-44a /3: one canonical root per slot in `[start_slot, end_slot]`.
     CanonicalRoots { start_slot: u64, end_slot: u64 },
+    /// Fork-choice store clock (`store.time` / `get_current_slot`).
+    StoreClock,
 }
 
 /// Reply for the Phase-1 / CC-27a / CC-3B / CC-44a `Query` command.
@@ -150,6 +160,8 @@ pub enum QueryReply {
     IsOptimistic { is_optimistic: bool, known: bool },
     /// CC-44a: canonical roots for the requested inclusive slot range.
     CanonicalRoots { roots: Vec<Root> },
+    /// Fork-choice store clock.
+    StoreClock { time: u64, slot: u64 },
 }
 
 /// Configuration for spawning the core thread.
@@ -179,8 +191,11 @@ pub struct CoreConfig {
     /// **Default `false`.** Fixture/integration tests carefully seed store time
     /// (e.g. Hoodi offline replay); a wall-clock tick would jump past the
     /// imported chain and leave `get_head` stranded. Production `main` enables
-    /// this (CC-33 /7, CC-36a).
+    /// this (CC-33 /7, CC-36a). Also gates wall-clock `on_tick` at the top of
+    /// each import (P0-12).
     pub slot_tick_enabled: bool,
+    /// `MAXIMUM_GOSSIP_CLOCK_DISPARITY` (config; never inlined at the check).
+    pub maximum_gossip_clock_disparity: Duration,
 }
 
 impl Default for CoreConfig {
@@ -194,6 +209,7 @@ impl Default for CoreConfig {
             engine_pending_timeout_slots: DEFAULT_ENGINE_PENDING_TIMEOUT_SLOTS,
             engine_uri: crate::engine_client::DEFAULT_ENGINE_URI.to_owned(),
             slot_tick_enabled: false,
+            maximum_gossip_clock_disparity: DEFAULT_MAXIMUM_GOSSIP_CLOCK_DISPARITY,
         }
     }
 }
@@ -202,6 +218,8 @@ impl Default for CoreConfig {
 #[derive(Debug, Clone)]
 pub struct CoreHandle {
     cmd_tx: mpsc::Sender<CoreCommand>,
+    /// Never-shed tick lane ([ARCH] §3.2). Depth [`TICK_LANE_DEPTH`].
+    tick_tx: mpsc::Sender<TickWork>,
     head: HeadSnapshotStore,
     epoch: EpochContextStore,
     metrics: ChainMetrics,
@@ -232,6 +250,20 @@ impl CoreHandle {
     /// Clone of the command sender (tests that fill the channel).
     pub fn command_sender(&self) -> mpsc::Sender<CoreCommand> {
         self.cmd_tx.clone()
+    }
+
+    /// Clone of the never-shed tick-lane sender (tests).
+    pub fn tick_sender(&self) -> mpsc::Sender<TickWork> {
+        self.tick_tx.clone()
+    }
+
+    /// `try_send` a [`TickWork::SlotTick`]. `false` if the lane is full or closed.
+    ///
+    /// The production ticker uses `blocking_send` so a full lane waits rather
+    /// than shedding. Tests use this to observe capacity without blocking.
+    #[must_use]
+    pub fn try_send_slot_tick(&self) -> bool {
+        self.tick_tx.try_send(TickWork::SlotTick).is_ok()
     }
 
     /// Import a block via the core channel with the 2 s send timeout.
@@ -504,6 +536,7 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
     core_cfg: CoreConfig,
 ) -> CoreThread {
     let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
+    let (tick_tx, tick_rx) = mpsc::channel(TICK_LANE_DEPTH);
     let counters = Arc::new(ImportCounters::default());
     let counters_thread = Arc::clone(&counters);
     let head_thread = head.clone();
@@ -515,27 +548,17 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
     publish_initial_snapshot(&store, &head);
     publish_epoch_context_from_store(&store, &config, &epoch, 0);
 
-    // Per-slot fcU floor ticker (CC-33 /7). try_send so a busy import queue
-    // never blocks the ticker; drops under load are fine (next slot retries).
-    // Gated by `slot_tick_enabled` so fixture tests keep exclusive control of
-    // store time (wall-clock on_tick would strand get_head past the chain).
+    // Genesis-aligned never-shed ticker (P0-12 / S0-A-14). `blocking_send` on
+    // the tick lane; a droppable `SlotTick` on the mixed channel is only a
+    // wakeup for an idle `blocking_recv`. Gated by `slot_tick_enabled` so
+    // fixture tests keep exclusive control of store time.
     let _fcu_ticker = if core_cfg.slot_tick_enabled {
-        let tick_tx = cmd_tx.clone();
-        let tick_secs = config.seconds_per_slot.max(1);
-        thread::Builder::new()
-            .name("chain-fcu-floor".into())
-            .spawn(move || {
-                loop {
-                    thread::sleep(Duration::from_secs(tick_secs));
-                    if tick_tx.try_send(CoreCommand::SlotTick).is_err() {
-                        // Channel full or closed — exit if closed; otherwise skip.
-                        if tick_tx.is_closed() {
-                            break;
-                        }
-                    }
-                }
-            })
-            .ok()
+        Some(spawn_slot_tick_driver(
+            tick_tx.clone(),
+            cmd_tx.clone(),
+            store.genesis_time(),
+            config.seconds_per_slot,
+        ))
     } else {
         None
     };
@@ -557,6 +580,7 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
                 counters_thread,
                 core_cfg,
                 cmd_rx,
+                tick_rx,
                 rt_handle,
             );
         })
@@ -569,6 +593,7 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
     CoreThread {
         handle: CoreHandle {
             cmd_tx,
+            tick_tx,
             head,
             epoch,
             metrics,
@@ -780,6 +805,10 @@ fn handle_query<P: Preset>(
             }
             Ok(QueryReply::CanonicalRoots { roots })
         }
+        QueryRequest::StoreClock => Ok(QueryReply::StoreClock {
+            time: store.time(),
+            slot: store.get_current_slot().as_u64(),
+        }),
     }
 }
 
@@ -879,6 +908,7 @@ fn core_loop<P: Preset>(
     counters: Arc<ImportCounters>,
     core_cfg: CoreConfig,
     mut cmd_rx: mpsc::Receiver<CoreCommand>,
+    mut tick_rx: mpsc::Receiver<TickWork>,
     rt_handle: Option<tokio::runtime::Handle>,
 ) {
     let mut residency =
@@ -894,6 +924,8 @@ fn core_loop<P: Preset>(
     let mut epoch_sequence: u64 = epoch.load().sequence;
     let mut last_published_epoch = epoch.load().epoch.as_u64();
     let verify = core_cfg.verify;
+    let slot_tick_enabled = core_cfg.slot_tick_enabled;
+    let gossip_disparity = core_cfg.maximum_gossip_clock_disparity;
     let peer_das = core_cfg.peer_das;
     let da_timeout_slots = core_cfg.da_pending_timeout_slots.max(1);
     let engine_timeout_slots = core_cfg.engine_pending_timeout_slots.max(1);
@@ -920,8 +952,27 @@ fn core_loop<P: Preset>(
         tracing::debug!("fcU driver disabled (no tokio runtime handle on core spawn)");
     }
 
+    let mut tick_mgr: Manager<ChainLane, TickWork> =
+        match Manager::loop_b(QueueSizes::new(0, P::SLOTS_PER_EPOCH)) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!(error = %e, "tick lane manager config");
+                std::process::abort();
+            }
+        };
+
     while let Some(cmd) = cmd_rx.blocking_recv() {
         metrics.set_import_queue_depth(cmd_rx.len() as u64);
+        drain_tick_lane(
+            &mut tick_mgr,
+            &mut tick_rx,
+            &mut store,
+            &mut pending_da,
+            &mut pending_engine,
+            da_timeout_slots,
+            engine_timeout_slots,
+            &metrics,
+        );
         // Slot-bounded timeout: drop permanently unavailable parked blocks.
         expire_pending_da(
             &mut pending_da,
@@ -940,6 +991,9 @@ fn core_loop<P: Preset>(
         }
         match cmd {
             CoreCommand::ImportBlock { request, reply } => {
+                if slot_tick_enabled {
+                    advance_store_clock(&mut store);
+                }
                 let outcome = import_block_with_early(
                     &mut store,
                     &mut residency,
@@ -956,6 +1010,7 @@ fn core_loop<P: Preset>(
                     None,
                     Some(&mut pending_da),
                     Some(&mut pending_engine),
+                    import_gossip_clock(slot_tick_enabled, gossip_disparity),
                 );
                 metrics.set_da_pending_occupancy(pending_da.len() as u64);
                 metrics.set_pending_engine_occupancy(pending_engine.len() as u64);
@@ -985,6 +1040,9 @@ fn core_loop<P: Preset>(
                 early_accept,
                 reply,
             } => {
+                if slot_tick_enabled {
+                    advance_store_clock(&mut store);
+                }
                 let epoch_snapshot = epoch.load();
                 let outcome = import_block_with_early(
                     &mut store,
@@ -1002,6 +1060,7 @@ fn core_loop<P: Preset>(
                     None, // production: no inject
                     Some(&mut pending_da),
                     Some(&mut pending_engine),
+                    import_gossip_clock(slot_tick_enabled, gossip_disparity),
                 );
                 metrics.set_da_pending_occupancy(pending_da.len() as u64);
                 metrics.set_pending_engine_occupancy(pending_engine.len() as u64);
@@ -1048,6 +1107,9 @@ fn core_loop<P: Preset>(
                 let _ = reply.send(());
             }
             CoreCommand::DataAvailable { root, slot } => {
+                if slot_tick_enabled {
+                    advance_store_clock(&mut store);
+                }
                 handle_data_available(
                     &mut store,
                     &mut residency,
@@ -1065,72 +1127,230 @@ fn core_loop<P: Preset>(
                     &mut epoch_sequence,
                     &mut last_published_epoch,
                     &epoch,
+                    import_gossip_clock(slot_tick_enabled, gossip_disparity),
                 );
                 // Re-import may have moved head.
                 emit_fcu_head(&store, fcu.as_ref());
             }
             CoreCommand::SlotTick => {
-                // Advance store time so slot-bounded pending_* expiries fire
-                // (CC-36a: 8-slot pending_engine must not stick forever).
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                if let Err(e) = on_tick(&mut store, now) {
-                    tracing::debug!(error = %e, now, "on_tick on SlotTick skipped");
-                }
-                let current_slot = store.get_current_slot().as_u64();
-                expire_pending_da(&mut pending_da, current_slot, da_timeout_slots, &metrics);
-                expire_pending_engine(
+                // Wakeup from the mixed channel, or a test-injected tick.
+                // The never-shed lane is drained at the top of the loop; this
+                // arm keeps the old command-path tick working until S0-A-17.
+                handle_slot_tick(
+                    &mut store,
+                    &mut pending_da,
                     &mut pending_engine,
-                    current_slot,
+                    da_timeout_slots,
                     engine_timeout_slots,
                     &metrics,
+                    poll_handle.as_ref(),
+                    &engine_uri,
+                    &mut last_engine_online,
+                    &mut residency,
+                    &config,
+                    &head,
+                    &event_tx,
+                    &counters,
+                    &mut snapshot_sequence,
+                    &mut epoch_sequence,
+                    &mut last_published_epoch,
+                    &epoch,
+                    fcu.as_ref(),
+                    verify,
                 );
-
-                // Offline → Online: drain pending_engine and re-drive (CC-36a / §4.9).
-                if let Some(ref h) = poll_handle {
-                    let online = poll_engine_online(h, &engine_uri);
-                    if online && !last_engine_online && !pending_engine.is_empty() {
-                        tracing::info!(
-                            n = pending_engine.len(),
-                            "engine online; re-driving pending_engine"
-                        );
-                        redrive_pending_engine(
-                            &mut store,
-                            &mut residency,
-                            &config,
-                            &head,
-                            &event_tx,
-                            &metrics,
-                            &counters,
-                            &mut snapshot_sequence,
-                            &mut pending_da,
-                            &mut pending_engine,
-                            verify,
-                            &mut epoch_sequence,
-                            &mut last_published_epoch,
-                            &epoch,
-                        );
-                        emit_fcu_head(&store, fcu.as_ref());
-                    }
-                    last_engine_online = online;
-                }
-
-                // Per-slot floor even with no new block (CC-33 /7).
-                if let Some(driver) = fcu.as_ref() {
-                    let slot = store.get_current_slot();
-                    if let Err(e) = driver.on_slot(slot) {
-                        tracing::warn!(error = %e, slot = slot.as_u64(), "fcU per-slot floor failed");
-                    }
-                }
             }
             CoreCommand::Shutdown { done } => {
                 let _ = done.send(());
                 break;
             }
         }
+        drain_tick_lane(
+            &mut tick_mgr,
+            &mut tick_rx,
+            &mut store,
+            &mut pending_da,
+            &mut pending_engine,
+            da_timeout_slots,
+            engine_timeout_slots,
+            &metrics,
+        );
         metrics.set_import_queue_depth(cmd_rx.len() as u64);
+    }
+}
+
+fn import_gossip_clock(enabled: bool, disparity: Duration) -> Option<GossipClock> {
+    enabled.then_some(GossipClock {
+        now_millis: unix_now_millis(),
+        disparity,
+    })
+}
+
+/// Genesis-aligned never-shed ticker. `blocking_send` on the tick lane;
+/// `try_send` on the mixed command channel is a droppable idle-wakeup only.
+fn spawn_slot_tick_driver(
+    tick_tx: mpsc::Sender<TickWork>,
+    wakeup: mpsc::Sender<CoreCommand>,
+    genesis_time: u64,
+    seconds_per_slot: u64,
+) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name("chain-slot-tick".into())
+        .spawn(move || {
+            loop {
+                let wait = duration_until_next_slot_boundary(
+                    std::time::SystemTime::now(),
+                    genesis_time,
+                    seconds_per_slot,
+                );
+                thread::sleep(wait);
+                if tick_tx.blocking_send(TickWork::SlotTick).is_err() {
+                    break;
+                }
+                // Wake an idle `blocking_recv`. Full mixed channel: drop — the
+                // real tick is already on the never-shed lane.
+                if wakeup.try_send(CoreCommand::SlotTick).is_err() && wakeup.is_closed() {
+                    break;
+                }
+            }
+        })
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "failed to spawn chain-slot-tick thread");
+            std::process::abort();
+        })
+}
+
+fn pop_tick_work(
+    manager: &mut Manager<ChainLane, TickWork>,
+    tick_rx: &mut mpsc::Receiver<TickWork>,
+) -> Option<TickWork> {
+    if let Some(sel) = manager.select() {
+        manager.note_idle();
+        return Some(sel.item);
+    }
+    match tick_rx.try_recv() {
+        Ok(work) => match manager.push(ChainLane::Tick, work) {
+            Enqueue::Accepted => {
+                let sel = manager.select()?;
+                manager.note_idle();
+                Some(sel.item)
+            }
+            Enqueue::WouldShed(work)
+            | Enqueue::DroppedNew(work)
+            | Enqueue::EvictedOldest(work)
+            | Enqueue::UnknownLane(work) => Some(work),
+        },
+        Err(_) => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn drain_tick_lane<P: Preset>(
+    manager: &mut Manager<ChainLane, TickWork>,
+    tick_rx: &mut mpsc::Receiver<TickWork>,
+    store: &mut Store<P>,
+    pending_da: &mut PendingDa,
+    pending_engine: &mut PendingEngine,
+    da_timeout_slots: u64,
+    engine_timeout_slots: u64,
+    metrics: &ChainMetrics,
+) {
+    while let Some(TickWork::SlotTick) = pop_tick_work(manager, tick_rx) {
+        // Lane work is clock-only so a saturated mixed channel cannot stall
+        // `store.time` behind an engine dial. fcU / engine redrive stay on
+        // the command-path `SlotTick` wakeup (idle) until S0-A-17.
+        apply_tick_clock(
+            store,
+            pending_da,
+            pending_engine,
+            da_timeout_slots,
+            engine_timeout_slots,
+            metrics,
+        );
+    }
+}
+
+fn apply_tick_clock<P: Preset>(
+    store: &mut Store<P>,
+    pending_da: &mut PendingDa,
+    pending_engine: &mut PendingEngine,
+    da_timeout_slots: u64,
+    engine_timeout_slots: u64,
+    metrics: &ChainMetrics,
+) {
+    let now = unix_now_secs();
+    if let Err(e) = on_tick(store, now) {
+        tracing::debug!(error = %e, now, "on_tick on SlotTick skipped");
+    }
+    let current_slot = store.get_current_slot().as_u64();
+    expire_pending_da(pending_da, current_slot, da_timeout_slots, metrics);
+    expire_pending_engine(pending_engine, current_slot, engine_timeout_slots, metrics);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_slot_tick<P: Preset>(
+    store: &mut Store<P>,
+    pending_da: &mut PendingDa,
+    pending_engine: &mut PendingEngine,
+    da_timeout_slots: u64,
+    engine_timeout_slots: u64,
+    metrics: &ChainMetrics,
+    poll_handle: Option<&tokio::runtime::Handle>,
+    engine_uri: &str,
+    last_engine_online: &mut bool,
+    residency: &mut Residency<P>,
+    config: &ChainConfig,
+    head: &HeadSnapshotStore,
+    event_tx: &mpsc::Sender<crate::events::EventInput>,
+    counters: &Arc<ImportCounters>,
+    snapshot_sequence: &mut u64,
+    epoch_sequence: &mut u64,
+    last_published_epoch: &mut u64,
+    epoch: &EpochContextStore,
+    fcu: Option<&FcuDriver<GrpcFcuSink>>,
+    verify: BlockSignatureStrategy,
+) {
+    apply_tick_clock(
+        store,
+        pending_da,
+        pending_engine,
+        da_timeout_slots,
+        engine_timeout_slots,
+        metrics,
+    );
+
+    if let Some(h) = poll_handle {
+        let online = poll_engine_online(h, engine_uri);
+        if online && !*last_engine_online && !pending_engine.is_empty() {
+            tracing::info!(
+                n = pending_engine.len(),
+                "engine online; re-driving pending_engine"
+            );
+            redrive_pending_engine(
+                store,
+                residency,
+                config,
+                head,
+                event_tx,
+                metrics,
+                counters,
+                snapshot_sequence,
+                pending_da,
+                pending_engine,
+                verify,
+                epoch_sequence,
+                last_published_epoch,
+                epoch,
+            );
+            emit_fcu_head(store, fcu);
+        }
+        *last_engine_online = online;
+    }
+
+    if let Some(driver) = fcu {
+        let slot = store.get_current_slot();
+        if let Err(e) = driver.on_slot(slot) {
+            tracing::warn!(error = %e, slot = slot.as_u64(), "fcU per-slot floor failed");
+        }
     }
 }
 
@@ -1195,6 +1415,7 @@ fn handle_data_available<P: Preset>(
     epoch_sequence: &mut u64,
     last_published_epoch: &mut u64,
     epoch: &EpochContextStore,
+    gossip_clock: Option<GossipClock>,
 ) {
     if let Some(da) = peer_das {
         da.mark_available(root);
@@ -1242,6 +1463,7 @@ fn handle_data_available<P: Preset>(
         None,
         Some(pending_da),
         None, // re-drive is DA-only; engine map is separate
+        gossip_clock,
     );
     if outcome.is_ok() {
         maybe_publish_epoch_context(store, config, epoch, epoch_sequence, last_published_epoch);
@@ -1319,6 +1541,7 @@ fn redrive_pending_engine<P: Preset>(
             None,
             Some(pending_da),
             Some(pending_engine),
+            None,
         );
         metrics.set_da_pending_occupancy(pending_da.len() as u64);
         metrics.set_pending_engine_occupancy(pending_engine.len() as u64);
@@ -1351,7 +1574,7 @@ fn maybe_publish_epoch_context<P: Preset>(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     /// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
     #[derive(Debug, Default, Clone, Copy)]
@@ -1370,14 +1593,18 @@ mod tests {
     use std::sync::Arc;
 
     use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
+    use cc_proto::chain::ImportBlockRequest;
+    use cc_scheduler::TICK_LANE_DEPTH;
     use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
     use cc_types::preset::Minimal;
     use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Slot, ValidatorIndex};
     use cc_types::{BeaconBlock, BeaconState};
     use prometheus_client::registry::Registry;
+    use tokio::sync::{mpsc, oneshot};
     use tree_hash::TreeHash;
 
     use crate::events::{EventsConfig, EventsHandle};
+    use crate::tick::unix_now_secs;
 
     fn minimal_config() -> ChainConfig {
         ChainConfig {
@@ -1474,7 +1701,8 @@ mod tests {
             | QueryReply::ValidatorPubkeys { .. }
             | QueryReply::ValidatorRecords { .. }
             | QueryReply::IsOptimistic { .. }
-            | QueryReply::CanonicalRoots { .. } => {
+            | QueryReply::CanonicalRoots { .. }
+            | QueryReply::StoreClock { .. } => {
                 unreachable!("Head request must yield Head reply")
             }
         };
@@ -1520,6 +1748,253 @@ mod tests {
         assert_eq!(snap.sequence, 0);
 
         block_task.await.unwrap();
+        core.handle.shutdown().await;
+        core.join();
+        events.shutdown().await;
+    }
+
+    async fn store_clock(handle: &CoreHandle) -> (u64, u64) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match handle.query(QueryRequest::StoreClock).await {
+                Ok(QueryReply::StoreClock { time, slot }) => return (time, slot),
+                Ok(other) => panic!("expected StoreClock, got {other:?}"),
+                Err(e) if e.code() == tonic::Code::ResourceExhausted => {
+                    if std::time::Instant::now() >= deadline {
+                        panic!("StoreClock still backpressured: {e}");
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(e) => panic!("StoreClock query failed: {e}"),
+            }
+        }
+    }
+
+    /// [ARCH] §2.2 policy-D conformance: ticks are not silently dropped when
+    /// the mixed 64-deep command channel is full.
+    #[tokio::test]
+    async fn slot_tick_is_never_shed() {
+        let (store, _anchor, config) = seeded_store();
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig::default());
+        let head = HeadSnapshotStore::new();
+        let core = spawn_core_thread(
+            store,
+            config,
+            head,
+            events.event_sender(),
+            metrics,
+            CoreConfig::default(),
+        );
+
+        let h = core.handle.clone();
+        let blocker = tokio::spawn(async move {
+            h.block_for(Duration::from_millis(200)).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let tx = core.handle.command_sender();
+        let mut held = Vec::new();
+        for _ in 0..COMMAND_CHANNEL_CAPACITY {
+            let (reply, rx) = oneshot::channel();
+            held.push(rx);
+            match tx.try_send(CoreCommand::Query {
+                request: QueryRequest::Head,
+                reply,
+            }) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => break,
+                Err(e) => panic!("unexpected send error: {e}"),
+            }
+        }
+        assert!(
+            matches!(
+                tx.try_send(CoreCommand::SlotTick),
+                Err(mpsc::error::TrySendError::Full(_))
+            ),
+            "mixed channel must be full so the old try_send path would shed"
+        );
+
+        for i in 0..TICK_LANE_DEPTH {
+            assert!(
+                core.handle.try_send_slot_tick(),
+                "tick {i} shed while the command channel was full"
+            );
+        }
+        // Lane at capacity refuses rather than silently dropping.
+        assert!(
+            !core.handle.try_send_slot_tick(),
+            "full never-shed lane must refuse, not grow"
+        );
+
+        drop(held);
+        let _ = blocker.await;
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut time = 0;
+        while std::time::Instant::now() < deadline {
+            time = store_clock(&core.handle).await.0;
+            if time > 1_000_000 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            time > 1_000_000,
+            "never-shed ticks must advance store.time; got {time}"
+        );
+
+        core.handle.shutdown().await;
+        core.join();
+        events.shutdown().await;
+    }
+
+    /// Saturating the mixed command channel (stand-in for the other lanes until
+    /// S0-A-15) still advances `store.time` within one slot.
+    #[tokio::test]
+    async fn slot_tick_advances_store_time_when_other_work_saturated() {
+        let (store, _anchor, config) = seeded_store();
+        let slot_secs = config.seconds_per_slot.max(1);
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig::default());
+        let head = HeadSnapshotStore::new();
+        let core = spawn_core_thread(
+            store,
+            config,
+            head,
+            events.event_sender(),
+            metrics,
+            CoreConfig::default(),
+        );
+
+        let before = store_clock(&core.handle).await.0;
+
+        let h = core.handle.clone();
+        let blocker = tokio::spawn(async move {
+            h.block_for(Duration::from_millis(200)).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        let tx = core.handle.command_sender();
+        let mut held = Vec::new();
+        for _ in 0..COMMAND_CHANNEL_CAPACITY {
+            let (reply, rx) = oneshot::channel();
+            held.push(rx);
+            match tx.try_send(CoreCommand::Query {
+                request: QueryRequest::Head,
+                reply,
+            }) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => break,
+                Err(e) => panic!("unexpected send error: {e}"),
+            }
+        }
+        assert!(
+            core.handle.try_send_slot_tick(),
+            "tick must be accepted while every other lane/channel is saturated"
+        );
+        let sent_at = std::time::Instant::now();
+
+        drop(held);
+        let _ = blocker.await;
+
+        let deadline = sent_at + Duration::from_secs(slot_secs);
+        let mut time = before;
+        while std::time::Instant::now() < deadline {
+            time = store_clock(&core.handle).await.0;
+            if time > before {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            time > before,
+            "store.time {time} did not advance past {before} within one slot"
+        );
+        assert!(
+            sent_at.elapsed() < Duration::from_secs(slot_secs),
+            "store.time advanced but not within one slot ({:?})",
+            sent_at.elapsed()
+        );
+
+        core.handle.shutdown().await;
+        core.join();
+        events.shutdown().await;
+    }
+
+    /// A block arriving early in its slot is not IGNOREd as `future_slot`.
+    #[tokio::test]
+    async fn block_gossiped_early_in_slot_is_not_ignored_as_future_slot() {
+        let now = unix_now_secs();
+        let mut config = minimal_config();
+        let sps = config.seconds_per_slot.max(1);
+        // One second into slot 1; store seeds at genesis (slot 0).
+        let genesis = now.saturating_sub(sps.saturating_add(1));
+        config.seconds_per_slot = sps;
+
+        let mut state = BeaconState::<Minimal>::default();
+        state.set_genesis_time(genesis);
+        state.set_slot(Slot::new(0));
+        let anchor_block = BeaconBlock {
+            slot: Slot::new(0),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: Root::ZERO,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        let store = get_forkchoice_store(
+            state,
+            &anchor_block,
+            Arc::new(AcceptEngine),
+            Arc::new(HarnessAvailability),
+            sps,
+        )
+        .unwrap();
+        assert_eq!(store.get_current_slot().as_u64(), 0);
+        let anchor = Root::from_hash256(TreeHash::tree_hash_root(&anchor_block));
+
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig::default());
+        let head = HeadSnapshotStore::new();
+        let core = spawn_core_thread(
+            store,
+            config,
+            head,
+            events.event_sender(),
+            metrics,
+            CoreConfig {
+                slot_tick_enabled: true,
+                ..CoreConfig::default()
+            },
+        );
+
+        let block = cc_types::SignedBeaconBlock::<Minimal> {
+            message: BeaconBlock {
+                slot: Slot::new(1),
+                proposer_index: ValidatorIndex::new(0),
+                parent_root: anchor,
+                state_root: Root::ZERO,
+                body: Default::default(),
+            },
+            signature: Default::default(),
+        };
+        let true_root = Root::from_hash256(TreeHash::tree_hash_root(&block.message));
+        let req = ImportBlockRequest {
+            ssz: crate::import::encode_signed_block(&block),
+            fork: 0,
+            root: true_root.as_slice().to_vec(),
+            source: 0,
+        };
+        let resp = core.handle.import_block(req).await.unwrap();
+        assert_ne!(
+            resp.reason, "future_slot",
+            "block early in its slot must not be IGNOREd; verdict={} reason={}",
+            resp.verdict, resp.reason
+        );
+
         core.handle.shutdown().await;
         core.join();
         events.shutdown().await;

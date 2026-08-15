@@ -152,6 +152,10 @@ struct ChainConfig {
     /// `RestoreFromStore{ kind: EMPTY }`.
     #[serde(default = "default_restore_grace_seconds")]
     restore_grace_seconds: u64,
+    /// `MAXIMUM_GOSSIP_CLOCK_DISPARITY` in milliseconds (P0-12). Config is the
+    /// sole source; never inlined at the future-slot check.
+    #[serde(default = "default_maximum_gossip_clock_disparity_ms")]
+    maximum_gossip_clock_disparity_ms: u64,
 }
 
 fn default_engine_uri() -> String {
@@ -178,6 +182,10 @@ fn default_safe_slots_to_import_optimistically() -> u64 {
 }
 fn default_restore_grace_seconds() -> u64 {
     DEFAULT_RESTORE_GRACE_SECONDS
+}
+fn default_maximum_gossip_clock_disparity_ms() -> u64 {
+    u64::try_from(cc_chain::tick::DEFAULT_MAXIMUM_GOSSIP_CLOCK_DISPARITY.as_millis())
+        .unwrap_or(5 * 100)
 }
 
 impl ChainConfig {
@@ -315,6 +323,9 @@ async fn main() -> anyhow::Result<()> {
         engine_uri: cfg.engine_uri.clone(),
         // Production: wall-clock SlotTick for fcU floor + pending_* expiry.
         slot_tick_enabled: true,
+        maximum_gossip_clock_disparity: Duration::from_millis(
+            cfg.maximum_gossip_clock_disparity_ms,
+        ),
         ..CoreConfig::default()
     };
 
