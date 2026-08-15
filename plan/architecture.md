@@ -1721,8 +1721,8 @@ document adds that the *instruments* must be too.
 | **Where it lives** | A **leaf crate depending only on `cc-types`** — beside `crates/crypto`, not under it; no `cc-store`, no `cc-proto`, no service crate. Enforced the way the repo already enforces "only `cc-libp2p` may depend on `libp2p*`" (§1.1). At S5 it **moves with the signer**, not with the beacon node — the EIP-3076 DB belongs to whatever holds the keys. `services/attestation` is an 85-line stub today, so this boundary is free to get right now and expensive later. |
 | **Backend** | **Its own redb file**, not SQLite ([q4]) — `rusqlite` pulls `libsqlite3-sys` (C FFI) into a workspace that sets `unsafe_code = "deny"` ✓ (`Cargo.toml:38`) and that chose redb after a documented falsifier exercise (`docs/storage-engine.md`). redb already exposes what is needed: `Durability::Immediate`, and `Paranoid` → Immediate + `set_two_phase_commit(true)` ✓ (`crates/store/src/engine/redb.rs:476-493`). SQLite is the reasonable alternative and must be recorded as a **stated exception** in the ADR, not taken by default. |
 | **Storage shape** | **Store the complete form; export the minimal form.** The minimal set — three integers per validator (`max_signed_block_slot`, `max_source_epoch`, `max_target_epoch`) — is what the EIP's "take the maximum" export rule sanctions and is strictly *more* conservative than `is_slashable_attestation_data`; storing the complete form keeps richer diagnostics without weakening the floors. |
-| **Blocking check** ([q4] §5) | **Does redb give a fail-fast cross-process exclusive open, or does it block?** A second opener must **error**, not block — that is what catches "operator started two validator clients on one key." If redb blocks, wrap the open in `flock(LOCK_EX \| LOCK_NB)`. This is the one guarantee SQLite gives for free and is the only remaining argument for it. |
-| **Record the decision now** | [q4]: the *decision* costs nothing and should be an ADR **before any Phase 5 code is written against the existing storage contracts** (ADR-R-05, §10.5) |
+| **Blocking check** ([q4] §5) | **Closed by S0a-B-10 / Q-2:** redb 4.1.0 fail-fast exclusive open is confirmed (second opener → `DatabaseAlreadyOpen` / `DatabaseLocked` in 12.5 ms; no `flock` wrapper). Backend is **redb**; SQLite remains a stated exception only. See `docs/adr/ADR-R-05.md`. |
+| **Record the decision now** | [q4]: the *decision* costs nothing and should be an ADR **before any Phase 5 code is written against the existing storage contracts** (ADR-R-05, §10.5) — written at S0-B-14 as `docs/adr/ADR-R-05.md`. |
 
 ### 9.2 What each stage must **not** do
 
@@ -2019,7 +2019,7 @@ Six, of which four are supersessions of (b) rows above.
 
 #### **ADR-R-05 — Slashing protection is a separate, exclusively-locked, synchronous store**
 
-- **Status:** proposed · **Refactor impact:** created at S5, **decided now**
+- **Status:** accepted · **Refactor impact:** created at S5, **decided now** · **File:** `docs/adr/ADR-R-05.md`
 - **Context.** [q4]: the one ordering that prevents a slashing is record-then-sign, and the
   record must be durable before the signature exists. `services/storage`'s write-behind path
   acknowledges before it commits (`commit_max_latency` default 4 s ✓) and has a path where a
@@ -2042,17 +2042,18 @@ Six, of which four are supersessions of (b) rows above.
 - **Consequences.** Costs a second embedded store and a second file lock. The minimal export
   refuses some non-slashable signatures after an import or long outage — missed duties, never
   a slashing. Forbids the convenient reuse of the archive's write path.
-- **Open, and blocking non-negotiable (3)** ([q4] §5): **does redb give a fail-fast
-  cross-process exclusive open, or does it block?** If it blocks, wrap the open in
-  `flock(LOCK_EX | LOCK_NB)`.
+- **Backend clause (Q-2, closed by S0a-B-10).** redb 4.1.0 gives a fail-fast cross-process
+  exclusive open: a second opener errors with `DatabaseAlreadyOpen` / `DatabaseLocked` in
+  12.5 ms and does not block (`plan/issues/spike-notes.md` ## Q-2;
+  `crates/store/tests/q2_redb_exclusive_open.rs`). No `flock` wrapper. SQLite remains a
+  stated exception only — not chosen.
 - **Alternatives considered.** Reuse `services/storage` — rejected on the two mechanisms in
   Context. **SQLite** (Lighthouse's choice: `POOL_SIZE = 1`, `locking_mode = EXCLUSIVE`,
   `TransactionBehavior::Exclusive`) — a genuinely reasonable alternative, and the one
   operator tooling expects; rejected because `rusqlite` pulls `libsqlite3-sys` (C FFI) into a
   workspace that sets `unsafe_code = "deny"` ✓ (`Cargo.toml:38`) and that chose redb after a
-  documented falsifier exercise. **If the answer to the open question is "redb blocks" and
-  `flock` proves awkward, take SQLite and record it here as a stated exception** — that is a
-  legitimate outcome, not a failure of this ADR.
+  documented falsifier exercise. SQLite is the stated exception if a future redb major
+  loses fail-fast exclusive open *and* `flock` proves awkward — not the default.
 
 ---
 
@@ -2149,7 +2150,7 @@ and was not independently re-derived.
 | # | Question | Blocks | Owner / cost |
 |---|---|---|---|
 | **Q-1** | `check-crate-dag.sh` has no test that its allowlist is **minimal** — an edge can be added and never removed. Add a `--check-unused` mode? | nothing; hygiene | S; whoever opens S1 |
-| **Q-2** | **Does redb give a fail-fast cross-process exclusive open, or does it block?** A second opener must *error* — that is what catches "two validator clients on one key." If it blocks: `flock(LOCK_EX \| LOCK_NB)`, or take SQLite as a stated exception. (The *durability* half is already answered: `Durability::Immediate` / `Paranoid`+`set_two_phase_commit` exist ✓ `crates/store/src/engine/redb.rs:476-493`.) | **ADR-R-05's non-negotiable (3)** | S; decide before any Phase 5 code ([q4] §5) |
+| **Q-2** | **Closed by S0a-B-10.** redb 4.1.0 fail-fast exclusive open confirmed (second opener → `DatabaseLocked` in 12.5 ms; no `flock`). Backend of ADR-R-05 is **redb**; SQLite is a stated exception only. (Durability half was already answered: `Durability::Immediate` / `Paranoid`+`set_two_phase_commit` ✓ `crates/store/src/engine/redb.rs:476-493`.) | **ADR-R-05's non-negotiable (3)** — decided | `docs/adr/ADR-R-05.md`; `plan/issues/spike-notes.md` ## Q-2 |
 | **Q-2b** | **Execute the pubkey-cache failure** before quoting ⟡ D-15's severity publicly: decode the committed Hoodi anchor state from SSZ and call `process_block` with a real block (~30 lines). The claim is a traced code path, not an observed failure. | the framing of an S0 item, not the fix itself | XS; with the S0 work ([q3] §5) |
 | **Q-2c** | **Should the restore/replay path call the engine at all** (ADR-R-06)? Needs an argument about whether an independently-restored EL could legitimately disagree about a previously-accepted payload. | nothing — option 1 ships at S0 regardless | decide before S0 closes, or record the deferral |
 | **Q-3** | **Does `superstruct` compose with milhouse's `List<T, N, U>` third type parameter** on `BeaconState` fields? Lighthouse does both, so it evidently works — but nobody has read the declaration. | **the S4a→S4b ordering argument (⟡ D-8)**; if they conflict the ordering inverts | 1 h reading Lighthouse `beacon_state.rs`; before S4 opens ([q5] §6) |
