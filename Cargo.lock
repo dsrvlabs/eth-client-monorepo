@@ -996,6 +996,7 @@ dependencies = [
  "cc-fork-choice",
  "cc-proto",
  "cc-scheduler",
+ "cc-seam",
  "cc-state-transition",
  "cc-types",
  "ethereum_ssz",
@@ -1156,6 +1157,7 @@ dependencies = [
  "cc-crypto",
  "cc-libp2p",
  "cc-proto",
+ "cc-seam",
  "cc-spec-tests",
  "cc-types",
  "clap",
@@ -1198,6 +1200,14 @@ dependencies = [
 [[package]]
 name = "cc-scheduler"
 version = "0.1.0"
+
+[[package]]
+name = "cc-seam"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "thiserror 2.0.19",
+]
 
 [[package]]
 name = "cc-serve-probe"

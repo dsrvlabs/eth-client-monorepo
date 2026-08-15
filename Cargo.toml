@@ -28,6 +28,8 @@ members = [
   "crates/scheduler",
   # S1-A-01 Engine API crate ([ARCH] §6.2 JWT re-point): 21 → 22.
   "crates/engine-api",
+  # S1-A-07 typed handles ([ARCH] §2.1): 22 → 23.
+  "crates/seam",
 ]
 
 [workspace.package]
@@ -185,6 +187,10 @@ cc-scheduler = { path = "crates/scheduler" }
 
 # S1-A-01 Engine API crate ([ARCH] §6.2). Skeleton: no workspace edges.
 cc-engine-api = { path = "crates/engine-api" }
+# S1-A-07 typed handles ([ARCH] §2.1). Leaf: no workspace edges.
+cc-seam = { path = "crates/seam" }
+# Object-safe async traits for `Arc<dyn ChainIngress>` / `Arc<dyn P2pEgress>`.
+async-trait = "0.1.91"
 
 [profile.release]
 opt-level = 3

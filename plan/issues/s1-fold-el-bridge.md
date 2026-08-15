@@ -185,6 +185,12 @@ second bound**; it names the existing one in the trait doc so a reviewer can dif
 **Acceptance** — `cc-chain` and `cc-p2p` name `Arc<dyn ChainIngress>` / `Arc<dyn P2pEgress>` and **no
 transport type**; `cc-p2p` has zero dependency on `cc-proto` for this edge.
 
+- [x] `crates/seam` (`cc-seam`) with `SeamError`, `ChainIngress`, `P2pEgress`
+- [x] Overflow contracts quote existing bounds; no second bound
+- [x] Workspace member + `allowed_deps` (`cc-seam` leaf; append on chain/p2p)
+- [x] `cc-chain` / `cc-p2p` name `Arc<dyn ChainIngress>` / `Arc<dyn P2pEgress>`
+- [x] No `InProcess` / `Ipc`; README records both stay buildable (`[ARCH]` §9.2)
+
 ---
 
 ### `S1-A-08` · `impl InProcess` · 2–3 pd / **5 pts** (≈)

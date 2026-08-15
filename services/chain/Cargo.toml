@@ -38,6 +38,7 @@ cc-crypto = { workspace = true }
 cc-fork-choice = { workspace = true }
 cc-proto = { workspace = true }
 cc-scheduler = { workspace = true }
+cc-seam = { workspace = true }
 cc-state-transition = { workspace = true }
 cc-types = { workspace = true }
 ethereum_ssz = { workspace = true }

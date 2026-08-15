@@ -57,3 +57,8 @@ pub mod supervisor;
 pub mod verdict;
 
 pub use verdict::{Verdict, gossip_class_for_reason, is_late_import_reject, to_message_acceptance};
+
+/// p2p → chain handle. Named here so this edge is not a transport type.
+pub type ChainIngressHandle = std::sync::Arc<dyn cc_seam::ChainIngress>;
+/// chain → p2p handle. Named here so this edge is not a transport type.
+pub type P2pEgressHandle = std::sync::Arc<dyn cc_seam::P2pEgress>;

@@ -128,3 +128,8 @@ pub use service::{
     status_below_finalized,
 };
 pub use tick::{DEFAULT_MAXIMUM_GOSSIP_CLOCK_DISPARITY, GossipClock};
+
+/// p2p → chain handle. Named here so this edge is not a transport type.
+pub type ChainIngressHandle = std::sync::Arc<dyn cc_seam::ChainIngress>;
+/// chain → p2p handle. Named here so this edge is not a transport type.
+pub type P2pEgressHandle = std::sync::Arc<dyn cc_seam::P2pEgress>;

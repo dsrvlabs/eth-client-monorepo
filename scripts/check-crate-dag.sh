@@ -273,9 +273,9 @@ allowed_deps() {
     cc-spec-tests)        echo "" ;;
     # Self-devnet generator (CC-2K member; content is CC-2Ja).
     cc-devnet-gen)        echo "cc-types cc-crypto cc-state-transition cc-config" ;;
-    cc-chain)             echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-state-transition cc-fork-choice cc-scheduler" ;;
+    cc-chain)             echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-state-transition cc-fork-choice cc-scheduler cc-seam" ;;
     # Phase 2: services/p2p may take cc-libp2p (CC-2K / Architecture §1.2).
-    cc-p2p)               echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-libp2p" ;;
+    cc-p2p)               echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-libp2p cc-seam" ;;
     cc-attestation)       echo "cc-bootstrap cc-config cc-proto" ;;
     # CC-32b: append cc-types (never re-sort). CC-37b: append cc-crypto (never re-sort).
     cc-engine)            echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto" ;;
@@ -291,6 +291,8 @@ allowed_deps() {
     cc-scheduler)         echo "" ;;
     # S1-A-01: skeleton, no workspace deps. JWT/HTTP isolation re-points here.
     cc-engine-api)        echo "" ;;
+    # S1-A-07: typed handles; leaf, no workspace edges ([ARCH] §2.1).
+    cc-seam)              echo "" ;;
     *)
       echo "error: unknown workspace member: $1" >&2
       return 1

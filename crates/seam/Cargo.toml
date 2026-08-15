@@ -1,0 +1,18 @@
+[package]
+name = "cc-seam"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Leaf crate: no workspace edges ([ARCH] §2.1 / S1-A-07).
+# `thiserror` is the shared error derive in the §2.1 sketch; `async-trait`
+# keeps the handle traits object-safe so callers can name `Arc<dyn …>`.
+async-trait = { workspace = true }
+thiserror = { workspace = true }
