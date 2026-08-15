@@ -105,6 +105,10 @@ jobs:
       - name: check compose URI overrides and identity mount
         run: bash scripts/check-compose-uri-overrides.sh
 
+      # S0-A-12 / P1-B/8: one fork-schedule walk outside cc-types.
+      - name: check fork-schedule walks
+        run: bash scripts/check-fork-schedule-walks.sh
+
   # CC-10h — unit tests + all minimal-preset suites; keep inside Phase 0's 10-minute
   # CC-07/4 budget. Mainnet + general suites move to the sharded `vectors` job.
   test:

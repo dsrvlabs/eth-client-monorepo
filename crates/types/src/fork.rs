@@ -1,5 +1,7 @@
 //! Fork types (Architecture §3.1).
 //!
+//! `ForkName` is activation-ordered. Runtime schedule walks live on
+//! [`crate::config::ChainConfig`] (`fork_name_at_epoch` and siblings).
 //! `ForkName::Fulu` is the only active Phase 1 variant (D1); the enum exists so
 //! `context_deserialize` (CC-10d) can take a fork context.
 
@@ -11,6 +13,12 @@ use tree_hash::{PackedEncoding, TreeHash, TreeHashType};
 use tree_hash_derive::TreeHash;
 
 use crate::primitives::{Epoch, ForkVersion, Root};
+
+/// Spec `FAR_FUTURE_EPOCH = 2**64 - 1`.
+///
+/// Unscheduled forks use this activation epoch and are skipped by
+/// [`crate::config::ChainConfig`] schedule accessors.
+pub const FAR_FUTURE_EPOCH: Epoch = Epoch::new(u64::MAX);
 
 /// Named consensus fork. Phase 1 activates only [`ForkName::Fulu`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -55,6 +63,19 @@ impl ForkName {
             Self::Deneb,
             Self::Electra,
             Self::Fulu,
+        ]
+    }
+
+    /// Every variant newest-first — the `ChainConfig` schedule-table order.
+    pub const fn all_descending() -> [Self; 7] {
+        [
+            Self::Fulu,
+            Self::Electra,
+            Self::Deneb,
+            Self::Capella,
+            Self::Bellatrix,
+            Self::Altair,
+            Self::Base,
         ]
     }
 }
@@ -184,6 +205,16 @@ mod tests {
     use super::*;
     use ssz::{Decode, Encode};
     use tree_hash::TreeHash;
+
+    #[test]
+    fn all_descending_is_reverse_of_all() {
+        let all = ForkName::all();
+        let descending = ForkName::all_descending();
+        for (i, name) in all.iter().enumerate() {
+            assert_eq!(descending[all.len() - 1 - i], *name);
+        }
+        assert_eq!(FAR_FUTURE_EPOCH.as_u64(), u64::MAX);
+    }
 
     #[test]
     fn fork_name_roundtrip_str() {

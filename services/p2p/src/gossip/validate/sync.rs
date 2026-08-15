@@ -29,7 +29,7 @@ use cc_types::operations::{
     SignedContributionAndProof, SyncAggregatorSelectionData, SyncCommitteeMessage,
 };
 use cc_types::preset::Preset;
-use cc_types::primitives::{Epoch, ForkVersion, Root};
+use cc_types::primitives::{Epoch, Root};
 use ssz::Decode;
 
 use super::check_payload_len;
@@ -562,7 +562,7 @@ fn verify_sync_message_signature(
     };
 
     let epoch = msg.slot.as_u64() / input.slots_per_epoch.max(1);
-    let fork_version = fork_version_at_epoch(input.config, epoch);
+    let fork_version = input.config.fork_version_at_epoch(Epoch::new(epoch));
     let gvr = root_from_bytes(input.genesis_validators_root);
     let domain = compute_domain(DOMAIN_SYNC_COMMITTEE, Some(fork_version), Some(gvr));
     let message = *compute_signing_root(&msg.beacon_block_root, domain).as_array();
@@ -586,7 +586,7 @@ fn verify_contribution_signatures<P: Preset>(
     let contribution = &cap.contribution;
     let slot = contribution.slot.as_u64();
     let epoch = slot / input.slots_per_epoch.max(1);
-    let fork_version = fork_version_at_epoch(input.config, epoch);
+    let fork_version = input.config.fork_version_at_epoch(Epoch::new(epoch));
     let gvr = root_from_bytes(input.genesis_validators_root);
 
     // selection proof
@@ -654,25 +654,6 @@ fn verify_sig_bytes(pk: &PublicKey, msg: &[u8; 32], sig_bytes: &[u8]) -> bool {
     verify(pk, msg, &sig)
 }
 
-fn fork_version_at_epoch(config: &ChainConfig, epoch: u64) -> ForkVersion {
-    let e = Epoch::new(epoch);
-    if e >= config.fulu_fork_epoch {
-        config.fulu_fork_version
-    } else if e >= config.electra_fork_epoch {
-        config.electra_fork_version
-    } else if e >= config.deneb_fork_epoch {
-        config.deneb_fork_version
-    } else if e >= config.capella_fork_epoch {
-        config.capella_fork_version
-    } else if e >= config.bellatrix_fork_epoch {
-        config.bellatrix_fork_version
-    } else if e >= config.altair_fork_epoch {
-        config.altair_fork_version
-    } else {
-        config.genesis_fork_version
-    }
-}
-
 fn root_from_bytes(bytes: &[u8]) -> Root {
     let mut a = [0u8; 32];
     if bytes.len() >= 32 {
@@ -708,7 +689,7 @@ mod tests {
     use std::sync::Arc;
 
     use cc_types::preset::Mainnet;
-    use cc_types::primitives::{Slot, ValidatorIndex};
+    use cc_types::primitives::{ForkVersion, Slot, ValidatorIndex};
     use cc_types::{BlobParameters, BlobSchedule, PresetName};
     use ssz::Encode;
 

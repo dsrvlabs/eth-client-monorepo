@@ -28,7 +28,7 @@ use cc_crypto::{
     compute_signing_root,
 };
 use cc_types::{
-    ChainConfig, Domain, ForkName, ForkVersion, Mainnet, Root, SignedBeaconBlock, Slot,
+    ChainConfig, Domain, Epoch, ForkName, ForkVersion, Mainnet, Root, SignedBeaconBlock, Slot,
 };
 
 use super::planner::{BatchPlan, FetchedBlock};
@@ -151,21 +151,7 @@ pub fn one_domain_for_window(
 /// Spec `compute_fork_version(epoch)` against the loaded runtime config.
 #[must_use]
 pub fn fork_at_epoch(config: &ChainConfig, epoch: u64) -> ForkVersion {
-    if epoch >= config.fulu_fork_epoch.as_u64() {
-        config.fulu_fork_version
-    } else if epoch >= config.electra_fork_epoch.as_u64() {
-        config.electra_fork_version
-    } else if epoch >= config.deneb_fork_epoch.as_u64() {
-        config.deneb_fork_version
-    } else if epoch >= config.capella_fork_epoch.as_u64() {
-        config.capella_fork_version
-    } else if epoch >= config.bellatrix_fork_epoch.as_u64() {
-        config.bellatrix_fork_version
-    } else if epoch >= config.altair_fork_epoch.as_u64() {
-        config.altair_fork_version
-    } else {
-        config.genesis_fork_version
-    }
+    config.fork_version_at_epoch(Epoch::new(epoch))
 }
 
 // ── Parent-root chain ───────────────────────────────────────────────────────

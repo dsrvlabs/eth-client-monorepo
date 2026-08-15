@@ -146,7 +146,7 @@ clippy: ## Clippy with -D warnings (CI: clippy job)
 	$(CARGO) clippy $(CLIPPY_FLAGS) -- -D warnings
 
 .PHONY: lint
-lint: fmt-check clippy check-dag check-env check-http check-gha-pins check-ci-jobs check-compose-uris ## Local lint suite (fmt + clippy + guards)
+lint: fmt-check clippy check-dag check-env check-http check-gha-pins check-ci-jobs check-compose-uris check-fork-schedule ## Local lint suite (fmt + clippy + guards)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Policy guards (scripts/ — wired into the matching CI job and `make ci`)
@@ -179,6 +179,10 @@ check-ci-jobs: ## Makefile CI_JOBS matches ci.yml job ids (S0a-B-04)
 .PHONY: check-compose-uris
 check-compose-uris: ## P0-07 / P1-A/27 compose URI overrides + identity mount
 	bash $(SCRIPTS)/check-compose-uri-overrides.sh
+
+.PHONY: check-fork-schedule
+check-fork-schedule: ## One fork-schedule walk outside cc-types (S0-A-12)
+	bash $(SCRIPTS)/check-fork-schedule-walks.sh
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Proto (required CI: proto job)

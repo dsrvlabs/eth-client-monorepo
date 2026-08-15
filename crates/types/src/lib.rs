@@ -28,7 +28,7 @@ pub use containers::{
     SyncCommittee, Validator,
 };
 pub use execution::{ExecutionPayload, ExecutionPayloadHeader, Transaction};
-pub use fork::{Fork, ForkData, ForkDigest, ForkName, UnknownForkName};
+pub use fork::{FAR_FUTURE_EPOCH, Fork, ForkData, ForkDigest, ForkName, UnknownForkName};
 pub use light_client::{
     LightClientBootstrap, LightClientFinalityUpdate, LightClientHeader,
     LightClientOptimisticUpdate, LightClientUpdate,

@@ -389,6 +389,13 @@ fork is one row rather than an if/else edit.
 3. P1-B/6 (`request_limits` duplicated in the codec) is **unaffected** and stays at S3a with
    `cc-wire`. Do not fold it in.
 
+- [x] Ordered `ChainConfig` fork accessors; five duplicated walks deleted.
+- [x] Grep gate asserts exactly one remaining walk outside `cc-types`.
+- [x] P1-B/6 not folded.
+
+- [x] P1-B/8 discharged at S0 per `[PLAN]` C-11 (`@ S4` superseded). M3 ledger not yet created
+      (`S0-B-18`); recorded here. P1-B/6 `request_limits` stays S3a.
+
 ---
 
 ### `S0-A-13` … `S0-A-19` · Loop B — five lanes + `cc-scheduler`

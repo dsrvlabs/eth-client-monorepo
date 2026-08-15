@@ -57,26 +57,11 @@ impl EnrForkId {
 
 /// Spec `compute_fork_version(epoch)` against the loaded runtime config.
 ///
-/// Walks the regular-fork schedule newest-first. Does **not** consult the blob
-/// schedule — BPO forks keep the same version.
+/// Delegates to [`ChainConfig::fork_version_at_epoch`]. Does **not** consult
+/// the blob schedule — BPO forks keep the same version.
 #[must_use]
 pub fn compute_fork_version(cfg: &ChainConfig, epoch: Epoch) -> ForkVersion {
-    let e = epoch.as_u64();
-    if e >= cfg.fulu_fork_epoch.as_u64() {
-        cfg.fulu_fork_version
-    } else if e >= cfg.electra_fork_epoch.as_u64() {
-        cfg.electra_fork_version
-    } else if e >= cfg.deneb_fork_epoch.as_u64() {
-        cfg.deneb_fork_version
-    } else if e >= cfg.capella_fork_epoch.as_u64() {
-        cfg.capella_fork_version
-    } else if e >= cfg.bellatrix_fork_epoch.as_u64() {
-        cfg.bellatrix_fork_version
-    } else if e >= cfg.altair_fork_epoch.as_u64() {
-        cfg.altair_fork_version
-    } else {
-        cfg.genesis_fork_version
-    }
+    cfg.fork_version_at_epoch(epoch)
 }
 
 /// Spec `compute_fork_digest(genesis_validators_root, epoch)` (Fulu form).
@@ -348,7 +333,7 @@ fn next_digest_boundary_epoch(cfg: &ChainConfig, epoch: Epoch) -> Option<Epoch> 
     let mut best: Option<u64> = None;
 
     let push = |best: &mut Option<u64>, candidate: u64| {
-        if candidate > cur {
+        if candidate > cur && candidate != FAR_FUTURE_EPOCH.as_u64() {
             *best = Some(best.map_or(candidate, |b| b.min(candidate)));
         }
     };
@@ -365,27 +350,16 @@ fn next_digest_boundary_epoch(cfg: &ChainConfig, epoch: Epoch) -> Option<Epoch> 
 
 /// Next **regular** fork version after `epoch`, or the current version if none.
 fn next_regular_fork_version(cfg: &ChainConfig, epoch: Epoch) -> ForkVersion {
-    let cur = epoch.as_u64();
-    // Ascending regular-fork table: (epoch, version).
-    let schedule: [(u64, ForkVersion); 6] = [
-        (cfg.altair_fork_epoch.as_u64(), cfg.altair_fork_version),
-        (
-            cfg.bellatrix_fork_epoch.as_u64(),
-            cfg.bellatrix_fork_version,
-        ),
-        (cfg.capella_fork_epoch.as_u64(), cfg.capella_fork_version),
-        (cfg.deneb_fork_epoch.as_u64(), cfg.deneb_fork_version),
-        (cfg.electra_fork_epoch.as_u64(), cfg.electra_fork_version),
-        (cfg.fulu_fork_epoch.as_u64(), cfg.fulu_fork_version),
-    ];
-    for &(e, v) in &schedule {
-        if e > cur {
-            return v;
-        }
+    match cfg.next_fork_after(epoch) {
+        Some((_, fork_epoch)) => cfg.fork_version_at_epoch(fork_epoch),
+        None => cfg.fork_version_at_epoch(epoch),
     }
-    compute_fork_version(cfg, epoch)
 }
 
+/// S0-A-12: the single remaining fork-schedule walk outside `cc-types`.
+///
+/// `next_digest_boundary_epoch` still has to mix regular-fork epochs with the
+/// blob schedule. Version-at-epoch lives on [`ChainConfig`].
 fn regular_fork_epochs(cfg: &ChainConfig) -> [u64; 6] {
     [
         cfg.altair_fork_epoch.as_u64(),

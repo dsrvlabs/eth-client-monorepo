@@ -26,7 +26,7 @@ use cc_types::operations::{
     AttesterSlashing, ProposerSlashing, SignedBlsToExecutionChange, SignedVoluntaryExit,
 };
 use cc_types::preset::Preset;
-use cc_types::primitives::{Epoch, ForkVersion, Root, Slot, ValidatorIndex};
+use cc_types::primitives::{Epoch, Root, Slot, ValidatorIndex};
 use ssz::Decode;
 use tree_hash::TreeHash;
 
@@ -871,24 +871,6 @@ fn gvr_from_view(view: &ChainView) -> Root {
     Root::from_array(arr)
 }
 
-fn fork_version_at_epoch(config: &ChainConfig, epoch: u64) -> ForkVersion {
-    if epoch >= config.fulu_fork_epoch.as_u64() {
-        config.fulu_fork_version
-    } else if epoch >= config.electra_fork_epoch.as_u64() {
-        config.electra_fork_version
-    } else if epoch >= config.deneb_fork_epoch.as_u64() {
-        config.deneb_fork_version
-    } else if epoch >= config.capella_fork_epoch.as_u64() {
-        config.capella_fork_version
-    } else if epoch >= config.bellatrix_fork_epoch.as_u64() {
-        config.bellatrix_fork_version
-    } else if epoch >= config.altair_fork_epoch.as_u64() {
-        config.altair_fork_version
-    } else {
-        config.genesis_fork_version
-    }
-}
-
 fn decode_pubkey(pk: &cc_types::primitives::BlsPublicKey) -> Option<PublicKey> {
     PublicKey::deserialize(pk.as_array()).ok()
 }
@@ -941,7 +923,7 @@ fn verify_proposer_slashing_sigs<P: Preset>(
             .as_u64();
         let domain = compute_domain(
             DOMAIN_BEACON_PROPOSER,
-            Some(fork_version_at_epoch(config, epoch)),
+            Some(config.fork_version_at_epoch(Epoch::new(epoch))),
             Some(gvr),
         );
         let message = *compute_signing_root(&signed_header.message, domain).as_array();
@@ -981,7 +963,7 @@ fn is_valid_indexed_attestation<P: Preset>(
     let epoch = indexed.data.target.epoch.as_u64();
     let domain = compute_domain(
         DOMAIN_BEACON_ATTESTER,
-        Some(fork_version_at_epoch(config, epoch)),
+        Some(config.fork_version_at_epoch(Epoch::new(epoch))),
         Some(gvr_from_view(view)),
     );
     let message = *compute_signing_root(&indexed.data, domain).as_array();
@@ -1053,7 +1035,7 @@ mod tests {
     use cc_types::containers::{AttestationData, Checkpoint, SignedBeaconBlockHeader};
     use cc_types::operations::{BlsToExecutionChange, IndexedAttestation, VoluntaryExit};
     use cc_types::preset::Mainnet;
-    use cc_types::primitives::{BlsPublicKey, BlsSignature, Gwei};
+    use cc_types::primitives::{BlsPublicKey, BlsSignature, ForkVersion, Gwei};
     use ssz::Encode;
 
     fn test_config() -> ChainConfig {
@@ -1293,7 +1275,7 @@ mod tests {
                 };
                 let domain = compute_domain(
                     DOMAIN_BEACON_PROPOSER,
-                    Some(fork_version_at_epoch(&config, msg.slot.epoch(32).as_u64())),
+                    Some(config.fork_version_at_epoch(msg.slot.epoch(32))),
                     Some(gvr_from_view(&view)),
                 );
                 let root = *compute_signing_root(&msg, domain).as_array();

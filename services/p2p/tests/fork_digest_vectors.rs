@@ -228,6 +228,24 @@ fn next_fork_before_fulu_is_regular_fork_boundary() {
     assert_ne!(enr.next_fork_version, compute_fork_version(&cfg, epoch));
 }
 
+#[test]
+fn far_future_regular_fork_is_not_a_digest_boundary() {
+    let mut cfg = hoodi_config();
+    let gvr = hoodi_gvr();
+    cfg.fulu_fork_epoch = FAR_FUTURE_EPOCH;
+
+    // Electra-era, Fulu unscheduled: next digest change is BPO1, not u64::MAX.
+    let epoch = Epoch::new(EPOCH_PRE_FULU);
+    let (b_epoch, b_version, _) = next_fork(&cfg, gvr, epoch).expect("BPO1 still scheduled");
+    assert_eq!(b_epoch, Epoch::new(EPOCH_BPO1));
+    assert_ne!(b_epoch, FAR_FUTURE_EPOCH);
+    assert_eq!(b_version, cfg.electra_fork_version);
+
+    let enr = enr_fork_id(&cfg, gvr, epoch);
+    assert_eq!(enr.next_fork_epoch, Epoch::new(EPOCH_BPO1));
+    assert_eq!(enr.next_fork_version, cfg.electra_fork_version);
+}
+
 // ── ForkContext cache ───────────────────────────────────────────────────────
 
 #[test]

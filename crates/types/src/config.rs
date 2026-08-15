@@ -10,6 +10,7 @@ use std::path::Path;
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 
+use crate::fork::{FAR_FUTURE_EPOCH, ForkName};
 use crate::preset::Preset;
 use crate::primitives::{Epoch, ExecutionAddress, ForkVersion, HexParseError, parse_hex_bytes};
 
@@ -221,6 +222,88 @@ impl ChainConfig {
             self.electra_fork_epoch,
             self.max_blobs_per_block_electra,
         )
+    }
+
+    /// Regular-fork schedule, newest first. Adding a fork is one row.
+    fn fork_schedule(&self) -> [(Epoch, ForkName, ForkVersion); 7] {
+        [
+            (self.fulu_fork_epoch, ForkName::Fulu, self.fulu_fork_version),
+            (
+                self.electra_fork_epoch,
+                ForkName::Electra,
+                self.electra_fork_version,
+            ),
+            (
+                self.deneb_fork_epoch,
+                ForkName::Deneb,
+                self.deneb_fork_version,
+            ),
+            (
+                self.capella_fork_epoch,
+                ForkName::Capella,
+                self.capella_fork_version,
+            ),
+            (
+                self.bellatrix_fork_epoch,
+                ForkName::Bellatrix,
+                self.bellatrix_fork_version,
+            ),
+            (
+                self.altair_fork_epoch,
+                ForkName::Altair,
+                self.altair_fork_version,
+            ),
+            (Epoch::ZERO, ForkName::Base, self.genesis_fork_version),
+        ]
+    }
+
+    /// Fork in effect at `epoch` (inclusive activation).
+    ///
+    /// Unscheduled (`FAR_FUTURE_EPOCH`) rows are skipped.
+    pub fn fork_name_at_epoch(&self, epoch: Epoch) -> ForkName {
+        for (fork_epoch, name, _) in self.fork_schedule() {
+            if fork_epoch != FAR_FUTURE_EPOCH && epoch >= fork_epoch {
+                return name;
+            }
+        }
+        ForkName::Base
+    }
+
+    /// Fork version in effect at `epoch`.
+    ///
+    /// Unscheduled (`FAR_FUTURE_EPOCH`) rows are skipped.
+    pub fn fork_version_at_epoch(&self, epoch: Epoch) -> ForkVersion {
+        for (fork_epoch, _, version) in self.fork_schedule() {
+            if fork_epoch != FAR_FUTURE_EPOCH && epoch >= fork_epoch {
+                return version;
+            }
+        }
+        self.genesis_fork_version
+    }
+
+    /// Activation epoch of `fork`. Phase 0 / genesis is epoch 0.
+    pub fn fork_epoch(&self, fork: ForkName) -> Epoch {
+        let mut found = Epoch::ZERO;
+        for (epoch, name, _) in self.fork_schedule() {
+            if name == fork {
+                found = epoch;
+                break;
+            }
+        }
+        found
+    }
+
+    /// Next scheduled regular fork strictly after `epoch`.
+    ///
+    /// Unscheduled (`FAR_FUTURE_EPOCH`) entries are skipped.
+    pub fn next_fork_after(&self, epoch: Epoch) -> Option<(ForkName, Epoch)> {
+        self.fork_schedule()
+            .into_iter()
+            .filter(|(fork_epoch, name, _)| {
+                *name != ForkName::Base && *fork_epoch != FAR_FUTURE_EPOCH && *fork_epoch > epoch
+            })
+            .min_by_key(|(fork_epoch, _, _)| *fork_epoch)
+            .map(|(fork_epoch, name, _)| (name, fork_epoch))
     }
 }
 
@@ -647,6 +730,96 @@ mod tests {
             mainnet.get_blob_parameters::<Mainnet>(Epoch::new(412_672)),
             entry(412_672, 15)
         );
+    }
+
+    #[test]
+    fn hoodi_fork_accessors_follow_descending_schedule() {
+        let hoodi_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/hoodi-config.yaml"
+        );
+        let hoodi = ChainConfig::from_yaml_file(hoodi_path)
+            .unwrap_or_else(|e| panic!("parse hoodi-config.yaml: {e}"));
+
+        // Hoodi: Altair..Deneb at 0, Electra 2048, Fulu 50688.
+        assert_eq!(hoodi.fork_name_at_epoch(Epoch::new(0)), ForkName::Deneb);
+        assert_eq!(hoodi.fork_name_at_epoch(Epoch::new(2_047)), ForkName::Deneb);
+        assert_eq!(
+            hoodi.fork_name_at_epoch(Epoch::new(2_048)),
+            ForkName::Electra
+        );
+        assert_eq!(
+            hoodi.fork_name_at_epoch(Epoch::new(50_687)),
+            ForkName::Electra
+        );
+        assert_eq!(hoodi.fork_name_at_epoch(Epoch::new(50_688)), ForkName::Fulu);
+
+        assert_eq!(
+            hoodi.fork_version_at_epoch(Epoch::new(0)),
+            hoodi.deneb_fork_version
+        );
+        assert_eq!(
+            hoodi.fork_version_at_epoch(Epoch::new(2_048)),
+            hoodi.electra_fork_version
+        );
+        assert_eq!(
+            hoodi.fork_version_at_epoch(Epoch::new(50_688)),
+            hoodi.fulu_fork_version
+        );
+
+        assert_eq!(hoodi.fork_epoch(ForkName::Base), Epoch::ZERO);
+        assert_eq!(hoodi.fork_epoch(ForkName::Electra), Epoch::new(2_048));
+        assert_eq!(hoodi.fork_epoch(ForkName::Fulu), Epoch::new(50_688));
+
+        assert_eq!(
+            hoodi.next_fork_after(Epoch::new(0)),
+            Some((ForkName::Electra, Epoch::new(2_048)))
+        );
+        assert_eq!(
+            hoodi.next_fork_after(Epoch::new(2_048)),
+            Some((ForkName::Fulu, Epoch::new(50_688)))
+        );
+        assert_eq!(hoodi.next_fork_after(Epoch::new(50_688)), None);
+    }
+
+    #[test]
+    fn far_future_fork_rows_are_unscheduled() {
+        let hoodi_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/hoodi-config.yaml"
+        );
+        let mut cfg = ChainConfig::from_yaml_file(hoodi_path)
+            .unwrap_or_else(|e| panic!("parse hoodi-config.yaml: {e}"));
+        cfg.fulu_fork_epoch = FAR_FUTURE_EPOCH;
+
+        assert_eq!(
+            cfg.fork_name_at_epoch(Epoch::new(50_688)),
+            ForkName::Electra
+        );
+        assert_eq!(
+            cfg.fork_version_at_epoch(Epoch::new(50_688)),
+            cfg.electra_fork_version
+        );
+        assert_eq!(cfg.next_fork_after(Epoch::new(2_048)), None);
+        assert_eq!(
+            cfg.next_fork_after(Epoch::new(0)),
+            Some((ForkName::Electra, Epoch::new(2_048)))
+        );
+        // Epoch::MAX must not activate an unscheduled row.
+        assert_eq!(cfg.fork_name_at_epoch(FAR_FUTURE_EPOCH), ForkName::Electra);
+    }
+
+    #[test]
+    fn all_forks_at_genesis_have_no_next() {
+        let cfg = ChainConfig::from_yaml_str(minimal_yaml_body())
+            .unwrap_or_else(|e| panic!("minimal yaml: {e}"));
+        assert_eq!(cfg.fork_name_at_epoch(Epoch::ZERO), ForkName::Fulu);
+        assert_eq!(
+            cfg.fork_version_at_epoch(Epoch::ZERO),
+            cfg.fulu_fork_version
+        );
+        assert_eq!(cfg.next_fork_after(Epoch::ZERO), None);
+        assert_eq!(cfg.next_fork_after(Epoch::new(1)), None);
     }
 
     fn minimal_yaml_body() -> &'static str {

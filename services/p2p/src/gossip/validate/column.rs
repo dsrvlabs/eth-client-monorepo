@@ -21,7 +21,7 @@ use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, Root, Slot};
 use cc_types::sidecar::DataColumnSidecar;
 use cc_types::{
-    ForkVersion, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, NUMBER_OF_COLUMNS,
+    KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, NUMBER_OF_COLUMNS,
     compute_subnet_for_data_column_sidecar,
 };
 use lru::LruCache;
@@ -626,7 +626,7 @@ fn verify_proposer_signature<P: Preset>(
     };
 
     let epoch = slot / slots_per_epoch.max(1);
-    let fork_version = fork_version_at_epoch(config, epoch);
+    let fork_version = config.fork_version_at_epoch(Epoch::new(epoch));
     let gvr = root_from_bytes(&view.genesis_validators_root);
     let domain = compute_domain(DOMAIN_BEACON_PROPOSER, Some(fork_version), Some(gvr));
     let message = *compute_signing_root(header, domain).as_array();
@@ -702,25 +702,6 @@ fn parent_is_view_head(view: &ChainView, parent_root: &[u8; 32]) -> bool {
         return false;
     }
     view.head_root.as_slice() == parent_root.as_slice()
-}
-
-fn fork_version_at_epoch(config: &ChainConfig, epoch: u64) -> ForkVersion {
-    let e = Epoch::new(epoch);
-    if e >= config.fulu_fork_epoch {
-        config.fulu_fork_version
-    } else if e >= config.electra_fork_epoch {
-        config.electra_fork_version
-    } else if e >= config.deneb_fork_epoch {
-        config.deneb_fork_version
-    } else if e >= config.capella_fork_epoch {
-        config.capella_fork_version
-    } else if e >= config.bellatrix_fork_epoch {
-        config.bellatrix_fork_version
-    } else if e >= config.altair_fork_epoch {
-        config.altair_fork_version
-    } else {
-        config.genesis_fork_version
-    }
 }
 
 fn root_from_bytes(b: &[u8]) -> Root {
@@ -1204,7 +1185,7 @@ mod tests {
             state_root: Root::ZERO,
             body_root: Root::from_array([9u8; 32]),
         };
-        let fork_version = fork_version_at_epoch(&config, epoch);
+        let fork_version = config.fork_version_at_epoch(Epoch::new(epoch));
         let domain = compute_domain(DOMAIN_BEACON_PROPOSER, Some(fork_version), Some(Root::ZERO));
         // Use GVR zero; view must match.
         let msg = *compute_signing_root(&header, domain).as_array();
