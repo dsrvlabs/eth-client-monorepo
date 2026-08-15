@@ -901,6 +901,9 @@ indexes"* contract.
 occupies slots {10,11,12}, branch B occupies {10,12} and is heavier; after the rewrite,
 `canonical[11]` is absent, not stale.
 
+- [x] `batch.delete` staged during the walk for vacated slots (including same-batch parents).
+- [x] Slot-skipping reorg test: after rewrite onto {10,12}, `canonical[11]` is absent.
+
 ---
 
 ### `S0-B-10` · P1-A/1 — `PutBackfillBatch` anchor/frontier binding

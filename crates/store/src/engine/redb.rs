@@ -152,6 +152,17 @@ impl Batch {
         self.overflowed
     }
 
+    /// Puts staged so far, in order. The canonical walk uses this to resolve
+    /// parents written earlier in the same batch (not yet visible to `ReadTxn`).
+    pub(crate) fn staged_puts(&self) -> impl Iterator<Item = (&str, &[u8], &[u8])> + '_ {
+        self.ops.iter().filter_map(|op| match op {
+            Op::Put { table, key, value } => {
+                Some((table.as_str(), key.as_slice(), value.as_slice()))
+            }
+            _ => None,
+        })
+    }
+
     /// Drain put/delete ops for submission through the single writer (CC-41).
     ///
     /// `DeleteRange` is expanded only if present — migration stages discrete deletes.
