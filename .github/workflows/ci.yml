@@ -114,6 +114,10 @@ jobs:
       - name: check compose host-publish policy
         run: bash scripts/offhost-port-scan.sh --policy
 
+      # S0-B-18 / E0.9: M3 Discharged-by column; no blank cells for claimed rows.
+      - name: check M3 discharged-by ledger
+        run: bash scripts/check-m3-discharged-by.sh
+
   # CC-10h — unit tests + all minimal-preset suites; keep inside Phase 0's 10-minute
   # CC-07/4 budget. Mainnet + general suites move to the sharded `vectors` job.
   test:

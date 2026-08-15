@@ -291,6 +291,11 @@ Both presets, **skiplist empty**, against `S4c-04`'s blocking enforcement.
 ### `S4c-06` · M3 ledger maintenance · 0.5 pd / **1 pt**
 P1-D/10, P1-D/15, P1-D/16, P1-E/S4, P1-B/8 (verified), P2-B/6 recorded with commit SHAs.
 
+**Convention.** This is the S4 instance of the ~0.5 pd stage-exit line item `S0-B-18` writes down
+(`[PRD]` §5.0 / E0.9). Also append `S4` / `S4a` / `S4b` / `S4c` to `CLAIM_STAGES` in
+`scripts/check-m3-discharged-by.sh`. P1-B/8 was already discharged at S0 (`[PLAN]` C-11) — verify
+the SHA, do not blank it.
+
 ---
 
 ## Ledger rows discharged by S4

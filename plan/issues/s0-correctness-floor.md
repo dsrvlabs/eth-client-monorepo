@@ -395,8 +395,8 @@ fork is one row rather than an if/else edit.
 - [x] Grep gate asserts exactly one remaining walk outside `cc-types`.
 - [x] P1-B/6 not folded.
 
-- [x] P1-B/8 discharged at S0 per `[PLAN]` C-11 (`@ S4` superseded). M3 ledger not yet created
-      (`S0-B-18`); recorded here. P1-B/6 `request_limits` stays S3a.
+- [x] P1-B/8 discharged at S0 per `[PLAN]` C-11 (`@ S4` superseded). Recorded on `[PRD]` §5.2
+      `Discharged by` (`7e6d09796f6a`). P1-B/6 `request_limits` stays S3a.
 
 ---
 
@@ -1133,6 +1133,14 @@ either source creates the artifact that makes that readable.**
 3. The maintenance convention is written down: each stage exit carries a ~0.5 pd line item to update
    it (`S1-B-21`, `S2-B-16`, `S3a-B-27`). This is also the mechanism behind the program's
    *no-P0-vanishes-silently* check.
+
+- [x] `Discharged by` column on PRD §5.1/§5.2; CI script on the S0a-B-04 gate list.
+
+- [x] `Discharged by` column on `[PRD]` §5.1 and §5.2 (SHA or stage id).
+- [x] `scripts/check-m3-discharged-by.sh` asserts zero blank claimed cells; wired into `make lint` /
+      the clippy job (`S0a-B-04` gate list).
+- [x] Maintenance convention in `[PRD]` §5.0; `S1-B-21`, `S2-B-16`, `S3a-B-27` (and `S4c-06`) name
+      the ~0.5 pd stage-exit update.
 
 ---
 

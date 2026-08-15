@@ -489,6 +489,12 @@ Loop A.
 implementations, five named contacts, five tentative dates on the calendar, recorded in the exit note.
 
 ### `S3a-B-27` · M3 ledger maintenance · 0.5 pd / **1 pt**
+Carry the `Discharged by` column (`[PRD]` §5.0 / E0.9) forward for every row S3a patched or wired,
+with the commit SHA. Zero blank cells for rows this stage claimed (`wire @ S3` / `patch @ S3`).
+
+**Convention.** This is the S3a instance of the ~0.5 pd stage-exit line item `S0-B-18` writes down.
+Also append `S3` and `S3a` to `CLAIM_STAGES` in `scripts/check-m3-discharged-by.sh`. A blank
+S3-claimed cell is a CI failure. That is the program's *no-P0-vanishes-silently* check.
 
 ---
 

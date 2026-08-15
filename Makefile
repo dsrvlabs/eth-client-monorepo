@@ -146,7 +146,7 @@ clippy: ## Clippy with -D warnings (CI: clippy job)
 	$(CARGO) clippy $(CLIPPY_FLAGS) -- -D warnings
 
 .PHONY: lint
-lint: fmt-check clippy check-dag check-env check-http check-gha-pins check-ci-jobs check-compose-uris check-fork-schedule check-offhost-policy ## Local lint suite (fmt + clippy + guards)
+lint: fmt-check clippy check-dag check-env check-http check-gha-pins check-ci-jobs check-compose-uris check-fork-schedule check-offhost-policy check-m3-discharged ## Local lint suite (fmt + clippy + guards)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Policy guards (scripts/ — wired into the matching CI job and `make ci`)
@@ -191,6 +191,10 @@ check-offhost-policy: ## S0-B-20 compose host-publish policy (fixtures + live fi
 .PHONY: check-offhost-scan
 check-offhost-scan: ## compose-flag alpine replay (not E0.8 / not M4)
 	bash $(SCRIPTS)/offhost-port-scan.sh --scan
+
+.PHONY: check-m3-discharged
+check-m3-discharged: ## M3 Discharged-by column; no blank claimed cells (S0-B-18)
+	bash $(SCRIPTS)/check-m3-discharged-by.sh
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Proto (required CI: proto job)

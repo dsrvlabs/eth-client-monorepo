@@ -515,8 +515,12 @@ from the `[PRD]` §5.0 vocabulary; every dismissal carries a reason. `[PRD]` §7
 ---
 
 ### `S1-B-21` · M3 ledger maintenance · 0.5 pd / **1 pt**
-Carry the `Discharged by` column forward for every row S1 patched or deleted, with the commit SHA or
-the stage id. Zero blank cells for rows this stage claimed.
+Carry the `Discharged by` column (`[PRD]` §5.0 / E0.9) forward for every row S1 patched or deleted,
+with the commit SHA or the stage id. Zero blank cells for rows this stage claimed.
+
+**Convention.** This is the S1 instance of the ~0.5 pd stage-exit line item `S0-B-18` writes down.
+Also append `S1` to `CLAIM_STAGES` in `scripts/check-m3-discharged-by.sh` so a blank S1-claimed cell
+is a CI failure, not a review note. That is the program's *no-P0-vanishes-silently* check.
 
 ### `S1-B-22` · **Spike Q-1** — `check-crate-dag.sh` allowlist minimality
 **Est** 0.5–1 pd / **2 pts** · ⌂ `[ARCH]` B.2 = **S** · **Scheduled** S1 open · **Blocks** nothing;

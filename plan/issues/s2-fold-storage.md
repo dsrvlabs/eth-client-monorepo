@@ -433,6 +433,10 @@ Every row S2 patched gets a commit SHA; every row **discharged by deletion** get
 The nine deletion-discharged rows are listed at the top of this file — none may be left blank on the
 argument that "no commit fixed it".
 
+**Convention.** This is the S2 instance of the ~0.5 pd stage-exit line item `S0-B-18` writes down
+(`[PRD]` §5.0 / E0.9). Also append `S2` to `CLAIM_STAGES` in `scripts/check-m3-discharged-by.sh`.
+A blank S2-claimed cell is a CI failure. That is the program's *no-P0-vanishes-silently* check.
+
 ---
 
 ## S2 exit criteria — and which issue earns each
