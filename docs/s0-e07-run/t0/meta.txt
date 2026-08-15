@@ -1,0 +1,4 @@
+label=T0
+scraped_utc=2026-08-15T17:35:01Z
+scraped_unix=1786815301
+command=bash scripts/s0-ab-baseline.sh --scrape --label T0 --raw-dir docs/s0-e07-run/t0

@@ -1,0 +1,27 @@
+=== six-service ps ===
+NAME                              SERVICE       STATUS
+s0b19-ab-baseline-attestation-1   attestation   Up 49 seconds (healthy)
+s0b19-ab-baseline-beacon-api-1    beacon-api    Up 43 seconds (healthy)
+s0b19-ab-baseline-chain-1         chain         Up 55 seconds (healthy)
+s0b19-ab-baseline-el-1            el            Up 55 seconds (health: starting)
+s0b19-ab-baseline-engine-1        engine        Up 49 seconds (healthy)
+s0b19-ab-baseline-p2p-1           p2p           Up 49 seconds (healthy)
+s0b19-ab-baseline-storage-1       storage       Up 49 seconds (healthy)
+=== el ===
+NAME                     SERVICE   STATUS
+s0b19-ab-baseline-el-1   el        Up 55 seconds (health: starting)
+=== cc-devnet ===
+NAME                              SERVICE       STATUS
+s0b19-ab-baseline-attestation-1   attestation   Up 49 seconds (healthy)
+s0b19-ab-baseline-beacon-api-1    beacon-api    Up 44 seconds (healthy)
+s0b19-ab-baseline-chain-1         chain         Up 55 seconds (healthy)
+s0b19-ab-baseline-el-1            el            Up 55 seconds (health: starting)
+s0b19-ab-baseline-engine-1        engine        Up 49 seconds (healthy)
+s0b19-ab-baseline-p2p-1           p2p           Up 49 seconds (healthy)
+s0b19-ab-baseline-storage-1       storage       Up 49 seconds (healthy)
+=== cc-devnet (project name from compose.yml) ===
+NAME                    SERVICE     STATUS
+cc-devnet-anchor-1      anchor      Up 32 seconds (healthy)
+cc-devnet-node-a-1      node-a      Up 31 seconds
+cc-devnet-node-b-1      node-b      Up 31 seconds
+cc-devnet-publisher-1   publisher   Up 32 seconds

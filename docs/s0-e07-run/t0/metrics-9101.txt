@@ -1,0 +1,366 @@
+# HELP cc_build_info Build identity (always 1); labels match eth.common.v1.BuildInfo.
+# TYPE cc_build_info gauge
+cc_build_info{service="chain",version="0.1.0",git_sha="e2ad297",rustc="rustc 1.97.1 (8bab26f4f 2026-07-14)"} 1
+# HELP cc_grpc_requests Total gRPC requests handled by this process.
+# TYPE cc_grpc_requests counter
+cc_grpc_requests_total{service="chain",method="unknown",code="0"} 93
+cc_grpc_requests_total{service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore",code="0"} 1
+# HELP cc_grpc_request_duration_seconds gRPC request latency.
+# TYPE cc_grpc_request_duration_seconds histogram
+# UNIT cc_grpc_request_duration_seconds seconds
+cc_grpc_request_duration_seconds_sum{service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 0.000248084
+cc_grpc_request_duration_seconds_count{service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="0.0005",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="0.001",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="0.0025",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="0.005",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="0.01",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="0.025",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="0.05",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="0.1",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="0.25",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="0.5",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="1.0",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="2.5",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="5.0",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="10.0",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_bucket{le="+Inf",service="chain",method="/eth.chain.v1.ChainService/RestoreFromStore"} 1
+cc_grpc_request_duration_seconds_sum{service="chain",method="unknown"} 0.010373333000000002
+cc_grpc_request_duration_seconds_count{service="chain",method="unknown"} 93
+cc_grpc_request_duration_seconds_bucket{le="0.0005",service="chain",method="unknown"} 92
+cc_grpc_request_duration_seconds_bucket{le="0.001",service="chain",method="unknown"} 92
+cc_grpc_request_duration_seconds_bucket{le="0.0025",service="chain",method="unknown"} 93
+cc_grpc_request_duration_seconds_bucket{le="0.005",service="chain",method="unknown"} 93
+cc_grpc_request_duration_seconds_bucket{le="0.01",service="chain",method="unknown"} 93
+cc_grpc_request_duration_seconds_bucket{le="0.025",service="chain",method="unknown"} 93
+cc_grpc_request_duration_seconds_bucket{le="0.05",service="chain",method="unknown"} 93
+cc_grpc_request_duration_seconds_bucket{le="0.1",service="chain",method="unknown"} 93
+cc_grpc_request_duration_seconds_bucket{le="0.25",service="chain",method="unknown"} 93
+cc_grpc_request_duration_seconds_bucket{le="0.5",service="chain",method="unknown"} 93
+cc_grpc_request_duration_seconds_bucket{le="1.0",service="chain",method="unknown"} 93
+cc_grpc_request_duration_seconds_bucket{le="2.5",service="chain",method="unknown"} 93
+cc_grpc_request_duration_seconds_bucket{le="5.0",service="chain",method="unknown"} 93
+cc_grpc_request_duration_seconds_bucket{le="10.0",service="chain",method="unknown"} 93
+cc_grpc_request_duration_seconds_bucket{le="+Inf",service="chain",method="unknown"} 93
+# HELP cc_chain_process_block_seconds Wall time of process_block (budgeted; boundary at 0.4 s).
+# TYPE cc_chain_process_block_seconds histogram
+# UNIT cc_chain_process_block_seconds seconds
+cc_chain_process_block_seconds_sum 0.0
+cc_chain_process_block_seconds_count 1
+cc_chain_process_block_seconds_bucket{le="0.005"} 1
+cc_chain_process_block_seconds_bucket{le="0.01"} 1
+cc_chain_process_block_seconds_bucket{le="0.025"} 1
+cc_chain_process_block_seconds_bucket{le="0.05"} 1
+cc_chain_process_block_seconds_bucket{le="0.1"} 1
+cc_chain_process_block_seconds_bucket{le="0.2"} 1
+cc_chain_process_block_seconds_bucket{le="0.3"} 1
+cc_chain_process_block_seconds_bucket{le="0.4"} 1
+cc_chain_process_block_seconds_bucket{le="0.5"} 1
+cc_chain_process_block_seconds_bucket{le="0.75"} 1
+cc_chain_process_block_seconds_bucket{le="1.0"} 1
+cc_chain_process_block_seconds_bucket{le="2.0"} 1
+cc_chain_process_block_seconds_bucket{le="5.0"} 1
+cc_chain_process_block_seconds_bucket{le="+Inf"} 1
+# HELP cc_chain_process_epoch_seconds Wall time of process_epoch (budgeted; boundary at 1.0 s).
+# TYPE cc_chain_process_epoch_seconds histogram
+# UNIT cc_chain_process_epoch_seconds seconds
+cc_chain_process_epoch_seconds_sum 0.0
+cc_chain_process_epoch_seconds_count 1
+cc_chain_process_epoch_seconds_bucket{le="0.05"} 1
+cc_chain_process_epoch_seconds_bucket{le="0.1"} 1
+cc_chain_process_epoch_seconds_bucket{le="0.25"} 1
+cc_chain_process_epoch_seconds_bucket{le="0.5"} 1
+cc_chain_process_epoch_seconds_bucket{le="0.75"} 1
+cc_chain_process_epoch_seconds_bucket{le="1.0"} 1
+cc_chain_process_epoch_seconds_bucket{le="1.25"} 1
+cc_chain_process_epoch_seconds_bucket{le="1.5"} 1
+cc_chain_process_epoch_seconds_bucket{le="2.0"} 1
+cc_chain_process_epoch_seconds_bucket{le="3.0"} 1
+cc_chain_process_epoch_seconds_bucket{le="5.0"} 1
+cc_chain_process_epoch_seconds_bucket{le="10.0"} 1
+cc_chain_process_epoch_seconds_bucket{le="+Inf"} 1
+# HELP cc_chain_process_slots_seconds Wall time of process_slots.
+# TYPE cc_chain_process_slots_seconds histogram
+# UNIT cc_chain_process_slots_seconds seconds
+cc_chain_process_slots_seconds_sum 0.0
+cc_chain_process_slots_seconds_count 1
+cc_chain_process_slots_seconds_bucket{le="0.005"} 1
+cc_chain_process_slots_seconds_bucket{le="0.01"} 1
+cc_chain_process_slots_seconds_bucket{le="0.025"} 1
+cc_chain_process_slots_seconds_bucket{le="0.05"} 1
+cc_chain_process_slots_seconds_bucket{le="0.1"} 1
+cc_chain_process_slots_seconds_bucket{le="0.2"} 1
+cc_chain_process_slots_seconds_bucket{le="0.3"} 1
+cc_chain_process_slots_seconds_bucket{le="0.4"} 1
+cc_chain_process_slots_seconds_bucket{le="0.5"} 1
+cc_chain_process_slots_seconds_bucket{le="0.75"} 1
+cc_chain_process_slots_seconds_bucket{le="1.0"} 1
+cc_chain_process_slots_seconds_bucket{le="2.0"} 1
+cc_chain_process_slots_seconds_bucket{le="5.0"} 1
+cc_chain_process_slots_seconds_bucket{le="+Inf"} 1
+# HELP cc_chain_state_hash_tree_root_seconds Wall time of state hash_tree_root (path=cached|cold; R-5 attribution).
+# TYPE cc_chain_state_hash_tree_root_seconds histogram
+# UNIT cc_chain_state_hash_tree_root_seconds seconds
+cc_chain_state_hash_tree_root_seconds_sum{path="cold"} 0.0
+cc_chain_state_hash_tree_root_seconds_count{path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.005",path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.01",path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.025",path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.05",path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.1",path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.2",path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.3",path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.4",path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.5",path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.75",path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="1.0",path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="2.0",path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="5.0",path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="+Inf",path="cold"} 1
+cc_chain_state_hash_tree_root_seconds_sum{path="cached"} 0.0
+cc_chain_state_hash_tree_root_seconds_count{path="cached"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.005",path="cached"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.01",path="cached"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.025",path="cached"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.05",path="cached"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.1",path="cached"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.2",path="cached"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.3",path="cached"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.4",path="cached"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.5",path="cached"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="0.75",path="cached"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="1.0",path="cached"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="2.0",path="cached"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="5.0",path="cached"} 1
+cc_chain_state_hash_tree_root_seconds_bucket{le="+Inf",path="cached"} 1
+# HELP cc_chain_import_seconds Wall time of import pipeline stages.
+# TYPE cc_chain_import_seconds histogram
+# UNIT cc_chain_import_seconds seconds
+cc_chain_import_seconds_sum{stage="publish"} 0.0
+cc_chain_import_seconds_count{stage="publish"} 1
+cc_chain_import_seconds_bucket{le="0.005",stage="publish"} 1
+cc_chain_import_seconds_bucket{le="0.01",stage="publish"} 1
+cc_chain_import_seconds_bucket{le="0.025",stage="publish"} 1
+cc_chain_import_seconds_bucket{le="0.05",stage="publish"} 1
+cc_chain_import_seconds_bucket{le="0.1",stage="publish"} 1
+cc_chain_import_seconds_bucket{le="0.2",stage="publish"} 1
+cc_chain_import_seconds_bucket{le="0.3",stage="publish"} 1
+cc_chain_import_seconds_bucket{le="0.4",stage="publish"} 1
+cc_chain_import_seconds_bucket{le="0.5",stage="publish"} 1
+cc_chain_import_seconds_bucket{le="0.75",stage="publish"} 1
+cc_chain_import_seconds_bucket{le="1.0",stage="publish"} 1
+cc_chain_import_seconds_bucket{le="2.0",stage="publish"} 1
+cc_chain_import_seconds_bucket{le="5.0",stage="publish"} 1
+cc_chain_import_seconds_bucket{le="+Inf",stage="publish"} 1
+cc_chain_import_seconds_sum{stage="decode"} 0.0
+cc_chain_import_seconds_count{stage="decode"} 1
+cc_chain_import_seconds_bucket{le="0.005",stage="decode"} 1
+cc_chain_import_seconds_bucket{le="0.01",stage="decode"} 1
+cc_chain_import_seconds_bucket{le="0.025",stage="decode"} 1
+cc_chain_import_seconds_bucket{le="0.05",stage="decode"} 1
+cc_chain_import_seconds_bucket{le="0.1",stage="decode"} 1
+cc_chain_import_seconds_bucket{le="0.2",stage="decode"} 1
+cc_chain_import_seconds_bucket{le="0.3",stage="decode"} 1
+cc_chain_import_seconds_bucket{le="0.4",stage="decode"} 1
+cc_chain_import_seconds_bucket{le="0.5",stage="decode"} 1
+cc_chain_import_seconds_bucket{le="0.75",stage="decode"} 1
+cc_chain_import_seconds_bucket{le="1.0",stage="decode"} 1
+cc_chain_import_seconds_bucket{le="2.0",stage="decode"} 1
+cc_chain_import_seconds_bucket{le="5.0",stage="decode"} 1
+cc_chain_import_seconds_bucket{le="+Inf",stage="decode"} 1
+cc_chain_import_seconds_sum{stage="fork_choice"} 0.0
+cc_chain_import_seconds_count{stage="fork_choice"} 1
+cc_chain_import_seconds_bucket{le="0.005",stage="fork_choice"} 1
+cc_chain_import_seconds_bucket{le="0.01",stage="fork_choice"} 1
+cc_chain_import_seconds_bucket{le="0.025",stage="fork_choice"} 1
+cc_chain_import_seconds_bucket{le="0.05",stage="fork_choice"} 1
+cc_chain_import_seconds_bucket{le="0.1",stage="fork_choice"} 1
+cc_chain_import_seconds_bucket{le="0.2",stage="fork_choice"} 1
+cc_chain_import_seconds_bucket{le="0.3",stage="fork_choice"} 1
+cc_chain_import_seconds_bucket{le="0.4",stage="fork_choice"} 1
+cc_chain_import_seconds_bucket{le="0.5",stage="fork_choice"} 1
+cc_chain_import_seconds_bucket{le="0.75",stage="fork_choice"} 1
+cc_chain_import_seconds_bucket{le="1.0",stage="fork_choice"} 1
+cc_chain_import_seconds_bucket{le="2.0",stage="fork_choice"} 1
+cc_chain_import_seconds_bucket{le="5.0",stage="fork_choice"} 1
+cc_chain_import_seconds_bucket{le="+Inf",stage="fork_choice"} 1
+cc_chain_import_seconds_sum{stage="transition"} 0.0
+cc_chain_import_seconds_count{stage="transition"} 1
+cc_chain_import_seconds_bucket{le="0.005",stage="transition"} 1
+cc_chain_import_seconds_bucket{le="0.01",stage="transition"} 1
+cc_chain_import_seconds_bucket{le="0.025",stage="transition"} 1
+cc_chain_import_seconds_bucket{le="0.05",stage="transition"} 1
+cc_chain_import_seconds_bucket{le="0.1",stage="transition"} 1
+cc_chain_import_seconds_bucket{le="0.2",stage="transition"} 1
+cc_chain_import_seconds_bucket{le="0.3",stage="transition"} 1
+cc_chain_import_seconds_bucket{le="0.4",stage="transition"} 1
+cc_chain_import_seconds_bucket{le="0.5",stage="transition"} 1
+cc_chain_import_seconds_bucket{le="0.75",stage="transition"} 1
+cc_chain_import_seconds_bucket{le="1.0",stage="transition"} 1
+cc_chain_import_seconds_bucket{le="2.0",stage="transition"} 1
+cc_chain_import_seconds_bucket{le="5.0",stage="transition"} 1
+cc_chain_import_seconds_bucket{le="+Inf",stage="transition"} 1
+# HELP cc_chain_head_slot Current head slot.
+# TYPE cc_chain_head_slot gauge
+cc_chain_head_slot 0
+# HELP cc_chain_head_lag_slots Slots the local head trails wall-clock / network head.
+# TYPE cc_chain_head_lag_slots gauge
+cc_chain_head_lag_slots 0
+# HELP cc_chain_finalized_epoch Current finalized epoch.
+# TYPE cc_chain_finalized_epoch gauge
+cc_chain_finalized_epoch 0
+# HELP cc_chain_import Block import outcomes (result=imported|duplicate|deferred|deferred_engine|unknown_parent|invalid).
+# TYPE cc_chain_import counter
+cc_chain_import_total{result="imported"} 0
+cc_chain_import_total{result="deferred_engine"} 0
+cc_chain_import_total{result="unknown_parent"} 0
+cc_chain_import_total{result="deferred"} 0
+cc_chain_import_total{result="invalid"} 0
+cc_chain_import_total{result="duplicate"} 0
+# HELP cc_chain_import_queue_depth In-flight / queued import requests (import lane).
+# TYPE cc_chain_import_queue_depth gauge
+cc_chain_import_queue_depth 0
+# HELP cc_chain_lane_queue_depth Loop B lane occupancy (lane=tick|import|query_p0|attestation|query_p1).
+# TYPE cc_chain_lane_queue_depth gauge
+cc_chain_lane_queue_depth{lane="tick"} 0
+cc_chain_lane_queue_depth{lane="attestation"} 0
+cc_chain_lane_queue_depth{lane="query_p1"} 0
+cc_chain_lane_queue_depth{lane="query_p0"} 0
+cc_chain_lane_queue_depth{lane="import"} 0
+# HELP cc_chain_event_buffer_occupancy Event bus occupancy (buffer=ring|subscriber).
+# TYPE cc_chain_event_buffer_occupancy gauge
+cc_chain_event_buffer_occupancy{buffer="subscriber"} 0
+cc_chain_event_buffer_occupancy{buffer="ring"} 0
+# HELP cc_chain_event_buffer_bytes Event ring accounted occupancy in bytes (CC-44a / §4.3).
+# TYPE cc_chain_event_buffer_bytes gauge
+cc_chain_event_buffer_bytes 0
+# HELP cc_chain_event_buffer_bytes_bound Event ring hard byte ceiling (chain.event_ring_bytes; CC-44a).
+# TYPE cc_chain_event_buffer_bytes_bound gauge
+cc_chain_event_buffer_bytes_bound 67108864
+# HELP cc_chain_resident_states Number of BeaconState values retained in memory.
+# TYPE cc_chain_resident_states gauge
+cc_chain_resident_states 0
+# HELP cc_chain_subscribers Active SubscribeEvents subscribers.
+# TYPE cc_chain_subscribers gauge
+cc_chain_subscribers 0
+# HELP cc_chain_budget_exceeded Single observations over the production budget (op=block|epoch); never fatal.
+# TYPE cc_chain_budget_exceeded counter
+cc_chain_budget_exceeded_total{op="epoch"} 0
+cc_chain_budget_exceeded_total{op="block"} 0
+# HELP cc_chain_import_root_mismatch ImportBlock requests whose supplied root ≠ decoded hash_tree_root.
+# TYPE cc_chain_import_root_mismatch counter
+cc_chain_import_root_mismatch_total 0
+# HELP cc_chain_import_rejected_backpressure ImportBlock requests rejected after command-channel send_timeout.
+# TYPE cc_chain_import_rejected_backpressure counter
+cc_chain_import_rejected_backpressure_total 0
+# HELP cc_chain_body_ring SignedBeaconBlock bodies retained for shallow-reorg replay (cap 64).
+# TYPE cc_chain_body_ring gauge
+cc_chain_body_ring 0
+# HELP cc_chain_event_publish_dropped Events lost when the events channel is closed (F1 loud path).
+# TYPE cc_chain_event_publish_dropped counter
+cc_chain_event_publish_dropped_total 0
+# HELP cc_chain_event_payload_rejected Events rejected because payload exceeded MAX_EVENT_PAYLOAD_BYTES (SEC-44a-2).
+# TYPE cc_chain_event_payload_rejected counter
+cc_chain_event_payload_rejected_total 0
+# HELP cc_chain_bootstrap_attempts Checkpoint bootstrap attempts (provider URL, result=success|failure).
+# TYPE cc_chain_bootstrap_attempts counter
+cc_chain_bootstrap_attempts_total{provider="none",result="failure"} 0
+cc_chain_bootstrap_attempts_total{provider="none",result="success"} 0
+# HELP cc_chain_da_pending_dropped Blocks dropped from pending_da (timeout or capacity eviction; CC-24d).
+# TYPE cc_chain_da_pending_dropped counter
+cc_chain_da_pending_dropped_total 0
+# HELP cc_chain_da_pending_occupancy Current pending_da map occupancy (bound 64; CC-24d).
+# TYPE cc_chain_da_pending_occupancy gauge
+cc_chain_da_pending_occupancy 0
+# HELP cc_chain_da_available_occupancy Current PeerDAS available-root set occupancy (CC-24d).
+# TYPE cc_chain_da_available_occupancy gauge
+cc_chain_da_available_occupancy 0
+# HELP cc_chain_engine_call_seconds Wall time of engine API calls from chain (PROCESS_BLOCK_BUCKETS; boundary at 0.4 s).
+# TYPE cc_chain_engine_call_seconds histogram
+# UNIT cc_chain_engine_call_seconds seconds
+cc_chain_engine_call_seconds_sum 0.0
+cc_chain_engine_call_seconds_count 1
+cc_chain_engine_call_seconds_bucket{le="0.005"} 1
+cc_chain_engine_call_seconds_bucket{le="0.01"} 1
+cc_chain_engine_call_seconds_bucket{le="0.025"} 1
+cc_chain_engine_call_seconds_bucket{le="0.05"} 1
+cc_chain_engine_call_seconds_bucket{le="0.1"} 1
+cc_chain_engine_call_seconds_bucket{le="0.2"} 1
+cc_chain_engine_call_seconds_bucket{le="0.3"} 1
+cc_chain_engine_call_seconds_bucket{le="0.4"} 1
+cc_chain_engine_call_seconds_bucket{le="0.5"} 1
+cc_chain_engine_call_seconds_bucket{le="0.75"} 1
+cc_chain_engine_call_seconds_bucket{le="1.0"} 1
+cc_chain_engine_call_seconds_bucket{le="2.0"} 1
+cc_chain_engine_call_seconds_bucket{le="5.0"} 1
+cc_chain_engine_call_seconds_bucket{le="+Inf"} 1
+# HELP cc_chain_process_block_local_seconds Exclusive local process_block wall time (PROCESS_BLOCK_BUCKETS; §6.4 Trigger A/B).
+# TYPE cc_chain_process_block_local_seconds histogram
+# UNIT cc_chain_process_block_local_seconds seconds
+cc_chain_process_block_local_seconds_sum 0.0
+cc_chain_process_block_local_seconds_count 0
+cc_chain_process_block_local_seconds_bucket{le="0.005"} 0
+cc_chain_process_block_local_seconds_bucket{le="0.01"} 0
+cc_chain_process_block_local_seconds_bucket{le="0.025"} 0
+cc_chain_process_block_local_seconds_bucket{le="0.05"} 0
+cc_chain_process_block_local_seconds_bucket{le="0.1"} 0
+cc_chain_process_block_local_seconds_bucket{le="0.2"} 0
+cc_chain_process_block_local_seconds_bucket{le="0.3"} 0
+cc_chain_process_block_local_seconds_bucket{le="0.4"} 0
+cc_chain_process_block_local_seconds_bucket{le="0.5"} 0
+cc_chain_process_block_local_seconds_bucket{le="0.75"} 0
+cc_chain_process_block_local_seconds_bucket{le="1.0"} 0
+cc_chain_process_block_local_seconds_bucket{le="2.0"} 0
+cc_chain_process_block_local_seconds_bucket{le="5.0"} 0
+cc_chain_process_block_local_seconds_bucket{le="+Inf"} 0
+# HELP cc_chain_optimistic_nodes Proto-array nodes with Optimistic execution status (node count, not a root set; ≠13/8).
+# TYPE cc_chain_optimistic_nodes gauge
+cc_chain_optimistic_nodes 0
+# HELP cc_chain_is_optimistic Whether the chain head is optimistic (0/1).
+# TYPE cc_chain_is_optimistic gauge
+cc_chain_is_optimistic 0
+# HELP cc_chain_optimistic_transitions Optimistic status transitions (direction=validated|invalidated).
+# TYPE cc_chain_optimistic_transitions counter
+cc_chain_optimistic_transitions_total{direction="validated"} 0
+cc_chain_optimistic_transitions_total{direction="invalidated"} 0
+# HELP cc_chain_valid_became_invalid Valid → Invalid hard errors (EL consensus failure; expected zero forever).
+# TYPE cc_chain_valid_became_invalid counter
+cc_chain_valid_became_invalid_total 0
+# HELP cc_chain_justified_invalidated Justified-checkpoint invalidation exits.
+# TYPE cc_chain_justified_invalidated counter
+cc_chain_justified_invalidated_total 0
+# HELP cc_chain_invalidated_nodes Proto-array nodes marked Invalid by a backwards walk.
+# TYPE cc_chain_invalidated_nodes counter
+cc_chain_invalidated_nodes_total 0
+# HELP cc_chain_pending_engine_occupancy Current pending_engine map occupancy.
+# TYPE cc_chain_pending_engine_occupancy gauge
+cc_chain_pending_engine_occupancy 0
+# HELP cc_chain_pending_engine_dropped Blocks dropped from pending_engine (timeout or capacity eviction).
+# TYPE cc_chain_pending_engine_dropped counter
+cc_chain_pending_engine_dropped_total 0
+# HELP cc_chain_pubkey_cache_len PubkeyIndexMap length on the state the core is importing against (M13 / P0-19).
+# TYPE cc_chain_pubkey_cache_len gauge
+cc_chain_pubkey_cache_len 0
+# HELP cc_chain_validators_len Validator registry length on the state the core is importing against (M13 / P0-19).
+# TYPE cc_chain_validators_len gauge
+cc_chain_validators_len 0
+# HELP process_cpu_seconds Total user and system CPU time spent in seconds
+# TYPE process_cpu_seconds counter
+# UNIT process_cpu_seconds seconds
+process_cpu_seconds_total 0.33
+# HELP process_resident_memory_bytes Resident memory size in bytes
+# TYPE process_resident_memory_bytes gauge
+# UNIT process_resident_memory_bytes bytes
+process_resident_memory_bytes 11206656
+# HELP process_virtual_memory_bytes Virtual memory size in bytes
+# TYPE process_virtual_memory_bytes gauge
+# UNIT process_virtual_memory_bytes bytes
+process_virtual_memory_bytes 294948864
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds
+# TYPE process_start_time_seconds gauge
+# UNIT process_start_time_seconds seconds
+process_start_time_seconds 1786815245.7
+# HELP process_open_fds Number of open file descriptors
+# TYPE process_open_fds gauge
+process_open_fds 20
+# EOF

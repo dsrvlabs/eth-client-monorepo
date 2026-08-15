@@ -1,0 +1,364 @@
+# HELP cc_build_info Build identity (always 1); labels match eth.common.v1.BuildInfo.
+# TYPE cc_build_info gauge
+cc_build_info{service="engine",version="0.1.0",git_sha="e2ad297",rustc="rustc 1.97.1 (8bab26f4f 2026-07-14)"} 1
+# HELP cc_grpc_requests Total gRPC requests handled by this process.
+# TYPE cc_grpc_requests counter
+cc_grpc_requests_total{service="engine",method="unknown",code="0"} 729
+# HELP cc_grpc_request_duration_seconds gRPC request latency.
+# TYPE cc_grpc_request_duration_seconds histogram
+# UNIT cc_grpc_request_duration_seconds seconds
+cc_grpc_request_duration_seconds_sum{service="engine",method="unknown"} 0.07177454500000001
+cc_grpc_request_duration_seconds_count{service="engine",method="unknown"} 729
+cc_grpc_request_duration_seconds_bucket{le="0.0005",service="engine",method="unknown"} 706
+cc_grpc_request_duration_seconds_bucket{le="0.001",service="engine",method="unknown"} 726
+cc_grpc_request_duration_seconds_bucket{le="0.0025",service="engine",method="unknown"} 729
+cc_grpc_request_duration_seconds_bucket{le="0.005",service="engine",method="unknown"} 729
+cc_grpc_request_duration_seconds_bucket{le="0.01",service="engine",method="unknown"} 729
+cc_grpc_request_duration_seconds_bucket{le="0.025",service="engine",method="unknown"} 729
+cc_grpc_request_duration_seconds_bucket{le="0.05",service="engine",method="unknown"} 729
+cc_grpc_request_duration_seconds_bucket{le="0.1",service="engine",method="unknown"} 729
+cc_grpc_request_duration_seconds_bucket{le="0.25",service="engine",method="unknown"} 729
+cc_grpc_request_duration_seconds_bucket{le="0.5",service="engine",method="unknown"} 729
+cc_grpc_request_duration_seconds_bucket{le="1.0",service="engine",method="unknown"} 729
+cc_grpc_request_duration_seconds_bucket{le="2.5",service="engine",method="unknown"} 729
+cc_grpc_request_duration_seconds_bucket{le="5.0",service="engine",method="unknown"} 729
+cc_grpc_request_duration_seconds_bucket{le="10.0",service="engine",method="unknown"} 729
+cc_grpc_request_duration_seconds_bucket{le="+Inf",service="engine",method="unknown"} 729
+# HELP cc_peer_health Peer aggregate health (1=up, 0=down); driven by the peer prober.
+# TYPE cc_peer_health gauge
+cc_peer_health{service="engine",peer="chain"} 1
+# HELP cc_engine_request_seconds Wall time of Engine API requests (method; decimal_buckets(-2,1); soft deadline is a separate counter — ATTESTATION_DUE_BPS, not a 4.0 bucket).
+# TYPE cc_engine_request_seconds histogram
+# UNIT cc_engine_request_seconds seconds
+cc_engine_request_seconds_sum{method="exchangeCapabilities"} 0.0
+cc_engine_request_seconds_count{method="exchangeCapabilities"} 1
+cc_engine_request_seconds_bucket{le="0.01",method="exchangeCapabilities"} 1
+cc_engine_request_seconds_bucket{le="0.02",method="exchangeCapabilities"} 1
+cc_engine_request_seconds_bucket{le="0.05",method="exchangeCapabilities"} 1
+cc_engine_request_seconds_bucket{le="0.1",method="exchangeCapabilities"} 1
+cc_engine_request_seconds_bucket{le="0.2",method="exchangeCapabilities"} 1
+cc_engine_request_seconds_bucket{le="0.5",method="exchangeCapabilities"} 1
+cc_engine_request_seconds_bucket{le="1.0",method="exchangeCapabilities"} 1
+cc_engine_request_seconds_bucket{le="2.0",method="exchangeCapabilities"} 1
+cc_engine_request_seconds_bucket{le="5.0",method="exchangeCapabilities"} 1
+cc_engine_request_seconds_bucket{le="10.0",method="exchangeCapabilities"} 1
+cc_engine_request_seconds_bucket{le="+Inf",method="exchangeCapabilities"} 1
+cc_engine_request_seconds_sum{method="eth_syncing"} 0.625411086
+cc_engine_request_seconds_count{method="eth_syncing"} 615
+cc_engine_request_seconds_bucket{le="0.01",method="eth_syncing"} 615
+cc_engine_request_seconds_bucket{le="0.02",method="eth_syncing"} 615
+cc_engine_request_seconds_bucket{le="0.05",method="eth_syncing"} 615
+cc_engine_request_seconds_bucket{le="0.1",method="eth_syncing"} 615
+cc_engine_request_seconds_bucket{le="0.2",method="eth_syncing"} 615
+cc_engine_request_seconds_bucket{le="0.5",method="eth_syncing"} 615
+cc_engine_request_seconds_bucket{le="1.0",method="eth_syncing"} 615
+cc_engine_request_seconds_bucket{le="2.0",method="eth_syncing"} 615
+cc_engine_request_seconds_bucket{le="5.0",method="eth_syncing"} 615
+cc_engine_request_seconds_bucket{le="10.0",method="eth_syncing"} 615
+cc_engine_request_seconds_bucket{le="+Inf",method="eth_syncing"} 615
+cc_engine_request_seconds_sum{method="newPayloadV4"} 0.0
+cc_engine_request_seconds_count{method="newPayloadV4"} 1
+cc_engine_request_seconds_bucket{le="0.01",method="newPayloadV4"} 1
+cc_engine_request_seconds_bucket{le="0.02",method="newPayloadV4"} 1
+cc_engine_request_seconds_bucket{le="0.05",method="newPayloadV4"} 1
+cc_engine_request_seconds_bucket{le="0.1",method="newPayloadV4"} 1
+cc_engine_request_seconds_bucket{le="0.2",method="newPayloadV4"} 1
+cc_engine_request_seconds_bucket{le="0.5",method="newPayloadV4"} 1
+cc_engine_request_seconds_bucket{le="1.0",method="newPayloadV4"} 1
+cc_engine_request_seconds_bucket{le="2.0",method="newPayloadV4"} 1
+cc_engine_request_seconds_bucket{le="5.0",method="newPayloadV4"} 1
+cc_engine_request_seconds_bucket{le="10.0",method="newPayloadV4"} 1
+cc_engine_request_seconds_bucket{le="+Inf",method="newPayloadV4"} 1
+cc_engine_request_seconds_sum{method="getBlobsV2"} 0.0
+cc_engine_request_seconds_count{method="getBlobsV2"} 1
+cc_engine_request_seconds_bucket{le="0.01",method="getBlobsV2"} 1
+cc_engine_request_seconds_bucket{le="0.02",method="getBlobsV2"} 1
+cc_engine_request_seconds_bucket{le="0.05",method="getBlobsV2"} 1
+cc_engine_request_seconds_bucket{le="0.1",method="getBlobsV2"} 1
+cc_engine_request_seconds_bucket{le="0.2",method="getBlobsV2"} 1
+cc_engine_request_seconds_bucket{le="0.5",method="getBlobsV2"} 1
+cc_engine_request_seconds_bucket{le="1.0",method="getBlobsV2"} 1
+cc_engine_request_seconds_bucket{le="2.0",method="getBlobsV2"} 1
+cc_engine_request_seconds_bucket{le="5.0",method="getBlobsV2"} 1
+cc_engine_request_seconds_bucket{le="10.0",method="getBlobsV2"} 1
+cc_engine_request_seconds_bucket{le="+Inf",method="getBlobsV2"} 1
+cc_engine_request_seconds_sum{method="forkchoiceUpdatedV3"} 0.0
+cc_engine_request_seconds_count{method="forkchoiceUpdatedV3"} 1
+cc_engine_request_seconds_bucket{le="0.01",method="forkchoiceUpdatedV3"} 1
+cc_engine_request_seconds_bucket{le="0.02",method="forkchoiceUpdatedV3"} 1
+cc_engine_request_seconds_bucket{le="0.05",method="forkchoiceUpdatedV3"} 1
+cc_engine_request_seconds_bucket{le="0.1",method="forkchoiceUpdatedV3"} 1
+cc_engine_request_seconds_bucket{le="0.2",method="forkchoiceUpdatedV3"} 1
+cc_engine_request_seconds_bucket{le="0.5",method="forkchoiceUpdatedV3"} 1
+cc_engine_request_seconds_bucket{le="1.0",method="forkchoiceUpdatedV3"} 1
+cc_engine_request_seconds_bucket{le="2.0",method="forkchoiceUpdatedV3"} 1
+cc_engine_request_seconds_bucket{le="5.0",method="forkchoiceUpdatedV3"} 1
+cc_engine_request_seconds_bucket{le="10.0",method="forkchoiceUpdatedV3"} 1
+cc_engine_request_seconds_bucket{le="+Inf",method="forkchoiceUpdatedV3"} 1
+# HELP cc_engine_encode_seconds Wall time of SSZ-decode + JSON-hex-encode (method; millisecond ladder).
+# TYPE cc_engine_encode_seconds histogram
+# UNIT cc_engine_encode_seconds seconds
+cc_engine_encode_seconds_sum{method="newPayloadV4"} 0.0
+cc_engine_encode_seconds_count{method="newPayloadV4"} 1
+cc_engine_encode_seconds_bucket{le="0.001",method="newPayloadV4"} 1
+cc_engine_encode_seconds_bucket{le="0.0025",method="newPayloadV4"} 1
+cc_engine_encode_seconds_bucket{le="0.005",method="newPayloadV4"} 1
+cc_engine_encode_seconds_bucket{le="0.01",method="newPayloadV4"} 1
+cc_engine_encode_seconds_bucket{le="0.025",method="newPayloadV4"} 1
+cc_engine_encode_seconds_bucket{le="0.05",method="newPayloadV4"} 1
+cc_engine_encode_seconds_bucket{le="0.1",method="newPayloadV4"} 1
+cc_engine_encode_seconds_bucket{le="0.25",method="newPayloadV4"} 1
+cc_engine_encode_seconds_bucket{le="0.5",method="newPayloadV4"} 1
+cc_engine_encode_seconds_bucket{le="1.0",method="newPayloadV4"} 1
+cc_engine_encode_seconds_bucket{le="+Inf",method="newPayloadV4"} 1
+cc_engine_encode_seconds_sum{method="forkchoiceUpdatedV3"} 0.0
+cc_engine_encode_seconds_count{method="forkchoiceUpdatedV3"} 1
+cc_engine_encode_seconds_bucket{le="0.001",method="forkchoiceUpdatedV3"} 1
+cc_engine_encode_seconds_bucket{le="0.0025",method="forkchoiceUpdatedV3"} 1
+cc_engine_encode_seconds_bucket{le="0.005",method="forkchoiceUpdatedV3"} 1
+cc_engine_encode_seconds_bucket{le="0.01",method="forkchoiceUpdatedV3"} 1
+cc_engine_encode_seconds_bucket{le="0.025",method="forkchoiceUpdatedV3"} 1
+cc_engine_encode_seconds_bucket{le="0.05",method="forkchoiceUpdatedV3"} 1
+cc_engine_encode_seconds_bucket{le="0.1",method="forkchoiceUpdatedV3"} 1
+cc_engine_encode_seconds_bucket{le="0.25",method="forkchoiceUpdatedV3"} 1
+cc_engine_encode_seconds_bucket{le="0.5",method="forkchoiceUpdatedV3"} 1
+cc_engine_encode_seconds_bucket{le="1.0",method="forkchoiceUpdatedV3"} 1
+cc_engine_encode_seconds_bucket{le="+Inf",method="forkchoiceUpdatedV3"} 1
+cc_engine_encode_seconds_sum{method="exchangeCapabilities"} 0.0
+cc_engine_encode_seconds_count{method="exchangeCapabilities"} 1
+cc_engine_encode_seconds_bucket{le="0.001",method="exchangeCapabilities"} 1
+cc_engine_encode_seconds_bucket{le="0.0025",method="exchangeCapabilities"} 1
+cc_engine_encode_seconds_bucket{le="0.005",method="exchangeCapabilities"} 1
+cc_engine_encode_seconds_bucket{le="0.01",method="exchangeCapabilities"} 1
+cc_engine_encode_seconds_bucket{le="0.025",method="exchangeCapabilities"} 1
+cc_engine_encode_seconds_bucket{le="0.05",method="exchangeCapabilities"} 1
+cc_engine_encode_seconds_bucket{le="0.1",method="exchangeCapabilities"} 1
+cc_engine_encode_seconds_bucket{le="0.25",method="exchangeCapabilities"} 1
+cc_engine_encode_seconds_bucket{le="0.5",method="exchangeCapabilities"} 1
+cc_engine_encode_seconds_bucket{le="1.0",method="exchangeCapabilities"} 1
+cc_engine_encode_seconds_bucket{le="+Inf",method="exchangeCapabilities"} 1
+cc_engine_encode_seconds_sum{method="eth_syncing"} 0.0
+cc_engine_encode_seconds_count{method="eth_syncing"} 1
+cc_engine_encode_seconds_bucket{le="0.001",method="eth_syncing"} 1
+cc_engine_encode_seconds_bucket{le="0.0025",method="eth_syncing"} 1
+cc_engine_encode_seconds_bucket{le="0.005",method="eth_syncing"} 1
+cc_engine_encode_seconds_bucket{le="0.01",method="eth_syncing"} 1
+cc_engine_encode_seconds_bucket{le="0.025",method="eth_syncing"} 1
+cc_engine_encode_seconds_bucket{le="0.05",method="eth_syncing"} 1
+cc_engine_encode_seconds_bucket{le="0.1",method="eth_syncing"} 1
+cc_engine_encode_seconds_bucket{le="0.25",method="eth_syncing"} 1
+cc_engine_encode_seconds_bucket{le="0.5",method="eth_syncing"} 1
+cc_engine_encode_seconds_bucket{le="1.0",method="eth_syncing"} 1
+cc_engine_encode_seconds_bucket{le="+Inf",method="eth_syncing"} 1
+cc_engine_encode_seconds_sum{method="getBlobsV2"} 0.0
+cc_engine_encode_seconds_count{method="getBlobsV2"} 1
+cc_engine_encode_seconds_bucket{le="0.001",method="getBlobsV2"} 1
+cc_engine_encode_seconds_bucket{le="0.0025",method="getBlobsV2"} 1
+cc_engine_encode_seconds_bucket{le="0.005",method="getBlobsV2"} 1
+cc_engine_encode_seconds_bucket{le="0.01",method="getBlobsV2"} 1
+cc_engine_encode_seconds_bucket{le="0.025",method="getBlobsV2"} 1
+cc_engine_encode_seconds_bucket{le="0.05",method="getBlobsV2"} 1
+cc_engine_encode_seconds_bucket{le="0.1",method="getBlobsV2"} 1
+cc_engine_encode_seconds_bucket{le="0.25",method="getBlobsV2"} 1
+cc_engine_encode_seconds_bucket{le="0.5",method="getBlobsV2"} 1
+cc_engine_encode_seconds_bucket{le="1.0",method="getBlobsV2"} 1
+cc_engine_encode_seconds_bucket{le="+Inf",method="getBlobsV2"} 1
+# HELP cc_engine_upcheck_seconds Wall time of eth_syncing upcheck (boundary at 1.0 s).
+# TYPE cc_engine_upcheck_seconds histogram
+# UNIT cc_engine_upcheck_seconds seconds
+cc_engine_upcheck_seconds_sum 0.6294069410000008
+cc_engine_upcheck_seconds_count 615
+cc_engine_upcheck_seconds_bucket{le="0.001"} 339
+cc_engine_upcheck_seconds_bucket{le="0.005"} 614
+cc_engine_upcheck_seconds_bucket{le="0.01"} 615
+cc_engine_upcheck_seconds_bucket{le="0.05"} 615
+cc_engine_upcheck_seconds_bucket{le="0.1"} 615
+cc_engine_upcheck_seconds_bucket{le="0.25"} 615
+cc_engine_upcheck_seconds_bucket{le="0.5"} 615
+cc_engine_upcheck_seconds_bucket{le="1.0"} 615
+cc_engine_upcheck_seconds_bucket{le="2.0"} 615
+cc_engine_upcheck_seconds_bucket{le="+Inf"} 615
+# HELP cc_engine_payload_status PayloadStatusV1 outcomes (method, status=VALID|INVALID|SYNCING|ACCEPTED|INVALID_BLOCK_HASH).
+# TYPE cc_engine_payload_status counter
+cc_engine_payload_status_total{method="newPayloadV4",status="ACCEPTED"} 0
+cc_engine_payload_status_total{method="forkchoiceUpdatedV3",status="INVALID"} 0
+cc_engine_payload_status_total{method="newPayloadV4",status="VALID"} 0
+cc_engine_payload_status_total{method="forkchoiceUpdatedV3",status="INVALID_BLOCK_HASH"} 0
+cc_engine_payload_status_total{method="newPayloadV4",status="SYNCING"} 0
+cc_engine_payload_status_total{method="forkchoiceUpdatedV3",status="ACCEPTED"} 0
+cc_engine_payload_status_total{method="newPayloadV4",status="INVALID"} 0
+cc_engine_payload_status_total{method="newPayloadV4",status="INVALID_BLOCK_HASH"} 0
+cc_engine_payload_status_total{method="forkchoiceUpdatedV3",status="VALID"} 0
+cc_engine_payload_status_total{method="forkchoiceUpdatedV3",status="SYNCING"} 0
+# HELP cc_engine_soft_deadline_exceeded Engine API calls that exceeded the runtime-derived attestation soft deadline (ATTESTATION_DUE_BPS × SLOT_DURATION_MS); never aborts.
+# TYPE cc_engine_soft_deadline_exceeded counter
+cc_engine_soft_deadline_exceeded_total{method="exchangeCapabilities"} 0
+cc_engine_soft_deadline_exceeded_total{method="eth_syncing"} 0
+cc_engine_soft_deadline_exceeded_total{method="newPayloadV4"} 0
+cc_engine_soft_deadline_exceeded_total{method="getBlobsV2"} 0
+cc_engine_soft_deadline_exceeded_total{method="forkchoiceUpdatedV3"} 0
+# HELP cc_engine_transport_timeout Engine API calls that hit the per-method transport timeout (method).
+# TYPE cc_engine_transport_timeout counter
+cc_engine_transport_timeout_total{method="getBlobsV2"} 0
+cc_engine_transport_timeout_total{method="exchangeCapabilities"} 0
+cc_engine_transport_timeout_total{method="eth_syncing"} 0
+cc_engine_transport_timeout_total{method="newPayloadV4"} 0
+cc_engine_transport_timeout_total{method="forkchoiceUpdatedV3"} 0
+# HELP cc_engine_errors Engine transport/JSON-RPC errors (code; unknown numeric codes collapse to other).
+# TYPE cc_engine_errors counter
+cc_engine_errors_total{code="-38001"} 0
+cc_engine_errors_total{code="-32601"} 0
+cc_engine_errors_total{code="http_4xx"} 0
+cc_engine_errors_total{code="-32602"} 0
+cc_engine_errors_total{code="decode"} 0
+cc_engine_errors_total{code="http_403"} 0
+cc_engine_errors_total{code="-38002"} 0
+cc_engine_errors_total{code="-38003"} 0
+cc_engine_errors_total{code="-38005"} 0
+cc_engine_errors_total{code="transport"} 0
+cc_engine_errors_total{code="timeout"} 0
+cc_engine_errors_total{code="http_401"} 0
+cc_engine_errors_total{code="-32603"} 0
+cc_engine_errors_total{code="-38004"} 0
+cc_engine_errors_total{code="other"} 0
+cc_engine_errors_total{code="-32000"} 0
+cc_engine_errors_total{code="http_5xx"} 0
+cc_engine_errors_total{code="-32700"} 0
+cc_engine_errors_total{code="-38006"} 0
+cc_engine_errors_total{code="-32600"} 0
+# HELP cc_engine_unsupported_fork Unsupported-fork errors (EL -38005 or our version-gate alarm).
+# TYPE cc_engine_unsupported_fork counter
+cc_engine_unsupported_fork_total 0
+# HELP cc_engine_capability_missing Advertised capability missing on the connected EL (method; 0/1 gauge).
+# TYPE cc_engine_capability_missing gauge
+cc_engine_capability_missing{method="forkchoiceUpdatedV3"} 0
+cc_engine_capability_missing{method="newPayloadV4"} 0
+cc_engine_capability_missing{method="exchangeCapabilities"} 0
+cc_engine_capability_missing{method="eth_syncing"} 0
+cc_engine_capability_missing{method="getBlobsV2"} 0
+# HELP cc_engine_state Engine internal state (state=synced|syncing|offline|auth_failed; 0/1 gauge).
+# TYPE cc_engine_state gauge
+cc_engine_state{state="offline"} 0
+cc_engine_state{state="auth_failed"} 0
+cc_engine_state{state="syncing"} 1
+cc_engine_state{state="synced"} 0
+# HELP cc_engine_el_offline Execution layer offline from the engine's perspective (0/1).
+# TYPE cc_engine_el_offline gauge
+cc_engine_el_offline 0
+# HELP cc_engine_fcu_dropped_stale forkchoiceUpdated calls dropped because a newer sequence superseded them.
+# TYPE cc_engine_fcu_dropped_stale counter
+cc_engine_fcu_dropped_stale_total 0
+# HELP cc_engine_inject_stream_state Engine↔p2p inject stream connected (0/1).
+# TYPE cc_engine_inject_stream_state gauge
+cc_engine_inject_stream_state 1
+# HELP cc_engine_getblobs getBlobsV2 outcomes (result=complete|miss|error).
+# TYPE cc_engine_getblobs counter
+cc_engine_getblobs_total{result="error"} 0
+cc_engine_getblobs_total{result="miss"} 0
+cc_engine_getblobs_total{result="complete"} 0
+# HELP cc_engine_cells_computed KZG cells computed on the getBlobsV2 fast path.
+# TYPE cc_engine_cells_computed counter
+cc_engine_cells_computed_total 0
+# HELP cc_engine_fastpath_seconds Wall time of fast-path stages (stage=fetch|compute_cells|assemble|inject).
+# TYPE cc_engine_fastpath_seconds histogram
+# UNIT cc_engine_fastpath_seconds seconds
+cc_engine_fastpath_seconds_sum{stage="assemble"} 0.0
+cc_engine_fastpath_seconds_count{stage="assemble"} 1
+cc_engine_fastpath_seconds_bucket{le="0.005",stage="assemble"} 1
+cc_engine_fastpath_seconds_bucket{le="0.01",stage="assemble"} 1
+cc_engine_fastpath_seconds_bucket{le="0.025",stage="assemble"} 1
+cc_engine_fastpath_seconds_bucket{le="0.05",stage="assemble"} 1
+cc_engine_fastpath_seconds_bucket{le="0.1",stage="assemble"} 1
+cc_engine_fastpath_seconds_bucket{le="0.25",stage="assemble"} 1
+cc_engine_fastpath_seconds_bucket{le="0.5",stage="assemble"} 1
+cc_engine_fastpath_seconds_bucket{le="1.0",stage="assemble"} 1
+cc_engine_fastpath_seconds_bucket{le="2.0",stage="assemble"} 1
+cc_engine_fastpath_seconds_bucket{le="4.0",stage="assemble"} 1
+cc_engine_fastpath_seconds_bucket{le="+Inf",stage="assemble"} 1
+cc_engine_fastpath_seconds_sum{stage="inject"} 0.0
+cc_engine_fastpath_seconds_count{stage="inject"} 1
+cc_engine_fastpath_seconds_bucket{le="0.005",stage="inject"} 1
+cc_engine_fastpath_seconds_bucket{le="0.01",stage="inject"} 1
+cc_engine_fastpath_seconds_bucket{le="0.025",stage="inject"} 1
+cc_engine_fastpath_seconds_bucket{le="0.05",stage="inject"} 1
+cc_engine_fastpath_seconds_bucket{le="0.1",stage="inject"} 1
+cc_engine_fastpath_seconds_bucket{le="0.25",stage="inject"} 1
+cc_engine_fastpath_seconds_bucket{le="0.5",stage="inject"} 1
+cc_engine_fastpath_seconds_bucket{le="1.0",stage="inject"} 1
+cc_engine_fastpath_seconds_bucket{le="2.0",stage="inject"} 1
+cc_engine_fastpath_seconds_bucket{le="4.0",stage="inject"} 1
+cc_engine_fastpath_seconds_bucket{le="+Inf",stage="inject"} 1
+cc_engine_fastpath_seconds_sum{stage="fetch"} 0.0
+cc_engine_fastpath_seconds_count{stage="fetch"} 1
+cc_engine_fastpath_seconds_bucket{le="0.005",stage="fetch"} 1
+cc_engine_fastpath_seconds_bucket{le="0.01",stage="fetch"} 1
+cc_engine_fastpath_seconds_bucket{le="0.025",stage="fetch"} 1
+cc_engine_fastpath_seconds_bucket{le="0.05",stage="fetch"} 1
+cc_engine_fastpath_seconds_bucket{le="0.1",stage="fetch"} 1
+cc_engine_fastpath_seconds_bucket{le="0.25",stage="fetch"} 1
+cc_engine_fastpath_seconds_bucket{le="0.5",stage="fetch"} 1
+cc_engine_fastpath_seconds_bucket{le="1.0",stage="fetch"} 1
+cc_engine_fastpath_seconds_bucket{le="2.0",stage="fetch"} 1
+cc_engine_fastpath_seconds_bucket{le="4.0",stage="fetch"} 1
+cc_engine_fastpath_seconds_bucket{le="+Inf",stage="fetch"} 1
+cc_engine_fastpath_seconds_sum{stage="compute_cells"} 0.0
+cc_engine_fastpath_seconds_count{stage="compute_cells"} 1
+cc_engine_fastpath_seconds_bucket{le="0.005",stage="compute_cells"} 1
+cc_engine_fastpath_seconds_bucket{le="0.01",stage="compute_cells"} 1
+cc_engine_fastpath_seconds_bucket{le="0.025",stage="compute_cells"} 1
+cc_engine_fastpath_seconds_bucket{le="0.05",stage="compute_cells"} 1
+cc_engine_fastpath_seconds_bucket{le="0.1",stage="compute_cells"} 1
+cc_engine_fastpath_seconds_bucket{le="0.25",stage="compute_cells"} 1
+cc_engine_fastpath_seconds_bucket{le="0.5",stage="compute_cells"} 1
+cc_engine_fastpath_seconds_bucket{le="1.0",stage="compute_cells"} 1
+cc_engine_fastpath_seconds_bucket{le="2.0",stage="compute_cells"} 1
+cc_engine_fastpath_seconds_bucket{le="4.0",stage="compute_cells"} 1
+cc_engine_fastpath_seconds_bucket{le="+Inf",stage="compute_cells"} 1
+# HELP cc_engine_sidecars_published Sidecars published to gossip (subscribed=true|false; false must stay zero).
+# TYPE cc_engine_sidecars_published counter
+cc_engine_sidecars_published_total{subscribed="false"} 0
+cc_engine_sidecars_published_total{subscribed="true"} 0
+# HELP cc_engine_sidecars_injected Sidecars injected into p2p (outcome=new|duplicate|rejected).
+# TYPE cc_engine_sidecars_injected counter
+cc_engine_sidecars_injected_total{outcome="new"} 0
+cc_engine_sidecars_injected_total{outcome="duplicate"} 0
+cc_engine_sidecars_injected_total{outcome="rejected"} 0
+# HELP cc_engine_fastpath_dropped Fast-path work dropped under load or disconnect.
+# TYPE cc_engine_fastpath_dropped counter
+cc_engine_fastpath_dropped_total 0
+# HELP cc_engine_fastpath_to_available_seconds Wall time from fast-path start to DA available (boundaries at 4/12/48 s).
+# TYPE cc_engine_fastpath_to_available_seconds histogram
+# UNIT cc_engine_fastpath_to_available_seconds seconds
+cc_engine_fastpath_to_available_seconds_sum 0.0
+cc_engine_fastpath_to_available_seconds_count 1
+cc_engine_fastpath_to_available_seconds_bucket{le="0.1"} 1
+cc_engine_fastpath_to_available_seconds_bucket{le="0.25"} 1
+cc_engine_fastpath_to_available_seconds_bucket{le="0.5"} 1
+cc_engine_fastpath_to_available_seconds_bucket{le="1.0"} 1
+cc_engine_fastpath_to_available_seconds_bucket{le="2.0"} 1
+cc_engine_fastpath_to_available_seconds_bucket{le="4.0"} 1
+cc_engine_fastpath_to_available_seconds_bucket{le="8.0"} 1
+cc_engine_fastpath_to_available_seconds_bucket{le="12.0"} 1
+cc_engine_fastpath_to_available_seconds_bucket{le="24.0"} 1
+cc_engine_fastpath_to_available_seconds_bucket{le="48.0"} 1
+cc_engine_fastpath_to_available_seconds_bucket{le="+Inf"} 1
+# HELP process_cpu_seconds Total user and system CPU time spent in seconds
+# TYPE process_cpu_seconds counter
+# UNIT process_cpu_seconds seconds
+process_cpu_seconds_total 1.48
+# HELP process_resident_memory_bytes Resident memory size in bytes
+# TYPE process_resident_memory_bytes gauge
+# UNIT process_resident_memory_bytes bytes
+process_resident_memory_bytes 12038144
+# HELP process_virtual_memory_bytes Virtual memory size in bytes
+# TYPE process_virtual_memory_bytes gauge
+# UNIT process_virtual_memory_bytes bytes
+process_virtual_memory_bytes 431738880
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds
+# TYPE process_start_time_seconds gauge
+# UNIT process_start_time_seconds seconds
+process_start_time_seconds 1786815251.33
+# HELP process_open_fds Number of open file descriptors
+# TYPE process_open_fds gauge
+process_open_fds 16
+# EOF

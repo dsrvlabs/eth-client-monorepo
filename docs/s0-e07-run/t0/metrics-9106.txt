@@ -1,0 +1,674 @@
+# HELP cc_build_info Build identity (always 1); labels match eth.common.v1.BuildInfo.
+# TYPE cc_build_info gauge
+cc_build_info{service="storage",version="0.1.0",git_sha="e2ad297",rustc="rustc 1.97.1 (8bab26f4f 2026-07-14)"} 1
+# HELP cc_grpc_requests Total gRPC requests handled by this process.
+# TYPE cc_grpc_requests counter
+cc_grpc_requests_total{service="storage",method="unknown",code="0"} 40
+# HELP cc_grpc_request_duration_seconds gRPC request latency.
+# TYPE cc_grpc_request_duration_seconds histogram
+# UNIT cc_grpc_request_duration_seconds seconds
+cc_grpc_request_duration_seconds_sum{service="storage",method="unknown"} 0.005220795000000001
+cc_grpc_request_duration_seconds_count{service="storage",method="unknown"} 40
+cc_grpc_request_duration_seconds_bucket{le="0.0005",service="storage",method="unknown"} 38
+cc_grpc_request_duration_seconds_bucket{le="0.001",service="storage",method="unknown"} 39
+cc_grpc_request_duration_seconds_bucket{le="0.0025",service="storage",method="unknown"} 40
+cc_grpc_request_duration_seconds_bucket{le="0.005",service="storage",method="unknown"} 40
+cc_grpc_request_duration_seconds_bucket{le="0.01",service="storage",method="unknown"} 40
+cc_grpc_request_duration_seconds_bucket{le="0.025",service="storage",method="unknown"} 40
+cc_grpc_request_duration_seconds_bucket{le="0.05",service="storage",method="unknown"} 40
+cc_grpc_request_duration_seconds_bucket{le="0.1",service="storage",method="unknown"} 40
+cc_grpc_request_duration_seconds_bucket{le="0.25",service="storage",method="unknown"} 40
+cc_grpc_request_duration_seconds_bucket{le="0.5",service="storage",method="unknown"} 40
+cc_grpc_request_duration_seconds_bucket{le="1.0",service="storage",method="unknown"} 40
+cc_grpc_request_duration_seconds_bucket{le="2.5",service="storage",method="unknown"} 40
+cc_grpc_request_duration_seconds_bucket{le="5.0",service="storage",method="unknown"} 40
+cc_grpc_request_duration_seconds_bucket{le="10.0",service="storage",method="unknown"} 40
+cc_grpc_request_duration_seconds_bucket{le="+Inf",service="storage",method="unknown"} 40
+# HELP cc_peer_health Peer aggregate health (1=up, 0=down); driven by the peer prober.
+# TYPE cc_peer_health gauge
+cc_peer_health{service="storage",peer="chain"} 1
+# HELP cc_storage_bytes_total Stored bytes by class (blocks|columns|snapshots|index|meta).
+# TYPE cc_storage_bytes_total gauge
+cc_storage_bytes_total{class="columns"} 0
+cc_storage_bytes_total{class="index"} 0
+cc_storage_bytes_total{class="snapshots"} 0
+cc_storage_bytes_total{class="blocks"} 0
+cc_storage_bytes_total{class="meta"} 0
+# HELP cc_storage_rows_total Stored rows by class.
+# TYPE cc_storage_rows_total gauge
+cc_storage_rows_total{class="columns"} 0
+cc_storage_rows_total{class="snapshots"} 0
+cc_storage_rows_total{class="meta"} 0
+cc_storage_rows_total{class="index"} 0
+cc_storage_rows_total{class="blocks"} 0
+# HELP cc_storage_disk_bytes On-disk store size in bytes (includes free pages).
+# TYPE cc_storage_disk_bytes gauge
+cc_storage_disk_bytes 1056768
+# HELP cc_storage_live_set_bytes Live-set (reachable) store size in bytes.
+# TYPE cc_storage_live_set_bytes gauge
+cc_storage_live_set_bytes 0
+# HELP cc_storage_tables_total Open tables by class.
+# TYPE cc_storage_tables_total gauge
+cc_storage_tables_total{class="index"} 0
+cc_storage_tables_total{class="meta"} 0
+cc_storage_tables_total{class="blocks"} 0
+cc_storage_tables_total{class="columns"} 0
+cc_storage_tables_total{class="snapshots"} 0
+# HELP cc_storage_pruned_bytes Bytes pruned by class (cumulative).
+# TYPE cc_storage_pruned_bytes counter
+cc_storage_pruned_bytes_total{class="snapshots"} 0
+cc_storage_pruned_bytes_total{class="columns"} 0
+cc_storage_pruned_bytes_total{class="blocks"} 0
+cc_storage_pruned_bytes_total{class="index"} 0
+cc_storage_pruned_bytes_total{class="meta"} 0
+# HELP cc_storage_pruned_rows Rows pruned by class (cumulative).
+# TYPE cc_storage_pruned_rows counter
+cc_storage_pruned_rows_total{class="meta"} 0
+cc_storage_pruned_rows_total{class="columns"} 0
+cc_storage_pruned_rows_total{class="snapshots"} 0
+cc_storage_pruned_rows_total{class="index"} 0
+cc_storage_pruned_rows_total{class="blocks"} 0
+# HELP cc_storage_prune_seconds Wall time of a prune pass (pass; boundary at 2.0 s).
+# TYPE cc_storage_prune_seconds histogram
+# UNIT cc_storage_prune_seconds seconds
+cc_storage_prune_seconds_sum{pass="unfinalized"} 0.0
+cc_storage_prune_seconds_count{pass="unfinalized"} 1
+cc_storage_prune_seconds_bucket{le="0.05",pass="unfinalized"} 1
+cc_storage_prune_seconds_bucket{le="0.1",pass="unfinalized"} 1
+cc_storage_prune_seconds_bucket{le="0.25",pass="unfinalized"} 1
+cc_storage_prune_seconds_bucket{le="0.5",pass="unfinalized"} 1
+cc_storage_prune_seconds_bucket{le="1.0",pass="unfinalized"} 1
+cc_storage_prune_seconds_bucket{le="2.0",pass="unfinalized"} 1
+cc_storage_prune_seconds_bucket{le="4.0",pass="unfinalized"} 1
+cc_storage_prune_seconds_bucket{le="8.0",pass="unfinalized"} 1
+cc_storage_prune_seconds_bucket{le="+Inf",pass="unfinalized"} 1
+cc_storage_prune_seconds_sum{pass="blocks"} 0.0
+cc_storage_prune_seconds_count{pass="blocks"} 1
+cc_storage_prune_seconds_bucket{le="0.05",pass="blocks"} 1
+cc_storage_prune_seconds_bucket{le="0.1",pass="blocks"} 1
+cc_storage_prune_seconds_bucket{le="0.25",pass="blocks"} 1
+cc_storage_prune_seconds_bucket{le="0.5",pass="blocks"} 1
+cc_storage_prune_seconds_bucket{le="1.0",pass="blocks"} 1
+cc_storage_prune_seconds_bucket{le="2.0",pass="blocks"} 1
+cc_storage_prune_seconds_bucket{le="4.0",pass="blocks"} 1
+cc_storage_prune_seconds_bucket{le="8.0",pass="blocks"} 1
+cc_storage_prune_seconds_bucket{le="+Inf",pass="blocks"} 1
+cc_storage_prune_seconds_sum{pass="snapshots"} 0.0
+cc_storage_prune_seconds_count{pass="snapshots"} 1
+cc_storage_prune_seconds_bucket{le="0.05",pass="snapshots"} 1
+cc_storage_prune_seconds_bucket{le="0.1",pass="snapshots"} 1
+cc_storage_prune_seconds_bucket{le="0.25",pass="snapshots"} 1
+cc_storage_prune_seconds_bucket{le="0.5",pass="snapshots"} 1
+cc_storage_prune_seconds_bucket{le="1.0",pass="snapshots"} 1
+cc_storage_prune_seconds_bucket{le="2.0",pass="snapshots"} 1
+cc_storage_prune_seconds_bucket{le="4.0",pass="snapshots"} 1
+cc_storage_prune_seconds_bucket{le="8.0",pass="snapshots"} 1
+cc_storage_prune_seconds_bucket{le="+Inf",pass="snapshots"} 1
+cc_storage_prune_seconds_sum{pass="state_roots"} 0.0
+cc_storage_prune_seconds_count{pass="state_roots"} 1
+cc_storage_prune_seconds_bucket{le="0.05",pass="state_roots"} 1
+cc_storage_prune_seconds_bucket{le="0.1",pass="state_roots"} 1
+cc_storage_prune_seconds_bucket{le="0.25",pass="state_roots"} 1
+cc_storage_prune_seconds_bucket{le="0.5",pass="state_roots"} 1
+cc_storage_prune_seconds_bucket{le="1.0",pass="state_roots"} 1
+cc_storage_prune_seconds_bucket{le="2.0",pass="state_roots"} 1
+cc_storage_prune_seconds_bucket{le="4.0",pass="state_roots"} 1
+cc_storage_prune_seconds_bucket{le="8.0",pass="state_roots"} 1
+cc_storage_prune_seconds_bucket{le="+Inf",pass="state_roots"} 1
+cc_storage_prune_seconds_sum{pass="columns"} 0.0
+cc_storage_prune_seconds_count{pass="columns"} 1
+cc_storage_prune_seconds_bucket{le="0.05",pass="columns"} 1
+cc_storage_prune_seconds_bucket{le="0.1",pass="columns"} 1
+cc_storage_prune_seconds_bucket{le="0.25",pass="columns"} 1
+cc_storage_prune_seconds_bucket{le="0.5",pass="columns"} 1
+cc_storage_prune_seconds_bucket{le="1.0",pass="columns"} 1
+cc_storage_prune_seconds_bucket{le="2.0",pass="columns"} 1
+cc_storage_prune_seconds_bucket{le="4.0",pass="columns"} 1
+cc_storage_prune_seconds_bucket{le="8.0",pass="columns"} 1
+cc_storage_prune_seconds_bucket{le="+Inf",pass="columns"} 1
+# HELP cc_storage_prune_lag_epochs Prune lag in epochs by class.
+# TYPE cc_storage_prune_lag_epochs gauge
+cc_storage_prune_lag_epochs{class="columns"} 112053
+cc_storage_prune_lag_epochs{class="snapshots"} 0
+cc_storage_prune_lag_epochs{class="index"} 0
+cc_storage_prune_lag_epochs{class="meta"} 0
+cc_storage_prune_lag_epochs{class="blocks"} 83125
+# HELP cc_storage_prune_deadline_exceeded Prune passes that exceeded the deadline (pass).
+# TYPE cc_storage_prune_deadline_exceeded counter
+cc_storage_prune_deadline_exceeded_total{pass="unfinalized"} 0
+cc_storage_prune_deadline_exceeded_total{pass="state_roots"} 0
+cc_storage_prune_deadline_exceeded_total{pass="columns"} 0
+cc_storage_prune_deadline_exceeded_total{pass="blocks"} 0
+cc_storage_prune_deadline_exceeded_total{pass="snapshots"} 0
+# HELP cc_storage_shard_dropped Shards dropped by class (cumulative).
+# TYPE cc_storage_shard_dropped counter
+cc_storage_shard_dropped_total{class="meta"} 0
+cc_storage_shard_dropped_total{class="blocks"} 0
+cc_storage_shard_dropped_total{class="index"} 0
+cc_storage_shard_dropped_total{class="columns"} 0
+cc_storage_shard_dropped_total{class="snapshots"} 0
+# HELP cc_storage_commit_seconds Wall time of a store commit (class; boundary at 0.5 s).
+# TYPE cc_storage_commit_seconds histogram
+# UNIT cc_storage_commit_seconds seconds
+cc_storage_commit_seconds_sum{class="blocks"} 0.0
+cc_storage_commit_seconds_count{class="blocks"} 1
+cc_storage_commit_seconds_bucket{le="0.001",class="blocks"} 1
+cc_storage_commit_seconds_bucket{le="0.005",class="blocks"} 1
+cc_storage_commit_seconds_bucket{le="0.01",class="blocks"} 1
+cc_storage_commit_seconds_bucket{le="0.025",class="blocks"} 1
+cc_storage_commit_seconds_bucket{le="0.05",class="blocks"} 1
+cc_storage_commit_seconds_bucket{le="0.1",class="blocks"} 1
+cc_storage_commit_seconds_bucket{le="0.25",class="blocks"} 1
+cc_storage_commit_seconds_bucket{le="0.5",class="blocks"} 1
+cc_storage_commit_seconds_bucket{le="1.0",class="blocks"} 1
+cc_storage_commit_seconds_bucket{le="2.5",class="blocks"} 1
+cc_storage_commit_seconds_bucket{le="+Inf",class="blocks"} 1
+cc_storage_commit_seconds_sum{class="meta"} 0.0
+cc_storage_commit_seconds_count{class="meta"} 1
+cc_storage_commit_seconds_bucket{le="0.001",class="meta"} 1
+cc_storage_commit_seconds_bucket{le="0.005",class="meta"} 1
+cc_storage_commit_seconds_bucket{le="0.01",class="meta"} 1
+cc_storage_commit_seconds_bucket{le="0.025",class="meta"} 1
+cc_storage_commit_seconds_bucket{le="0.05",class="meta"} 1
+cc_storage_commit_seconds_bucket{le="0.1",class="meta"} 1
+cc_storage_commit_seconds_bucket{le="0.25",class="meta"} 1
+cc_storage_commit_seconds_bucket{le="0.5",class="meta"} 1
+cc_storage_commit_seconds_bucket{le="1.0",class="meta"} 1
+cc_storage_commit_seconds_bucket{le="2.5",class="meta"} 1
+cc_storage_commit_seconds_bucket{le="+Inf",class="meta"} 1
+cc_storage_commit_seconds_sum{class="snapshots"} 0.0
+cc_storage_commit_seconds_count{class="snapshots"} 1
+cc_storage_commit_seconds_bucket{le="0.001",class="snapshots"} 1
+cc_storage_commit_seconds_bucket{le="0.005",class="snapshots"} 1
+cc_storage_commit_seconds_bucket{le="0.01",class="snapshots"} 1
+cc_storage_commit_seconds_bucket{le="0.025",class="snapshots"} 1
+cc_storage_commit_seconds_bucket{le="0.05",class="snapshots"} 1
+cc_storage_commit_seconds_bucket{le="0.1",class="snapshots"} 1
+cc_storage_commit_seconds_bucket{le="0.25",class="snapshots"} 1
+cc_storage_commit_seconds_bucket{le="0.5",class="snapshots"} 1
+cc_storage_commit_seconds_bucket{le="1.0",class="snapshots"} 1
+cc_storage_commit_seconds_bucket{le="2.5",class="snapshots"} 1
+cc_storage_commit_seconds_bucket{le="+Inf",class="snapshots"} 1
+cc_storage_commit_seconds_sum{class="index"} 0.0
+cc_storage_commit_seconds_count{class="index"} 1
+cc_storage_commit_seconds_bucket{le="0.001",class="index"} 1
+cc_storage_commit_seconds_bucket{le="0.005",class="index"} 1
+cc_storage_commit_seconds_bucket{le="0.01",class="index"} 1
+cc_storage_commit_seconds_bucket{le="0.025",class="index"} 1
+cc_storage_commit_seconds_bucket{le="0.05",class="index"} 1
+cc_storage_commit_seconds_bucket{le="0.1",class="index"} 1
+cc_storage_commit_seconds_bucket{le="0.25",class="index"} 1
+cc_storage_commit_seconds_bucket{le="0.5",class="index"} 1
+cc_storage_commit_seconds_bucket{le="1.0",class="index"} 1
+cc_storage_commit_seconds_bucket{le="2.5",class="index"} 1
+cc_storage_commit_seconds_bucket{le="+Inf",class="index"} 1
+cc_storage_commit_seconds_sum{class="columns"} 0.0
+cc_storage_commit_seconds_count{class="columns"} 1
+cc_storage_commit_seconds_bucket{le="0.001",class="columns"} 1
+cc_storage_commit_seconds_bucket{le="0.005",class="columns"} 1
+cc_storage_commit_seconds_bucket{le="0.01",class="columns"} 1
+cc_storage_commit_seconds_bucket{le="0.025",class="columns"} 1
+cc_storage_commit_seconds_bucket{le="0.05",class="columns"} 1
+cc_storage_commit_seconds_bucket{le="0.1",class="columns"} 1
+cc_storage_commit_seconds_bucket{le="0.25",class="columns"} 1
+cc_storage_commit_seconds_bucket{le="0.5",class="columns"} 1
+cc_storage_commit_seconds_bucket{le="1.0",class="columns"} 1
+cc_storage_commit_seconds_bucket{le="2.5",class="columns"} 1
+cc_storage_commit_seconds_bucket{le="+Inf",class="columns"} 1
+# HELP cc_storage_written_bytes Bytes written by class (cumulative).
+# TYPE cc_storage_written_bytes counter
+cc_storage_written_bytes_total{class="index"} 0
+cc_storage_written_bytes_total{class="meta"} 0
+cc_storage_written_bytes_total{class="columns"} 0
+cc_storage_written_bytes_total{class="snapshots"} 0
+cc_storage_written_bytes_total{class="blocks"} 0
+# HELP cc_storage_write_behind_lag_slots Write-behind lag in slots (boundary at 1).
+# TYPE cc_storage_write_behind_lag_slots histogram
+cc_storage_write_behind_lag_slots_sum 0.0
+cc_storage_write_behind_lag_slots_count 1
+cc_storage_write_behind_lag_slots_bucket{le="0.0"} 1
+cc_storage_write_behind_lag_slots_bucket{le="1.0"} 1
+cc_storage_write_behind_lag_slots_bucket{le="2.0"} 1
+cc_storage_write_behind_lag_slots_bucket{le="3.0"} 1
+cc_storage_write_behind_lag_slots_bucket{le="5.0"} 1
+cc_storage_write_behind_lag_slots_bucket{le="8.0"} 1
+cc_storage_write_behind_lag_slots_bucket{le="16.0"} 1
+cc_storage_write_behind_lag_slots_bucket{le="32.0"} 1
+cc_storage_write_behind_lag_slots_bucket{le="64.0"} 1
+cc_storage_write_behind_lag_slots_bucket{le="+Inf"} 1
+# HELP cc_storage_stream_reconnect Stream reconnects by reason (cursor_too_old|cursor_unknown_session|resource_exhausted|transport).
+# TYPE cc_storage_stream_reconnect counter
+cc_storage_stream_reconnect_total{reason="resource_exhausted"} 0
+cc_storage_stream_reconnect_total{reason="cursor_unknown_session"} 0
+cc_storage_stream_reconnect_total{reason="cursor_too_old"} 0
+cc_storage_stream_reconnect_total{reason="transport"} 0
+# HELP cc_storage_writer_queue_depth Writer queue depth by class.
+# TYPE cc_storage_writer_queue_depth gauge
+cc_storage_writer_queue_depth{class="p2"} 0
+cc_storage_writer_queue_depth{class="p1"} 0
+cc_storage_writer_queue_depth{class="p0"} 0
+# HELP cc_storage_writer_chunk_dropped Writer chunks dropped by class (cumulative).
+# TYPE cc_storage_writer_chunk_dropped counter
+cc_storage_writer_chunk_dropped_total{class="blocks"} 0
+cc_storage_writer_chunk_dropped_total{class="columns"} 0
+cc_storage_writer_chunk_dropped_total{class="snapshots"} 0
+cc_storage_writer_chunk_dropped_total{class="p1"} 0
+cc_storage_writer_chunk_dropped_total{class="p2"} 0
+cc_storage_writer_chunk_dropped_total{class="meta"} 0
+cc_storage_writer_chunk_dropped_total{class="p0"} 0
+cc_storage_writer_chunk_dropped_total{class="index"} 0
+# HELP cc_storage_read_txn_seconds Wall time of a read transaction (boundary at 1.0 s).
+# TYPE cc_storage_read_txn_seconds histogram
+# UNIT cc_storage_read_txn_seconds seconds
+cc_storage_read_txn_seconds_sum 0.0
+cc_storage_read_txn_seconds_count 1
+cc_storage_read_txn_seconds_bucket{le="0.001"} 1
+cc_storage_read_txn_seconds_bucket{le="0.005"} 1
+cc_storage_read_txn_seconds_bucket{le="0.01"} 1
+cc_storage_read_txn_seconds_bucket{le="0.05"} 1
+cc_storage_read_txn_seconds_bucket{le="0.1"} 1
+cc_storage_read_txn_seconds_bucket{le="0.25"} 1
+cc_storage_read_txn_seconds_bucket{le="0.5"} 1
+cc_storage_read_txn_seconds_bucket{le="1.0"} 1
+cc_storage_read_txn_seconds_bucket{le="2.0"} 1
+cc_storage_read_txn_seconds_bucket{le="+Inf"} 1
+# HELP cc_storage_serve_seconds Wall time of a serve request (protocol; boundary at 0.15 s).
+# TYPE cc_storage_serve_seconds histogram
+# UNIT cc_storage_serve_seconds seconds
+cc_storage_serve_seconds_sum{protocol="finalized_checkpoint_history"} 0.0
+cc_storage_serve_seconds_count{protocol="finalized_checkpoint_history"} 1
+cc_storage_serve_seconds_bucket{le="0.005",protocol="finalized_checkpoint_history"} 1
+cc_storage_serve_seconds_bucket{le="0.01",protocol="finalized_checkpoint_history"} 1
+cc_storage_serve_seconds_bucket{le="0.025",protocol="finalized_checkpoint_history"} 1
+cc_storage_serve_seconds_bucket{le="0.05",protocol="finalized_checkpoint_history"} 1
+cc_storage_serve_seconds_bucket{le="0.1",protocol="finalized_checkpoint_history"} 1
+cc_storage_serve_seconds_bucket{le="0.15",protocol="finalized_checkpoint_history"} 1
+cc_storage_serve_seconds_bucket{le="0.25",protocol="finalized_checkpoint_history"} 1
+cc_storage_serve_seconds_bucket{le="0.5",protocol="finalized_checkpoint_history"} 1
+cc_storage_serve_seconds_bucket{le="1.0",protocol="finalized_checkpoint_history"} 1
+cc_storage_serve_seconds_bucket{le="+Inf",protocol="finalized_checkpoint_history"} 1
+cc_storage_serve_seconds_sum{protocol="snapshot_state"} 0.0
+cc_storage_serve_seconds_count{protocol="snapshot_state"} 1
+cc_storage_serve_seconds_bucket{le="0.005",protocol="snapshot_state"} 1
+cc_storage_serve_seconds_bucket{le="0.01",protocol="snapshot_state"} 1
+cc_storage_serve_seconds_bucket{le="0.025",protocol="snapshot_state"} 1
+cc_storage_serve_seconds_bucket{le="0.05",protocol="snapshot_state"} 1
+cc_storage_serve_seconds_bucket{le="0.1",protocol="snapshot_state"} 1
+cc_storage_serve_seconds_bucket{le="0.15",protocol="snapshot_state"} 1
+cc_storage_serve_seconds_bucket{le="0.25",protocol="snapshot_state"} 1
+cc_storage_serve_seconds_bucket{le="0.5",protocol="snapshot_state"} 1
+cc_storage_serve_seconds_bucket{le="1.0",protocol="snapshot_state"} 1
+cc_storage_serve_seconds_bucket{le="+Inf",protocol="snapshot_state"} 1
+cc_storage_serve_seconds_sum{protocol="columns_by_range"} 0.0
+cc_storage_serve_seconds_count{protocol="columns_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.005",protocol="columns_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.01",protocol="columns_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.025",protocol="columns_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.05",protocol="columns_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.1",protocol="columns_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.15",protocol="columns_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.25",protocol="columns_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.5",protocol="columns_by_range"} 1
+cc_storage_serve_seconds_bucket{le="1.0",protocol="columns_by_range"} 1
+cc_storage_serve_seconds_bucket{le="+Inf",protocol="columns_by_range"} 1
+cc_storage_serve_seconds_sum{protocol="blocks_by_head"} 0.0
+cc_storage_serve_seconds_count{protocol="blocks_by_head"} 1
+cc_storage_serve_seconds_bucket{le="0.005",protocol="blocks_by_head"} 1
+cc_storage_serve_seconds_bucket{le="0.01",protocol="blocks_by_head"} 1
+cc_storage_serve_seconds_bucket{le="0.025",protocol="blocks_by_head"} 1
+cc_storage_serve_seconds_bucket{le="0.05",protocol="blocks_by_head"} 1
+cc_storage_serve_seconds_bucket{le="0.1",protocol="blocks_by_head"} 1
+cc_storage_serve_seconds_bucket{le="0.15",protocol="blocks_by_head"} 1
+cc_storage_serve_seconds_bucket{le="0.25",protocol="blocks_by_head"} 1
+cc_storage_serve_seconds_bucket{le="0.5",protocol="blocks_by_head"} 1
+cc_storage_serve_seconds_bucket{le="1.0",protocol="blocks_by_head"} 1
+cc_storage_serve_seconds_bucket{le="+Inf",protocol="blocks_by_head"} 1
+cc_storage_serve_seconds_sum{protocol="blocks_by_root"} 0.0
+cc_storage_serve_seconds_count{protocol="blocks_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.005",protocol="blocks_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.01",protocol="blocks_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.025",protocol="blocks_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.05",protocol="blocks_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.1",protocol="blocks_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.15",protocol="blocks_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.25",protocol="blocks_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.5",protocol="blocks_by_root"} 1
+cc_storage_serve_seconds_bucket{le="1.0",protocol="blocks_by_root"} 1
+cc_storage_serve_seconds_bucket{le="+Inf",protocol="blocks_by_root"} 1
+cc_storage_serve_seconds_sum{protocol="blocks_by_range"} 0.0
+cc_storage_serve_seconds_count{protocol="blocks_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.005",protocol="blocks_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.01",protocol="blocks_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.025",protocol="blocks_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.05",protocol="blocks_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.1",protocol="blocks_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.15",protocol="blocks_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.25",protocol="blocks_by_range"} 1
+cc_storage_serve_seconds_bucket{le="0.5",protocol="blocks_by_range"} 1
+cc_storage_serve_seconds_bucket{le="1.0",protocol="blocks_by_range"} 1
+cc_storage_serve_seconds_bucket{le="+Inf",protocol="blocks_by_range"} 1
+cc_storage_serve_seconds_sum{protocol="columns_by_root"} 0.0
+cc_storage_serve_seconds_count{protocol="columns_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.005",protocol="columns_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.01",protocol="columns_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.025",protocol="columns_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.05",protocol="columns_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.1",protocol="columns_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.15",protocol="columns_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.25",protocol="columns_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.5",protocol="columns_by_root"} 1
+cc_storage_serve_seconds_bucket{le="1.0",protocol="columns_by_root"} 1
+cc_storage_serve_seconds_bucket{le="+Inf",protocol="columns_by_root"} 1
+cc_storage_serve_seconds_sum{protocol="historical_block_by_slot"} 0.0
+cc_storage_serve_seconds_count{protocol="historical_block_by_slot"} 1
+cc_storage_serve_seconds_bucket{le="0.005",protocol="historical_block_by_slot"} 1
+cc_storage_serve_seconds_bucket{le="0.01",protocol="historical_block_by_slot"} 1
+cc_storage_serve_seconds_bucket{le="0.025",protocol="historical_block_by_slot"} 1
+cc_storage_serve_seconds_bucket{le="0.05",protocol="historical_block_by_slot"} 1
+cc_storage_serve_seconds_bucket{le="0.1",protocol="historical_block_by_slot"} 1
+cc_storage_serve_seconds_bucket{le="0.15",protocol="historical_block_by_slot"} 1
+cc_storage_serve_seconds_bucket{le="0.25",protocol="historical_block_by_slot"} 1
+cc_storage_serve_seconds_bucket{le="0.5",protocol="historical_block_by_slot"} 1
+cc_storage_serve_seconds_bucket{le="1.0",protocol="historical_block_by_slot"} 1
+cc_storage_serve_seconds_bucket{le="+Inf",protocol="historical_block_by_slot"} 1
+cc_storage_serve_seconds_sum{protocol="historical_block_by_root"} 0.0
+cc_storage_serve_seconds_count{protocol="historical_block_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.005",protocol="historical_block_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.01",protocol="historical_block_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.025",protocol="historical_block_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.05",protocol="historical_block_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.1",protocol="historical_block_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.15",protocol="historical_block_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.25",protocol="historical_block_by_root"} 1
+cc_storage_serve_seconds_bucket{le="0.5",protocol="historical_block_by_root"} 1
+cc_storage_serve_seconds_bucket{le="1.0",protocol="historical_block_by_root"} 1
+cc_storage_serve_seconds_bucket{le="+Inf",protocol="historical_block_by_root"} 1
+# HELP cc_storage_serve Serve outcomes (protocol, result=ok|resource_unavailable|rate_limited|error).
+# TYPE cc_storage_serve counter
+cc_storage_serve_total{protocol="blocks_by_head",result="error"} 0
+cc_storage_serve_total{protocol="blocks_by_root",result="rate_limited"} 0
+cc_storage_serve_total{protocol="blocks_by_range",result="resource_unavailable"} 0
+cc_storage_serve_total{protocol="snapshot_state",result="ok"} 0
+cc_storage_serve_total{protocol="blocks_by_root",result="ok"} 0
+cc_storage_serve_total{protocol="columns_by_range",result="ok"} 0
+cc_storage_serve_total{protocol="historical_block_by_root",result="error"} 0
+cc_storage_serve_total{protocol="columns_by_range",result="rate_limited"} 0
+cc_storage_serve_total{protocol="columns_by_range",result="resource_unavailable"} 0
+cc_storage_serve_total{protocol="blocks_by_root",result="resource_unavailable"} 0
+cc_storage_serve_total{protocol="columns_by_root",result="error"} 0
+cc_storage_serve_total{protocol="historical_block_by_root",result="ok"} 0
+cc_storage_serve_total{protocol="historical_block_by_slot",result="ok"} 0
+cc_storage_serve_total{protocol="blocks_by_head",result="rate_limited"} 0
+cc_storage_serve_total{protocol="blocks_by_head",result="ok"} 0
+cc_storage_serve_total{protocol="historical_block_by_slot",result="rate_limited"} 0
+cc_storage_serve_total{protocol="columns_by_range",result="error"} 0
+cc_storage_serve_total{protocol="snapshot_state",result="error"} 0
+cc_storage_serve_total{protocol="blocks_by_range",result="rate_limited"} 0
+cc_storage_serve_total{protocol="finalized_checkpoint_history",result="rate_limited"} 0
+cc_storage_serve_total{protocol="columns_by_root",result="ok"} 0
+cc_storage_serve_total{protocol="columns_by_root",result="resource_unavailable"} 0
+cc_storage_serve_total{protocol="historical_block_by_slot",result="resource_unavailable"} 0
+cc_storage_serve_total{protocol="historical_block_by_root",result="resource_unavailable"} 0
+cc_storage_serve_total{protocol="blocks_by_head",result="resource_unavailable"} 0
+cc_storage_serve_total{protocol="historical_block_by_root",result="rate_limited"} 0
+cc_storage_serve_total{protocol="finalized_checkpoint_history",result="error"} 0
+cc_storage_serve_total{protocol="snapshot_state",result="rate_limited"} 0
+cc_storage_serve_total{protocol="blocks_by_range",result="error"} 0
+cc_storage_serve_total{protocol="snapshot_state",result="resource_unavailable"} 0
+cc_storage_serve_total{protocol="blocks_by_root",result="error"} 0
+cc_storage_serve_total{protocol="historical_block_by_slot",result="error"} 0
+cc_storage_serve_total{protocol="columns_by_root",result="rate_limited"} 0
+cc_storage_serve_total{protocol="blocks_by_range",result="ok"} 0
+cc_storage_serve_total{protocol="finalized_checkpoint_history",result="ok"} 0
+cc_storage_serve_total{protocol="finalized_checkpoint_history",result="resource_unavailable"} 0
+# HELP cc_storage_serve_bytes Bytes served by protocol (cumulative).
+# TYPE cc_storage_serve_bytes counter
+cc_storage_serve_bytes_total{protocol="blocks_by_range"} 0
+cc_storage_serve_bytes_total{protocol="columns_by_range"} 0
+cc_storage_serve_bytes_total{protocol="blocks_by_head"} 0
+cc_storage_serve_bytes_total{protocol="finalized_checkpoint_history"} 0
+cc_storage_serve_bytes_total{protocol="historical_block_by_slot"} 0
+cc_storage_serve_bytes_total{protocol="snapshot_state"} 0
+cc_storage_serve_bytes_total{protocol="blocks_by_root"} 0
+cc_storage_serve_bytes_total{protocol="columns_by_root"} 0
+cc_storage_serve_bytes_total{protocol="historical_block_by_root"} 0
+# HELP cc_storage_serve_admission_wait_seconds Serve admission wait time (boundary at 2.0 s).
+# TYPE cc_storage_serve_admission_wait_seconds histogram
+# UNIT cc_storage_serve_admission_wait_seconds seconds
+cc_storage_serve_admission_wait_seconds_sum 0.0
+cc_storage_serve_admission_wait_seconds_count 1
+cc_storage_serve_admission_wait_seconds_bucket{le="0.001"} 1
+cc_storage_serve_admission_wait_seconds_bucket{le="0.01"} 1
+cc_storage_serve_admission_wait_seconds_bucket{le="0.05"} 1
+cc_storage_serve_admission_wait_seconds_bucket{le="0.1"} 1
+cc_storage_serve_admission_wait_seconds_bucket{le="0.5"} 1
+cc_storage_serve_admission_wait_seconds_bucket{le="1.0"} 1
+cc_storage_serve_admission_wait_seconds_bucket{le="2.0"} 1
+cc_storage_serve_admission_wait_seconds_bucket{le="+Inf"} 1
+# HELP cc_storage_restart_seconds Wall time of restart phases (phase=open|schema_check|snapshot_load|restore_send|chain_replay|forkchoice_rebuild|resubscribe).
+# TYPE cc_storage_restart_seconds histogram
+# UNIT cc_storage_restart_seconds seconds
+cc_storage_restart_seconds_sum{phase="restore_send"} 0.003626
+cc_storage_restart_seconds_count{phase="restore_send"} 2
+cc_storage_restart_seconds_bucket{le="0.1",phase="restore_send"} 2
+cc_storage_restart_seconds_bucket{le="0.5",phase="restore_send"} 2
+cc_storage_restart_seconds_bucket{le="1.0",phase="restore_send"} 2
+cc_storage_restart_seconds_bucket{le="2.0",phase="restore_send"} 2
+cc_storage_restart_seconds_bucket{le="5.0",phase="restore_send"} 2
+cc_storage_restart_seconds_bucket{le="10.0",phase="restore_send"} 2
+cc_storage_restart_seconds_bucket{le="20.0",phase="restore_send"} 2
+cc_storage_restart_seconds_bucket{le="30.0",phase="restore_send"} 2
+cc_storage_restart_seconds_bucket{le="45.0",phase="restore_send"} 2
+cc_storage_restart_seconds_bucket{le="60.0",phase="restore_send"} 2
+cc_storage_restart_seconds_bucket{le="120.0",phase="restore_send"} 2
+cc_storage_restart_seconds_bucket{le="+Inf",phase="restore_send"} 2
+cc_storage_restart_seconds_sum{phase="schema_check"} 0.000002375
+cc_storage_restart_seconds_count{phase="schema_check"} 2
+cc_storage_restart_seconds_bucket{le="0.1",phase="schema_check"} 2
+cc_storage_restart_seconds_bucket{le="0.5",phase="schema_check"} 2
+cc_storage_restart_seconds_bucket{le="1.0",phase="schema_check"} 2
+cc_storage_restart_seconds_bucket{le="2.0",phase="schema_check"} 2
+cc_storage_restart_seconds_bucket{le="5.0",phase="schema_check"} 2
+cc_storage_restart_seconds_bucket{le="10.0",phase="schema_check"} 2
+cc_storage_restart_seconds_bucket{le="20.0",phase="schema_check"} 2
+cc_storage_restart_seconds_bucket{le="30.0",phase="schema_check"} 2
+cc_storage_restart_seconds_bucket{le="45.0",phase="schema_check"} 2
+cc_storage_restart_seconds_bucket{le="60.0",phase="schema_check"} 2
+cc_storage_restart_seconds_bucket{le="120.0",phase="schema_check"} 2
+cc_storage_restart_seconds_bucket{le="+Inf",phase="schema_check"} 2
+cc_storage_restart_seconds_sum{phase="snapshot_load"} 0.0
+cc_storage_restart_seconds_count{phase="snapshot_load"} 2
+cc_storage_restart_seconds_bucket{le="0.1",phase="snapshot_load"} 2
+cc_storage_restart_seconds_bucket{le="0.5",phase="snapshot_load"} 2
+cc_storage_restart_seconds_bucket{le="1.0",phase="snapshot_load"} 2
+cc_storage_restart_seconds_bucket{le="2.0",phase="snapshot_load"} 2
+cc_storage_restart_seconds_bucket{le="5.0",phase="snapshot_load"} 2
+cc_storage_restart_seconds_bucket{le="10.0",phase="snapshot_load"} 2
+cc_storage_restart_seconds_bucket{le="20.0",phase="snapshot_load"} 2
+cc_storage_restart_seconds_bucket{le="30.0",phase="snapshot_load"} 2
+cc_storage_restart_seconds_bucket{le="45.0",phase="snapshot_load"} 2
+cc_storage_restart_seconds_bucket{le="60.0",phase="snapshot_load"} 2
+cc_storage_restart_seconds_bucket{le="120.0",phase="snapshot_load"} 2
+cc_storage_restart_seconds_bucket{le="+Inf",phase="snapshot_load"} 2
+cc_storage_restart_seconds_sum{phase="chain_replay"} 0.0
+cc_storage_restart_seconds_count{phase="chain_replay"} 2
+cc_storage_restart_seconds_bucket{le="0.1",phase="chain_replay"} 2
+cc_storage_restart_seconds_bucket{le="0.5",phase="chain_replay"} 2
+cc_storage_restart_seconds_bucket{le="1.0",phase="chain_replay"} 2
+cc_storage_restart_seconds_bucket{le="2.0",phase="chain_replay"} 2
+cc_storage_restart_seconds_bucket{le="5.0",phase="chain_replay"} 2
+cc_storage_restart_seconds_bucket{le="10.0",phase="chain_replay"} 2
+cc_storage_restart_seconds_bucket{le="20.0",phase="chain_replay"} 2
+cc_storage_restart_seconds_bucket{le="30.0",phase="chain_replay"} 2
+cc_storage_restart_seconds_bucket{le="45.0",phase="chain_replay"} 2
+cc_storage_restart_seconds_bucket{le="60.0",phase="chain_replay"} 2
+cc_storage_restart_seconds_bucket{le="120.0",phase="chain_replay"} 2
+cc_storage_restart_seconds_bucket{le="+Inf",phase="chain_replay"} 2
+cc_storage_restart_seconds_sum{phase="open"} 0.009312375
+cc_storage_restart_seconds_count{phase="open"} 2
+cc_storage_restart_seconds_bucket{le="0.1",phase="open"} 2
+cc_storage_restart_seconds_bucket{le="0.5",phase="open"} 2
+cc_storage_restart_seconds_bucket{le="1.0",phase="open"} 2
+cc_storage_restart_seconds_bucket{le="2.0",phase="open"} 2
+cc_storage_restart_seconds_bucket{le="5.0",phase="open"} 2
+cc_storage_restart_seconds_bucket{le="10.0",phase="open"} 2
+cc_storage_restart_seconds_bucket{le="20.0",phase="open"} 2
+cc_storage_restart_seconds_bucket{le="30.0",phase="open"} 2
+cc_storage_restart_seconds_bucket{le="45.0",phase="open"} 2
+cc_storage_restart_seconds_bucket{le="60.0",phase="open"} 2
+cc_storage_restart_seconds_bucket{le="120.0",phase="open"} 2
+cc_storage_restart_seconds_bucket{le="+Inf",phase="open"} 2
+cc_storage_restart_seconds_sum{phase="forkchoice_rebuild"} 0.0
+cc_storage_restart_seconds_count{phase="forkchoice_rebuild"} 2
+cc_storage_restart_seconds_bucket{le="0.1",phase="forkchoice_rebuild"} 2
+cc_storage_restart_seconds_bucket{le="0.5",phase="forkchoice_rebuild"} 2
+cc_storage_restart_seconds_bucket{le="1.0",phase="forkchoice_rebuild"} 2
+cc_storage_restart_seconds_bucket{le="2.0",phase="forkchoice_rebuild"} 2
+cc_storage_restart_seconds_bucket{le="5.0",phase="forkchoice_rebuild"} 2
+cc_storage_restart_seconds_bucket{le="10.0",phase="forkchoice_rebuild"} 2
+cc_storage_restart_seconds_bucket{le="20.0",phase="forkchoice_rebuild"} 2
+cc_storage_restart_seconds_bucket{le="30.0",phase="forkchoice_rebuild"} 2
+cc_storage_restart_seconds_bucket{le="45.0",phase="forkchoice_rebuild"} 2
+cc_storage_restart_seconds_bucket{le="60.0",phase="forkchoice_rebuild"} 2
+cc_storage_restart_seconds_bucket{le="120.0",phase="forkchoice_rebuild"} 2
+cc_storage_restart_seconds_bucket{le="+Inf",phase="forkchoice_rebuild"} 2
+cc_storage_restart_seconds_sum{phase="resubscribe"} 0.0
+cc_storage_restart_seconds_count{phase="resubscribe"} 2
+cc_storage_restart_seconds_bucket{le="0.1",phase="resubscribe"} 2
+cc_storage_restart_seconds_bucket{le="0.5",phase="resubscribe"} 2
+cc_storage_restart_seconds_bucket{le="1.0",phase="resubscribe"} 2
+cc_storage_restart_seconds_bucket{le="2.0",phase="resubscribe"} 2
+cc_storage_restart_seconds_bucket{le="5.0",phase="resubscribe"} 2
+cc_storage_restart_seconds_bucket{le="10.0",phase="resubscribe"} 2
+cc_storage_restart_seconds_bucket{le="20.0",phase="resubscribe"} 2
+cc_storage_restart_seconds_bucket{le="30.0",phase="resubscribe"} 2
+cc_storage_restart_seconds_bucket{le="45.0",phase="resubscribe"} 2
+cc_storage_restart_seconds_bucket{le="60.0",phase="resubscribe"} 2
+cc_storage_restart_seconds_bucket{le="120.0",phase="resubscribe"} 2
+cc_storage_restart_seconds_bucket{le="+Inf",phase="resubscribe"} 2
+# HELP cc_storage_following_head Storage is following chain head (0/1).
+# TYPE cc_storage_following_head gauge
+cc_storage_following_head 1
+# HELP cc_storage_replay_divergence Replay divergence detections (cumulative).
+# TYPE cc_storage_replay_divergence counter
+cc_storage_replay_divergence_total 0
+# HELP cc_storage_snapshot_seconds Wall time of snapshot phases (phase=replay|serialize|write|load).
+# TYPE cc_storage_snapshot_seconds histogram
+# UNIT cc_storage_snapshot_seconds seconds
+cc_storage_snapshot_seconds_sum{phase="write"} 0.0
+cc_storage_snapshot_seconds_count{phase="write"} 1
+cc_storage_snapshot_seconds_bucket{le="0.1",phase="write"} 1
+cc_storage_snapshot_seconds_bucket{le="0.25",phase="write"} 1
+cc_storage_snapshot_seconds_bucket{le="0.5",phase="write"} 1
+cc_storage_snapshot_seconds_bucket{le="1.0",phase="write"} 1
+cc_storage_snapshot_seconds_bucket{le="2.0",phase="write"} 1
+cc_storage_snapshot_seconds_bucket{le="5.0",phase="write"} 1
+cc_storage_snapshot_seconds_bucket{le="10.0",phase="write"} 1
+cc_storage_snapshot_seconds_bucket{le="20.0",phase="write"} 1
+cc_storage_snapshot_seconds_bucket{le="40.0",phase="write"} 1
+cc_storage_snapshot_seconds_bucket{le="+Inf",phase="write"} 1
+cc_storage_snapshot_seconds_sum{phase="load"} 0.0
+cc_storage_snapshot_seconds_count{phase="load"} 1
+cc_storage_snapshot_seconds_bucket{le="0.1",phase="load"} 1
+cc_storage_snapshot_seconds_bucket{le="0.25",phase="load"} 1
+cc_storage_snapshot_seconds_bucket{le="0.5",phase="load"} 1
+cc_storage_snapshot_seconds_bucket{le="1.0",phase="load"} 1
+cc_storage_snapshot_seconds_bucket{le="2.0",phase="load"} 1
+cc_storage_snapshot_seconds_bucket{le="5.0",phase="load"} 1
+cc_storage_snapshot_seconds_bucket{le="10.0",phase="load"} 1
+cc_storage_snapshot_seconds_bucket{le="20.0",phase="load"} 1
+cc_storage_snapshot_seconds_bucket{le="40.0",phase="load"} 1
+cc_storage_snapshot_seconds_bucket{le="+Inf",phase="load"} 1
+cc_storage_snapshot_seconds_sum{phase="replay"} 0.0
+cc_storage_snapshot_seconds_count{phase="replay"} 1
+cc_storage_snapshot_seconds_bucket{le="0.1",phase="replay"} 1
+cc_storage_snapshot_seconds_bucket{le="0.25",phase="replay"} 1
+cc_storage_snapshot_seconds_bucket{le="0.5",phase="replay"} 1
+cc_storage_snapshot_seconds_bucket{le="1.0",phase="replay"} 1
+cc_storage_snapshot_seconds_bucket{le="2.0",phase="replay"} 1
+cc_storage_snapshot_seconds_bucket{le="5.0",phase="replay"} 1
+cc_storage_snapshot_seconds_bucket{le="10.0",phase="replay"} 1
+cc_storage_snapshot_seconds_bucket{le="20.0",phase="replay"} 1
+cc_storage_snapshot_seconds_bucket{le="40.0",phase="replay"} 1
+cc_storage_snapshot_seconds_bucket{le="+Inf",phase="replay"} 1
+cc_storage_snapshot_seconds_sum{phase="serialize"} 0.0
+cc_storage_snapshot_seconds_count{phase="serialize"} 1
+cc_storage_snapshot_seconds_bucket{le="0.1",phase="serialize"} 1
+cc_storage_snapshot_seconds_bucket{le="0.25",phase="serialize"} 1
+cc_storage_snapshot_seconds_bucket{le="0.5",phase="serialize"} 1
+cc_storage_snapshot_seconds_bucket{le="1.0",phase="serialize"} 1
+cc_storage_snapshot_seconds_bucket{le="2.0",phase="serialize"} 1
+cc_storage_snapshot_seconds_bucket{le="5.0",phase="serialize"} 1
+cc_storage_snapshot_seconds_bucket{le="10.0",phase="serialize"} 1
+cc_storage_snapshot_seconds_bucket{le="20.0",phase="serialize"} 1
+cc_storage_snapshot_seconds_bucket{le="40.0",phase="serialize"} 1
+cc_storage_snapshot_seconds_bucket{le="+Inf",phase="serialize"} 1
+# HELP cc_storage_snapshot_bytes Latest snapshot size in bytes.
+# TYPE cc_storage_snapshot_bytes gauge
+cc_storage_snapshot_bytes 0
+# HELP cc_storage_snapshot_ring_depth Snapshot ring depth (count of retained snapshots).
+# TYPE cc_storage_snapshot_ring_depth gauge
+cc_storage_snapshot_ring_depth 0
+# HELP cc_storage_earliest_available_slot Earliest slot available from storage.
+# TYPE cc_storage_earliest_available_slot gauge
+cc_storage_earliest_available_slot 0
+# HELP cc_storage_window_branch Active window branch identifier.
+# TYPE cc_storage_window_branch gauge
+cc_storage_window_branch 0
+# HELP cc_storage_window_hole_slots Hole slots inside the retention window.
+# TYPE cc_storage_window_hole_slots gauge
+cc_storage_window_hole_slots 0
+# HELP cc_storage_window_increase_rejected Window-size increases rejected (cumulative).
+# TYPE cc_storage_window_increase_rejected counter
+cc_storage_window_increase_rejected_total 0
+# HELP cc_storage_backfill_oldest_slot Oldest backfill slot by class.
+# TYPE cc_storage_backfill_oldest_slot gauge
+cc_storage_backfill_oldest_slot{class="index"} 0
+cc_storage_backfill_oldest_slot{class="meta"} 0
+cc_storage_backfill_oldest_slot{class="blocks"} 0
+cc_storage_backfill_oldest_slot{class="columns"} 0
+cc_storage_backfill_oldest_slot{class="snapshots"} 0
+# HELP cc_storage_backfill_bytes Bytes backfilled by class (cumulative).
+# TYPE cc_storage_backfill_bytes counter
+cc_storage_backfill_bytes_total{class="columns"} 0
+cc_storage_backfill_bytes_total{class="snapshots"} 0
+cc_storage_backfill_bytes_total{class="index"} 0
+cc_storage_backfill_bytes_total{class="meta"} 0
+cc_storage_backfill_bytes_total{class="blocks"} 0
+# HELP cc_storage_split_slot Current split slot.
+# TYPE cc_storage_split_slot gauge
+cc_storage_split_slot 0
+# HELP cc_storage_invariant_violation Invariant violations (invariant; closed domain §10.1).
+# TYPE cc_storage_invariant_violation counter
+cc_storage_invariant_violation_total{invariant="col_block"} 0
+cc_storage_invariant_violation_total{invariant="window"} 0
+cc_storage_invariant_violation_total{invariant="node_id"} 0
+cc_storage_invariant_violation_total{invariant="split_fin"} 0
+cc_storage_invariant_violation_total{invariant="cursor"} 0
+cc_storage_invariant_violation_total{invariant="key_collision"} 0
+cc_storage_invariant_violation_total{invariant="contig"} 0
+cc_storage_invariant_violation_total{invariant="shards"} 0
+cc_storage_invariant_violation_total{invariant="ring"} 0
+# HELP cc_storage_key_collision Key collisions detected (cumulative).
+# TYPE cc_storage_key_collision counter
+cc_storage_key_collision_total 0
+# HELP process_cpu_seconds Total user and system CPU time spent in seconds
+# TYPE process_cpu_seconds counter
+# UNIT process_cpu_seconds seconds
+process_cpu_seconds_total 0.08
+# HELP process_resident_memory_bytes Resident memory size in bytes
+# TYPE process_resident_memory_bytes gauge
+# UNIT process_resident_memory_bytes bytes
+process_resident_memory_bytes 10891264
+# HELP process_virtual_memory_bytes Virtual memory size in bytes
+# TYPE process_virtual_memory_bytes gauge
+# UNIT process_virtual_memory_bytes bytes
+process_virtual_memory_bytes 359858176
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds
+# TYPE process_start_time_seconds gauge
+# UNIT process_start_time_seconds seconds
+process_start_time_seconds 1786815251.33
+# HELP process_open_fds Number of open file descriptors
+# TYPE process_open_fds gauge
+process_open_fds 19
+# EOF

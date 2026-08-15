@@ -1,0 +1,411 @@
+# HELP cc_build_info Build identity (always 1); labels match eth.common.v1.BuildInfo.
+# TYPE cc_build_info gauge
+cc_build_info{service="p2p",version="0.1.0",git_sha="e2ad297",rustc="rustc 1.97.1 (8bab26f4f 2026-07-14)"} 1
+# HELP cc_p2p_peers Connected peers by direction (inbound|outbound).
+# TYPE cc_p2p_peers gauge
+cc_p2p_peers{direction="inbound"} 2
+cc_p2p_peers{direction="outbound"} 0
+# HELP cc_p2p_peers_custody_compatible Peers whose custody coverage is compatible with our requirements.
+# TYPE cc_p2p_peers_custody_compatible gauge
+cc_p2p_peers_custody_compatible 0
+# HELP cc_p2p_peers_below_threshold Peers scoring below a named threshold.
+# TYPE cc_p2p_peers_below_threshold gauge
+cc_p2p_peers_below_threshold{threshold="gossip"} 0
+# HELP cc_p2p_gossip_messages Gossip messages observed (topic, verdict).
+# TYPE cc_p2p_gossip_messages counter
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_73",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_29",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_43",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_53",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_124",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_114",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_36",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_75",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_65",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_81",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_92",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_40",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_42",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_2",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_84",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_46",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_123",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_87",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_109",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_24",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_71",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_34",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_113",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_27",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_50",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_127",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_38",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_85",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_9",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_8",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_68",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_103",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_59",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_16",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_102",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_94",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_3",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="beacon_block",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_99",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_32",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_10",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_78",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_110",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_88",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_63",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_106",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_107",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_20",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_118",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_70",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_35",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_93",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_49",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_72",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_33",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_57",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_119",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_19",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_80",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_4",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_96",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_1",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="none",verdict="none"} 0
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_48",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_6",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_22",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_117",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_62",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_15",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_77",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_64",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_95",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_105",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_60",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_52",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_7",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_89",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_39",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_86",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_74",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_108",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_61",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_47",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_12",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_79",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_69",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_54",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_26",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_82",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_37",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_44",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_100",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_104",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_25",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_115",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_56",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_13",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_125",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_28",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_120",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_18",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_17",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_58",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_116",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_66",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_83",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_45",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_23",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_126",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_30",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_51",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_31",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_97",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_122",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_98",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_67",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_41",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_5",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_76",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_91",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_121",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_0",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_14",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_111",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_112",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_55",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_11",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_21",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_101",verdict="published"} 64
+cc_p2p_gossip_messages_total{topic="data_column_sidecar_90",verdict="published"} 64
+# HELP cc_p2p_gossip_validation_seconds Wall time of gossip validation (topic).
+# TYPE cc_p2p_gossip_validation_seconds histogram
+# UNIT cc_p2p_gossip_validation_seconds seconds
+cc_p2p_gossip_validation_seconds_sum{topic="none"} 0.0
+cc_p2p_gossip_validation_seconds_count{topic="none"} 1
+cc_p2p_gossip_validation_seconds_bucket{le="0.01",topic="none"} 1
+cc_p2p_gossip_validation_seconds_bucket{le="0.025",topic="none"} 1
+cc_p2p_gossip_validation_seconds_bucket{le="0.05",topic="none"} 1
+cc_p2p_gossip_validation_seconds_bucket{le="0.1",topic="none"} 1
+cc_p2p_gossip_validation_seconds_bucket{le="0.2",topic="none"} 1
+cc_p2p_gossip_validation_seconds_bucket{le="0.4",topic="none"} 1
+cc_p2p_gossip_validation_seconds_bucket{le="0.8",topic="none"} 1
+cc_p2p_gossip_validation_seconds_bucket{le="2.0",topic="none"} 1
+cc_p2p_gossip_validation_seconds_bucket{le="4.0",topic="none"} 1
+cc_p2p_gossip_validation_seconds_bucket{le="+Inf",topic="none"} 1
+# HELP cc_p2p_idontwant IDONTWANT control messages (direction).
+# TYPE cc_p2p_idontwant counter
+cc_p2p_idontwant_total{direction="inbound"} 0
+cc_p2p_idontwant_total{direction="outbound"} 0
+# HELP cc_p2p_gossip_duplicate_bytes Duplicate gossip payload bytes (topic).
+# TYPE cc_p2p_gossip_duplicate_bytes counter
+cc_p2p_gossip_duplicate_bytes_total{topic="none"} 0
+# HELP cc_p2p_gossip_shed Gossip messages shed under load (topic).
+# TYPE cc_p2p_gossip_shed counter
+cc_p2p_gossip_shed_total{topic="none"} 0
+# HELP cc_p2p_peer_score Gossipsub peer score distribution (boundary at -4000).
+# TYPE cc_p2p_peer_score histogram
+cc_p2p_peer_score_sum 0.0
+cc_p2p_peer_score_count 1
+cc_p2p_peer_score_bucket{le="-16000.0"} 0
+cc_p2p_peer_score_bucket{le="-8000.0"} 0
+cc_p2p_peer_score_bucket{le="-4000.0"} 0
+cc_p2p_peer_score_bucket{le="-1000.0"} 0
+cc_p2p_peer_score_bucket{le="-100.0"} 0
+cc_p2p_peer_score_bucket{le="-10.0"} 0
+cc_p2p_peer_score_bucket{le="0.0"} 1
+cc_p2p_peer_score_bucket{le="10.0"} 1
+cc_p2p_peer_score_bucket{le="100.0"} 1
+cc_p2p_peer_score_bucket{le="+Inf"} 1
+# HELP cc_p2p_app_score Application peer score distribution.
+# TYPE cc_p2p_app_score histogram
+cc_p2p_app_score_sum 0.0
+cc_p2p_app_score_count 1
+cc_p2p_app_score_bucket{le="-16000.0"} 0
+cc_p2p_app_score_bucket{le="-8000.0"} 0
+cc_p2p_app_score_bucket{le="-4000.0"} 0
+cc_p2p_app_score_bucket{le="-1000.0"} 0
+cc_p2p_app_score_bucket{le="-100.0"} 0
+cc_p2p_app_score_bucket{le="-10.0"} 0
+cc_p2p_app_score_bucket{le="0.0"} 1
+cc_p2p_app_score_bucket{le="10.0"} 1
+cc_p2p_app_score_bucket{le="100.0"} 1
+cc_p2p_app_score_bucket{le="+Inf"} 1
+# HELP cc_p2p_peer_penalty Peer penalties by reason (no catch-all; §3.7).
+# TYPE cc_p2p_peer_penalty counter
+cc_p2p_peer_penalty_total{reason="gossip_invalid"} 0
+cc_p2p_peer_penalty_total{reason="rate_limit"} 0
+cc_p2p_peer_penalty_total{reason="behavioural"} 0
+cc_p2p_peer_penalty_total{reason="import_invalid"} 0
+cc_p2p_peer_penalty_total{reason="custody_unserved"} 0
+cc_p2p_peer_penalty_total{reason="reqresp_fault"} 0
+# HELP cc_p2p_da_outcome Data-availability outcomes (result=imported|deferred|recovered|abandoned).
+# TYPE cc_p2p_da_outcome counter
+cc_p2p_da_outcome_total{result="deferred"} 0
+cc_p2p_da_outcome_total{result="abandoned"} 0
+cc_p2p_da_outcome_total{result="imported"} 0
+cc_p2p_da_outcome_total{result="recovered"} 0
+# HELP cc_p2p_sampling_seconds Wall time of column sampling (boundary at 0.2 s).
+# TYPE cc_p2p_sampling_seconds histogram
+# UNIT cc_p2p_sampling_seconds seconds
+cc_p2p_sampling_seconds_sum 0.0
+cc_p2p_sampling_seconds_count 1
+cc_p2p_sampling_seconds_bucket{le="0.01"} 1
+cc_p2p_sampling_seconds_bucket{le="0.025"} 1
+cc_p2p_sampling_seconds_bucket{le="0.05"} 1
+cc_p2p_sampling_seconds_bucket{le="0.1"} 1
+cc_p2p_sampling_seconds_bucket{le="0.2"} 1
+cc_p2p_sampling_seconds_bucket{le="0.4"} 1
+cc_p2p_sampling_seconds_bucket{le="0.8"} 1
+cc_p2p_sampling_seconds_bucket{le="2.0"} 1
+cc_p2p_sampling_seconds_bucket{le="4.0"} 1
+cc_p2p_sampling_seconds_bucket{le="+Inf"} 1
+# HELP cc_p2p_da_verdict_slot_delta Slot delta between block and DA verdict.
+# TYPE cc_p2p_da_verdict_slot_delta histogram
+cc_p2p_da_verdict_slot_delta_sum 0.0
+cc_p2p_da_verdict_slot_delta_count 1
+cc_p2p_da_verdict_slot_delta_bucket{le="0.0"} 1
+cc_p2p_da_verdict_slot_delta_bucket{le="1.0"} 1
+cc_p2p_da_verdict_slot_delta_bucket{le="2.0"} 1
+cc_p2p_da_verdict_slot_delta_bucket{le="3.0"} 1
+cc_p2p_da_verdict_slot_delta_bucket{le="5.0"} 1
+cc_p2p_da_verdict_slot_delta_bucket{le="8.0"} 1
+cc_p2p_da_verdict_slot_delta_bucket{le="16.0"} 1
+cc_p2p_da_verdict_slot_delta_bucket{le="32.0"} 1
+cc_p2p_da_verdict_slot_delta_bucket{le="64.0"} 1
+cc_p2p_da_verdict_slot_delta_bucket{le="+Inf"} 1
+# HELP cc_p2p_columns_received Data columns received by source (gossip|byroot|byrange|engine).
+# TYPE cc_p2p_columns_received counter
+cc_p2p_columns_received_total{source="engine"} 0
+cc_p2p_columns_received_total{source="byrange"} 0
+cc_p2p_columns_received_total{source="byroot"} 0
+cc_p2p_columns_received_total{source="gossip"} 0
+# HELP cc_p2p_inclusion_proof_verifications KZG commitments inclusion-proof verifications.
+# TYPE cc_p2p_inclusion_proof_verifications counter
+cc_p2p_inclusion_proof_verifications_total 0
+# HELP cc_p2p_head_lag_slots Slots the local head trails network head (boundary at 1).
+# TYPE cc_p2p_head_lag_slots histogram
+cc_p2p_head_lag_slots_sum 0.0
+cc_p2p_head_lag_slots_count 1
+cc_p2p_head_lag_slots_bucket{le="0.0"} 1
+cc_p2p_head_lag_slots_bucket{le="1.0"} 1
+cc_p2p_head_lag_slots_bucket{le="2.0"} 1
+cc_p2p_head_lag_slots_bucket{le="3.0"} 1
+cc_p2p_head_lag_slots_bucket{le="5.0"} 1
+cc_p2p_head_lag_slots_bucket{le="8.0"} 1
+cc_p2p_head_lag_slots_bucket{le="16.0"} 1
+cc_p2p_head_lag_slots_bucket{le="32.0"} 1
+cc_p2p_head_lag_slots_bucket{le="64.0"} 1
+cc_p2p_head_lag_slots_bucket{le="+Inf"} 1
+# HELP cc_p2p_backfill_progress_slots Backfill progress in slots.
+# TYPE cc_p2p_backfill_progress_slots gauge
+cc_p2p_backfill_progress_slots 64
+# HELP cc_p2p_backfill_batch_abandoned Backfill batches abandoned.
+# TYPE cc_p2p_backfill_batch_abandoned counter
+cc_p2p_backfill_batch_abandoned_total 0
+# HELP cc_p2p_cache_occupancy_bytes P2P cache occupancy in bytes.
+# TYPE cc_p2p_cache_occupancy_bytes gauge
+cc_p2p_cache_occupancy_bytes 0
+# HELP cc_p2p_cache_bound_bytes P2P cache hard bound in bytes.
+# TYPE cc_p2p_cache_bound_bytes gauge
+cc_p2p_cache_bound_bytes 0
+# HELP cc_p2p_earliest_available_slot Earliest slot available from the network / cache.
+# TYPE cc_p2p_earliest_available_slot gauge
+cc_p2p_earliest_available_slot 0
+# HELP cc_p2p_window_collapsed Serve-window fail-closed collapses after window_stale_grace (CC-48 §5.5).
+# TYPE cc_p2p_window_collapsed counter
+cc_p2p_window_collapsed_total 0
+# HELP cc_p2p_queue_depth In-process queue / set depth (q=gossip|reqresp_in|conn|kzg|publish|cmd|outstanding|pending_sidecar|pending_block|seen_column|seen_block).
+# TYPE cc_p2p_queue_depth gauge
+cc_p2p_queue_depth{q="gossip"} 0
+cc_p2p_queue_depth{q="cmd"} 0
+cc_p2p_queue_depth{q="seen_bls_to_execution_change"} 0
+cc_p2p_queue_depth{q="reqresp_in"} 0
+cc_p2p_queue_depth{q="seen_column"} 0
+cc_p2p_queue_depth{q="seen_voluntary_exit"} 0
+cc_p2p_queue_depth{q="pending_sidecar"} 0
+cc_p2p_queue_depth{q="seen_sync"} 0
+cc_p2p_queue_depth{q="seen_proposer_slashing"} 0
+cc_p2p_queue_depth{q="outstanding"} 0
+cc_p2p_queue_depth{q="conn"} 0
+cc_p2p_queue_depth{q="seen_attester_slashing"} 0
+cc_p2p_queue_depth{q="publish"} 0
+cc_p2p_queue_depth{q="seen_block"} 0
+cc_p2p_queue_depth{q="pending_block"} 0
+cc_p2p_queue_depth{q="sampling"} 0
+cc_p2p_queue_depth{q="kzg"} 0
+# HELP cc_p2p_chain_stream_saturation_ratio Chain stream saturation ratio (0–1 scale as integer milli later; seeded 0).
+# TYPE cc_p2p_chain_stream_saturation_ratio gauge
+cc_p2p_chain_stream_saturation_ratio 0
+# HELP cc_p2p_verdict_latency_seconds Wall time from object send to chain verdict (boundary at 0.1 s).
+# TYPE cc_p2p_verdict_latency_seconds histogram
+# UNIT cc_p2p_verdict_latency_seconds seconds
+cc_p2p_verdict_latency_seconds_sum 0.0
+cc_p2p_verdict_latency_seconds_count 1
+cc_p2p_verdict_latency_seconds_bucket{le="0.005"} 1
+cc_p2p_verdict_latency_seconds_bucket{le="0.01"} 1
+cc_p2p_verdict_latency_seconds_bucket{le="0.025"} 1
+cc_p2p_verdict_latency_seconds_bucket{le="0.05"} 1
+cc_p2p_verdict_latency_seconds_bucket{le="0.1"} 1
+cc_p2p_verdict_latency_seconds_bucket{le="0.25"} 1
+cc_p2p_verdict_latency_seconds_bucket{le="0.5"} 1
+cc_p2p_verdict_latency_seconds_bucket{le="1.0"} 1
+cc_p2p_verdict_latency_seconds_bucket{le="2.0"} 1
+cc_p2p_verdict_latency_seconds_bucket{le="+Inf"} 1
+# HELP cc_p2p_verdict_late Chain verdicts arriving after the budget.
+# TYPE cc_p2p_verdict_late counter
+cc_p2p_verdict_late_total 0
+# HELP cc_p2p_verdict_timeout Chain verdict waits that timed out.
+# TYPE cc_p2p_verdict_timeout counter
+cc_p2p_verdict_timeout_total 0
+# HELP cc_p2p_chain_objects_sent Objects sent on the chain stream.
+# TYPE cc_p2p_chain_objects_sent counter
+cc_p2p_chain_objects_sent_total 0
+# HELP cc_p2p_chain_verdicts_received Verdicts received on the chain stream.
+# TYPE cc_p2p_chain_verdicts_received counter
+cc_p2p_chain_verdicts_received_total 0
+# HELP cc_p2p_reqresp_inbound Inbound req/resp exchanges (protocol, result).
+# TYPE cc_p2p_reqresp_inbound counter
+cc_p2p_reqresp_inbound_total{protocol="none",result="none"} 0
+# HELP cc_p2p_reqresp_outbound Outbound req/resp exchanges (protocol, result).
+# TYPE cc_p2p_reqresp_outbound counter
+cc_p2p_reqresp_outbound_total{protocol="none",result="none"} 0
+# HELP cc_p2p_reqresp_ratelimit Req/resp rate-limit hits (peer_kind, protocol).
+# TYPE cc_p2p_reqresp_ratelimit counter
+cc_p2p_reqresp_ratelimit_total{peer_kind="none",protocol="none"} 0
+# HELP cc_p2p_worker_panics Worker task panics (worker); cumulative across respawns (§2.4).
+# TYPE cc_p2p_worker_panics counter
+cc_p2p_worker_panics_total{worker="none"} 0
+# HELP cc_p2p_swarm_stall_seconds Seconds the swarm event loop has been stalled.
+# TYPE cc_p2p_swarm_stall_seconds gauge
+cc_p2p_swarm_stall_seconds 0
+# HELP process_cpu_seconds Total user and system CPU time spent in seconds
+# TYPE process_cpu_seconds counter
+# UNIT process_cpu_seconds seconds
+process_cpu_seconds_total 8.15
+# HELP process_resident_memory_bytes Resident memory size in bytes
+# TYPE process_resident_memory_bytes gauge
+# UNIT process_resident_memory_bytes bytes
+process_resident_memory_bytes 56131584
+# HELP process_virtual_memory_bytes Virtual memory size in bytes
+# TYPE process_virtual_memory_bytes gauge
+# UNIT process_virtual_memory_bytes bytes
+process_virtual_memory_bytes 409329664
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds
+# TYPE process_start_time_seconds gauge
+# UNIT process_start_time_seconds seconds
+process_start_time_seconds 1786815280.07
+# HELP process_open_fds Number of open file descriptors
+# TYPE process_open_fds gauge
+process_open_fds 16
+# HELP cc_p2p_libp2p_libp2p_gossipsub_messages Number of messages received.
+# TYPE cc_p2p_libp2p_libp2p_gossipsub_messages counter
+cc_p2p_libp2p_libp2p_gossipsub_messages_total 0
+# HELP cc_p2p_libp2p_libp2p_identify_errors Number of errors while attempting to identify the remote.
+# TYPE cc_p2p_libp2p_libp2p_identify_errors counter
+cc_p2p_libp2p_libp2p_identify_errors_total 0
+# HELP cc_p2p_libp2p_libp2p_identify_pushed Number of times identification information of the local node has been actively pushed to a peer..
+# TYPE cc_p2p_libp2p_libp2p_identify_pushed counter
+cc_p2p_libp2p_libp2p_identify_pushed_total 0
+# HELP cc_p2p_libp2p_libp2p_identify_received Number of times identification information has been received from a peer.
+# TYPE cc_p2p_libp2p_libp2p_identify_received counter
+cc_p2p_libp2p_libp2p_identify_received_total 0
+# HELP cc_p2p_libp2p_libp2p_identify_sent Number of times identification information of the local node has been sent to a peer in response to an identification request.
+# TYPE cc_p2p_libp2p_libp2p_identify_sent counter
+cc_p2p_libp2p_libp2p_identify_sent_total 0
+# HELP cc_p2p_libp2p_libp2p_identify_remote_protocols Number of connected nodes supporting a specific protocol, with "unrecognized" for each peer supporting one or more unrecognized protocols
+# TYPE cc_p2p_libp2p_libp2p_identify_remote_protocols gauge
+# HELP cc_p2p_libp2p_libp2p_identify_remote_listen_addresses Number of connected nodes advertising a specific listen address
+# TYPE cc_p2p_libp2p_libp2p_identify_remote_listen_addresses gauge
+# HELP cc_p2p_libp2p_libp2p_identify_local_observed_addresses Number of connected nodes observing the local node at a specific address
+# TYPE cc_p2p_libp2p_libp2p_identify_local_observed_addresses gauge
+# HELP cc_p2p_libp2p_libp2p_ping_rtt_seconds Round-trip time sending a 'ping' and receiving a 'pong'.
+# TYPE cc_p2p_libp2p_libp2p_ping_rtt_seconds histogram
+# UNIT cc_p2p_libp2p_libp2p_ping_rtt_seconds seconds
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_sum 0.0
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_count 0
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_bucket{le="0.001"} 0
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_bucket{le="0.002"} 0
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_bucket{le="0.004"} 0
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_bucket{le="0.008"} 0
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_bucket{le="0.016"} 0
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_bucket{le="0.032"} 0
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_bucket{le="0.064"} 0
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_bucket{le="0.128"} 0
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_bucket{le="0.256"} 0
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_bucket{le="0.512"} 0
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_bucket{le="1.024"} 0
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_bucket{le="2.048"} 0
+cc_p2p_libp2p_libp2p_ping_rtt_seconds_bucket{le="+Inf"} 0
+# HELP cc_p2p_libp2p_libp2p_swarm_listener_error Number of listener errors.
+# TYPE cc_p2p_libp2p_libp2p_swarm_listener_error counter
+cc_p2p_libp2p_libp2p_swarm_listener_error_total 0
+# HELP cc_p2p_libp2p_libp2p_swarm_dial_attempt Number of dial attempts.
+# TYPE cc_p2p_libp2p_libp2p_swarm_dial_attempt counter
+cc_p2p_libp2p_libp2p_swarm_dial_attempt_total 0
+# EOF

@@ -1,0 +1,9 @@
+127.0.0.1:9101 ok docs/s0-e07-run/t0/metrics-9101.txt
+127.0.0.1:9102 ok docs/s0-e07-run/t0/metrics-9102.txt
+127.0.0.1:9103 ok docs/s0-e07-run/t0/metrics-9103.txt
+127.0.0.1:9104 ok docs/s0-e07-run/t0/metrics-9104.txt
+127.0.0.1:9105 ok docs/s0-e07-run/t0/metrics-9105.txt
+127.0.0.1:9106 ok docs/s0-e07-run/t0/metrics-9106.txt
+127.0.0.1:19102 ok docs/s0-e07-run/t0/metrics-19102.txt
+127.0.0.1:19112 ok docs/s0-e07-run/t0/metrics-19112.txt
+127.0.0.1:19122 ok docs/s0-e07-run/t0/metrics-19122.txt

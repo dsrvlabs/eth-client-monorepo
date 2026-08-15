@@ -1,0 +1,49 @@
+# HELP cc_build_info Build identity (always 1); labels match eth.common.v1.BuildInfo.
+# TYPE cc_build_info gauge
+cc_build_info{service="attestation",version="0.1.0",git_sha="e2ad297",rustc="rustc 1.97.1 (8bab26f4f 2026-07-14)"} 1
+# HELP cc_grpc_requests Total gRPC requests handled by this process.
+# TYPE cc_grpc_requests counter
+cc_grpc_requests_total{service="attestation",method="unknown",code="0"} 24
+# HELP cc_grpc_request_duration_seconds gRPC request latency.
+# TYPE cc_grpc_request_duration_seconds histogram
+# UNIT cc_grpc_request_duration_seconds seconds
+cc_grpc_request_duration_seconds_sum{service="attestation",method="unknown"} 0.003852083999999999
+cc_grpc_request_duration_seconds_count{service="attestation",method="unknown"} 24
+cc_grpc_request_duration_seconds_bucket{le="0.0005",service="attestation",method="unknown"} 23
+cc_grpc_request_duration_seconds_bucket{le="0.001",service="attestation",method="unknown"} 23
+cc_grpc_request_duration_seconds_bucket{le="0.0025",service="attestation",method="unknown"} 24
+cc_grpc_request_duration_seconds_bucket{le="0.005",service="attestation",method="unknown"} 24
+cc_grpc_request_duration_seconds_bucket{le="0.01",service="attestation",method="unknown"} 24
+cc_grpc_request_duration_seconds_bucket{le="0.025",service="attestation",method="unknown"} 24
+cc_grpc_request_duration_seconds_bucket{le="0.05",service="attestation",method="unknown"} 24
+cc_grpc_request_duration_seconds_bucket{le="0.1",service="attestation",method="unknown"} 24
+cc_grpc_request_duration_seconds_bucket{le="0.25",service="attestation",method="unknown"} 24
+cc_grpc_request_duration_seconds_bucket{le="0.5",service="attestation",method="unknown"} 24
+cc_grpc_request_duration_seconds_bucket{le="1.0",service="attestation",method="unknown"} 24
+cc_grpc_request_duration_seconds_bucket{le="2.5",service="attestation",method="unknown"} 24
+cc_grpc_request_duration_seconds_bucket{le="5.0",service="attestation",method="unknown"} 24
+cc_grpc_request_duration_seconds_bucket{le="10.0",service="attestation",method="unknown"} 24
+cc_grpc_request_duration_seconds_bucket{le="+Inf",service="attestation",method="unknown"} 24
+# HELP cc_peer_health Peer aggregate health (1=up, 0=down); driven by the peer prober.
+# TYPE cc_peer_health gauge
+cc_peer_health{service="attestation",peer="chain"} 1
+# HELP process_cpu_seconds Total user and system CPU time spent in seconds
+# TYPE process_cpu_seconds counter
+# UNIT process_cpu_seconds seconds
+process_cpu_seconds_total 0.02
+# HELP process_resident_memory_bytes Resident memory size in bytes
+# TYPE process_resident_memory_bytes gauge
+# UNIT process_resident_memory_bytes bytes
+process_resident_memory_bytes 7786496
+# HELP process_virtual_memory_bytes Virtual memory size in bytes
+# TYPE process_virtual_memory_bytes gauge
+# UNIT process_virtual_memory_bytes bytes
+process_virtual_memory_bytes 356556800
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds
+# TYPE process_start_time_seconds gauge
+# UNIT process_start_time_seconds seconds
+process_start_time_seconds 1786815251.33
+# HELP process_open_fds Number of open file descriptors
+# TYPE process_open_fds gauge
+process_open_fds 15
+# EOF

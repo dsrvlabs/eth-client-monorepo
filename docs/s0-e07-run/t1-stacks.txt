@@ -1,0 +1,15 @@
+=== T1 six-service ===
+NAME                              SERVICE       STATUS
+s0b19-ab-baseline-attestation-1   attestation   Up About an hour (healthy)
+s0b19-ab-baseline-beacon-api-1    beacon-api    Up About an hour (healthy)
+s0b19-ab-baseline-chain-1         chain         Up About an hour (healthy)
+s0b19-ab-baseline-el-1            el            Up About an hour (unhealthy)
+s0b19-ab-baseline-engine-1        engine        Up About an hour (healthy)
+s0b19-ab-baseline-p2p-1           p2p           Up About an hour (healthy)
+s0b19-ab-baseline-storage-1       storage       Up About an hour (healthy)
+=== T1 cc-devnet ===
+NAME                    SERVICE     STATUS
+cc-devnet-anchor-1      anchor      Up About an hour (healthy)
+cc-devnet-node-a-1      node-a      Up About an hour
+cc-devnet-node-b-1      node-b      Up About an hour
+cc-devnet-publisher-1   publisher   Up About an hour

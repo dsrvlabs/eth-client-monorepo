@@ -1,0 +1,15 @@
+commit=e2ad297072d07ab00cb328e5e12549d9c210ba8d
+commit_short=e2ad297
+branch=feature/s0-b-19-ab-baseline
+cwd=.
+compose_project=s0b19-ab-baseline
+devnet_project=cc-devnet
+devnet_max_slots=2000
+devnet_slot_count=64
+devnet_seconds_per_slot=3
+jwt_present=yes
+t0_unix=1786815301
+t0_utc=2026-08-15T17:35:01Z
+t1_unix=1786818933
+t1_utc=2026-08-15T18:35:33Z
+elapsed_s=3632

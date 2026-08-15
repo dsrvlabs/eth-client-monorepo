@@ -1,0 +1,258 @@
+# S0-B-19 / E0.7 parsed family tables (absolute numbers)
+# Topology A == Topology B == this commit (S0: no structural split).
+# Same-commit A/B pair is T0 vs T>=1h. T>=1h is the S0 baseline.
+
+== T0 snapshot (same-commit topology A) ==
+family	endpoint	series	value
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="0.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="1.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="2.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="3.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="5.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="8.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="16.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="32.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="64.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="+Inf"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="0.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="1.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="2.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="3.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="5.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="8.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="16.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="32.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="64.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="+Inf"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="0.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="1.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="2.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="3.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="5.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="8.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="16.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="32.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="64.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="+Inf"}	1
+2	127.0.0.1:9101 (six/chain)	cc_chain_head_lag_slots	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="imported"}	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="deferred_engine"}	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="unknown_parent"}	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="deferred"}	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="invalid"}	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="duplicate"}	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_subscribers	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_import_rejected_backpressure_total	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_event_publish_dropped_total	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_da_pending_dropped_total	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_pending_engine_dropped_total	0
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="0.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="1.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="2.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="3.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="5.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="8.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="16.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="32.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="64.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="+Inf"}	1
+3	127.0.0.1:9104 (six/engine)	cc_engine_fcu_dropped_stale_total	0
+3	127.0.0.1:9104 (six/engine)	cc_engine_fastpath_dropped_total	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="meta"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="blocks"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="index"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="columns"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="snapshots"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="blocks"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="columns"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="snapshots"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="p1"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="p2"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="meta"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="p0"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="index"}	0
+
+== T>=1h snapshot (same-commit topology B; S0 baseline) ==
+family	endpoint	series	value
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="0.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="1.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="2.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="3.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="5.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="8.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="16.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="32.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="64.0"}	1
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="+Inf"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="0.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="1.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="2.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="3.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="5.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="8.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="16.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="32.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="64.0"}	1
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="+Inf"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="0.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="1.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="2.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="3.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="5.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="8.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="16.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="32.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="64.0"}	1
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="+Inf"}	1
+2	127.0.0.1:9101 (six/chain)	cc_chain_head_lag_slots	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="imported"}	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="deferred_engine"}	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="unknown_parent"}	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="deferred"}	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="invalid"}	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="duplicate"}	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_subscribers	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_import_rejected_backpressure_total	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_event_publish_dropped_total	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_da_pending_dropped_total	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_pending_engine_dropped_total	0
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="0.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="1.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="2.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="3.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="5.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="8.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="16.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="32.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="64.0"}	1
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="+Inf"}	1
+3	127.0.0.1:9104 (six/engine)	cc_engine_fcu_dropped_stale_total	0
+3	127.0.0.1:9104 (six/engine)	cc_engine_fastpath_dropped_total	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="meta"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="blocks"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="index"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="columns"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="snapshots"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="blocks"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="columns"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="snapshots"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="p1"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="p2"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="meta"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="p0"}	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="index"}	0
+
+== T0 vs T>=1h diff (same-commit A/B) ==
+family	endpoint	series	T0	T1h	delta
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="deferred"}	0	0	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="deferred_engine"}	0	0	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="duplicate"}	0	0	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="imported"}	0	0	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="invalid"}	0	0	0
+1	127.0.0.1:9101 (six/chain)	cc_chain_import_total{result="unknown_parent"}	0	0	0
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="+Inf"}	1	1	0
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="0.0"}	1	1	0
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="1.0"}	1	1	0
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="16.0"}	1	1	0
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="2.0"}	1	1	0
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="3.0"}	1	1	0
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="32.0"}	1	1	0
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="5.0"}	1	1	0
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="64.0"}	1	1	0
+2	127.0.0.1:19102 (devnet/publisher)	cc_p2p_head_lag_slots_bucket{le="8.0"}	1	1	0
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="+Inf"}	1	1	0
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="0.0"}	1	1	0
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="1.0"}	1	1	0
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="16.0"}	1	1	0
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="2.0"}	1	1	0
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="3.0"}	1	1	0
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="32.0"}	1	1	0
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="5.0"}	1	1	0
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="64.0"}	1	1	0
+2	127.0.0.1:19112 (devnet/node-a)	cc_p2p_head_lag_slots_bucket{le="8.0"}	1	1	0
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="+Inf"}	1	1	0
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="0.0"}	1	1	0
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="1.0"}	1	1	0
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="16.0"}	1	1	0
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="2.0"}	1	1	0
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="3.0"}	1	1	0
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="32.0"}	1	1	0
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="5.0"}	1	1	0
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="64.0"}	1	1	0
+2	127.0.0.1:19122 (devnet/node-b)	cc_p2p_head_lag_slots_bucket{le="8.0"}	1	1	0
+2	127.0.0.1:9101 (six/chain)	cc_chain_head_lag_slots	0	0	0
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="+Inf"}	1	1	0
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="0.0"}	1	1	0
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="1.0"}	1	1	0
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="16.0"}	1	1	0
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="2.0"}	1	1	0
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="3.0"}	1	1	0
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="32.0"}	1	1	0
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="5.0"}	1	1	0
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="64.0"}	1	1	0
+2	127.0.0.1:9102 (six/p2p)	cc_p2p_head_lag_slots_bucket{le="8.0"}	1	1	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_da_pending_dropped_total	0	0	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_event_publish_dropped_total	0	0	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_import_rejected_backpressure_total	0	0	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_pending_engine_dropped_total	0	0	0
+3	127.0.0.1:9101 (six/chain)	cc_chain_subscribers	0	0	0
+3	127.0.0.1:9104 (six/engine)	cc_engine_fastpath_dropped_total	0	0	0
+3	127.0.0.1:9104 (six/engine)	cc_engine_fcu_dropped_stale_total	0	0	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="blocks"}	0	0	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="columns"}	0	0	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="index"}	0	0	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="meta"}	0	0	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_shard_dropped_total{class="snapshots"}	0	0	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="blocks"}	0	0	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="columns"}	0	0	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="index"}	0	0	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="meta"}	0	0	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="p0"}	0	0	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="p1"}	0	0	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="p2"}	0	0	0
+3	127.0.0.1:9106 (six/storage)	cc_storage_writer_chunk_dropped_total{class="snapshots"}	0	0	0
+
+family1_nonzero_delta_series: 0
+family2_nonzero_delta_series: 0
+family3_nonzero_delta_series: 0
+dangerous_case: no
+dangerous-case rule did not fire (requires family-3 nonzero AND families 1–2 zero).
+
+== exact series names observed ==
+cc_chain_da_pending_dropped_total
+cc_chain_event_publish_dropped_total
+cc_chain_head_lag_slots
+cc_chain_import_rejected_backpressure_total
+cc_chain_import_total{result="deferred"}
+cc_chain_import_total{result="deferred_engine"}
+cc_chain_import_total{result="duplicate"}
+cc_chain_import_total{result="imported"}
+cc_chain_import_total{result="invalid"}
+cc_chain_import_total{result="unknown_parent"}
+cc_chain_pending_engine_dropped_total
+cc_chain_subscribers
+cc_engine_fastpath_dropped_total
+cc_engine_fcu_dropped_stale_total
+cc_p2p_head_lag_slots_bucket{le="+Inf"}
+cc_p2p_head_lag_slots_bucket{le="0.0"}
+cc_p2p_head_lag_slots_bucket{le="1.0"}
+cc_p2p_head_lag_slots_bucket{le="16.0"}
+cc_p2p_head_lag_slots_bucket{le="2.0"}
+cc_p2p_head_lag_slots_bucket{le="3.0"}
+cc_p2p_head_lag_slots_bucket{le="32.0"}
+cc_p2p_head_lag_slots_bucket{le="5.0"}
+cc_p2p_head_lag_slots_bucket{le="64.0"}
+cc_p2p_head_lag_slots_bucket{le="8.0"}
+cc_storage_shard_dropped_total{class="blocks"}
+cc_storage_shard_dropped_total{class="columns"}
+cc_storage_shard_dropped_total{class="index"}
+cc_storage_shard_dropped_total{class="meta"}
+cc_storage_shard_dropped_total{class="snapshots"}
+cc_storage_writer_chunk_dropped_total{class="blocks"}
+cc_storage_writer_chunk_dropped_total{class="columns"}
+cc_storage_writer_chunk_dropped_total{class="index"}
+cc_storage_writer_chunk_dropped_total{class="meta"}
+cc_storage_writer_chunk_dropped_total{class="p0"}
+cc_storage_writer_chunk_dropped_total{class="p1"}
+cc_storage_writer_chunk_dropped_total{class="p2"}
+cc_storage_writer_chunk_dropped_total{class="snapshots"}

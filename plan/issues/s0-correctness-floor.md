@@ -1182,6 +1182,23 @@ Establishes the baseline every later stage diffs against. Per `[ARCH]` §9.0:
 **Acceptance** — all six binaries built and run; the three families recorded with absolute numbers, not
 "no significant change".
 
+- [x] `make build` produced all six binaries under `target/debug/`
+      (`cc-chain`, `cc-p2p`, `cc-attestation`, `cc-engine`, `cc-beacon-api`,
+      `cc-storage`).
+- [x] Six-service compose `COMPOSE_PROJECT_NAME=s0b19-ab-baseline` ran; all
+      six healthy for the whole window. EL `service_started` (ADR P3-14).
+- [x] Self-devnet `cc-devnet` ran ≥1 h (publisher + node-a + node-b + anchor).
+      64-slot fixture, `CC_DEVNET_MAX_SLOTS=2000`; stacks stayed up after
+      publish. node-a/node-b each accepted 64 `beacon_block`s.
+- [x] T0 2026-08-15T17:35:01Z and T≥1h 2026-08-15T18:35:33Z (elapsed **3632 s**).
+      Three families recorded with absolute numbers in
+      [`docs/s0-e07-ab-baseline.txt`](../../docs/s0-e07-ab-baseline.txt).
+- [x] Topology A == Topology B == commit `e2ad297`. Same-commit A/B is T0 vs
+      T≥1h: family 1/2/3 deltas all 0. **dangerous_case=no** (family 3 did not
+      move). T≥1h is the S0 baseline later stages diff against.
+- [x] Helper `scripts/s0-ab-baseline.sh` (fail-closed, loopback only, not in
+      `make ci` / `make lint`).
+
 ---
 
 ### `S0-B-20` · **E0.8** — off-host port scan
