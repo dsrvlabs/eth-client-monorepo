@@ -1,0 +1,548 @@
+# S1 — fold the EL bridge · wk 9–16
+
+**Entry.** S0 exit criteria E0.1–E0.7 all met, under `make ci`.
+**Ships.** 3 containers · engine-fastpath DA works end to end · real KZG replaces `kzg: None`.
+
+**Moves.** `services/engine/{transport,jwt,state,version,errors,capabilities,config}.rs`, `methods/`,
+`fastpath/` → `crates/engine-api`, **verbatim with tests**.
+**Adds.** `cc-seam` (`ChainIngress`, `P2pEgress`, `SeamError`, the 11-test conformance suite) · **E1/E2
+typed but not moved** (the R-1 discharge order) · the core-liveness probe (M8) · real KZG.
+**Deletes.** `services/chain/src/engine_client.rs` (E3 and P0-15's surface), `EngineStream`'s engine
+half, the `trusted_local` bool, `services/engine/src/{service,main,inject}.rs`.
+
+**Out of scope** (`[PLAN]` §3/S1, `[ARCH]` §9.2):
+
+- **Moving any transport.** E1/E2 are **typed only** — R-1's discharge order is types-then-transport.
+- **Merging moved services into `beacon-core` as *modules*.** That deletes `check-crate-dag.sh`'s five
+  named prohibitions (⟡ D-1).
+- **Any direct `cc-chain` ↔ `cc-p2p` call not routed through `cc-seam`** — it forecloses D-2.
+- **Adding `cc-chain` to `check-crate-dag.sh`'s JWT grandfather list** — that deletes the invariant.
+- Storage work.
+
+**The stage carries a second, concurrent deliverable: the S2 entry gate.** The ADR corpus (M11) and
+the P2-E triage (M12) gate **S2 entry**, so scheduling them at S2 makes them a serial prefix to the
+longest structural stage. They run as stream B's second half **inside S1** (`[PLAN]` §4, D8), and
+they are an **S1 exit item** (E1.6), not an S2 start item.
+
+Estimate provenance and the points scale are defined in [`s0a-gate-restoration.md`](s0a-gate-restoration.md).
+
+---
+
+## Issue index
+
+### Stream A — consensus core (`crates/engine-api`, `cc-seam`, M8)
+
+| Id | Title | pd | pts | Deps |
+|---|---|---:|---:|---|
+| `S1-A-01` | `crates/engine-api` skeleton **+ the `check-crate-dag.sh` JWT re-point (same PR)** | 1.5–2.5 | 3 | — |
+| `S1-A-02` | Move `transport.rs` (three-lane) + `config.rs`, verbatim with tests | 2–3 | 5 | `S1-A-01` |
+| `S1-A-03` | Move `jwt.rs`, `version.rs`, `errors.rs`, `capabilities.rs` | 1.5–2 | 3 | `S1-A-01` |
+| `S1-A-04` | Move `state.rs` (the health machine), verbatim with tests | 1.5–2.5 | 3 | `S1-A-01` |
+| `S1-A-05` | Move `methods/` + `fastpath/` | 2–3 | 5 | `S1-A-02..04` |
+| `S1-A-06` | `services/engine/main.rs` → thin constructor; delete `service.rs`, `inject.rs` | 1.5–2 | 3 | `S1-A-05` |
+| `S1-A-07` | `crates/seam` — `SeamError`, `ChainIngress`, `P2pEgress` with overflow doc contracts | 1.5–2 | 3 | — |
+| `S1-A-08` | `impl InProcess` — bounded tokio mpsc + oneshot replies | 2–3 | 5 | `S1-A-07` |
+| `S1-A-09` | `impl Ipc` — wrap today's tonic edge; the jittered reconnect loop stays inside it | 2–3 | 5 | `S1-A-07` |
+| `S1-A-10` | Conformance 1/3 — policy **A**, `backpressure_surfaces_after_deadline` | 1.5–2 | 3 | `S1-A-08`, `S1-A-09` |
+| `S1-A-11` | Conformance 2/3 — policies **B**, **C**, **D** | 1.5–2 | 3 | `S1-A-10` |
+| `S1-A-12` | Conformance 3/3 — the remaining tests to 11; both impls in CI | 2–3 | 5 | `S1-A-11` |
+| `S1-A-13` | `check-crate-dag.sh` — `cc-p2p ↛ cc-chain` and `cc-chain ↛ cc-p2p` prohibitions | 1.5–2 | 3 | `S1-A-07` |
+| `S1-A-14` | P1-D/11 (S1 half) — type the stringly-typed cross-service contracts | 1.5–2.5 | 3 | `S1-A-07` |
+| `S1-A-15` | M8 core-liveness probe — design + implementation | 2.5–3 | 5 | `S1-A-05` |
+| `S1-A-16` | M8 — wire into the healthcheck; **ADR-R-04** | 1.5–2 | 3 | `S1-A-15` |
+| `S1-A-17` | M8 — injected engine black-hole; **demonstrated red** (E1.2) | 1.5–2 | 3 | `S1-A-16` |
+| `S1-A-18` | S1 testability test — `import → engine → fork-choice`, timeout ⇒ **deferral** | 2–3 | 5 | `S1-A-06` |
+| `S1-A-19` | §9.0 A/B run + exit note (E1.1) | 2–3 | 5 | all |
+| | **Stream A total** | **33–47.5** | **73** | |
+
+### Stream B — edge & platform (engine rows) + **the S2 entry gate**
+
+| Id | Title | pd | pts | Deps |
+|---|---|---:|---:|---|
+| `S1-B-01` | P1-A/25 — real KZG replaces `kzg: None` (**P0-16 engine half**) | 2–3 | 5 | `S1-A-05` |
+| `S1-B-02` | P1-A/26 — production lane uses the `hoodi_blob_bound()` **test fixture** | 1–1.5 | 3 | `S1-A-05` |
+| `S1-B-03` | P1-A/24 — block-branch `FetchBlobs` carries a zeroed KZG inclusion proof | 1.5–2 | 3 | `S1-B-01` |
+| `S1-B-04` | P2-D/19 + P2-B/5 — the engine policy edges | 2–3 | 5 | `S1-A-05` |
+| `S1-B-05` | **Gate 1** — the reconciliation mechanism itself (J-16). **First task.** | 1.5–2 | 3 | — |
+| `S1-B-06` | **Gate 2** — the CI resolver gate | 1.5–2 | 3 | `S1-B-05` |
+| `S1-B-07` | Gate (a) 1/4 — proto / build / CI / supply-chain ids (9) | 1.5–2 | 3 | `S1-B-05` |
+| `S1-B-08` | Gate (a) 2/4 — chain and fork-choice ids (13) | 2–2.5 | 5 | `S1-B-05` |
+| `S1-B-09` | Gate (a) 3/4 — p2p ids (8) | 1.5–2 | 3 | `S1-B-05` |
+| `S1-B-10` | Gate (a) 4/4 — engine and store ids (13) | 2–2.5 | 5 | `S1-B-05` |
+| `S1-B-11` | Gate (b) — `ADR-P3-16` → **ADR-R-03**. The highest-priority (b) row | 1–1.5 | 3 | `S1-A-01` |
+| `S1-B-12` | Gate (b) — `ADR-P3-02` → ADR-R-03 supersession | 0.75–1 | 2 | `S1-A-16` |
+| `S1-B-13` | Gate (b) — `ADR-P3-15`, the `trusted_local` KZG skip | 1–1.5 | 3 | `S1-B-01` |
+| `S1-B-14` | Gate (b) — `ADR-P4-03`, chain relays column SSZ without decoding | 0.75–1 | 2 | `S1-B-05` |
+| `S1-B-15` | Gate (b) — `ADR-P2-13`, per-task panic policy. **On the X1 path.** | 0.75–1 | 2 | `S1-B-05` |
+| `S1-B-16` | Gate (b) — the remaining 7, with `Status: proposed` + *revisit at Sn* | 2.5–3.5 | 5 | `S1-B-05` |
+| `S1-B-17` | Gate (c) — 3 stale citations deleted | 0.5 | 1 | `S1-B-05` |
+| `S1-B-18` | **ADR-R-01** — typed handles with a stated overflow policy | 0.5–0.75 | 2 | `S1-A-07` |
+| `S1-B-19` | **R-P2-triage** 1/2 — rows 2–20 (minus the 5 done at S0) | 2–3 | 5 | — |
+| `S1-B-20` | **R-P2-triage** 2/2 — rows 22–35 | 2–3 | 5 | — |
+| `S1-B-21` | M3 ledger — `Discharged by` maintenance for S1 rows | 0.5 | 1 | — |
+| `S1-B-22` | **Spike Q-1** — `check-crate-dag.sh` allowlist minimality | 0.5–1 | 2 | — |
+| | **Stream B total** | **29.25–40.75** | **71** | |
+
+**Phase totals.** **62.25–88.25 pd · 144 pts.** Of which the S2 entry gate is **`S1-B-05` … `S1-B-21`
+= 22.25–30.25 pd**, against `[PLAN]` §4's **19–32 pd** and §3/S1's **19–26 pd**.
+
+**Parallel duration, 2 streams.** Stream A binds at 33–47.5 pd → **8.25–11.9 wk** at 4 effective
+pd/engineer-week, against `[PLAN]`'s **7–9 wk**. See the drift note.
+
+---
+
+## Stream A — the engine fold
+
+### `S1-A-01` · `crates/engine-api` skeleton + the JWT re-point
+
+**Stream** A · **Est** 1.5–2.5 pd / **3 pts** (≈) · **Discharges** ⟡ D-10, part of P1-E/S1
+
+**This issue cannot be split, and the reason is a security invariant.** `[ARCH]` §6.2: the
+`check-crate-dag.sh` JWT rule must name `cc-engine-api` **in the same PR that creates the crate**. A
+stage that lands `crates/engine-api` without it has **silently deleted a mechanically-enforced
+invariant** — the rule today says *only `cc-engine` may declare an HTTP client or JWT signer*
+(ADR-P3-16 ✓ `docs/supply-chain.md:121`, `scripts/check-crate-dag.sh:202`), and a new crate holding
+the JWT signer with no rule naming it is an invariant that evaporates rather than one that is
+re-decided.
+
+**Touch points**
+- `crates/engine-api/Cargo.toml`, `src/lib.rs` (new)
+- `scripts/check-crate-dag.sh:202` — the JWT/HTTP-client rule
+- `Cargo.toml:3-27` — workspace members (20 today ✓)
+
+**Acceptance (falsifiable)**
+1. `check-crate-dag.sh` names `cc-engine-api` in the JWT rule (E1.4).
+2. **`cc-chain` is NOT on the grandfather list** (E1.4, and `[ARCH]` §9.2's S1 prohibition).
+3. A deliberate test edit adding an HTTP client to a third crate makes the script fail —
+   demonstrated in the PR.
+4. `S1-B-11` (ADR-R-03) is opened in the same sprint; the rule change without the record is half the
+   deliverable.
+
+---
+
+### `S1-A-02` … `S1-A-06` · The verbatim move
+
+**Combined** 8.5–12.5 pd / **19 pts** (≈ — a move, but the JWT / health-machine / three-lane transport
+is delicate) · **Discharges** P1-E/S1
+
+**"Verbatim with tests" is the review contract.** Any behavioural change in these five issues is a
+review-stopper and belongs in a separate PR. `[ARCH]` §2.4/3: *"the diff must show the queue bound
+moving, not being re-derived. A new numeric literal in a moved file is a review-stopper."*
+
+| Id | Moves | pd | Note |
+|---|---|---:|---|
+| `S1-A-02` | `transport.rs`, `config.rs` | 2–3 | the three-lane transport and `TransportTimeouts` ✓ (`services/engine/src/config.rs:37-67`) — the EL's own HTTP timeouts already modelled here become the callee-side overflow story for E3 |
+| `S1-A-03` | `jwt.rs`, `version.rs`, `errors.rs`, `capabilities.rs` | 1.5–2 | `errors.rs:6` carries ADR-P3-09 (*the transport never retries `newPayload`*), which S1's deadline design depends on — do not "improve" it |
+| `S1-A-04` | `state.rs` (health machine) | 1.5–2.5 | |
+| `S1-A-05` | `methods/`, `fastpath/` | 2–3 | `fastpath/cells.rs:1` carries ADR-P3-12 (cell extension on the blocking pool); `fastpath/filter.rs:346` carries ADR-P3-15, the `cfg(test)`-only `verify_cell_kzg_proof_batch` → `S1-B-13` |
+| `S1-A-06` | `services/engine/main.rs` → thin constructor over `cc-engine-api`; delete `service.rs`, `inject.rs` | 1.5–2 | **`services/engine` stays a workspace member** so the 4-container topology can still be run for A/B (`[ARCH]` §9.1) |
+
+**Also deleted in `S1-A-06`** — `services/chain/src/engine_client.rs` (the whole `block_on` bridge,
+E3, P0-15's and P1-B/11's surface) and the `trusted_local` bool. E3 becomes a direct
+`cc-engine-api` call from the core thread with an explicit `Duration` argument.
+
+**Acceptance for the group**
+1. `cargo test -p cc-engine-api` passes with the tests that moved with the code.
+2. `services/chain/src/engine_client.rs` no longer exists; no `handle.block_on` remains on any
+   chain→engine path.
+3. The `trusted_local` bool and its proto comment recording the security residual ✓
+   (`p2p.proto:240-249`) are gone.
+
+---
+
+### `S1-A-07` · `crates/seam` — the traits
+
+**Stream** A · **Est** 1.5–2 pd / **3 pts** · ⌂ `[ARCH]` §2.1 specifies the shape ·
+**Discharges** part of P1-D/11, the R-1 discharge order
+
+Three properties, all load-bearing:
+1. **The methods mirror today's proto `oneof` arms**, so the move is mechanical and reviewable
+   against the `.proto` file.
+2. **The error type is shared with the transport and names the overflow condition explicitly.** Not
+   `Result<T, Box<dyn Error>>`, not `Option<T>`.
+3. **The overflow policy is stated in the trait's doc contract.**
+
+`SeamError` has exactly four variants — `Backpressure { bound, waited_ms }`, `Unavailable(String)`,
+`InvalidArgument(String)`, `FailedPrecondition { reason }`. **Adding a variant is a contract change
+and needs an ADR** (`[ARCH]` §2.1); write that sentence into the enum's doc comment.
+
+**Overflow contracts, quoted into the traits**
+- `ChainIngress::submit_gossip` MUST block up to `IMPORT_SEND_TIMEOUT` (2 s) and then return
+  `Backpressure`. It **MUST NOT silently drop.** Implementations that cannot block must still surface
+  `Backpressure`.
+- `P2pEgress::publish` is **lossy by design** and returns `Ok(Published::Dropped)` rather than an
+  error when the publish queue is full — preserving today's behaviour ✓
+  (`services/p2p/src/service.rs:796`). That looseness is a deliberate, recorded decision (ADR-R-02),
+  not an oversight.
+- `P2pEgress::update_view` is an `ArcSwap` store — never blocks, never fails.
+
+**Where backpressure lives: exactly one place per edge** — the bound on the receiving queue, named as
+a constant, plus the `send_timeout` on the sending side. Both are already the house pattern:
+`COMMAND_CHANNEL_CAPACITY = 64` ✓ (`core.rs:54`), `IMPORT_SEND_TIMEOUT = 2s` ✓ (`core.rs:57`), and
+the nine named bounds in `services/p2p/src/channels.rs:29-45` ✓. **The handle does not introduce a
+second bound**; it names the existing one in the trait doc so a reviewer can diff it.
+
+**Acceptance** — `cc-chain` and `cc-p2p` name `Arc<dyn ChainIngress>` / `Arc<dyn P2pEgress>` and **no
+transport type**; `cc-p2p` has zero dependency on `cc-proto` for this edge.
+
+---
+
+### `S1-A-08` · `impl InProcess` · 2–3 pd / **5 pts** (≈)
+Bounded tokio mpsc + oneshot replies. The Single Hull candidate.
+
+### `S1-A-09` · `impl Ipc` · 2–3 pd / **5 pts** (≈)
+Wraps today's tonic-over-TCP edge; the S3 option is a unix socket + `SO_PEERCRED`. **The jittered
+reconnect loop stays inside this impl** (`services/p2p/src/chain_stream/client.rs`) — it is the repo's
+best distributed-systems code and the thing X3 asks about.
+
+**`[ARCH]` §9.2 / `[PLAN]` R-14: neither impl is ever deleted.** Both stay buildable permanently; the
+losing one is demoted to a test fixture, because it is the only way the conformance suite stays
+honest. Write that into the crate's README now, not at S3.
+
+---
+
+### `S1-A-10` … `S1-A-12` · The conformance suite
+
+**Combined** 5–7 pd / **11 pts** · ⌂ `[ARCH]` §2.2 · **Discharges** E1.3
+
+`[ARCH]` §2.2 records **four distinct overflow policies** on internal edges today, one of which is a
+correctness bug. They must be preserved **individually**; collapsing them to one policy at the fold
+would be exactly the silent change R-1 predicts.
+
+| Policy | Today's trigger | Caller-visible signal today | Post-move signal | Conformance test | Issue |
+|---|---|---|---|---|---|
+| **A** blocking with deadline | `cmd_tx.send_timeout(cmd, 2s)` on a 64-deep channel ✓ `core.rs:241,278,307,332,365` | gRPC `RESOURCE_EXHAUSTED` + `cc_chain_import_rejected_backpressure` | `SeamError::Backpressure` | `backpressure_surfaces_after_deadline` — fill the queue, assert the variant **and** that it took ≥ 2 s | `S1-A-10` |
+| **B** try_send, drop the *subscriber* | per-subscriber `mpsc(256)` ✓ `events/mod.rs:34-35,91,599-601` | stream terminated `RESOURCE_EXHAUSTED`; consumer reconnects with cursor | unchanged for the API/observer bus; **N/A** for storage after S2 | `events::slow_subscriber_is_terminated_not_stalled` (**exists today; keep it**) | `S1-A-11` |
+| **C** try_send, drop the *message*, log | publish queue → swarm cmd queue full ✓ `service.rs:794-797` | `error!(...)`, **no caller signal** | `Ok(Published::Dropped)` — **a value, not a log line** | `publish_drop_is_observable` | `S1-A-11` |
+| **D** try_send, drop *silently* | `SlotTick` into the full 64-deep channel ✓ `core.rs:527-532` | **none** | **deleted** — the tick has its own never-shed lane | `core::slot_tick_is_never_shed` | `S1-A-11` (assert it, landed at `S0-A-14`) |
+
+**Under-specified — flag in `S1-A-12`.** `[PLAN]` and `[ARCH]` both say **11 tests**. `[ARCH]` §2.2
+names **four**. The remaining **seven are unnamed in either source.** Do not invent them silently:
+`S1-A-12`'s first deliverable is the enumerated list of 11, reviewed before any is written, with each
+test traced to a trait method or an overflow row. If the honest count is not 11, say so and correct
+the figure in `[ARCH]` §2.1.
+
+**Acceptance for the group** — `cargo test -p cc-seam` passes against **both** impls (`InProcess` and
+`Ipc`), not one, and CI runs both (E1.3).
+
+---
+
+### `S1-A-13` · `check-crate-dag.sh` — the `cc-chain` ↔ `cc-p2p` prohibitions
+
+**Stream** A · **Est** 1.5–2 pd / **3 pts** · ⌂ `[ARCH]` §2.5 · **Discharges** R-7's mitigation
+
+**Constraint stated as a check** (`[ARCH]` §2.5): *no PR in S0–S2 may introduce a call from `cc-chain`
+to `cc-p2p` or vice versa that is not routed through a `cc-seam` trait.* This is enforceable today by
+adding two explicit named prohibitions in the style of the existing `services/storage ↛
+cc-fork-choice` rule ✓ (`scripts/check-crate-dag.sh:48-58`).
+
+**Acceptance** — both directions named; a deliberate test edit adding either dependency fails the
+script, demonstrated in the PR; the rule is added to the `S0a-B-04` `make ci` job list so it runs
+locally too.
+
+---
+
+### `S1-A-14` · P1-D/11 (S1 half) — type the stringly-typed contracts
+
+**Stream** A · **Est** 1.5–2.5 pd / **3 pts** (≈) · **Discharges** P1-D/11 (S1 half; the S2 half is
+`S2-A-08`)
+
+R-1's failure mode is **silent**, so there is no report to fix it from (ADR-R-01's rejected
+alternative). Type the contracts **before** moving them.
+
+**Targets** — verdict reason strings; `FCU_DROPPED_STALE:` prefixes; hand-rolled event byte-offsets
+with silent-default fallbacks. The most consequential instance of the last is
+`services/storage/src/write_behind.rs:763-770` (`column_index_at_offset(&ssz).unwrap_or(0)`, then a
+2-byte LE read, then `0` — a short or malformed payload is **durably stored as column index 0**), but
+**that one is deleted at S2** by the typed ingest path (`S2-A-05`), not typed here. Do not patch it.
+
+**Acceptance** — every cross-service string discriminant on an S1-moved surface is an enum; a grep for
+the named prefixes outside test code returns 0.
+
+---
+
+### `S1-A-15` … `S1-A-17` · M8 — the core-liveness probe
+
+**Combined** 5.5–7 pd / **11 pts** (≈) · ⌂ `[ARCH]` §7.2 · **Discharges** M8, R-4, E1.2
+
+**Why it ships at S1 and not "before S3".** `[ARCH]` §9.1 puts it at S1 — earlier than `[PRD]` R-4
+requires. The health DAG is green for the one failure it cannot heal and red for the one compose
+already restarts (`[ARCH]` §7.1). A parked consensus core reports healthy **today**.
+
+- `S1-A-15` (2.5–3 pd) — a **deadline-bounded no-op through the consensus core**. The deadline is the
+  soft deadline substituted from `ATTESTATION_DUE_BPS` × slot duration (ADR-P3-13 ✓
+  `services/engine/src/metrics.rs:8`), which `[ARCH]` §7.2 names as the relevant precedent.
+- `S1-A-16` (1.5–2 pd) — wire into the healthcheck; commit **ADR-R-04** (*liveness is proved by a
+  deadline-bounded no-op through the consensus core*).
+- `S1-A-17` (1.5–2 pd) — the injected engine black-hole harness.
+
+**Acceptance (E1.2, falsifiable)** — **M8 demonstrated red** against an injected engine black-hole,
+with the healthcheck output pasted into the S1 exit note. A probe that has only ever been observed
+green is the same failure shape as an X1 counter that has only ever returned 0.
+
+---
+
+### `S1-A-18` · S1 testability test
+
+**Stream** A · **Est** 2–3 pd / **5 pts** · ⌂ `[ARCH]` §8.2 · **Discharges** the direct regression
+test for P0-15
+
+`import → engine → fork-choice` in one process, with a `newPayload` timeout asserting **deferral**,
+not park. This re-runs `S0-A-27`'s assertion after the move: the deferral machinery exists
+(`services/chain/src/pending_engine.rs`, ADR-P3-05's separate map) and the point of P0-15 is that it
+could never trigger.
+
+**Acceptance** — the test exists, runs in CI, and fails if `pending_engine` is bypassed.
+
+---
+
+### `S1-A-19` · §9.0 A/B run + exit note
+
+**Stream** A · **Est** 2–3 pd / **5 pts** · ⌂ `[ARCH]` §9.0 · **Discharges** E1.1
+
+Same procedure as `S0-B-19`, diffed against the S0 baseline.
+
+**E1.1's blocker rule, stated as acceptance:** `cc_chain_import_result{*}` distribution and head-lag
+buckets match the S0 baseline; **any non-zero diff in the overflow-counter family with zero diff in
+the other two is a stage blocker, not a curiosity** (`[ARCH]` §9.0/4). It means behaviour is unchanged
+at test load and the *contract* changed — which is precisely the R-1 failure this stage's typing work
+exists to prevent.
+
+**Also in the exit note** — E1.5: 3 containers run; engine-fastpath DA works end to end on
+self-devnet.
+
+---
+
+## Stream B — engine rows
+
+### `S1-B-01` · P1-A/25 — real KZG replaces `kzg: None`
+
+**Stream** B · **Est** 2–3 pd / **5 pts** (≈) · **Deps** `S1-A-05` · **Discharges** P1-A/25,
+**P0-16's engine half**
+
+The production binary passes `kzg: None` ✓ (`services/engine/src/main.rs:135`), so **the entire
+CC-37b getBlobs fastpath is dead**. P0-16's disposition is `wire @ S3` with the **engine half landing
+at S1** — this issue is that half.
+
+**Acceptance** — a self-devnet run shows non-zero getBlobsV2 fastpath completions. Note that W4's
+Phase-3 clause 4 makes *"non-zero complete **and** zero engine-sourced columns"* the pass condition
+and anything else a **FAIL** — so this issue's success is a precondition for `S3b-W-04`, not a
+substitute for it.
+
+### `S1-B-02` · P1-A/26 — production lane uses a test fixture · 1–1.5 pd / **3 pts** (≈)
+**Touch** `services/engine/src/main.rs:133` — the production lane uses `hoodi_blob_bound()`, a **test
+fixture**, for the blob-count gate. Links P1-D/18 (test-harness state in production paths).
+**Acceptance** — the bound comes from `ChainConfig` (the field added at `S0-A-07`); a grep for
+`hoodi_blob_bound` outside `#[cfg(test)]` returns 0.
+
+### `S1-B-03` · P1-A/24 — zeroed KZG inclusion proof · 1.5–2 pd / **3 pts** (≈)
+**Touch** `services/chain/src/da.rs:395` — the block-branch `FetchBlobs` template always carries a
+zeroed KZG inclusion proof in production.
+**Acceptance** — the proof is computed; a test asserts a non-zero proof on the block branch and that
+verification against it passes.
+
+### `S1-B-04` · P2-D/19 + P2-B/5 — the engine policy edges · 2–3 pd / **5 pts** (≈)
+`[PRD]` P2-D/19 is **19 engine policy edges**; the three named are: the fail-open fork-schedule
+default `osaka_time=0`; the gate-bypassing Synced-edge fcU resend; terminal `AuthFailed` with no
+operator escape. P2-B/5 is the documented transient fcU retry that is unreachable on the production
+gated path (`services/engine/src/methods/fcu.rs:324`).
+**Under-specified:** `[PRD]` enumerates 3 of the 19 and gives no `file:line` for the other 16. Scope
+this issue to the three named plus P2-B/5, and file the remaining 16 as a triage line item if the
+count matters — do not silently claim 19.
+
+---
+
+## Stream B — the S2 entry gate (M11 + M12)
+
+**The gate, restated (⟡ D-13).** *"Every cited id resolves to a committed document and the
+reconciliation table has no unclassified rows"* — **not** "write 58 ADRs", which would stall the
+stage. `[ARCH]` §10.1 measures the corpus at **207 citations / 58 distinct ids / 541 `Architecture §`
+occurrences / 0 ADR files**.
+
+**R-17 — the gate as literally worded is not satisfiable at S2 entry, and this is the resolution.**
+At least three (b)-class ids are decided by *later* stages: `ADR-07` is *"decided again at S3"*,
+`ADR-P1-04` is *"supersede at S4a"*, and `ADR-R-02` is *"created at S2"*. **A resolving document may
+carry `Status: proposed` plus an explicit "revisit at Sn" line** — the MADR format already has the
+field. Without stating this, someone either stalls S2 or fudges the gate.
+
+**Bucket counts.** Sized off the **enumerated** §10.4 table: **(a) 43 · (b) 12 · (c) 3** = 58.
+`[ARCH]` §10.4's own totals line and ⟡ D-13/§9.1 say **42/12/4**; `[PLAN]` X-1 flags the ±1 and does
+not adjudicate it. The enumerated table is the artifact the work is done against, so it is the one
+used here.
+
+---
+
+### `S1-B-05` · Gate 1 — the reconciliation mechanism itself
+
+**Stream** B · **Est** 1.5–2 pd / **3 pts** · ⌂ `[PLAN]` §4 (J-16) · **This is the first task, not the
+last** · **Blocks** every other gate issue
+
+`[PRD]` J-16: **the proposed mechanism for discharging D-6 does not exist yet.** `[ARCH]` cites its
+own §10 ten times — and the document reproduced the exact bug class D-6 describes, one revision after
+the class was documented. Three of the ids the corpus now needs (`ADR-R-02/03/04`) were created by the
+document that proposes to reconcile them.
+
+**Deliverables**
+1. `docs/adr/` with the MADR format from `[ARCH]` §10.2 and the id scheme from §10.3.
+2. The reconciliation table committed as a **file**, not a section of a design doc, so the CI gate
+   (`S1-B-06`) has something to resolve against.
+3. A `docs/adr/README.md` recording the **8 never-cited ids** — `P1-01`, `P1-02`, `P1-03`, `P1-06`,
+   `P2-01`, `P2-03`, `P2-12`, `P4-02` ✓. **These need no ADR** — an uncited id is not an unresolvable
+   citation — and recording the fact is what stops the next reader hunting for them.
+4. Adopt **748 occurrences** as the M11 baseline and state the unit as *occurrences*, not lines
+   (`[PLAN]` X-5: 541 `Architecture §` + 207 ADR). This settles `[PRD]` J-15's ±1 id / ∓3 citation
+   disagreement as a side effect.
+
+---
+
+### `S1-B-06` · Gate 2 — the CI resolver gate
+
+**Stream** B · **Est** 1.5–2 pd / **3 pts** · ⌂ `[PLAN]` §4 · **Deps** `S1-B-05`
+
+**Without it the corpus re-diverges the week after the gate passes.**
+
+**Acceptance (falsifiable)**
+1. A script extracts every `ADR[ -]<id>` **and** `Architecture §<n>` occurrence in the tree. It must
+   catch the **spaced** spelling (`ADR P3-02`) — `[PRD]` M11 records that revision 1 missed it and
+   undercounted the corpus by ~4.5×.
+2. The script **fails** when an id does not resolve under `docs/adr/`.
+3. Added to the `S0a-B-04` `make ci` job list.
+4. A deliberate test citation of a nonexistent id fails CI, demonstrated in the PR.
+
+---
+
+### `S1-B-07` … `S1-B-10` · Gate (a) — the 43 re-derivable ids
+
+**Combined** 7–9 pd / **16 pts** · ⌂ `[ARCH]` §10.4 sizes each at **~1 h** *(that is `[ARCH]`'s
+estimate, not a measurement — carried as such)* · **Deps** `S1-B-05`
+
+**These parallelise across writers.** Each is written by reading the citation site; no new decision is
+needed. Split by area so one writer holds one subsystem's context.
+
+| Id | Ids | Count |
+|---|---|---:|
+| `S1-B-07` | `ADR-04`, `ADR-05`, `ADR-06`, `ADR-11`, `ADR-12`, `ADR-P1-14`, `ADR-P3-01`, `ADR-P4-11`, `ADR-P4-12` | 9 |
+| `S1-B-08` | `ADR-P1-05`, `P1-07`, `P1-08`, `P1-09`, `P1-10`, `P1-12`, `P1-15`, `P2-04`, `P3-03`, `P3-04`, `P3-05`, `P3-10`, `P3-11` | 13 |
+| `S1-B-09` | `ADR-P2-02`, `P2-05`, `P2-06`, `P2-07`, `P2-08`, `P2-09`, `P2-14`, `P3-07` | 8 |
+| `S1-B-10` | `ADR-P3-08`, `P3-09`, `P3-12`, `P3-13`, `P4-01`, `P4-04`, `P4-05`, `P4-06`, `P4-08`, `P4-09`, `P4-10`, `P4-13`, `P4-14` | 13 |
+
+**Nine of these are marked "survives and is load-bearing" and must be written so a later stage cannot
+quietly contradict them:** `ADR-P1-09` (fork-choice `Store` owned by value on a dedicated OS thread —
+it is *why* Loop B keeps `max_workers = 1`), `ADR-P1-15` (latency SLOs off histogram buckets, never
+quantile interpolation — §7.3's metric reshape must preserve it), `ADR-P2-04` (only BLOCK is
+chain-authoritative — it is why `ChainIngress` is narrow), `ADR-P2-08` (KZG cross-sidecar batching),
+`ADR-P2-14` (`earliest_available_slot` as one `AtomicU64` — **it replaces E6**), `ADR-P3-03` (exactly
+one `verify_and_notify_new_payload` call site — why §4.2's `block_on` trace has a single terminus),
+`ADR-P3-09` (the transport never retries `newPayload`), `ADR-P4-01` (redb behind an engine seam),
+`ADR-P4-04` (single writer task + three-class priority mailbox — §4.3's post-move overflow policy *is*
+this mailbox), `ADR-P4-12` (the prober's independent codec — why P0-06 exists), `ADR-P4-13`
+(`I-node-id` — §4.2's boot policy).
+
+**One (a) row carries a correction:** `ADR-P3-01` cites *"Phase 3 adds no workspace member"* alongside
+a member count of **16**; the workspace has **20** today ✓ (`Cargo.toml:3-27`). Record the ADR **and**
+fix the count in `docs/phase-3-acceptance.md:607`.
+
+**Acceptance** — every id in the bucket resolves under `docs/adr/`; `S1-B-06`'s gate is green for
+them.
+
+---
+
+### `S1-B-11` … `S1-B-16` · Gate (b) — the 12 that need a decision recorded
+
+**Combined** 6.75–9.5 pd / **17 pts** · ⌂ `[ARCH]` §10.4, `[PLAN]` §4 sizes each 0.5–1 d
+
+**These do not parallelise onto one writer.** `[PLAN]` §9: *"They look like 12 documents one writer
+can produce. Each records a decision whose owner is the person who made it; they parallelise across
+**people who know the subject**, not across writers."* Split below by owner, not by volume.
+
+| Id | ADR | Why it needs a decision | Coupling |
+|---|---|---|---|
+| `S1-B-11` | `ADR-P3-16` → **ADR-R-03** | *only `cc-engine` may declare an HTTP client or JWT signer* — **S1 falsifies it as written** (`[ARCH]` §6.2). **The highest-priority (b) row in the table.** | **must land with `S1-A-01`'s dag rule** |
+| `S1-B-12` | `ADR-P3-02` → ADR-R-03 | *engine dials p2p; engine is deliberately not a health peer* — §7.1 shows **this is why a parked core reports green**. Defensible for a separate engine process; **void once the engine is in-process** | **must land with `S1-A-16`'s probe** |
+| `S1-B-13` | `ADR-P3-15` | `verify_cell_kzg_proof_batch` runs **only under `cfg(test)`** in the fastpath ✓ (`fastpath/filter.rs:346`) — this is the `trusted_local` KZG-skip. S1 makes the caller the process, which changes the trust argument but **does not automatically make skipping correct** | with `S1-B-01` |
+| `S1-B-14` | `ADR-P4-03` | *chain relays column SSZ without decoding* — right for a relay, wrong for an owner. S2 replaces it with a typed ingest | records the change S2 makes |
+| `S1-B-15` | `ADR-P2-13` | per-task panic policy: **catch and restart rather than abort the process**. **Directly determines whether X1 is measurable** (⟡ D-11) — the ADR must state that the catch path gains a counter before S3 | **on the X1 critical path**; read by `S3a-B-19` |
+| `S1-B-16` | the remaining 7: `ADR-07` (*re-decided at S3*), `ADR-09` (*re-decide at S3*), `ADR-P1-04` (*supersede at S4a* — milhouse changes it), `ADR-P1-11` (*storage stops being a consumer at S2*; survives for API consumers, consequences rewritten), `ADR-P2-10` (gossip topic scoring weight **0** on every topic; **P0-17a wires §5.6 scoring at S3** — the deferral ends, record the new weights), `ADR-P2-11` (`ColumnSidecar` contract-only, no producer; supersede at S2), `ADR-P3-14` (EL dependency is `service_started`, never `service_healthy`; re-decide when compose collapses at S2) | each carries `Status: proposed` + an explicit **"revisit at Sn"** line, per R-17 |
+
+**Id conflict to resolve in `S1-B-13` — flagged by this decomposition (`X-6`).** `[ARCH]` §10.4 routes
+`ADR-P3-15`'s replacement decision to *"ADR-R-05"*, but §10.5's **`ADR-R-05` is the
+slashing-protection record** (written at S0, `S0-B-14`). One of the two needs a new id. Recommend
+`ADR-P3-15` take **`ADR-R-07`**, leaving §10.5's enumeration intact.
+
+---
+
+### `S1-B-17` · Gate (c) — the three stale citations
+
+**Stream** B · **Est** 0.5 pd / **1 pt** · ⌂ `[ARCH]` §10.4
+
+| Id | Site | Action |
+|---|---|---|
+| `ADR-P1-13` | `scripts/check-crate-dag.sh:100` | **the crate it governs no longer exists** — `cc-driver` retired at CC-28. Delete the citation; the removal note stays as a plain comment |
+| `ADR-P3-06` | `proto/eth/p2p/v1/p2p.proto:23,253` | *"`EngineStream` is bidirectional so the topology stays at nine contracts rather than ten"* — **the premise is deleted.** "Number of contracts" stops being a design constraint when the contracts stop being transports. Delete at S1; **do not write the ADR as if it still binds** |
+| `ADR-P4-07` | `services/chain/src/restore.rs:5` | deleted at S2. Write the ADR with `Status: superseded-by ADR-R-02` **so the history is legible**, then delete the citations with the code at S2 |
+
+Note the enumerated table gives 3 (c) rows while §10.4's totals line says 4 — `[PLAN]` X-1. If a
+fourth surfaces while doing this issue, record it rather than adjudicating the count silently.
+
+---
+
+### `S1-B-18` · **ADR-R-01** — typed handles with a stated overflow policy
+**Est** 0.5–0.75 pd / **2 pts** · ⌂ `[ARCH]` §10.5 (*created at S1*) · **Deps** `S1-A-07`
+Records the R-1 discharge order — types land, transport later — and names the rejected alternative
+(*wait for a report of changed backpressure semantics*), whose failure mode is silent.
+
+---
+
+### `S1-B-19` · `S1-B-20` · **R-P2-triage** — M12 → 0
+
+**Combined** 4–6 pd / **10 pts** · ⌂ `[PLAN]` §4 sizes the 35-row pass at 5–7 pd · **Discharges M12**
+
+**One adversarial verification pass over all 35 P2-E rows**, each **promoted with a tier and
+disposition** or **dismissed with a recorded reason**. Five (rows 1, 6, 8, 21, 31) are done at
+`S0-B-17`; these two issues cover the remaining 30.
+
+- `S1-B-19` — rows 2–5, 7, 9–20 (16 rows)
+- `S1-B-20` — rows 22–35 (14 rows)
+
+**Not schedulable as work until promoted** (`[PRD]` §5.3.2). A promoted row becomes a new issue filed
+against its owning stage, and its estimate is **not** in this file's totals — that is the point of a
+triage gate.
+
+**Acceptance** — **M12 = 0**: zero rows in an unknown state; every promotion carries a disposition
+from the `[PRD]` §5.0 vocabulary; every dismissal carries a reason. `[PRD]` §7.5's anti-metric applies
+— a row cleared without a recorded judgement is not progress.
+
+---
+
+### `S1-B-21` · M3 ledger maintenance · 0.5 pd / **1 pt**
+Carry the `Discharged by` column forward for every row S1 patched or deleted, with the commit SHA or
+the stage id. Zero blank cells for rows this stage claimed.
+
+### `S1-B-22` · **Spike Q-1** — `check-crate-dag.sh` allowlist minimality
+**Est** 0.5–1 pd / **2 pts** · ⌂ `[ARCH]` B.2 = **S** · **Scheduled** S1 open · **Blocks** nothing;
+hygiene. Run `--check-unused`; report whether the allowlist carries entries no crate needs.
+
+---
+
+## S1 exit criteria — and which issue earns each
+
+| # | Criterion | Earned by |
+|---|---|---|
+| E1.1 | §9.0 A/B clean; **non-zero overflow-family diff with zero diff in the other two = stage blocker** | `S1-A-19` |
+| E1.2 | **M8 demonstrated red** against an injected engine black-hole | `S1-A-17` |
+| E1.3 | `cargo test -p cc-seam` passes against **both** impls | `S1-A-12` |
+| E1.4 | `check-crate-dag.sh` names `cc-engine-api` in the JWT rule; `cc-chain` **not** grandfathered | `S1-A-01` |
+| E1.5 | 3 containers run; engine-fastpath DA works end to end on self-devnet | `S1-A-19`, `S1-B-01` |
+| E1.6 | **S2 entry gate discharged** — M11 resolvable, M12 = 0. **An S1 exit item, not an S2 start item** | `S1-B-05` … `S1-B-20` |
+
+---
+
+## Drift against `[PLAN]` §3/S1 — stated, not smoothed
+
+| # | Observation |
+|---|---|
+| 1 | **The `crates/engine-api` extraction is 8–12 pd in `[PLAN]`; decomposed it is 8.5–12.5 pd** — consistent. **The `cc-seam` group is 10–14 pd in `[PLAN]`; decomposed 11–15 pd** — consistent. The gate is 19–26 pd in §3 and 19–32 pd in §4; decomposed **22.25–30.25 pd**, inside §4's range and above §3's. Use §4's figure. |
+| 2 | **Calendar.** Stream A carries 33–47.5 pd → **8.25–11.9 wk** at 4 effective pd/engineer-week, against `[PLAN]`'s 7–9 wk. Stream B carries 29.25–40.75 pd → 7.3–10.2 wk. The two streams are well balanced; the phase simply runs ~1–2 wk long at the top of the range. `[PLAN]` §12's lever — *a dedicated technical writer for the ADR corpus* — buys the (a) bucket (7–9 pd) but **not** the 12 (b) rows, which need the decision owners. |
+| 3 | **The 11 conformance tests are named as a count, not a list.** `[ARCH]` §2.2 names four. Seven are unspecified in either source. `S1-A-12` enumerates them before writing them; if the honest number is not 11, the source figure needs correcting rather than the test list padding. |
+| 4 | **P2-D/19 is "19 engine policy edges" with three named and no `file:line` for the other 16.** `S1-B-04` scopes to the three named; the rest are unestimatable as written. |
+| 5 | **`X-6`, this decomposition's finding:** `[ARCH]` §10.4 assigns `ADR-P3-15`'s replacement to `ADR-R-05`, which §10.5 already uses for the slashing-protection record. Two decisions, one id. Resolved in `S1-B-13` by moving `ADR-P3-15`'s successor to `ADR-R-07`. |
