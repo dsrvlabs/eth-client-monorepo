@@ -187,6 +187,8 @@ impl RestoreGate {
     fn end_stream(&self) {
         let mut g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         g.in_flight = false;
+        // Cancel of the spawn_blocking join must not leave wait() parked.
+        self.notify.notify_waiters();
     }
 
     /// Publish EMPTY — collapses grace immediately.
@@ -687,6 +689,51 @@ pub fn spawn_core_from_restore<P: Preset + 'static>(
 
 // ── gRPC handler body ───────────────────────────────────────────────────────
 
+/// Owned inputs for [`apply_restore_set_blocking`] (handler + tests).
+#[allow(missing_debug_implementations)]
+struct RestoreApplyOwned {
+    state_ssz: Vec<u8>,
+    anchor_block_ssz: Vec<u8>,
+    anchor_block_fork: u32,
+    blocks: Vec<RestoreBlock>,
+    fork_choice_scalars_ssz: Vec<u8>,
+    chain_config: ChainConfig,
+    engine_uri: String,
+    expected_head_root: Root,
+    expected_head_slot: u64,
+    metrics: ChainMetrics,
+}
+
+/// Run [`apply_restore_set`] on the blocking pool.
+///
+/// `EngineApiClient` uses `Handle::block_on` for lazy connect and NewPayload;
+/// that panics on a tonic worker.
+async fn apply_restore_set_blocking<P: Preset + 'static>(
+    owned: RestoreApplyOwned,
+) -> Result<RestoreApplyResult<P>, Status> {
+    tokio::task::spawn_blocking(move || {
+        apply_restore_set::<P>(RestoreApplyInput {
+            state_ssz: &owned.state_ssz,
+            anchor_block_ssz: if owned.anchor_block_ssz.is_empty() {
+                None
+            } else {
+                Some(owned.anchor_block_ssz.as_slice())
+            },
+            anchor_block_fork: owned.anchor_block_fork,
+            blocks: &owned.blocks,
+            fork_choice_scalars_ssz: &owned.fork_choice_scalars_ssz,
+            chain_config: &owned.chain_config,
+            engine_uri: owned.engine_uri,
+            expected_head_root: owned.expected_head_root,
+            expected_head_slot: owned.expected_head_slot,
+            metrics: &owned.metrics,
+            _preset: PhantomData,
+        })
+    })
+    .await
+    .map_err(|e| Status::internal(format!("restore apply join: {e}")))?
+}
+
 /// Shared deps for the restore RPC (owned by `ChainServiceImpl`).
 #[derive(Clone)]
 #[allow(missing_debug_implementations)]
@@ -702,17 +749,30 @@ pub struct RestoreHandlerDeps {
     pub _marker: (),
 }
 
+/// Clears [`RestoreGate::in_flight`] if the RPC future is dropped (client
+/// cancel at the `spawn_blocking` join, or earlier). `publish_*` already
+/// clears the flag; a second `end_stream` is a no-op on that field.
+#[derive(Debug)]
+struct RestoreInFlightGuard<'a> {
+    gate: &'a RestoreGate,
+}
+
+impl Drop for RestoreInFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.gate.end_stream();
+    }
+}
+
 /// Handle one `RestoreFromStore` client stream.
 pub async fn handle_restore_from_store<P: Preset + 'static>(
     deps: RestoreHandlerDeps,
     request: Request<Streaming<RestoreChunk>>,
 ) -> Result<Response<RestoreResponse>, Status> {
     deps.gate.try_begin_stream()?;
-    let result = handle_restore_inner::<P>(deps.clone(), request).await;
-    if result.is_err() {
-        deps.gate.end_stream();
-    }
-    result
+    let _guard = RestoreInFlightGuard {
+        gate: deps.gate.as_ref(),
+    };
+    handle_restore_inner::<P>(deps.clone(), request).await
 }
 
 async fn handle_restore_inner<P: Preset + 'static>(
@@ -748,23 +808,27 @@ async fn handle_restore_inner<P: Preset + 'static>(
         "RestoreFromStore: applying snapshot + replay set (NoVerification, DA as verdict)"
     );
 
-    let applied = apply_restore_set::<P>(RestoreApplyInput {
-        state_ssz: &acc.state_ssz,
-        anchor_block_ssz: if header.anchor_block_ssz.is_empty() {
-            None
-        } else {
-            Some(header.anchor_block_ssz.as_slice())
-        },
+    let owned = RestoreApplyOwned {
+        state_ssz: acc.state_ssz,
+        anchor_block_ssz: header.anchor_block_ssz,
         anchor_block_fork: header.anchor_block_fork,
-        blocks: &acc.blocks,
-        fork_choice_scalars_ssz: &header.fork_choice_scalars_ssz,
-        chain_config: &deps.chain_config,
+        blocks: acc.blocks,
+        fork_choice_scalars_ssz: header.fork_choice_scalars_ssz,
+        chain_config: deps.chain_config.clone(),
         engine_uri: deps.core_cfg.engine_uri.clone(),
         expected_head_root,
         expected_head_slot,
-        metrics: &deps.metrics,
-        _preset: PhantomData,
-    })?;
+        metrics: deps.metrics.clone(),
+    };
+
+    // EngineApiClient parks on Handle::block_on (lazy connect + newPayload).
+    // That panics on this tonic worker; the blocking pool is not a worker.
+    let applied = {
+        let _join_guard = RestoreInFlightGuard {
+            gate: deps.gate.as_ref(),
+        };
+        apply_restore_set_blocking::<P>(owned).await
+    }?;
 
     let resp = RestoreResponse {
         head_root: applied.head_root.as_slice().to_vec(),
@@ -802,12 +866,24 @@ mod tests {
     use super::*;
     use cc_crypto::{bls_verify_count, take_bls_verify_count};
     use cc_fork_choice::{DataAvailability, ExecutionStatus, HarnessAvailability, ProtoNodeBlock};
+    use cc_proto::engine::engine_service_server::{EngineService, EngineServiceServer};
+    use cc_proto::engine::{
+        ForkchoiceUpdatedRequest, ForkchoiceUpdatedResponse, GetEngineStateRequest,
+        GetEngineStateResponse, GetInfoRequest, GetInfoResponse,
+        NewPayloadRequest as ProtoNewPayloadRequest, NewPayloadResponse, PayloadStatusV1,
+    };
     use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
-    use cc_types::containers::BeaconBlockHeader;
+    use cc_types::containers::{BeaconBlockHeader, Validator};
     use cc_types::preset::Minimal;
-    use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, ValidatorIndex};
-    use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
+    use cc_types::primitives::{
+        BlsSignature, Epoch, ExecutionAddress, ForkVersion, Gwei, ValidatorIndex,
+    };
+    use cc_types::{BeaconBlock, BeaconBlockBody, BeaconState, SignedBeaconBlock};
     use ssz::Encode;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tokio::sync::oneshot;
     use tree_hash::{Hash256, TreeHash};
 
     #[derive(Debug, Default, Clone, Copy)]
@@ -884,6 +960,25 @@ mod tests {
         let da = RestoreDaStatus::try_from(rb.da_status).unwrap_or(RestoreDaStatus::Unspecified);
         assert!(matches!(da, RestoreDaStatus::Unspecified));
         // Production match arm returns INVALID_ARGUMENT for this case.
+    }
+
+    /// Cancel / `end_stream` after grace must not leave `wait` parked.
+    #[tokio::test]
+    async fn in_flight_drop_unblocks_restore_wait() {
+        let gate = RestoreGate::new(Duration::from_millis(20));
+        gate.try_begin_stream().unwrap();
+        let waiter_gate = Arc::clone(&gate);
+        let waiter = tokio::spawn(async move { waiter_gate.wait().await });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        drop(RestoreInFlightGuard { gate: &gate });
+        let outcome = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("wait must not hang after in_flight is cleared")
+            .unwrap();
+        assert!(
+            matches!(outcome, RestoreGateOutcome::TimedOut),
+            "expected TimedOut after drop, got {outcome:?}"
+        );
     }
 
     /// EMPTY collapses grace immediately (not after 30 s).
@@ -1254,5 +1349,224 @@ mod tests {
             decode < observe && observe < on_block,
             "M13 observe must sit between hydrated decode and on_block"
         );
+    }
+
+    #[test]
+    fn handler_offloads_apply_restore_set_to_spawn_blocking() {
+        let src = include_str!("restore.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap();
+        let spawn = production
+            .find("tokio::task::spawn_blocking")
+            .expect("handle_restore_inner must spawn_blocking");
+        let apply = production
+            .find("apply_restore_set::<P>")
+            .expect("handle_restore_inner must call apply_restore_set");
+        assert!(
+            spawn < apply,
+            "apply_restore_set must run inside spawn_blocking"
+        );
+    }
+
+    /// Always-VALID engine gRPC (counts NewPayload). Distinct from `AcceptEngine`,
+    /// which never reaches `Handle::block_on` and hid this panic.
+    #[derive(Debug, Default)]
+    struct CountingEngine {
+        calls: AtomicU64,
+    }
+
+    #[tonic::async_trait]
+    impl EngineService for CountingEngine {
+        async fn get_info(
+            &self,
+            _: tonic::Request<GetInfoRequest>,
+        ) -> Result<tonic::Response<GetInfoResponse>, Status> {
+            Ok(tonic::Response::new(GetInfoResponse { build_info: None }))
+        }
+
+        async fn new_payload(
+            &self,
+            _: tonic::Request<ProtoNewPayloadRequest>,
+        ) -> Result<tonic::Response<NewPayloadResponse>, Status> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(tonic::Response::new(NewPayloadResponse {
+                payload_status: Some(PayloadStatusV1 {
+                    status: "VALID".into(),
+                    latest_valid_hash: None,
+                    validation_error: None,
+                }),
+            }))
+        }
+
+        async fn forkchoice_updated(
+            &self,
+            _: tonic::Request<ForkchoiceUpdatedRequest>,
+        ) -> Result<tonic::Response<ForkchoiceUpdatedResponse>, Status> {
+            Ok(tonic::Response::new(ForkchoiceUpdatedResponse {
+                payload_status: Some(PayloadStatusV1 {
+                    status: "VALID".into(),
+                    latest_valid_hash: None,
+                    validation_error: None,
+                }),
+                payload_id: None,
+            }))
+        }
+
+        async fn get_engine_state(
+            &self,
+            _: tonic::Request<GetEngineStateRequest>,
+        ) -> Result<tonic::Response<GetEngineStateResponse>, Status> {
+            Ok(tonic::Response::new(GetEngineStateResponse {
+                el_offline: false,
+                internal_state: "synced".into(),
+            }))
+        }
+    }
+
+    async fn spawn_counting_engine() -> (SocketAddr, oneshot::Sender<()>, Arc<CountingEngine>) {
+        let mock = Arc::new(CountingEngine::default());
+        let svc = EngineServiceServer::from_arc(Arc::clone(&mock));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(svc)
+                .serve_with_incoming_shutdown(
+                    tokio_stream::wrappers::TcpListenerStream::new(listener),
+                    async move {
+                        let _ = rx.await;
+                    },
+                )
+                .await
+                .unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        (addr, tx, mock)
+    }
+
+    fn seed_payload_restore_state() -> BeaconState<Minimal> {
+        let mut state = BeaconState::<Minimal>::default();
+        for i in 0..state.proposer_lookahead_len() {
+            state
+                .proposer_lookahead_set(i, ValidatorIndex::new(0))
+                .unwrap();
+        }
+        state
+            .validators_push(Validator {
+                pubkey: Default::default(),
+                withdrawal_credentials: Root::ZERO,
+                effective_balance: Gwei::new(32_000_000_000),
+                slashed: false,
+                activation_eligibility_epoch: Default::default(),
+                activation_epoch: Default::default(),
+                exit_epoch: Epoch::new(u64::MAX),
+                withdrawable_epoch: Epoch::new(u64::MAX),
+            })
+            .unwrap();
+        state.balances_push(Gwei::new(32_000_000_000)).unwrap();
+        let body = BeaconBlockBody::<Minimal>::default();
+        state.set_latest_block_header(BeaconBlockHeader {
+            slot: Slot::new(0),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: Root::ZERO,
+            state_root: Root::ZERO,
+            body_root: Root::from_hash256(TreeHash::tree_hash_root(&body)),
+        });
+        state.set_slot(Slot::new(0));
+        state.set_genesis_time(0);
+        state.set_deposit_requests_start_index(u64::MAX);
+        state
+    }
+
+    fn payload_carrying_child(
+        state: &BeaconState<Minimal>,
+        config: &ChainConfig,
+    ) -> SignedBeaconBlock<Minimal> {
+        let parent = Root::from_hash256(TreeHash::tree_hash_root(state.latest_block_header()));
+        let epoch = cc_state_transition::get_current_epoch(state);
+        let mix = cc_state_transition::get_randao_mix(state, epoch).unwrap();
+        let mut body = BeaconBlockBody::<Minimal>::default();
+        body.execution_payload.prev_randao = mix;
+        body.execution_payload.timestamp = cc_state_transition::compute_time_at_slot(
+            state.genesis_time(),
+            state.slot(),
+            config.seconds_per_slot,
+        );
+        body.execution_payload.parent_hash = state.latest_execution_payload_header().block_hash;
+        body.sync_aggregate.sync_committee_signature =
+            BlsSignature::from_array(cc_crypto::INFINITY_SIGNATURE);
+        SignedBeaconBlock {
+            message: BeaconBlock {
+                slot: state.slot(),
+                proposer_index: cc_state_transition::get_beacon_proposer_index(state).unwrap(),
+                parent_root: parent,
+                state_root: Root::ZERO,
+                body,
+            },
+            signature: Default::default(),
+        }
+    }
+
+    /// S0-A-28: `apply_restore_set` from a runtime worker + real `EngineApiClient`
+    /// + a payload-carrying block must not panic (`Handle::block_on` on a worker).
+    ///
+    /// Goes through [`apply_restore_set_blocking`] — the same wrap the handler
+    /// uses — so removing `spawn_blocking` there fails this test.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_restore_set_from_runtime_worker_with_real_engine_does_not_panic() {
+        let (addr, shutdown, mock) = spawn_counting_engine().await;
+        let uri = format!("http://{addr}");
+
+        let mut snapshot = seed_payload_restore_state();
+        let post_root = snapshot.canonical_root();
+        let signed_anchor = SignedBeaconBlock::<Minimal> {
+            message: BeaconBlock {
+                slot: Slot::new(0),
+                proposer_index: ValidatorIndex::new(0),
+                parent_root: Root::ZERO,
+                state_root: post_root,
+                body: Default::default(),
+            },
+            signature: Default::default(),
+        };
+        let mut child_pre = snapshot.clone();
+        let _ = cc_state_transition::process_slots(&mut child_pre, Slot::new(1)).unwrap();
+        let config = minimal_config();
+        let child = payload_carrying_child(&child_pre, &config);
+        let child_root = Root::from_hash256(TreeHash::tree_hash_root(&child.message));
+
+        let restore_block = RestoreBlock {
+            ssz: child.as_ssz_bytes(),
+            fork: 0,
+            root: child_root.as_slice().to_vec(),
+            da_status: RestoreDaStatus::Available as i32,
+        };
+
+        let mut registry = prometheus_client::registry::Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let applied = apply_restore_set_blocking::<Minimal>(RestoreApplyOwned {
+            state_ssz: snapshot.as_ssz_bytes(),
+            anchor_block_ssz: signed_anchor.as_ssz_bytes(),
+            anchor_block_fork: 0,
+            blocks: vec![restore_block],
+            fork_choice_scalars_ssz: Vec::new(),
+            chain_config: config,
+            engine_uri: uri,
+            expected_head_root: child_root,
+            expected_head_slot: 1,
+            metrics,
+        })
+        .await;
+        let apply_dbg = match &applied {
+            Ok(_) => "ok".to_string(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            mock.calls.load(Ordering::SeqCst) >= 1,
+            "payload-carrying restore block must reach EngineApiClient \
+             (connect + newPayload block_on); AcceptEngine never would; \
+             apply={apply_dbg}"
+        );
+        let _ = shutdown.send(());
     }
 }

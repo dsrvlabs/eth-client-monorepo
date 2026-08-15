@@ -633,6 +633,9 @@ way. `[PRD]` P0-15's main clause (deadlines) does not touch this line, and S2 is
 `EngineApiClient` (not the `AcceptEngine` double) and a payload-carrying block does not panic. Using
 the double reproduces the reason this never fired.
 
+- [x] `apply_restore_set` runs under `spawn_blocking` from the tonic handler.
+- [x] Real-`EngineApiClient` payload test does not panic; cancel clears `in_flight`.
+
 ---
 
 ### `S0-A-29` · **ADR-R-06** — does the restore/replay path call the engine at all?
