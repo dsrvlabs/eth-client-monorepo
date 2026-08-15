@@ -647,6 +647,7 @@ async fn main() -> anyhow::Result<()> {
                     shutdown_rx,
                     Some(migrator),
                     Some(replayer),
+                    Some(Arc::clone(&engine)),
                 );
                 tracing::info!(
                     data_dir = %cfg.data_dir.display(),

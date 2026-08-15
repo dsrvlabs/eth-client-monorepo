@@ -882,6 +882,9 @@ State it in the same words in both places.
 a resume from that cursor re-delivers the failed unit's events; a test asserts no `WriteCursor` with
 a seq beyond `last_flushed` is ever committed after the error.
 
+- [x] Injected P0 flush error ends the session at last_flushed (including first flush / last_flushed = None).
+- [x] Resume re-delivers the failed unit; no WriteCursor jumps past it.
+
 ---
 
 ### `S0-B-09` · P0-14 — `rewrite_from_head` deletes canonical rows for vacated slots
