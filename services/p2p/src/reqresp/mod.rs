@@ -196,9 +196,9 @@ impl Protocol {
             Self::GoodbyeV1 | Self::PingV1 => SszLimits { min: 8, max: 8 },
             // MetaData request is empty.
             Self::MetaDataV3 => SszLimits { min: 0, max: 0 },
-            // (start_slot, count) — two uint64s. Spec also had step historically;
-            // v2 is start+count = 16.
-            Self::BeaconBlocksByRangeV2 => SszLimits { min: 16, max: 16 },
+            // (start_slot, count, step) — three uint64s. `step` is deprecated
+            // but still required by the SSZ schema and MUST be 1.
+            Self::BeaconBlocksByRangeV2 => SszLimits { min: 24, max: 24 },
             // List[Root, 1024] ≈ 4 + 1024×32 (not 10 MiB).
             Self::BeaconBlocksByRootV2 => SszLimits {
                 min: 4,

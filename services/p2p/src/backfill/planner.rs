@@ -345,10 +345,7 @@ impl BatchPlan {
     /// Build the blocks-by-range request body.
     #[must_use]
     pub fn blocks_request(self) -> BlocksByRangeRequest {
-        BlocksByRangeRequest {
-            start_slot: self.start_slot,
-            count: self.count,
-        }
+        BlocksByRangeRequest::new(self.start_slot, self.count)
     }
 
     /// Build the columns-by-range request for **sampled** indices (CC-26/1).

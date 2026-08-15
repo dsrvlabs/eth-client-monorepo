@@ -205,7 +205,7 @@ pub fn request_limits(protocol: &str, global_max: usize) -> (usize, usize) {
         "/eth2/beacon_chain/req/goodbye/1/ssz_snappy"
         | "/eth2/beacon_chain/req/ping/1/ssz_snappy" => (8, 8),
         "/eth2/beacon_chain/req/metadata/3/ssz_snappy" => (0, 0),
-        "/eth2/beacon_chain/req/beacon_blocks_by_range/2/ssz_snappy" => (16, 16),
+        "/eth2/beacon_chain/req/beacon_blocks_by_range/2/ssz_snappy" => (24, 24),
         // List[Root, 1024] ≈ 4 + 1024*32 = 32772.
         "/eth2/beacon_chain/req/beacon_blocks_by_root/2/ssz_snappy" => (4, 4 + 1024 * 32),
         "/eth2/beacon_chain/req/beacon_blocks_by_head/1/ssz_snappy" => (40, 40),

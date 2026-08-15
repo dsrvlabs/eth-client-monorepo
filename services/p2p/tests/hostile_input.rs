@@ -758,9 +758,10 @@ fn valid_request_seed(protocol: Protocol) -> Vec<u8> {
         }
         .to_ssz_bytes(),
         Protocol::BeaconBlocksByRangeV2 => {
-            let mut b = [0u8; 16];
+            let mut b = [0u8; 24];
             b[0..8].copy_from_slice(&100u64.to_le_bytes());
             b[8..16].copy_from_slice(&2u64.to_le_bytes());
+            b[16..24].copy_from_slice(&1u64.to_le_bytes());
             b.to_vec()
         }
         Protocol::StatusV2 => vec![0u8; 92],

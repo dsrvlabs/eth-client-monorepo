@@ -361,10 +361,7 @@ mod tests {
         let mut registry = Registry::default();
         let metrics = P2pMetrics::register(&mut registry);
 
-        let req = BlocksByRangeRequest {
-            start_slot: Slot::new(200),
-            count: 3,
-        };
+        let req = BlocksByRangeRequest::new(Slot::new(200), 3);
         let (cur, fulu) = test_epochs();
         let framed = serve_block_protocol(
             Protocol::BeaconBlocksByRangeV2,
@@ -399,10 +396,7 @@ mod tests {
         let cache = filled(200, 210);
         let mut fork = fork_ctx();
         let mut lim = InboundRateLimiter::new();
-        let req = BlocksByRangeRequest {
-            start_slot: Slot::new(200),
-            count: MAX_REQUEST_BLOCKS_DENEB + 1,
-        };
+        let req = BlocksByRangeRequest::new(Slot::new(200), MAX_REQUEST_BLOCKS_DENEB + 1);
         let (cur, fulu) = test_epochs();
         let framed = serve_block_protocol(
             Protocol::BeaconBlocksByRangeV2,
@@ -444,10 +438,7 @@ mod tests {
                 RateLimitOutcome::Allow
             );
         }
-        let req = BlocksByRangeRequest {
-            start_slot: Slot::new(200),
-            count: 50,
-        };
+        let req = BlocksByRangeRequest::new(Slot::new(200), 50);
         let (cur, fulu) = test_epochs();
         let framed = serve_block_protocol(
             Protocol::BeaconBlocksByRangeV2,
@@ -485,10 +476,7 @@ mod tests {
         let (cur, fulu) = test_epochs();
 
         // by_range
-        let r = BlocksByRangeRequest {
-            start_slot: Slot::new(300),
-            count: 1,
-        };
+        let r = BlocksByRangeRequest::new(Slot::new(300), 1);
         let f = serve_block_protocol(
             Protocol::BeaconBlocksByRangeV2,
             &r.to_ssz_bytes(),

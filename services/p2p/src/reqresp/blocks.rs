@@ -4,7 +4,7 @@
 //!
 //! | Protocol | Request | Order |
 //! |---|---|---|
-//! | `beacon_blocks_by_range/2/` | `(start_slot, count)` | ascending slot |
+//! | `beacon_blocks_by_range/2/` | `(start_slot, count, step)` | ascending slot |
 //! | `beacon_blocks_by_root/2/` | `List[Root, 128]` | request order |
 //! | `beacon_blocks_by_head/1/` | `(beacon_root, count)` | **descending** ancestors |
 //!
@@ -42,8 +42,9 @@ pub const MAX_REQUEST_BLOCKS_DENEB: u64 = 128;
 /// value through; until then the mainnet/hoodi scalars are inlined.
 pub const MIN_EPOCHS_FOR_BLOCK_REQUESTS: u64 = 256 + 65_536 / 2;
 
-/// SSZ length of `BeaconBlocksByRange` request: two `uint64`.
-pub const BY_RANGE_SSZ_LEN: usize = 16;
+/// SSZ length of `BeaconBlocksByRange` request: three `uint64`
+/// (`start_slot`, `count`, `step`). `step` is deprecated but still required.
+pub const BY_RANGE_SSZ_LEN: usize = 24;
 
 /// SSZ length of `BeaconBlocksByHead` request: `Root` + `uint64`.
 pub const BY_HEAD_SSZ_LEN: usize = 40;
@@ -57,19 +58,35 @@ pub struct BlocksByRangeRequest {
     pub start_slot: Slot,
     /// Number of slots to cover (1..=[`MAX_REQUEST_BLOCKS_DENEB`]).
     pub count: u64,
+    /// Deprecated; spec requires `1`. Still part of the SSZ schema.
+    pub step: u64,
 }
 
 impl BlocksByRangeRequest {
-    /// SSZ-encode `(start_slot, count)`.
+    /// Spec-deprecated `step` value; MUST be 1.
+    pub const STEP: u64 = 1;
+
+    /// Build a request with `step` set to [`Self::STEP`].
+    #[must_use]
+    pub fn new(start_slot: Slot, count: u64) -> Self {
+        Self {
+            start_slot,
+            count,
+            step: Self::STEP,
+        }
+    }
+
+    /// SSZ-encode `(start_slot, count, step)`.
     #[must_use]
     pub fn to_ssz_bytes(self) -> [u8; BY_RANGE_SSZ_LEN] {
         let mut out = [0u8; BY_RANGE_SSZ_LEN];
         out[0..8].copy_from_slice(&self.start_slot.as_u64().to_le_bytes());
         out[8..16].copy_from_slice(&self.count.to_le_bytes());
+        out[16..24].copy_from_slice(&self.step.to_le_bytes());
         out
     }
 
-    /// SSZ-decode; length must be exactly 16.
+    /// SSZ-decode; length must be exactly 24.
     pub fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, io::Error> {
         if bytes.len() != BY_RANGE_SSZ_LEN {
             return Err(io::Error::new(
@@ -87,9 +104,15 @@ impl BlocksByRangeRequest {
                 .try_into()
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "count"))?,
         );
+        let step = u64::from_le_bytes(
+            bytes[16..24]
+                .try_into()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "step"))?,
+        );
         Ok(Self {
             start_slot: Slot::new(start),
             count,
+            step,
         })
     }
 }
@@ -696,12 +719,35 @@ mod tests {
 
     #[test]
     fn by_range_roundtrip_ssz() {
-        let r = BlocksByRangeRequest {
-            start_slot: Slot::new(42),
-            count: 7,
-        };
+        let r = BlocksByRangeRequest::new(Slot::new(42), 7);
         let bytes = r.to_ssz_bytes();
         assert_eq!(BlocksByRangeRequest::from_ssz_bytes(&bytes).unwrap(), r);
+        assert_eq!(r.step, 1);
+        assert_eq!(bytes.len(), BY_RANGE_SSZ_LEN);
+        assert_eq!(BY_RANGE_SSZ_LEN, 24);
+    }
+
+    /// Spec schema is three little-endian `uint64`s. Bytes are assembled here
+    /// by hand so the codec is checked against the schema, not against itself.
+    #[test]
+    fn by_range_ssz_matches_handwritten_24_byte_fixture() {
+        assert_eq!(BY_RANGE_SSZ_LEN, 24);
+        // start_slot = 42, count = 7, step = 1
+        let fixture: [u8; 24] = [
+            42, 0, 0, 0, 0, 0, 0, 0, // start_slot
+            7, 0, 0, 0, 0, 0, 0, 0, // count
+            1, 0, 0, 0, 0, 0, 0, 0, // step
+        ];
+        let decoded = BlocksByRangeRequest::from_ssz_bytes(&fixture).expect("24-byte fixture");
+        assert_eq!(
+            decoded,
+            BlocksByRangeRequest {
+                start_slot: Slot::new(42),
+                count: 7,
+                step: 1,
+            }
+        );
+        assert_eq!(decoded.to_ssz_bytes(), fixture);
     }
 
     #[test]
@@ -748,14 +794,8 @@ mod tests {
         let mut fork_ctx = fork_ctx_at(60_000);
         let mut ctx = serve_ctx(&cache, &mut fork_ctx);
 
-        let huge = BlocksByRangeRequest {
-            start_slot: Slot::new(100),
-            count: 1_000_000,
-        };
-        let over = BlocksByRangeRequest {
-            start_slot: Slot::new(100),
-            count: 129,
-        };
+        let huge = BlocksByRangeRequest::new(Slot::new(100), 1_000_000);
+        let over = BlocksByRangeRequest::new(Slot::new(100), 129);
         let e1 = serve_blocks_by_range(&mut ctx, huge).unwrap_err();
         let e2 = serve_blocks_by_range(&mut ctx, over).unwrap_err();
         assert!(matches!(e1, BlockServeError::InvalidRequest(_)));
@@ -773,10 +813,7 @@ mod tests {
         let mut fork_ctx = fork_ctx_at(60_000);
         let mut ctx = serve_ctx(&cache, &mut fork_ctx);
 
-        let below = BlocksByRangeRequest {
-            start_slot: Slot::new(earliest.as_u64() - 1),
-            count: 1,
-        };
+        let below = BlocksByRangeRequest::new(Slot::new(earliest.as_u64() - 1), 1);
         let err = serve_blocks_by_range(&mut ctx, below).unwrap_err();
         assert!(matches!(err, BlockServeError::ResourceUnavailable(_)));
         assert_eq!(err.response_code(), ResponseCode::ResourceUnavailable);
@@ -791,10 +828,7 @@ mod tests {
         let mut fork_ctx = fork_ctx_at(60_000);
         let mut ctx = serve_ctx(&cache, &mut fork_ctx);
 
-        let above = BlocksByRangeRequest {
-            start_slot: Slot::new(earliest.as_u64() + 1),
-            count: 2,
-        };
+        let above = BlocksByRangeRequest::new(Slot::new(earliest.as_u64() + 1), 2);
         let planned = serve_blocks_by_range(&mut ctx, above).unwrap();
         assert_eq!(planned.chunks.len(), 2);
         for c in &planned.chunks {
@@ -836,10 +870,7 @@ mod tests {
             current_epoch: Epoch::new(fulu_epoch),
             fulu_fork_epoch: Epoch::new(fulu_epoch),
         };
-        let req = BlocksByRangeRequest {
-            start_slot: Slot::new(low_slot),
-            count: 1,
-        };
+        let req = BlocksByRangeRequest::new(Slot::new(low_slot), 1);
         let err = serve_blocks_by_range(&mut ctx, req).unwrap_err();
         // Slot 10 is below fulu epoch start → BelowMinimumEpoch branch.
         assert!(
@@ -891,10 +922,7 @@ mod tests {
         assert!(count <= MAX_REQUEST_BLOCKS_DENEB);
         let planned = serve_blocks_by_range(
             &mut ctx,
-            BlocksByRangeRequest {
-                start_slot: Slot::new(slot_a),
-                count,
-            },
+            BlocksByRangeRequest::new(Slot::new(slot_a), count),
         )
         .unwrap();
         assert_eq!(planned.chunks.len(), count as usize);
