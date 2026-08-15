@@ -520,6 +520,9 @@ Partially mutates vote trackers on an out-of-bounds index and skips the counter 
 **Acceptance** — the mutation is all-or-nothing; a test with one OOB index in a multi-index attestation
 leaves *no* tracker mutated and bumps the counter.
 
+- [x] Mutation is all-or-nothing, including when an OOB index is already equivocating.
+- [x] OOB multi-index test leaves no tracker mutated and bumps the counter.
+
 ### `S0-A-23` · P1-A/20 — justified `CheckpointContext` overwritten from the wrong state
 **Est** 1–1.5 pd / **3 pts** (≈) · **Touch** `crates/fork-choice/src/on_block.rs:452`
 Overwritten from the **importing block's post-state**, not the checkpoint state.

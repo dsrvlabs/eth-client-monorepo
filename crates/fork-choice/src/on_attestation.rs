@@ -269,7 +269,11 @@ pub fn store_target_checkpoint_context<P: Preset>(
 ///
 /// Only mutates `next_root` / `next_epoch` when the attestation is newer than
 /// the tracked vote. Skips equivocating indices. Rejects indices outside the
-/// store's fixed vote capacity (SEC-16-2). Returns whether any tracker changed.
+/// store's fixed vote capacity (SEC-16-2), including those already marked
+/// equivocating. Returns whether any tracker changed.
+///
+/// Capacity is checked for every index before any write so a late
+/// out-of-range index cannot leave a partial apply.
 fn update_latest_messages<P: Preset>(
     store: &mut Store<P>,
     attesting_indices: impl IntoIterator<Item = ValidatorIndex>,
@@ -277,11 +281,8 @@ fn update_latest_messages<P: Preset>(
     beacon_block_root: Root,
 ) -> Result<bool, OnAttestationError> {
     let capacity = store.votes().len();
-    let mut changed = false;
+    let mut eligible = Vec::new();
     for index in attesting_indices {
-        if store.equivocating_indices().contains(&index) {
-            continue;
-        }
         let idx = index.as_u64() as usize;
         if idx >= capacity {
             return Err(OnAttestationError::ValidatorIndexOutOfRange {
@@ -289,6 +290,14 @@ fn update_latest_messages<P: Preset>(
                 capacity,
             });
         }
+        if store.equivocating_indices().contains(&index) {
+            continue;
+        }
+        eligible.push(idx);
+    }
+
+    let mut changed = false;
+    for idx in eligible {
         let vote = &mut store.votes_mut()[idx];
         // Spec: absent message OR target.epoch > existing.epoch.
         let should_update =
@@ -313,6 +322,10 @@ fn update_latest_messages<P: Preset>(
 ///
 /// **Does not touch node weights** — only vote trackers and checkpoint contexts.
 /// Head weight is recomputed later by `get_head` → [`compute_deltas`].
+///
+/// Bumps [`Store::mutation_counter`] when a tracker actually changes, and also
+/// on an out-of-range reject (no tracker write; head-cache observers still see
+/// the failed apply).
 pub fn on_attestation<P: Preset>(
     store: &mut Store<P>,
     attestation: &IndexedAttestation<P>,
@@ -331,16 +344,23 @@ pub fn on_attestation<P: Preset>(
     store_target_checkpoint_context(store, data.target, config)?;
 
     // Callers must pass a validated IndexedAttestation (see module docs).
-    let changed = update_latest_messages(
+    let changed = match update_latest_messages(
         store,
         attestation.attesting_indices.iter().copied(),
         data.target.epoch,
         data.beacon_block_root,
-    )?;
+    ) {
+        Ok(changed) => changed,
+        Err(err) => {
+            // Vote writes are all-or-nothing; still bump so a rejected apply is
+            // not silent to head-cache observers.
+            store.bump_mutation_counter();
+            return Err(err);
+        }
+    };
 
     if changed {
-        // Architecture §6.4: any on_attestation that actually changes a tracker
-        // bumps the mutation counter.
+        // Tracker change (or an OOB reject, above) bumps the mutation counter.
         store.bump_mutation_counter();
     }
 
@@ -904,6 +924,78 @@ mod tests {
                 }
             ),
             "{err:?}"
+        );
+    }
+
+    /// One OOB index in a multi-index attestation must not mutate any tracker
+    /// (all-or-nothing) and must still bump the mutation counter.
+    #[test]
+    fn oob_index_is_all_or_nothing_and_bumps_counter() {
+        let (mut store, anchor) = seeded_store(3);
+        let votes_before = store.votes().to_vec();
+        let before = store.mutation_counter();
+        let att = indexed(&[0, 99, 1], 0, anchor, cp(0, anchor));
+
+        let err = on_attestation(&mut store, &att, false).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                OnAttestationError::ValidatorIndexOutOfRange {
+                    index: 99,
+                    capacity: 3
+                }
+            ),
+            "{err:?}"
+        );
+        assert_eq!(
+            store.votes(),
+            votes_before.as_slice(),
+            "OOB index must leave every vote tracker unchanged"
+        );
+        assert!(
+            store.latest_message(ValidatorIndex::new(0)).is_none(),
+            "in-range index 0 must not be written"
+        );
+        assert!(
+            store.latest_message(ValidatorIndex::new(1)).is_none(),
+            "in-range index 1 must not be written"
+        );
+        assert!(
+            store.mutation_counter() > before,
+            "OOB reject must still bump mutation_counter"
+        );
+    }
+
+    /// An already-equivocating OOB index must still reject the whole attestation.
+    #[test]
+    fn equivocating_oob_index_is_still_all_or_nothing() {
+        let (mut store, anchor) = seeded_store(3);
+        store.insert_equivocating_indices([ValidatorIndex::new(99)]);
+        let votes_before = store.votes().to_vec();
+        let before = store.mutation_counter();
+        let att = indexed(&[0, 99, 1], 0, anchor, cp(0, anchor));
+
+        let err = on_attestation(&mut store, &att, false).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                OnAttestationError::ValidatorIndexOutOfRange {
+                    index: 99,
+                    capacity: 3
+                }
+            ),
+            "{err:?}"
+        );
+        assert_eq!(
+            store.votes(),
+            votes_before.as_slice(),
+            "equivocating OOB must not write in-range trackers"
+        );
+        assert!(store.latest_message(ValidatorIndex::new(0)).is_none());
+        assert!(store.latest_message(ValidatorIndex::new(1)).is_none());
+        assert!(
+            store.mutation_counter() > before,
+            "OOB reject must still bump mutation_counter"
         );
     }
 
