@@ -957,6 +957,8 @@ a silent 0. A 0 floor is maximally destructive for retention (cf. P2-E row 21, t
 `write_behind_lag_slots` **never records**. (This is also P2-D/20's "a lag metric that never emits".)
 **Acceptance** — a test drives a known lag and asserts the histogram observes it.
 
+- [x] `take_flush` preserves lag slots; a test drives a known lag and the histogram observes it.
+
 ---
 
 ### `S0-B-13` · P1-A/8, /9, /10 — gossip validation and registry rows

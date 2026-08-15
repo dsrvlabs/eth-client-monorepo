@@ -1142,7 +1142,14 @@ fn take_flush(acc: &mut Accumulator, session_id: u64) -> Option<CommitUnit> {
     if acc.is_empty() {
         return None;
     }
+    // P1-B/1: callers observe lag *after* a successful take. `mem::take`
+    // would clear both fields and `write_behind_lag_slots` would never record.
+    // `open_if_needed` overwrites `open_slot` when the next unit opens.
+    let latest_head_slot = acc.latest_head_slot;
+    let open_slot = acc.open_slot;
     let taken = std::mem::take(acc);
+    acc.latest_head_slot = latest_head_slot;
+    acc.open_slot = open_slot;
     if let Some(mut unit) = taken.into_commit_unit() {
         unit.cursor.session_id = session_id;
         Some(unit)
@@ -1372,6 +1379,7 @@ mod tests {
         MIN_BLOCK_SSZ_LEN, PARENT_ROOT_SSZ_OFFSET, SLOT_SSZ_OFFSET, STATE_ROOT_SSZ_OFFSET,
     };
     use cc_store::engine::{Durability, Engine, EngineOptions};
+    use prometheus_client::encoding::text::encode;
     use prometheus_client::registry::Registry;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -1381,6 +1389,40 @@ mod tests {
     fn metrics() -> StorageMetrics {
         let mut reg = Registry::default();
         StorageMetrics::register(&mut reg)
+    }
+
+    /// OpenMetrics scrape of `write_behind_lag_slots` (`prometheus-client`
+    /// gates `Histogram::count` behind `test-util`).
+    fn scrape_lag(m: &StorageMetrics) -> (f64, f64, String) {
+        let mut registry = Registry::default();
+        registry.register(
+            "cc_storage_write_behind_lag_slots",
+            "test scrape",
+            m.write_behind_lag_slots.clone(),
+        );
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        let mut sum = 0.0;
+        let mut count = 0.0;
+        for line in buf.lines() {
+            if let Some(rest) = line.strip_prefix("cc_storage_write_behind_lag_slots_sum ") {
+                sum = rest.trim().parse().unwrap();
+            }
+            if let Some(rest) = line.strip_prefix("cc_storage_write_behind_lag_slots_count ") {
+                count = rest.trim().parse().unwrap();
+            }
+        }
+        (sum, count, buf)
+    }
+
+    fn lag_bucket(buf: &str, le: &str) -> f64 {
+        let needle = format!("cc_storage_write_behind_lag_slots_bucket{{le=\"{le}\"}}");
+        for line in buf.lines() {
+            if let Some(rest) = line.strip_prefix(&needle) {
+                return rest.trim().parse().unwrap();
+            }
+        }
+        panic!("missing le={le} bucket in:\n{buf}");
     }
 
     fn root_n(n: u8) -> Root {
@@ -2282,6 +2324,38 @@ mod tests {
         // commit_slots=32: need 32-slot span.
         assert!(!should_flush_for_head(Some(0), 10, 32, true));
         assert!(should_flush_for_head(Some(0), 31, 32, true));
+    }
+
+    /// P1-B/1 / S0-B-12: the latency-flush arm calls `observe_lag` *after*
+    /// `take_flush`. Lag is `head − open_slot`; that pair must survive the take.
+    #[test]
+    fn observe_lag_records_known_delta_after_take_flush() {
+        let m = metrics();
+        let mut acc = Accumulator::default();
+        let r = root_n(1);
+        let ssz = synth_block(10, &Root::ZERO, &root_n(0xF0));
+        apply_event(&mut acc, &block_event(0, 10, r, ssz), false).unwrap();
+        apply_event(&mut acc, &head_event(1, 13, r), true).unwrap();
+        assert_eq!(acc.open_slot, Some(10));
+        assert_eq!(acc.latest_head_slot, Some(13));
+
+        let (sum0, count0, buf0) = scrape_lag(&m);
+        let le2_0 = lag_bucket(&buf0, "2.0");
+        let le3_0 = lag_bucket(&buf0, "3.0");
+
+        // Same order as the successful latency-flush arm (`:599`).
+        assert!(take_flush(&mut acc, 1).is_some());
+        observe_lag(&m, &acc);
+
+        let (sum1, count1, buf1) = scrape_lag(&m);
+        assert_eq!(count1, count0 + 1.0);
+        assert_eq!(sum1, sum0 + 3.0);
+        assert_eq!(
+            lag_bucket(&buf1, "2.0"),
+            le2_0,
+            "lag 3 must not land in le=2"
+        );
+        assert_eq!(lag_bucket(&buf1, "3.0"), le3_0 + 1.0);
     }
 
     /// Write-behind panic → respawn counter increments (not process-fatal).
