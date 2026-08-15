@@ -747,6 +747,8 @@ covers P0-19 only; P0-09 has the same *invisible-to-`make ci`* shape and needs i
 **Acceptance** — under `NoVerification` the sync-aggregate signature is **not** verified; a test
 asserts the BLS verify count is 0 on that strategy. (Interacts with `S0-A-35`'s instrumentation.)
 
+- [x] Under `NoVerification`, sync-aggregate BLS count is 0.
+
 ### `S0-A-34` · P1-B/10 — `block_to_epoch` catch-all relabels every error
 **Est** 0.5–1 pd / **2 pts** (≈) · **Touch** `crates/state-transition/src/epoch/mod.rs:53`
 Every unexpected error is relabelled `ArithmeticOverflow`.

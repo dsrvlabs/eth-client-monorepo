@@ -124,10 +124,11 @@ pub fn state_transition<P: Preset>(
 
     // Verify signature(s): proposer + RANDAO + CC-12c operation set (§5.2).
     // process_operations then runs with verify_signatures=false.
+    // Sync-aggregate is *not* in that set — process_block honours `verify`.
     verify_block_signatures(state, block, ctx.config, verify)?;
 
     // Process block.
-    process_block(state, message, ctx, pre_state_root)?;
+    process_block_with_strategy(state, message, ctx, pre_state_root, verify)?;
 
     // Verify state root — second measured canonical_root on a block slot.
     let post_root = measured_canonical_root(state);
@@ -144,20 +145,45 @@ pub fn state_transition<P: Preset>(
 /// Spec `process_block` — flat call list in Fulu beacon-chain order.
 ///
 /// Calls [`BeaconState::commit`] at the end (§3.4).
+///
+/// Standalone callers (spec `process_block`) always verify the sync-aggregate.
+/// [`state_transition`] threads [`BlockSignatureStrategy`] so [`BlockSignatureStrategy::NoVerification`]
+/// skips that BLS check (P1-A/18).
 pub fn process_block<P: Preset>(
     state: &mut BeaconState<P>,
     block: &BeaconBlock<P>,
     ctx: &TransitionContext<'_, P>,
     pre_state_root: Root,
 ) -> Result<(), BlockError> {
+    process_block_with_strategy(
+        state,
+        block,
+        ctx,
+        pre_state_root,
+        BlockSignatureStrategy::VerifyIndividual,
+    )
+}
+
+fn process_block_with_strategy<P: Preset>(
+    state: &mut BeaconState<P>,
+    block: &BeaconBlock<P>,
+    ctx: &TransitionContext<'_, P>,
+    pre_state_root: Root,
+    verify: BlockSignatureStrategy,
+) -> Result<(), BlockError> {
     process_block_header(state, block, pre_state_root)?;
     process_withdrawals(state, block)?;
     process_execution_payload(state, block, ctx)?;
     process_randao(state, block)?;
     process_eth1_data(state, block)?;
-    // Signatures already verified in `state_transition` under the chosen strategy.
+    // Operation signatures already verified in `state_transition` under the
+    // chosen strategy. Sync-aggregate is not in that set (P1-A/18).
     process_operations(state, block, ctx, false)?;
-    process_sync_aggregate(state, block)?;
+    process_sync_aggregate_with_opts(
+        state,
+        &block.body.sync_aggregate,
+        !matches!(verify, BlockSignatureStrategy::NoVerification),
+    )?;
     state.commit();
     Ok(())
 }
@@ -168,8 +194,10 @@ mod tests {
 
     use super::*;
     use crate::engine_seam::{ExecutionEngine, NewPayloadRequest, PayloadStatus};
-    use crate::error::EngineError;
+    use crate::error::{BlockError, EngineError, SignatureKind};
     use crate::root_measure::{canonical_root_call_count, take_canonical_root_call_count};
+    use cc_crypto::{BLS_SIGNATURE_DST, take_bls_verify_count};
+    use cc_types::primitives::{BlsPublicKey, BlsSignature};
 
     /// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
     #[derive(Debug, Default, Clone, Copy)]
@@ -287,6 +315,117 @@ mod tests {
         let engine = AcceptEngine;
         let ctx = TransitionContext::<Minimal>::new(&config, &engine);
         process_block(&mut state, &block, &ctx, pre).expect("full process_block should complete");
+    }
+
+    /// Valid-encoded BLS pair that is *not* a correct sync-aggregate signature.
+    ///
+    /// Empty-participant + infinity short-circuits in `eth_fast_aggregate_verify`
+    /// without incrementing the counter, so it cannot falsify P1-A/18.
+    fn junk_sync_bls_pair() -> (BlsPublicKey, BlsSignature) {
+        let sk = blst::min_pk::SecretKey::key_gen(&[1u8; 32], &[]).expect("key_gen");
+        let pk = BlsPublicKey::from_array(sk.sk_to_pk().compress());
+        let sig = BlsSignature::from_array(sk.sign(&[9u8; 32], BLS_SIGNATURE_DST, &[]).compress());
+        (pk, sig)
+    }
+
+    fn state_with_participant_sync_committee() -> BeaconState<Minimal> {
+        let mut state = BeaconState::<Minimal>::default();
+        seed(&mut state);
+        state.set_deposit_requests_start_index(u64::MAX);
+        let (pk, _) = junk_sync_bls_pair();
+        let mut committee = state.current_sync_committee().clone();
+        committee.pubkeys[0] = pk;
+        state.set_current_sync_committee(committee);
+        // Remaining committee slots are the default (zero) key.
+        state
+            .caches_mut()
+            .pubkeys
+            .insert(Default::default(), ValidatorIndex::new(0));
+        state
+            .caches_mut()
+            .pubkeys
+            .insert(pk, ValidatorIndex::new(0));
+        state
+    }
+
+    /// S0-A-33 / P1-A/18 — `NoVerification` must not BLS-verify the sync-aggregate.
+    #[test]
+    fn no_verification_skips_sync_aggregate_bls() {
+        let mut pre = state_with_participant_sync_committee();
+        let config = minimal_test_config();
+        let engine = AcceptEngine;
+        let ctx = TransitionContext::<Minimal>::new(&config, &engine);
+
+        let mut advanced = pre.clone();
+        let _pre_root = process_slots(&mut advanced, Slot::new(1), &config).unwrap();
+        let parent = Root::from_hash256(tree_hash::TreeHash::tree_hash_root(
+            advanced.latest_block_header(),
+        ));
+        use crate::helpers::accessors::{get_current_epoch, get_randao_mix};
+        let epoch = get_current_epoch(&advanced);
+        let mix = get_randao_mix(&advanced, epoch).unwrap();
+        let (_, junk_sig) = junk_sync_bls_pair();
+        let mut body = cc_types::BeaconBlockBody::<Minimal>::default();
+        body.execution_payload.prev_randao = mix;
+        body.execution_payload.timestamp = advanced.genesis_time() + advanced.slot().as_u64() * 6;
+        body.execution_payload.parent_hash = advanced.latest_execution_payload_header().block_hash;
+        body.sync_aggregate
+            .sync_committee_bits
+            .set(0, true)
+            .unwrap();
+        body.sync_aggregate.sync_committee_signature = junk_sig;
+        let block = BeaconBlock {
+            slot: Slot::new(1),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: parent,
+            state_root: Root::ZERO,
+            body,
+        };
+
+        // Control: verifying the same aggregate reaches crypto and increments.
+        let mut control = advanced;
+        let _ = take_bls_verify_count();
+        let err = process_sync_aggregate_with_opts(&mut control, &block.body.sync_aggregate, true)
+            .expect_err("junk participant aggregate must fail when verified");
+        assert!(
+            matches!(
+                err,
+                BlockError::InvalidSignature {
+                    which: SignatureKind::SyncAggregate
+                }
+            ),
+            "expected SyncAggregate InvalidSignature, got {err:?}"
+        );
+        assert!(
+            take_bls_verify_count() >= 1,
+            "instrument must count the verifying path so a 0 under NoVerification is meaningful"
+        );
+
+        let signed = SignedBeaconBlock {
+            message: block,
+            signature: Default::default(),
+        };
+        let _ = take_bls_verify_count();
+        let result = state_transition(
+            &mut pre,
+            &signed,
+            &ctx,
+            BlockSignatureStrategy::NoVerification,
+        );
+        assert!(
+            !matches!(
+                result,
+                Err(BlockError::InvalidSignature {
+                    which: SignatureKind::SyncAggregate
+                })
+            ),
+            "sync-aggregate must not be verified under NoVerification: {result:?}"
+        );
+        assert_eq!(
+            take_bls_verify_count(),
+            0,
+            "NoVerification must not reach cc_crypto verify for the sync-aggregate"
+        );
     }
 
     fn minimal_test_config() -> ChainConfig {
