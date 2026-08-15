@@ -55,3 +55,55 @@ callers to `publish_window` / `derive_and_publish_window` from backfill, prune,
 and CGC-raise. There is no hidden live publisher that would invert that framing.
 
 Closes `[PRD]` J-3.
+
+## Q-3
+
+**YES** — `superstruct` composes with milhouse's `List<T, N, U>` third type
+parameter. The planned S4 order **4a → 4b → 4c** stands. **`S4-ALT` is not
+selected.**
+
+**Settling declaration** (the combination `[Q5]` §6 said nobody had read):
+
+`sigp/lighthouse` `stable` @ `b263df596671`,
+`consensus/types/src/state/beacon_state.rs:528-530`
+
+```rust
+#[superstruct(only(Altair, Bellatrix, Capella, Deneb, Electra, Fulu, Gloas))]
+#[cfg_attr(feature = "arbitrary", arbitrary(default))]
+pub inactivity_scores: List<u64, E::ValidatorRegistryLimit>,
+```
+
+`List` here is `milhouse::List` (`:11`), on a `#[superstruct]` `BeaconState`
+(`:278`, `:433`). `U` is the defaulted third parameter
+(`List<T, N, U: UpdateMap<T> = MaxMap<VecMap<T>>>`); writing `List<T, N>` *is*
+`List<T, N, U>`.
+
+**The third parameter is also spelled explicitly** on a field of the same
+superstruct (`:73-74`, `:479`):
+
+```rust
+pub type Validators<E> =
+    List<Validator, <E as EthSpec>::ValidatorRegistryLimit, BTreeMap<usize, Validator>>;
+// …
+pub validators: Validators<E>,
+```
+
+That is `U = BTreeMap<usize, Validator>` — a non-default `UpdateMap` — hosted
+as an ordinary superstruct field. Superstruct-generated partial getters then
+return the milhouse list; e.g. `self.inactivity_scores_mut()?.push(0)` at
+`:2040-2041`.
+
+Further `#[superstruct(only(…))]` + milhouse `List` fields on the same struct:
+`:495-497` (`previous_epoch_attestations`, Base-only), `:504-507`
+(`previous_epoch_participation`), `:613-614` (`pending_deposits`), `:634-635`
+(`builders`, Gloas-only). The Gloas −1/+9 field list is already expressed this
+way.
+
+**Path note.** `[PLAN]` / `S0a-B-09` name
+`consensus/types/src/beacon_state.rs`. On current `stable` the file lives at
+`consensus/types/src/state/beacon_state.rs` (moved into the `state/` module).
+Same type, new path.
+
+**S4 implication.** ⟡ D-8 ch.2 holds: milhouse (4a) still reduces the
+four-place schema to two *before* the Gloas superstruct edit (4b). Do not
+invert. No change to `s4-fork-seam.md` dependency tables.

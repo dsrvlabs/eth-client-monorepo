@@ -191,10 +191,12 @@ dependency edges. It is one hour of reading Lighthouse's `consensus/types/src/be
 `[PLAN]` §8 schedules it in wk 1 rather than at S4 entry precisely so the inversion is cheap.
 
 **Deliverable**
-1. A yes/no with the Lighthouse file:line that settles it.
-2. **If NO** — file the inversion against `s4-fork-seam.md`'s named alternate branch (`S4-ALT`), which already
+1. [x] A yes/no with the Lighthouse file:line that settles it.
+2. [x] **If NO** — file the inversion against `s4-fork-seam.md`'s named alternate branch (`S4-ALT`), which already
    states the reversed edge set. Do not leave it as a footnote; the S4 file's dependency table has
    two versions and this spike picks one.
+
+(Answer was YES; planned 4a → 4b → 4c stands. Item 2 does not apply.)
 
 ---
 
