@@ -25,7 +25,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cc_bootstrap::{PeerSpec, ServiceSpec, TelemetrySettings};
+use cc_bootstrap::{
+    PeerSpec, ServeOptions, ServiceSpec, SignalTrigger, TelemetrySettings, serve_with_options,
+};
 use cc_config::ServiceConfig;
 use cc_proto::storage::storage_service_server::StorageServiceServer;
 use cc_store::engine::{Durability, EngineOptions};
@@ -447,6 +449,16 @@ fn parse_gvr(s: Option<&str>) -> anyhow::Result<Root> {
     Ok(Root::from_array(arr))
 }
 
+/// Fire the process shutdown watch from bootstrap's SIGTERM/SIGINT pre-drain hook.
+fn pre_drain_fire_shutdown(shutdown_tx: watch::Sender<bool>) -> cc_bootstrap::PreDrainHook {
+    Box::new(move || {
+        Box::pin(async move {
+            tracing::info!("pre-drain: firing storage shutdown watch");
+            let _ = shutdown_tx.send(true);
+        })
+    })
+}
+
 /// Minimal chain config for the config-digest input when no network YAML is set.
 trait MainnetLikeDigest {
     fn mainnet_like_for_digest() -> Self;
@@ -504,9 +516,7 @@ async fn main() -> anyhow::Result<()> {
 
     // CC-44b: open store + spawn writer (process-fatal) + write-behind.
     // CC-4F: keep engine Arc for the serve pool (no mem::forget).
-    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-    // Keep shutdown sender alive for process lifetime (SIGTERM path is serve's).
-    let _shutdown_keep = _shutdown_tx;
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let mut serve_engine: Option<Arc<cc_store::engine::Engine>> = None;
     let mut serve_writer: Option<WriterHandle> = None;
@@ -695,8 +705,42 @@ async fn main() -> anyhow::Result<()> {
         None => StorageServer::stub(storage_metrics, cfg.serve_config()),
     };
     let routes = Routes::default().add_service(StorageServiceServer::new(storage_svc));
-    cc_bootstrap::serve(bs, cfg.service_spec(), routes).await?;
+    let options = ServeOptions {
+        on_pre_drain: Some(pre_drain_fire_shutdown(shutdown_tx)),
+        ..ServeOptions::default()
+    };
+    serve_with_options(
+        bs,
+        cfg.service_spec(),
+        routes,
+        options,
+        SignalTrigger::UnixSignals,
+    )
+    .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod shutdown_watch_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use std::time::Duration;
+
+    /// Falsifier for the old "keep the sender, never send" wiring: `changed()`
+    /// must complete with `true`, not hang and not return `Err`.
+    #[tokio::test]
+    async fn pre_drain_hook_fires_shutdown_watch() {
+        let (tx, mut rx) = watch::channel(false);
+        assert!(!*rx.borrow());
+        let hook = pre_drain_fire_shutdown(tx);
+        hook().await;
+        tokio::time::timeout(Duration::from_millis(200), rx.changed())
+            .await
+            .expect("shutdown watch must fire")
+            .expect("shutdown watch must be marked true, not closed");
+        assert!(*rx.borrow());
+    }
 }
 
 #[cfg(test)]

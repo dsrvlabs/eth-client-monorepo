@@ -448,6 +448,8 @@ backstop to the primary trigger.
 hot-spin on `watch` Err; drain-timeout exits 0. **Only the "fire the watch" half is S0**; the rest of
 P1-D/14 is `deleted @ S2`.
 
+- [x] SIGTERM/SIGINT fire the storage shutdown watch (`send(true)`) so writer / write-behind / replay / prune leave their selects.
+
 ---
 
 ### `S0-A-20` · P0-09 — grow the fork-choice vote and balance tables
