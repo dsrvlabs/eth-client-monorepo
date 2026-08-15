@@ -1,9 +1,7 @@
 //! Spec constants used by block/epoch handlers (Electra / Capella / Deneb).
 //!
-//! Values match consensus-specs; not network-configurable unless noted as
-//! network-config constants keyed by preset name.
+//! Values match consensus-specs. Network-config values live on [`cc_types::config::ChainConfig`].
 
-use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, Gwei};
 
 /// `FAR_FUTURE_EPOCH = 2**64 - 1`.
@@ -125,51 +123,3 @@ pub const MAX_PENDING_DEPOSITS_PER_EPOCH: u64 = 16;
 
 /// `UINT64_MAX_SQRT` for integer square root of `u64::MAX`.
 pub const UINT64_MAX_SQRT: u64 = 4_294_967_295;
-
-/// Network-config constants that differ by preset base (not compile-time preset
-/// scalars, but fixed per mainnet/minimal config shipped with the pin).
-pub mod network {
-    use super::*;
-
-    /// `SHARD_COMMITTEE_PERIOD`.
-    pub fn shard_committee_period<P: Preset>() -> Epoch {
-        match P::NAME {
-            "minimal" => Epoch::new(64),
-            _ => Epoch::new(256),
-        }
-    }
-
-    /// `MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA` (Gwei).
-    pub fn min_per_epoch_churn_limit_electra<P: Preset>() -> Gwei {
-        match P::NAME {
-            "minimal" => Gwei::new(64_000_000_000),
-            _ => Gwei::new(128_000_000_000),
-        }
-    }
-
-    /// `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` (Gwei).
-    pub fn max_per_epoch_activation_exit_churn_limit<P: Preset>() -> Gwei {
-        match P::NAME {
-            "minimal" => Gwei::new(128_000_000_000),
-            _ => Gwei::new(256_000_000_000),
-        }
-    }
-
-    /// `CHURN_LIMIT_QUOTIENT`.
-    pub fn churn_limit_quotient<P: Preset>() -> u64 {
-        match P::NAME {
-            "minimal" => 32,
-            _ => 65_536,
-        }
-    }
-
-    /// `GENESIS_FORK_VERSION` (mainnet `0x00000000`, minimal `0x00000001`).
-    ///
-    /// Used for deposit-domain computation (`compute_domain(DOMAIN_DEPOSIT, …)`).
-    pub fn genesis_fork_version<P: Preset>() -> cc_types::primitives::ForkVersion {
-        match P::NAME {
-            "minimal" => cc_types::primitives::ForkVersion::from_array([0, 0, 0, 1]),
-            _ => cc_types::primitives::ForkVersion::from_array([0, 0, 0, 0]),
-        }
-    }
-}

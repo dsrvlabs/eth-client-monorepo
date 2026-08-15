@@ -4,6 +4,7 @@
 //! mutating state rather than rejecting the block.
 
 use cc_types::BeaconState;
+use cc_types::config::ChainConfig;
 use cc_types::operations::{PendingPartialWithdrawal, WithdrawalRequest};
 use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, Gwei};
@@ -14,7 +15,7 @@ use crate::helpers::accessors::{
 };
 use crate::helpers::constants::{
     FAR_FUTURE_EPOCH, FULL_EXIT_REQUEST_AMOUNT, MIN_ACTIVATION_BALANCE,
-    MIN_VALIDATOR_WITHDRAWABILITY_DELAY, network,
+    MIN_VALIDATOR_WITHDRAWABILITY_DELAY,
 };
 use crate::helpers::misc::execution_address_from_credentials;
 use crate::helpers::mutators::{compute_exit_epoch_and_update_churn, initiate_validator_exit};
@@ -29,6 +30,7 @@ use crate::helpers::predicates::{
 pub fn process_withdrawal_request<P: Preset>(
     state: &mut BeaconState<P>,
     withdrawal_request: &WithdrawalRequest,
+    config: &ChainConfig,
 ) -> Result<(), BlockError> {
     let amount = withdrawal_request.amount.as_u64();
     let is_full_exit_request = amount == FULL_EXIT_REQUEST_AMOUNT;
@@ -69,7 +71,7 @@ pub fn process_withdrawal_request<P: Preset>(
         < validator
             .activation_epoch
             .as_u64()
-            .saturating_add(network::shard_committee_period::<P>().as_u64())
+            .saturating_add(config.shard_committee_period.as_u64())
     {
         return Ok(());
     }
@@ -78,7 +80,7 @@ pub fn process_withdrawal_request<P: Preset>(
 
     if is_full_exit_request {
         if pending_balance_to_withdraw.as_u64() == 0 {
-            initiate_validator_exit(state, index)?;
+            initiate_validator_exit(state, index, config)?;
         }
         return Ok(());
     }
@@ -103,7 +105,8 @@ pub fn process_withdrawal_request<P: Preset>(
             .saturating_sub(MIN_ACTIVATION_BALANCE.as_u64())
             .saturating_sub(pending_balance_to_withdraw.as_u64()))
         .min(amount);
-        let exit_queue_epoch = compute_exit_epoch_and_update_churn(state, Gwei::new(to_withdraw))?;
+        let exit_queue_epoch =
+            compute_exit_epoch_and_update_churn(state, Gwei::new(to_withdraw), config)?;
         let withdrawable_epoch = Epoch::new(
             exit_queue_epoch
                 .as_u64()

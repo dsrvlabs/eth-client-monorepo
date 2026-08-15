@@ -2,6 +2,7 @@
 
 use cc_crypto::INFINITY_SIGNATURE;
 use cc_types::BeaconState;
+use cc_types::config::ChainConfig;
 use cc_types::operations::PendingDeposit;
 use cc_types::preset::Preset;
 use cc_types::primitives::{BlsSignature, Epoch, Gwei, Slot, ValidatorIndex};
@@ -58,13 +59,14 @@ pub fn decrease_balance<P: Preset>(
 pub fn compute_exit_epoch_and_update_churn<P: Preset>(
     state: &mut BeaconState<P>,
     exit_balance: Gwei,
+    config: &ChainConfig,
 ) -> Result<Epoch, BlockError> {
     let current_epoch = get_current_epoch(state);
     let mut earliest_exit_epoch = state
         .earliest_exit_epoch()
         .as_u64()
         .max(compute_activation_exit_epoch::<P>(current_epoch).as_u64());
-    let per_epoch_churn = get_activation_exit_churn_limit(state)?;
+    let per_epoch_churn = get_activation_exit_churn_limit(state, config)?;
 
     let mut exit_balance_to_consume = if state.earliest_exit_epoch().as_u64() < earliest_exit_epoch
     {
@@ -102,6 +104,7 @@ pub fn compute_exit_epoch_and_update_churn<P: Preset>(
 pub fn initiate_validator_exit<P: Preset>(
     state: &mut BeaconState<P>,
     index: ValidatorIndex,
+    config: &ChainConfig,
 ) -> Result<(), BlockError> {
     let i = index.as_u64() as usize;
     let validator = state
@@ -111,7 +114,7 @@ pub fn initiate_validator_exit<P: Preset>(
         return Ok(());
     }
     let effective_balance = validator.effective_balance;
-    let exit_queue_epoch = compute_exit_epoch_and_update_churn(state, effective_balance)?;
+    let exit_queue_epoch = compute_exit_epoch_and_update_churn(state, effective_balance, config)?;
     let withdrawable = Epoch::new(
         exit_queue_epoch
             .as_u64()
@@ -132,13 +135,14 @@ pub fn initiate_validator_exit<P: Preset>(
 pub fn compute_consolidation_epoch_and_update_churn<P: Preset>(
     state: &mut BeaconState<P>,
     consolidation_balance: Gwei,
+    config: &ChainConfig,
 ) -> Result<Epoch, BlockError> {
     let current_epoch = get_current_epoch(state);
     let mut earliest_consolidation_epoch = state
         .earliest_consolidation_epoch()
         .as_u64()
         .max(compute_activation_exit_epoch::<P>(current_epoch).as_u64());
-    let per_epoch_churn = get_consolidation_churn_limit(state)?;
+    let per_epoch_churn = get_consolidation_churn_limit(state, config)?;
 
     let mut consolidation_balance_to_consume =
         if state.earliest_consolidation_epoch().as_u64() < earliest_consolidation_epoch {
@@ -215,9 +219,10 @@ pub fn slash_validator<P: Preset>(
     state: &mut BeaconState<P>,
     slashed_index: ValidatorIndex,
     whistleblower_index: Option<ValidatorIndex>,
+    config: &ChainConfig,
 ) -> Result<(), BlockError> {
     let epoch = get_current_epoch(state);
-    initiate_validator_exit(state, slashed_index)?;
+    initiate_validator_exit(state, slashed_index, config)?;
 
     let i = slashed_index.as_u64() as usize;
     let effective_balance = {

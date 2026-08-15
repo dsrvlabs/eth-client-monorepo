@@ -2,6 +2,7 @@
 
 use cc_crypto::{DOMAIN_BEACON_PROPOSER, compute_signing_root, verify};
 use cc_types::BeaconState;
+use cc_types::config::ChainConfig;
 use cc_types::operations::ProposerSlashing;
 use cc_types::preset::Preset;
 
@@ -23,6 +24,7 @@ fn invalid(detail: impl Into<String>) -> BlockError {
 pub fn process_proposer_slashing<P: Preset>(
     state: &mut BeaconState<P>,
     proposer_slashing: &ProposerSlashing,
+    config: &ChainConfig,
     verify_signatures: bool,
 ) -> Result<(), BlockError> {
     let header_1 = &proposer_slashing.signed_header_1.message;
@@ -68,5 +70,5 @@ pub fn process_proposer_slashing<P: Preset>(
         }
     }
 
-    slash_validator(state, proposer_index, None)
+    slash_validator(state, proposer_index, None, config)
 }

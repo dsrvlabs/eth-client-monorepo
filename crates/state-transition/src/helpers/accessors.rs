@@ -8,6 +8,7 @@ use cc_crypto::{
     DOMAIN_BEACON_ATTESTER, compute_domain, compute_signing_root, fast_aggregate_verify, get_domain,
 };
 use cc_types::BeaconState;
+use cc_types::config::ChainConfig;
 use cc_types::containers::{AttestationData, Checkpoint, Validator};
 use cc_types::operations::{Attestation, IndexedAttestation};
 use cc_types::preset::Preset;
@@ -18,7 +19,7 @@ use crate::error::BlockError;
 use crate::helpers::constants::{
     BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, GENESIS_EPOCH,
     MIN_ATTESTATION_INCLUSION_DELAY, MIN_EPOCHS_TO_INACTIVITY_PENALTY, PARTICIPATION_FLAG_WEIGHTS,
-    TIMELY_HEAD_FLAG_INDEX, TIMELY_SOURCE_FLAG_INDEX, TIMELY_TARGET_FLAG_INDEX, network,
+    TIMELY_HEAD_FLAG_INDEX, TIMELY_SOURCE_FLAG_INDEX, TIMELY_TARGET_FLAG_INDEX,
 };
 use crate::helpers::misc::{
     compute_epoch_at_slot, compute_start_slot_at_epoch, integer_squareroot, u64_to_bytes_le,
@@ -461,10 +462,18 @@ pub fn get_pending_balance_to_withdraw<P: Preset>(
 }
 
 /// Spec `get_balance_churn_limit`.
-pub fn get_balance_churn_limit<P: Preset>(state: &BeaconState<P>) -> Result<Gwei, BlockError> {
+///
+/// `CHURN_LIMIT_QUOTIENT == 0` is [`BlockError::ArithmeticOverflow`], not a panic.
+pub fn get_balance_churn_limit<P: Preset>(
+    state: &BeaconState<P>,
+    config: &ChainConfig,
+) -> Result<Gwei, BlockError> {
     let total = get_total_active_balance(state)?;
-    let churn = (total.as_u64() / network::churn_limit_quotient::<P>())
-        .max(network::min_per_epoch_churn_limit_electra::<P>().as_u64());
+    let by_quotient = total
+        .as_u64()
+        .checked_div(config.churn_limit_quotient)
+        .ok_or(BlockError::ArithmeticOverflow)?;
+    let churn = by_quotient.max(config.min_per_epoch_churn_limit_electra);
     // Align down to EFFECTIVE_BALANCE_INCREMENT.
     let aligned = churn - (churn % EFFECTIVE_BALANCE_INCREMENT.as_u64());
     Ok(Gwei::new(aligned))
@@ -473,19 +482,23 @@ pub fn get_balance_churn_limit<P: Preset>(state: &BeaconState<P>) -> Result<Gwei
 /// Spec `get_activation_exit_churn_limit`.
 pub fn get_activation_exit_churn_limit<P: Preset>(
     state: &BeaconState<P>,
+    config: &ChainConfig,
 ) -> Result<Gwei, BlockError> {
-    let balance_churn = get_balance_churn_limit(state)?;
-    Ok(Gwei::new(balance_churn.as_u64().min(
-        network::max_per_epoch_activation_exit_churn_limit::<P>().as_u64(),
-    )))
+    let balance_churn = get_balance_churn_limit(state, config)?;
+    Ok(Gwei::new(
+        balance_churn
+            .as_u64()
+            .min(config.max_per_epoch_activation_exit_churn_limit),
+    ))
 }
 
 /// Spec `get_consolidation_churn_limit`.
 pub fn get_consolidation_churn_limit<P: Preset>(
     state: &BeaconState<P>,
+    config: &ChainConfig,
 ) -> Result<Gwei, BlockError> {
-    let balance = get_balance_churn_limit(state)?;
-    let activation_exit = get_activation_exit_churn_limit(state)?;
+    let balance = get_balance_churn_limit(state, config)?;
+    let activation_exit = get_activation_exit_churn_limit(state, config)?;
     Ok(Gwei::new(
         balance.as_u64().saturating_sub(activation_exit.as_u64()),
     ))

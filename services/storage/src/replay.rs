@@ -568,7 +568,7 @@ fn replay_state_to_slot(
 
     // Empty slots after the last applied block (or entire range if no blocks).
     if state.slot() < target {
-        process_slots(state, target).map_err(|e| ReplayError::Transition {
+        process_slots(state, target, chain_config).map_err(|e| ReplayError::Transition {
             slot: target.as_u64(),
             detail: format!("process_slots: {e}"),
         })?;
@@ -1230,7 +1230,7 @@ mod tests {
         let target = Slot::new(4);
         let mut expected_state =
             BeaconState::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, &ssz0).unwrap();
-        process_slots(&mut expected_state, target).unwrap();
+        process_slots(&mut expected_state, target, &driver.chain_config).unwrap();
         let expected = measured_canonical_root(&mut expected_state);
         {
             let mut batch = driver.engine.batch();

@@ -315,7 +315,11 @@ fn run_slots_cases<P: Preset>() {
             .checked_add(slots)
             .unwrap_or_else(|| panic!("slot overflow {rel}"));
 
-        process_slots(&mut state, Slot::new(target.as_u64()))
+        let config = spec_config_for_preset(match P::NAME {
+            "minimal" => PresetName::Minimal,
+            _ => PresetName::Mainnet,
+        });
+        process_slots(&mut state, Slot::new(target.as_u64()), &config)
             .unwrap_or_else(|e| panic!("process_slots {rel}: {e}"));
 
         let post_path = case_dir.join("post.ssz_snappy");

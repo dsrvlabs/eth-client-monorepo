@@ -1,6 +1,7 @@
 //! Spec `process_registry_updates` (Electra).
 
 use cc_types::BeaconState;
+use cc_types::config::ChainConfig;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, ValidatorIndex};
 
@@ -21,7 +22,10 @@ use super::block_to_epoch;
 /// Single pass: activation-queue eligibility, ejections (via balance-based
 /// exit churn in `initiate_validator_exit`), and activations for finalized
 /// eligibles. Electra removed the pre-Electra count-based activation churn.
-pub fn process_registry_updates<P: Preset>(state: &mut BeaconState<P>) -> Result<(), EpochError> {
+pub fn process_registry_updates<P: Preset>(
+    state: &mut BeaconState<P>,
+    config: &ChainConfig,
+) -> Result<(), EpochError> {
     let current_epoch = get_current_epoch(state);
     let activation_epoch = compute_activation_exit_epoch::<P>(current_epoch);
     let finalized_epoch = state.finalized_checkpoint().epoch;
@@ -50,7 +54,7 @@ pub fn process_registry_updates<P: Preset>(state: &mut BeaconState<P>) -> Result
             v.activation_eligibility_epoch = Epoch::new(current_epoch.as_u64().saturating_add(1));
             mutated = true;
         } else if active_eject {
-            initiate_validator_exit(state, vi).map_err(block_to_epoch)?;
+            initiate_validator_exit(state, vi, config).map_err(block_to_epoch)?;
             mutated = true;
         } else if eligible_activate {
             let v = state

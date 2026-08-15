@@ -120,7 +120,7 @@ pub fn state_transition<P: Preset>(
     let message = &block.message;
 
     // Process slots (including those with no blocks) since the previous block.
-    let pre_state_root = process_slots(state, message.slot)?;
+    let pre_state_root = process_slots(state, message.slot, ctx.config)?;
 
     // Verify signature(s): proposer + RANDAO + CC-12c operation set (§5.2).
     // process_operations then runs with verify_signatures=false.
@@ -229,7 +229,8 @@ mod tests {
         let _ = take_canonical_root_call_count();
 
         // Pre-state root via process_slots (one call).
-        let pre_root = process_slots(&mut state, Slot::new(1)).unwrap();
+        let config = minimal_test_config();
+        let pre_root = process_slots(&mut state, Slot::new(1), &config).unwrap();
         assert_eq!(canonical_root_call_count(), 1);
         assert_eq!(state.state_roots_get(0), Some(pre_root));
         assert_eq!(state.latest_block_header().state_root, pre_root);
@@ -261,7 +262,8 @@ mod tests {
         // eth1 deposits disabled (unset start index) so empty deposits list is ok.
         state.set_deposit_requests_start_index(u64::MAX);
 
-        let pre = process_slots(&mut state, Slot::new(1)).unwrap();
+        let config = minimal_test_config();
+        let pre = process_slots(&mut state, Slot::new(1), &config).unwrap();
         let parent = Root::from_hash256(tree_hash::TreeHash::tree_hash_root(
             state.latest_block_header(),
         ));
@@ -282,7 +284,6 @@ mod tests {
             state_root: Root::ZERO,
             body,
         };
-        let config = minimal_test_config();
         let engine = AcceptEngine;
         let ctx = TransitionContext::<Minimal>::new(&config, &engine);
         process_block(&mut state, &block, &ctx, pre).expect("full process_block should complete");

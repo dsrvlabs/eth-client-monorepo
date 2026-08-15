@@ -3,6 +3,7 @@
 //! **Invalid requests are no-ops** — early `Ok(())` without state mutation.
 
 use cc_types::BeaconState;
+use cc_types::config::ChainConfig;
 use cc_types::operations::{ConsolidationRequest, PendingConsolidation};
 use cc_types::preset::Preset;
 use cc_types::primitives::Epoch;
@@ -13,7 +14,7 @@ use crate::helpers::accessors::{
     get_validator_index_by_pubkey,
 };
 use crate::helpers::constants::{
-    FAR_FUTURE_EPOCH, MIN_ACTIVATION_BALANCE, MIN_VALIDATOR_WITHDRAWABILITY_DELAY, network,
+    FAR_FUTURE_EPOCH, MIN_ACTIVATION_BALANCE, MIN_VALIDATOR_WITHDRAWABILITY_DELAY,
 };
 use crate::helpers::misc::execution_address_from_credentials;
 use crate::helpers::mutators::{
@@ -66,6 +67,7 @@ fn is_valid_switch_to_compounding_request<P: Preset>(
 pub fn process_consolidation_request<P: Preset>(
     state: &mut BeaconState<P>,
     consolidation_request: &ConsolidationRequest,
+    config: &ChainConfig,
 ) -> Result<(), BlockError> {
     if is_valid_switch_to_compounding_request(state, consolidation_request) {
         // Re-resolve after the validity check (map may have been backfilled).
@@ -87,7 +89,7 @@ pub fn process_consolidation_request<P: Preset>(
         return Ok(());
     }
     // If there is too little available consolidation churn limit, ignore.
-    if get_consolidation_churn_limit(state)?.as_u64() <= MIN_ACTIVATION_BALANCE.as_u64() {
+    if get_consolidation_churn_limit(state, config)?.as_u64() <= MIN_ACTIVATION_BALANCE.as_u64() {
         return Ok(());
     }
 
@@ -139,7 +141,7 @@ pub fn process_consolidation_request<P: Preset>(
         < source_validator
             .activation_epoch
             .as_u64()
-            .saturating_add(network::shard_committee_period::<P>().as_u64())
+            .saturating_add(config.shard_committee_period.as_u64())
     {
         return Ok(());
     }
@@ -148,8 +150,11 @@ pub fn process_consolidation_request<P: Preset>(
     }
 
     // Initiate source validator exit via consolidation churn and append pending.
-    let exit_epoch =
-        compute_consolidation_epoch_and_update_churn(state, source_validator.effective_balance)?;
+    let exit_epoch = compute_consolidation_epoch_and_update_churn(
+        state,
+        source_validator.effective_balance,
+        config,
+    )?;
     let withdrawable_epoch = Epoch::new(
         exit_epoch
             .as_u64()

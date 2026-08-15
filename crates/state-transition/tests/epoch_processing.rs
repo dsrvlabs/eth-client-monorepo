@@ -18,8 +18,86 @@ use cc_state_transition::{
     process_randao_mixes_reset, process_registry_updates, process_rewards_and_penalties,
     process_slashings, process_slashings_reset, process_sync_committee_updates,
 };
+use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::preset::{Mainnet, Minimal, Preset};
+use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion};
 use cc_types::{BeaconState, ForkName};
+
+fn spec_config_for_preset(preset: PresetName) -> ChainConfig {
+    let (name, seconds, genesis, altair, bellatrix, capella, deneb, electra, fulu) = match preset {
+        PresetName::Mainnet => (
+            "mainnet",
+            12u64,
+            [0x00, 0x00, 0x00, 0x00],
+            [0x01, 0x00, 0x00, 0x00],
+            [0x02, 0x00, 0x00, 0x00],
+            [0x03, 0x00, 0x00, 0x00],
+            [0x04, 0x00, 0x00, 0x00],
+            [0x05, 0x00, 0x00, 0x00],
+            [0x06, 0x00, 0x00, 0x00],
+        ),
+        PresetName::Minimal => (
+            "minimal",
+            6u64,
+            [0x00, 0x00, 0x00, 0x01],
+            [0x01, 0x00, 0x00, 0x01],
+            [0x02, 0x00, 0x00, 0x01],
+            [0x03, 0x00, 0x00, 0x01],
+            [0x04, 0x00, 0x00, 0x01],
+            [0x05, 0x00, 0x00, 0x01],
+            [0x06, 0x00, 0x00, 0x01],
+        ),
+    };
+    ChainConfig {
+        preset_base: preset,
+        config_name: name.into(),
+        genesis_fork_version: ForkVersion::from_array(genesis),
+        altair_fork_version: ForkVersion::from_array(altair),
+        altair_fork_epoch: Epoch::new(0),
+        bellatrix_fork_version: ForkVersion::from_array(bellatrix),
+        bellatrix_fork_epoch: Epoch::new(0),
+        capella_fork_version: ForkVersion::from_array(capella),
+        capella_fork_epoch: Epoch::new(0),
+        deneb_fork_version: ForkVersion::from_array(deneb),
+        deneb_fork_epoch: Epoch::new(0),
+        electra_fork_version: ForkVersion::from_array(electra),
+        electra_fork_epoch: Epoch::new(0),
+        fulu_fork_version: ForkVersion::from_array(fulu),
+        fulu_fork_epoch: Epoch::new(0),
+        seconds_per_slot: seconds,
+        blob_schedule: BlobSchedule::try_from_entries(vec![BlobParameters {
+            epoch: Epoch::new(0),
+            max_blobs_per_block: 9,
+        }])
+        .unwrap(),
+        deposit_chain_id: 0,
+        deposit_contract_address: ExecutionAddress::ZERO,
+        churn_limit_quotient: match preset {
+            PresetName::Mainnet => 65_536,
+            PresetName::Minimal => 32,
+        },
+        min_per_epoch_churn_limit_electra: match preset {
+            PresetName::Mainnet => 128_000_000_000,
+            PresetName::Minimal => 64_000_000_000,
+        },
+        max_per_epoch_activation_exit_churn_limit: match preset {
+            PresetName::Mainnet => 256_000_000_000,
+            PresetName::Minimal => 128_000_000_000,
+        },
+        shard_committee_period: Epoch::new(match preset {
+            PresetName::Mainnet => 256,
+            PresetName::Minimal => 64,
+        }),
+        max_blobs_per_block_electra: 9,
+    }
+}
+
+fn spec_config_for<P: Preset>() -> ChainConfig {
+    match P::NAME {
+        "minimal" => spec_config_for_preset(PresetName::Minimal),
+        _ => spec_config_for_preset(PresetName::Mainnet),
+    }
+}
 
 const FORK: &str = "fulu";
 const RUNNER: &str = "epoch_processing";
@@ -189,15 +267,19 @@ fn rebuild_pubkey_cache<P: Preset>(state: &mut BeaconState<P>) {
     }
 }
 
-fn dispatch<P: Preset>(handler: &str, state: &mut BeaconState<P>) -> Result<(), EpochError> {
+fn dispatch<P: Preset>(
+    handler: &str,
+    state: &mut BeaconState<P>,
+    config: &ChainConfig,
+) -> Result<(), EpochError> {
     match handler {
         "justification_and_finalization" => process_justification_and_finalization(state),
         "inactivity_updates" => process_inactivity_updates(state),
         "rewards_and_penalties" => process_rewards_and_penalties(state),
-        "registry_updates" => process_registry_updates(state),
+        "registry_updates" => process_registry_updates(state, config),
         "slashings" => process_slashings(state),
         "eth1_data_reset" => process_eth1_data_reset(state),
-        "pending_deposits" => process_pending_deposits(state),
+        "pending_deposits" => process_pending_deposits(state, config),
         "pending_consolidations" => process_pending_consolidations(state),
         "effective_balance_updates" => process_effective_balance_updates(state),
         "slashings_reset" => process_slashings_reset(state),
@@ -217,7 +299,8 @@ fn run_case<P: Preset>(handler: &str, rel: &str, case_dir: &Path) {
     rebuild_pubkey_cache(&mut state);
 
     let post_path = case_dir.join("post.ssz_snappy");
-    let result = dispatch(handler, &mut state);
+    let config = spec_config_for::<P>();
+    let result = dispatch(handler, &mut state, &config);
 
     if post_path.is_file() {
         result.unwrap_or_else(|e| panic!("{handler} valid case {rel}: {e}"));

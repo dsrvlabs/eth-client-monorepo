@@ -1,6 +1,7 @@
 //! Spec `process_pending_deposits` / `apply_pending_deposit` (Fulu / Electra).
 
 use cc_types::BeaconState;
+use cc_types::config::ChainConfig;
 use cc_types::operations::PendingDeposit;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, Gwei, ValidatorIndex};
@@ -21,6 +22,7 @@ use super::block_to_epoch;
 pub fn apply_pending_deposit<P: Preset>(
     state: &mut BeaconState<P>,
     deposit: &PendingDeposit,
+    config: &ChainConfig,
 ) -> Result<(), EpochError> {
     let existing = state.caches().pubkeys.get(&deposit.pubkey).or_else(|| {
         state
@@ -32,11 +34,12 @@ pub fn apply_pending_deposit<P: Preset>(
 
     match existing {
         None => {
-            if is_valid_deposit_signature::<P>(
+            if is_valid_deposit_signature(
                 &deposit.pubkey,
                 &deposit.withdrawal_credentials,
                 deposit.amount,
                 &deposit.signature,
+                config,
             )
             .map_err(block_to_epoch)?
             {
@@ -63,13 +66,16 @@ pub fn apply_pending_deposit<P: Preset>(
 /// activation-exit balance churn. Exiting validators' deposits are postponed
 /// (kept in the queue) rather than dropped; withdrawn validators receive the
 /// balance without consuming churn.
-pub fn process_pending_deposits<P: Preset>(state: &mut BeaconState<P>) -> Result<(), EpochError> {
+pub fn process_pending_deposits<P: Preset>(
+    state: &mut BeaconState<P>,
+    config: &ChainConfig,
+) -> Result<(), EpochError> {
     let next_epoch = Epoch::new(get_current_epoch(state).as_u64().saturating_add(1));
     let available_for_processing = state
         .deposit_balance_to_consume()
         .as_u64()
         .checked_add(
-            get_activation_exit_churn_limit(state)
+            get_activation_exit_churn_limit(state, config)
                 .map_err(block_to_epoch)?
                 .as_u64(),
         )
@@ -114,7 +120,7 @@ pub fn process_pending_deposits<P: Preset>(state: &mut BeaconState<P>) -> Result
             };
 
         if is_validator_withdrawn {
-            apply_pending_deposit(state, deposit)?;
+            apply_pending_deposit(state, deposit, config)?;
         } else if is_validator_exited {
             // Postpone until after withdrawable epoch — do not drop.
             deposits_to_postpone.push(*deposit);
@@ -129,7 +135,7 @@ pub fn process_pending_deposits<P: Preset>(state: &mut BeaconState<P>) -> Result
             processed_amount = processed_amount
                 .checked_add(deposit.amount.as_u64())
                 .ok_or(EpochError::ArithmeticOverflow)?;
-            apply_pending_deposit(state, deposit)?;
+            apply_pending_deposit(state, deposit, config)?;
         }
 
         next_deposit_index = next_deposit_index

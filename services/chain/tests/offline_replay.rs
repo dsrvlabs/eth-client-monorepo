@@ -375,7 +375,7 @@ fn make_next_block(
 
     let mut st = parent_state.clone();
     let next_slot = Slot::new(st.slot().as_u64() + 1);
-    let pre_root = process_slots(&mut st, next_slot).expect("process_slots");
+    let pre_root = process_slots(&mut st, next_slot, config).expect("process_slots");
     let proposer = get_beacon_proposer_index(&st).expect("proposer");
     let (withdrawals, _) = get_expected_withdrawals(&st).expect("withdrawals");
 
@@ -870,7 +870,7 @@ fn cc1h_mid_gate_with_fork_choice_clone() {
     {
         let from = state.slot().as_u64();
         let to = next_boundary;
-        process_slots(&mut state, Slot::new(to))
+        process_slots(&mut state, Slot::new(to), &hoodi_config())
             .unwrap_or_else(|e| panic!("warm-up process_slots {from}->{to}: {e}"));
         let mut pull = state.clone();
         process_justification_and_finalization(&mut pull)
@@ -918,7 +918,7 @@ fn cc1h_mid_gate_with_fork_choice_clone() {
         let _ = take_canonical_root_call_count();
         let _ = take_canonical_root_elapsed_ns();
         let t0 = Instant::now();
-        process_slots(&mut state, Slot::new(to))
+        process_slots(&mut state, Slot::new(to), &hoodi_config())
             .unwrap_or_else(|e| panic!("process_slots {from}->{to}: {e}"));
 
         // FC path cost: state clone + process_justification_and_finalization

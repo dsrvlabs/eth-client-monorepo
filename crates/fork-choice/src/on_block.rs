@@ -1426,7 +1426,7 @@ mod tests {
             },
             signature: Default::default(),
         };
-        on_attestation(&mut store, &att, false).unwrap();
+        on_attestation(&mut store, &att, false, &minimal_config()).unwrap();
         assert_eq!(
             store.latest_message(ValidatorIndex::new(POST_ANCHOR_INDEX)),
             Some(LatestMessage {

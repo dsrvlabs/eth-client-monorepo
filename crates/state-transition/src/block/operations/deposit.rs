@@ -2,6 +2,7 @@
 
 use cc_crypto::{DOMAIN_DEPOSIT, compute_signing_root, verify};
 use cc_types::BeaconState;
+use cc_types::config::ChainConfig;
 use cc_types::containers::{DepositMessage, Validator};
 use cc_types::operations::{Deposit, PendingDeposit};
 use cc_types::preset::Preset;
@@ -26,24 +27,20 @@ fn invalid(detail: impl Into<String>) -> BlockError {
 
 /// Spec `is_valid_deposit_signature`.
 ///
-/// Domain uses the preset's `GENESIS_FORK_VERSION` (mainnet zero / minimal
-/// `0x00000001`) so minimal vectors verify correctly.
-pub fn is_valid_deposit_signature<P: Preset>(
+/// Domain uses the runtime config's `GENESIS_FORK_VERSION`.
+pub fn is_valid_deposit_signature(
     pubkey: &cc_types::primitives::BlsPublicKey,
     withdrawal_credentials: &Root,
     amount: Gwei,
     signature: &cc_types::primitives::BlsSignature,
+    config: &ChainConfig,
 ) -> Result<bool, BlockError> {
     let deposit_message = DepositMessage {
         pubkey: *pubkey,
         withdrawal_credentials: *withdrawal_credentials,
         amount,
     };
-    let domain = cc_crypto::compute_domain(
-        DOMAIN_DEPOSIT,
-        Some(crate::helpers::constants::network::genesis_fork_version::<P>()),
-        None,
-    );
+    let domain = cc_crypto::compute_domain(DOMAIN_DEPOSIT, Some(config.genesis_fork_version), None);
     let message = *compute_signing_root(&deposit_message, domain).as_array();
     // Block-carried material → Reject on bad encoding.
     let pk = match decode_block_pubkey(pubkey) {
@@ -114,6 +111,7 @@ pub fn apply_deposit<P: Preset>(
     withdrawal_credentials: Root,
     amount: Gwei,
     signature: cc_types::primitives::BlsSignature,
+    config: &ChainConfig,
 ) -> Result<(), BlockError> {
     // Prefer pubkey map; fall back to linear scan and backfill the map.
     let existing = state.caches().pubkeys.get(&pubkey).or_else(|| {
@@ -126,7 +124,8 @@ pub fn apply_deposit<P: Preset>(
 
     if existing.is_none() {
         // Proof-of-possession; invalid signature → silently drop (spec).
-        if is_valid_deposit_signature::<P>(&pubkey, &withdrawal_credentials, amount, &signature)? {
+        if is_valid_deposit_signature(&pubkey, &withdrawal_credentials, amount, &signature, config)?
+        {
             // New validator with balance 0; pending deposit carries amount.
             add_validator_to_registry(state, pubkey, withdrawal_credentials, Gwei::new(0))?;
         } else {
@@ -152,6 +151,7 @@ pub fn apply_deposit<P: Preset>(
 pub fn process_deposit<P: Preset>(
     state: &mut BeaconState<P>,
     deposit: &Deposit,
+    config: &ChainConfig,
 ) -> Result<(), BlockError> {
     let leaf = Root::from_hash256(TreeHash::tree_hash_root(&deposit.data));
     let branch: Vec<Root> = deposit.proof.iter().copied().collect();
@@ -177,5 +177,6 @@ pub fn process_deposit<P: Preset>(
         deposit.data.withdrawal_credentials,
         deposit.data.amount,
         deposit.data.signature,
+        config,
     )
 }

@@ -19,9 +19,16 @@ use std::time::Instant;
 use cc_state_transition::{
     process_slots, take_canonical_root_call_count, take_canonical_root_elapsed_ns,
 };
+use cc_types::config::ChainConfig;
 use cc_types::preset::{Mainnet, Preset};
 use cc_types::primitives::Slot;
 use cc_types::{BeaconState, ForkName};
+
+fn hoodi_config() -> ChainConfig {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../types/tests/fixtures/hoodi-config.yaml");
+    ChainConfig::from_yaml_file(&path).unwrap_or_else(|e| panic!("hoodi-config.yaml: {e}"))
+}
 
 const ANCHOR_SLOT: u64 = 3_649_472;
 const ANCHOR_STATE_ROOT: &str =
@@ -67,6 +74,7 @@ fn load_hoodi_state() -> BeaconState<Mainnet> {
 #[ignore = "CC-1H early gate — run manually, record in docs/phase-1-soak.md"]
 fn process_slots_five_epoch_boundaries_from_hoodi() {
     let mut state = load_hoodi_state();
+    let config = hoodi_config();
 
     // Warm caches once so the first measured epoch is not cold-decode noise.
     let warm_root = state.canonical_root();
@@ -117,7 +125,7 @@ fn process_slots_five_epoch_boundaries_from_hoodi() {
         let _ = take_canonical_root_call_count();
         let _ = take_canonical_root_elapsed_ns();
         let t0 = Instant::now();
-        process_slots(&mut state, Slot::new(to))
+        process_slots(&mut state, Slot::new(to), &config)
             .unwrap_or_else(|e| panic!("process_slots {from}->{to}: {e}"));
         let wall = t0.elapsed();
         let root_calls = take_canonical_root_call_count();

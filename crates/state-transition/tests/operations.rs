@@ -731,7 +731,7 @@ fn proposer_slashing_minimal() {
         "proposer_slashing",
         "proposer_slashing.ssz_snappy",
         true,
-        |op, state, _cfg, verify| process_proposer_slashing(state, op, verify),
+        |op, state, cfg, verify| process_proposer_slashing(state, op, cfg, verify),
     );
 }
 
@@ -741,7 +741,7 @@ fn proposer_slashing_mainnet() {
         "proposer_slashing",
         "proposer_slashing.ssz_snappy",
         true,
-        |op, state, _cfg, verify| process_proposer_slashing(state, op, verify),
+        |op, state, cfg, verify| process_proposer_slashing(state, op, cfg, verify),
     );
 }
 
@@ -751,7 +751,7 @@ fn attester_slashing_minimal() {
         "attester_slashing",
         "attester_slashing.ssz_snappy",
         true,
-        |op, state, _cfg, verify| process_attester_slashing(state, op, verify),
+        |op, state, cfg, verify| process_attester_slashing(state, op, cfg, verify),
     );
 }
 
@@ -761,7 +761,7 @@ fn attester_slashing_mainnet() {
         "attester_slashing",
         "attester_slashing.ssz_snappy",
         true,
-        |op, state, _cfg, verify| process_attester_slashing(state, op, verify),
+        |op, state, cfg, verify| process_attester_slashing(state, op, cfg, verify),
     );
 }
 
@@ -871,7 +871,7 @@ fn withdrawal_request_minimal() {
         "withdrawal_request",
         "withdrawal_request.ssz_snappy",
         false, // incorrect_* cases are valid blocks (no-op), not rejections
-        |op, state, _cfg, _v| process_withdrawal_request(state, op),
+        |op, state, cfg, _v| process_withdrawal_request(state, op, cfg),
     );
 }
 
@@ -881,7 +881,7 @@ fn withdrawal_request_mainnet() {
         "withdrawal_request",
         "withdrawal_request.ssz_snappy",
         false,
-        |op, state, _cfg, _v| process_withdrawal_request(state, op),
+        |op, state, cfg, _v| process_withdrawal_request(state, op, cfg),
     );
 }
 
@@ -891,7 +891,7 @@ fn consolidation_request_minimal() {
         "consolidation_request",
         "consolidation_request.ssz_snappy",
         false, // incorrect_* cases are valid blocks (no-op), not rejections
-        |op, state, _cfg, _v| process_consolidation_request(state, op),
+        |op, state, cfg, _v| process_consolidation_request(state, op, cfg),
     );
 }
 
@@ -901,7 +901,7 @@ fn consolidation_request_mainnet() {
         "consolidation_request",
         "consolidation_request.ssz_snappy",
         false,
-        |op, state, _cfg, _v| process_consolidation_request(state, op),
+        |op, state, cfg, _v| process_consolidation_request(state, op, cfg),
     );
 }
 
@@ -1254,6 +1254,7 @@ fn deposit_top_up_lands_in_pending_deposits_not_balances() {
         creds,
         Gwei::new(1_000_000_000),
         BlsSignature::default(),
+        &spec_config_for_preset(PresetName::Minimal),
     )
     .unwrap();
 
@@ -1289,7 +1290,7 @@ fn deposit_new_validator_appends_registry_and_pubkey_map() {
         withdrawal_credentials: creds,
         amount,
     };
-    // Minimal genesis fork version is 0x00000001 (matches is_valid_deposit_signature).
+    // Minimal genesis fork version is 0x00000001 (matches spec_config_for_preset).
     let domain = compute_domain(
         DOMAIN_DEPOSIT,
         Some(cc_types::primitives::ForkVersion::from_array([0, 0, 0, 1])),
@@ -1303,7 +1304,15 @@ fn deposit_new_validator_appends_registry_and_pubkey_map() {
     assert_eq!(state.validators_len(), 0);
     assert!(state.caches().pubkeys.is_empty());
 
-    apply_deposit(&mut state, pk, creds, amount, signature).unwrap();
+    apply_deposit(
+        &mut state,
+        pk,
+        creds,
+        amount,
+        signature,
+        &spec_config_for_preset(PresetName::Minimal),
+    )
+    .unwrap();
 
     assert_eq!(state.validators_len(), 1);
     assert_eq!(state.balances_len(), 1);
@@ -1593,7 +1602,8 @@ fn invalid_withdrawal_and_consolidation_requests_are_noops() {
         validator_pubkey: pk,
         amount: Gwei::new(0),
     };
-    process_withdrawal_request(&mut state, &bad_wd).unwrap();
+    let cfg = spec_config_for_preset(PresetName::Minimal);
+    process_withdrawal_request(&mut state, &bad_wd, &cfg).unwrap();
     assert_eq!(state, pre, "invalid withdrawal must leave state unchanged");
 
     // Unknown target pubkey consolidation → no-op.
@@ -1602,7 +1612,7 @@ fn invalid_withdrawal_and_consolidation_requests_are_noops() {
         source_pubkey: pk,
         target_pubkey: BlsPublicKey::from_array([0x22; 48]),
     };
-    process_consolidation_request(&mut state, &bad_con).unwrap();
+    process_consolidation_request(&mut state, &bad_con, &cfg).unwrap();
     assert_eq!(
         state, pre,
         "invalid consolidation must leave state unchanged"

@@ -31,6 +31,7 @@ use cc_proto::chain::{
     ApplyAttestationsRequest, ApplyAttestationsResponse, AttestationApplyResult,
     AttestationApplyVerdict,
 };
+use cc_types::config::ChainConfig;
 use cc_types::operations::IndexedAttestation;
 use cc_types::preset::Preset;
 use cc_types::primitives::Root;
@@ -64,6 +65,7 @@ pub fn apply_attestations<P: Preset>(
     metrics: &ChainMetrics,
     snapshot_sequence: &mut u64,
     request: ApplyAttestationsRequest,
+    config: &ChainConfig,
 ) -> Result<ApplyAttestationsResponse, Status> {
     let n = request.attestations_ssz.len();
     if n > MAX_APPLY_ATTESTATIONS {
@@ -76,7 +78,7 @@ pub fn apply_attestations<P: Preset>(
     let mut any_applied = false;
 
     for ssz in &request.attestations_ssz {
-        match apply_one::<P>(store, ssz) {
+        match apply_one::<P>(store, ssz, config) {
             Ok(()) => {
                 any_applied = true;
                 results.push(AttestationApplyResult {
@@ -114,11 +116,15 @@ pub fn apply_attestations<P: Preset>(
     Ok(ApplyAttestationsResponse { results })
 }
 
-fn apply_one<P: Preset>(store: &mut Store<P>, ssz: &[u8]) -> Result<(), String> {
+fn apply_one<P: Preset>(
+    store: &mut Store<P>,
+    ssz: &[u8],
+    config: &ChainConfig,
+) -> Result<(), String> {
     let indexed = IndexedAttestation::<P>::from_ssz_bytes(ssz)
         .map_err(|e| format!("failed to decode IndexedAttestation SSZ: {e:?}"))?;
     // Free-floating path (Phase 5 producer): is_from_block = false.
-    on_attestation(store, &indexed, false).map_err(|e| e.to_string())
+    on_attestation(store, &indexed, false, config).map_err(|e| e.to_string())
 }
 
 fn recompute_and_publish_head<P: Preset>(
@@ -219,10 +225,46 @@ mod tests {
     use std::sync::Arc;
 
     use cc_fork_choice::{ExecutionStatus, HarnessAvailability, get_forkchoice_store};
+    use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
     use cc_types::containers::{AttestationData, BeaconBlockHeader, Checkpoint};
     use cc_types::operations::IndexedAttestation;
     use cc_types::preset::Minimal;
-    use cc_types::primitives::{Epoch, Hash256, Root, Slot, ValidatorIndex};
+    use cc_types::primitives::{
+        Epoch, ExecutionAddress, ForkVersion, Hash256, Root, Slot, ValidatorIndex,
+    };
+
+    fn test_config() -> ChainConfig {
+        ChainConfig {
+            preset_base: PresetName::Minimal,
+            config_name: "minimal".into(),
+            genesis_fork_version: ForkVersion::from_array([0, 0, 0, 1]),
+            altair_fork_version: ForkVersion::from_array([1, 0, 0, 1]),
+            altair_fork_epoch: Epoch::new(0),
+            bellatrix_fork_version: ForkVersion::from_array([2, 0, 0, 1]),
+            bellatrix_fork_epoch: Epoch::new(0),
+            capella_fork_version: ForkVersion::from_array([3, 0, 0, 1]),
+            capella_fork_epoch: Epoch::new(0),
+            deneb_fork_version: ForkVersion::from_array([4, 0, 0, 1]),
+            deneb_fork_epoch: Epoch::new(0),
+            electra_fork_version: ForkVersion::from_array([5, 0, 0, 1]),
+            electra_fork_epoch: Epoch::new(0),
+            fulu_fork_version: ForkVersion::from_array([6, 0, 0, 1]),
+            fulu_fork_epoch: Epoch::new(0),
+            seconds_per_slot: 6,
+            blob_schedule: BlobSchedule::try_from_entries(vec![BlobParameters {
+                epoch: Epoch::new(0),
+                max_blobs_per_block: 9,
+            }])
+            .unwrap(),
+            deposit_chain_id: 0,
+            deposit_contract_address: ExecutionAddress::ZERO,
+            churn_limit_quotient: 32,
+            min_per_epoch_churn_limit_electra: 64_000_000_000,
+            max_per_epoch_activation_exit_churn_limit: 128_000_000_000,
+            shard_committee_period: Epoch::new(64),
+            max_blobs_per_block_electra: 9,
+        }
+    }
     use cc_types::{BeaconBlock, BeaconState};
     use prometheus_client::registry::Registry;
     use ssz::Encode;
@@ -359,6 +401,7 @@ mod tests {
             ApplyAttestationsRequest {
                 attestations_ssz: batch,
             },
+            &test_config(),
         )
         .unwrap_err();
         assert_eq!(err.code(), Code::InvalidArgument);
@@ -397,6 +440,7 @@ mod tests {
             ApplyAttestationsRequest {
                 attestations_ssz: vec![valid.as_ssz_bytes(), unknown.as_ssz_bytes()],
             },
+            &test_config(),
         )
         .unwrap();
         assert_eq!(resp.results.len(), 2);
@@ -442,6 +486,7 @@ mod tests {
             ApplyAttestationsRequest {
                 attestations_ssz: batch,
             },
+            &test_config(),
         )
         .unwrap();
         assert_eq!(resp.results.len(), MAX_APPLY_ATTESTATIONS);

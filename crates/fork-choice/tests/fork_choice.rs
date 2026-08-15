@@ -605,7 +605,7 @@ fn run_case<P: Preset>(rel: &str, case_dir: &Path, config: &ChainConfig, da: Arc
                         // Pyspec `add_block`: an on_block step implies receiving
                         // the block's attestations and attester slashings
                         // (`is_from_block=True`). These are NOT separate steps.
-                        apply_block_operations(&mut store, &signed, rel, i);
+                        apply_block_operations(&mut store, &signed, rel, i, config);
                         let _ = get_head(&mut store);
                     }
                     (true, Ok(other)) => {
@@ -638,7 +638,7 @@ fn run_case<P: Preset>(rel: &str, case_dir: &Path, config: &ChainConfig, da: Arc
 
                 // Index using target checkpoint state (spec path).
                 let index_result = (|| {
-                    store_target_checkpoint_context(&mut store, att.data.target)?;
+                    store_target_checkpoint_context(&mut store, att.data.target, config)?;
                     let mut state = store
                         .block_state(&att.data.target.root)
                         .ok_or(cc_fork_choice::OnAttestationError::MissingBlockState(
@@ -647,14 +647,14 @@ fn run_case<P: Preset>(rel: &str, case_dir: &Path, config: &ChainConfig, da: Arc
                         .clone();
                     let epoch_start = compute_start_slot_at_epoch::<P>(att.data.target.epoch);
                     if state.slot().as_u64() < epoch_start.as_u64() {
-                        process_slots(&mut state, epoch_start).map_err(|e| {
+                        process_slots(&mut state, epoch_start, config).map_err(|e| {
                             cc_fork_choice::OnAttestationError::ProcessSlots(e.to_string())
                         })?;
                     }
                     let indexed = get_indexed_attestation(&state, &att).map_err(|e| {
                         cc_fork_choice::OnAttestationError::ProcessSlots(e.to_string())
                     })?;
-                    on_attestation(&mut store, &indexed, false)?;
+                    on_attestation(&mut store, &indexed, false, config)?;
                     Ok::<(), cc_fork_choice::OnAttestationError>(())
                 })();
 
@@ -738,10 +738,11 @@ fn apply_block_operations<P: Preset>(
     signed: &SignedBeaconBlock<P>,
     rel: &str,
     step_i: usize,
+    config: &ChainConfig,
 ) {
     for attestation in signed.message.body.attestations.iter() {
         let index_result = (|| {
-            store_target_checkpoint_context(store, attestation.data.target)?;
+            store_target_checkpoint_context(store, attestation.data.target, config)?;
             let mut state = store
                 .block_state(&attestation.data.target.root)
                 .ok_or(cc_fork_choice::OnAttestationError::MissingBlockState(
@@ -750,13 +751,13 @@ fn apply_block_operations<P: Preset>(
                 .clone();
             let epoch_start = compute_start_slot_at_epoch::<P>(attestation.data.target.epoch);
             if state.slot().as_u64() < epoch_start.as_u64() {
-                process_slots(&mut state, epoch_start)
+                process_slots(&mut state, epoch_start, config)
                     .map_err(|e| cc_fork_choice::OnAttestationError::ProcessSlots(e.to_string()))?;
             }
             let indexed = get_indexed_attestation(&state, attestation)
                 .map_err(|e| cc_fork_choice::OnAttestationError::ProcessSlots(e.to_string()))?;
             // Block-carried: is_from_block = true.
-            on_attestation(store, &indexed, true)?;
+            on_attestation(store, &indexed, true, config)?;
             Ok::<(), cc_fork_choice::OnAttestationError>(())
         })();
         // Soft-fail: compliance / invalid_message cases may carry attestations

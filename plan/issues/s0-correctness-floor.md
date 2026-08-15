@@ -327,6 +327,10 @@ plumbing, not a constant swap**.
 3. **Both** preset vector suites green — mainnet and minimal.
 4. `pub mod network` no longer exists.
 
+- [x] `constants::network::` is 0 in `*.rs`; `pub mod network` is deleted.
+- [x] Omitting `&ChainConfig` at a touched call site is a compile error.
+- [x] Mainnet and minimal vector suites stay green.
+
 ---
 
 ### `S0-A-10` · P2-B/3 — `apply_deposit` reimplements `get_validator_index_by_pubkey`

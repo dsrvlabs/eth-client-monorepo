@@ -8,7 +8,7 @@ use cc_types::preset::Preset;
 
 use crate::error::{BlockError, OperationError};
 use crate::helpers::accessors::{get_current_epoch, get_pending_balance_to_withdraw};
-use crate::helpers::constants::{FAR_FUTURE_EPOCH, network};
+use crate::helpers::constants::FAR_FUTURE_EPOCH;
 use crate::helpers::mutators::initiate_validator_exit;
 use crate::helpers::predicates::is_active_validator;
 use crate::signatures::{decode_signature, decode_state_pubkey};
@@ -48,7 +48,7 @@ pub fn process_voluntary_exit<P: Preset>(
     let min_active = validator
         .activation_epoch
         .as_u64()
-        .saturating_add(network::shard_committee_period::<P>().as_u64());
+        .saturating_add(config.shard_committee_period.as_u64());
     if current_epoch.as_u64() < min_active {
         return Err(invalid("validator has not been active long enough"));
     }
@@ -72,5 +72,5 @@ pub fn process_voluntary_exit<P: Preset>(
         }
     }
 
-    initiate_validator_exit(state, index)
+    initiate_validator_exit(state, index, config)
 }

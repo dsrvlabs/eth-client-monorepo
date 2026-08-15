@@ -35,6 +35,7 @@ use cc_state_transition::helpers::constants::GENESIS_EPOCH;
 use cc_state_transition::helpers::misc::compute_start_slot_at_epoch;
 use cc_state_transition::helpers::predicates::is_slashable_attestation_data;
 use cc_state_transition::{compute_epoch_at_slot, process_slots};
+use cc_types::config::ChainConfig;
 use cc_types::containers::Checkpoint;
 use cc_types::operations::{AttesterSlashing, IndexedAttestation};
 use cc_types::preset::Preset;
@@ -238,6 +239,7 @@ pub fn validate_on_attestation<P: Preset>(
 pub fn store_target_checkpoint_context<P: Preset>(
     store: &mut Store<P>,
     target: Checkpoint,
+    config: &ChainConfig,
 ) -> Result<(), OnAttestationError> {
     if store.checkpoint_context(target).is_some() {
         return Ok(());
@@ -250,7 +252,7 @@ pub fn store_target_checkpoint_context<P: Preset>(
 
     let epoch_start = compute_start_slot_at_epoch::<P>(target.epoch);
     if state.slot().as_u64() < epoch_start.as_u64() {
-        process_slots(&mut state, epoch_start)
+        process_slots(&mut state, epoch_start, config)
             .map_err(|e| OnAttestationError::ProcessSlots(e.to_string()))?;
     }
 
@@ -315,6 +317,7 @@ pub fn on_attestation<P: Preset>(
     store: &mut Store<P>,
     attestation: &IndexedAttestation<P>,
     is_from_block: bool,
+    config: &ChainConfig,
 ) -> Result<(), OnAttestationError> {
     let data = &attestation.data;
     validate_on_attestation(
@@ -325,7 +328,7 @@ pub fn on_attestation<P: Preset>(
         is_from_block,
     )?;
 
-    store_target_checkpoint_context(store, data.target)?;
+    store_target_checkpoint_context(store, data.target, config)?;
 
     // Callers must pass a validated IndexedAttestation (see module docs).
     let changed = update_latest_messages(
@@ -591,6 +594,41 @@ mod tests {
     use crate::store::{LatestMessage, Store, VoteTracker};
     use cc_types::BeaconBlock;
     use cc_types::BeaconState;
+    use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
+    use cc_types::primitives::{ExecutionAddress, ForkVersion};
+
+    fn test_config() -> ChainConfig {
+        ChainConfig {
+            preset_base: PresetName::Minimal,
+            config_name: "minimal".into(),
+            genesis_fork_version: ForkVersion::from_array([0, 0, 0, 1]),
+            altair_fork_version: ForkVersion::from_array([1, 0, 0, 1]),
+            altair_fork_epoch: Epoch::new(0),
+            bellatrix_fork_version: ForkVersion::from_array([2, 0, 0, 1]),
+            bellatrix_fork_epoch: Epoch::new(0),
+            capella_fork_version: ForkVersion::from_array([3, 0, 0, 1]),
+            capella_fork_epoch: Epoch::new(0),
+            deneb_fork_version: ForkVersion::from_array([4, 0, 0, 1]),
+            deneb_fork_epoch: Epoch::new(0),
+            electra_fork_version: ForkVersion::from_array([5, 0, 0, 1]),
+            electra_fork_epoch: Epoch::new(0),
+            fulu_fork_version: ForkVersion::from_array([6, 0, 0, 1]),
+            fulu_fork_epoch: Epoch::new(0),
+            seconds_per_slot: 6,
+            blob_schedule: BlobSchedule::try_from_entries(vec![BlobParameters {
+                epoch: Epoch::new(0),
+                max_blobs_per_block: 9,
+            }])
+            .unwrap(),
+            deposit_chain_id: 0,
+            deposit_contract_address: ExecutionAddress::ZERO,
+            churn_limit_quotient: 32,
+            min_per_epoch_churn_limit_electra: 64_000_000_000,
+            max_per_epoch_activation_exit_churn_limit: 128_000_000_000,
+            shard_committee_period: Epoch::new(64),
+            max_blobs_per_block_electra: 9,
+        }
+    }
 
     fn root(b: u8) -> Root {
         let mut a = [0u8; 32];
@@ -715,7 +753,7 @@ mod tests {
         let target = cp(0, anchor);
         let att = indexed(&[0, 1], 0, anchor, target);
 
-        on_attestation(&mut store, &att, false).unwrap();
+        on_attestation(&mut store, &att, false, &test_config()).unwrap();
 
         assert_eq!(
             store.latest_message(ValidatorIndex::new(0)),
@@ -756,8 +794,8 @@ mod tests {
             .collect();
 
         let att = indexed(&[0], 1, child, cp(0, anchor));
-        on_attestation(&mut store, &att, false).unwrap();
-        on_attestation(&mut store, &att, false).unwrap(); // idempotent epoch
+        on_attestation(&mut store, &att, false, &test_config()).unwrap();
+        on_attestation(&mut store, &att, false, &test_config()).unwrap(); // idempotent epoch
 
         let weights_after: Vec<i64> = store
             .proto_array()
@@ -856,7 +894,7 @@ mod tests {
     fn out_of_range_validator_index_is_rejected() {
         let (mut store, anchor) = seeded_store(2);
         let att = indexed(&[0, 99], 0, anchor, cp(0, anchor));
-        let err = on_attestation(&mut store, &att, false).unwrap_err();
+        let err = on_attestation(&mut store, &att, false, &test_config()).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -930,7 +968,7 @@ mod tests {
         // Simpler path: vote for anchor at epoch 0 then try to re-vote older — both
         // epoch 0, second with same epoch does not overwrite (strict >).
         let first = indexed(&[0], 0, anchor, cp(0, anchor));
-        on_attestation(&mut store, &first, true).unwrap();
+        on_attestation(&mut store, &first, true, &test_config()).unwrap();
         let mid = store.votes()[0];
 
         // Same epoch, different root: must NOT overwrite (spec uses `>` not `>=`).
@@ -938,7 +976,7 @@ mod tests {
         // LMD consistency: target root == checkpoint of beacon at target epoch.
         // child at slot 1 epoch 0 → checkpoint is epoch-0 start = anchor (if anchor
         // is the epoch start). get_checkpoint_block(child, 0) walks to slot 0.
-        on_attestation(&mut store, &same_epoch, true).unwrap();
+        on_attestation(&mut store, &same_epoch, true, &test_config()).unwrap();
         assert_eq!(
             store.votes()[0].next_root,
             mid.next_root,
@@ -1043,7 +1081,7 @@ mod tests {
     fn store_balance_snapshot_old_retract_new_apply_via_apply_deltas() {
         let (mut store, anchor) = seeded_store(1);
         let att = indexed(&[0], 0, anchor, cp(0, anchor));
-        on_attestation(&mut store, &att, false).unwrap();
+        on_attestation(&mut store, &att, false, &test_config()).unwrap();
 
         // First apply with old=new=32 Gwei → weight on anchor.
         let bal_32 = vec![32u64];
@@ -1077,7 +1115,7 @@ mod tests {
         // Capture instrumented count immediately around the hot path (other tests
         // may also call compute_deltas in parallel — only assert this call gap).
         let before_batch = COMPUTE_DELTAS_CALLS.load(Ordering::SeqCst);
-        on_attestation(&mut store, &att, false).unwrap();
+        on_attestation(&mut store, &att, false, &test_config()).unwrap();
         let after_batch = COMPUTE_DELTAS_CALLS.load(Ordering::SeqCst);
         assert!(after_batch >= before_batch, "counter is monotonic");
         // If no other test raced, equal; if raced, still no *local* call — weight
@@ -1167,7 +1205,7 @@ mod tests {
 
         // Vote, apply deltas so current_root is set and weight is on the node.
         let att = indexed(&[0], 0, anchor, cp(0, anchor));
-        on_attestation(&mut store, &att, false).unwrap();
+        on_attestation(&mut store, &att, false, &test_config()).unwrap();
         let balances = store.justified_balances().to_vec();
         apply_attestation_deltas(&mut store, &balances).unwrap();
 
@@ -1202,12 +1240,12 @@ mod tests {
         let c0 = store.mutation_counter();
 
         let att = indexed(&[0], 0, anchor, cp(0, anchor));
-        on_attestation(&mut store, &att, false).unwrap();
+        on_attestation(&mut store, &att, false, &test_config()).unwrap();
         let c1 = store.mutation_counter();
         assert!(c1 > c0, "on_attestation bumps on change");
 
         // No-op same-epoch re-apply: no bump.
-        on_attestation(&mut store, &att, false).unwrap();
+        on_attestation(&mut store, &att, false, &test_config()).unwrap();
         assert_eq!(store.mutation_counter(), c1);
 
         let a1 = indexed(&[0], 0, anchor, cp(0, anchor));
@@ -1226,7 +1264,7 @@ mod tests {
 
         // store_target_checkpoint_context alone does not bump (cache fill).
         // Re-insert same target: still no bump beyond prior.
-        store_target_checkpoint_context(&mut store, cp(0, anchor)).unwrap();
+        store_target_checkpoint_context(&mut store, cp(0, anchor), &test_config()).unwrap();
         assert_eq!(store.mutation_counter(), c2);
 
         let balances = store.justified_balances().to_vec();
@@ -1245,7 +1283,7 @@ mod tests {
         assert!(store.checkpoint_context(target).is_some());
         let len_before = store.checkpoint_contexts_len();
 
-        store_target_checkpoint_context(&mut store, target).unwrap();
+        store_target_checkpoint_context(&mut store, target, &test_config()).unwrap();
         assert_eq!(store.checkpoint_contexts_len(), len_before);
 
         // Evict by flooding LRU, then rebuild.
@@ -1268,7 +1306,7 @@ mod tests {
             store.insert_checkpoint_context(cp(i as u64, r), Arc::new(ctx));
         }
         // Original may have been evicted; function rebuilds from block state.
-        store_target_checkpoint_context(&mut store, target).unwrap();
+        store_target_checkpoint_context(&mut store, target, &test_config()).unwrap();
         let ctx = store.checkpoint_context(target).expect("rebuilt");
         assert_eq!(ctx.epoch, Epoch::new(0));
     }

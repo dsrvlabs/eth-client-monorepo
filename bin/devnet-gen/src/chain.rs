@@ -82,7 +82,7 @@ pub fn generate_chain<P: Preset>(
         let blob_count = params.capped_blobs_for_epoch(epoch, requested);
 
         // Advance empty slots (incl. epoch transitions).
-        let pre_root = process_slots(state, slot)
+        let pre_root = process_slots(state, slot, config)
             .map_err(|e| anyhow::anyhow!("process_slots to {slot_u}: {e:?}"))?;
 
         let proposer = get_beacon_proposer_index(state)

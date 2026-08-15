@@ -2,22 +2,61 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use cc_state_transition::helpers::accessors::{get_activation_exit_churn_limit, get_current_epoch};
+use cc_state_transition::helpers::accessors::{
+    get_activation_exit_churn_limit, get_balance_churn_limit, get_current_epoch,
+};
 use cc_state_transition::helpers::constants::{
     EFFECTIVE_BALANCE_INCREMENT, EJECTION_BALANCE, FAR_FUTURE_EPOCH, GENESIS_SLOT,
     HYSTERESIS_QUOTIENT, HYSTERESIS_UPWARD_MULTIPLIER, MAX_EFFECTIVE_BALANCE,
-    MIN_ACTIVATION_BALANCE, network,
+    MIN_ACTIVATION_BALANCE,
 };
 use cc_state_transition::{
-    get_beacon_proposer_indices, process_effective_balance_updates, process_pending_consolidations,
-    process_pending_deposits, process_proposer_lookahead, process_registry_updates,
-    process_sync_committee_updates,
+    BlockError, get_beacon_proposer_indices, process_effective_balance_updates,
+    process_pending_consolidations, process_pending_deposits, process_proposer_lookahead,
+    process_registry_updates, process_sync_committee_updates,
 };
 use cc_types::BeaconState;
+use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::containers::{Checkpoint, Validator};
 use cc_types::operations::{PendingConsolidation, PendingDeposit};
 use cc_types::preset::{Minimal, Preset};
-use cc_types::primitives::{BlsPublicKey, BlsSignature, Epoch, Gwei, Root, Slot, ValidatorIndex};
+use cc_types::primitives::{
+    BlsPublicKey, BlsSignature, Epoch, ExecutionAddress, ForkVersion, Gwei, Root, Slot,
+    ValidatorIndex,
+};
+
+fn minimal_config() -> ChainConfig {
+    ChainConfig {
+        preset_base: PresetName::Minimal,
+        config_name: "minimal".into(),
+        genesis_fork_version: ForkVersion::from_array([0, 0, 0, 1]),
+        altair_fork_version: ForkVersion::from_array([1, 0, 0, 1]),
+        altair_fork_epoch: Epoch::new(0),
+        bellatrix_fork_version: ForkVersion::from_array([2, 0, 0, 1]),
+        bellatrix_fork_epoch: Epoch::new(0),
+        capella_fork_version: ForkVersion::from_array([3, 0, 0, 1]),
+        capella_fork_epoch: Epoch::new(0),
+        deneb_fork_version: ForkVersion::from_array([4, 0, 0, 1]),
+        deneb_fork_epoch: Epoch::new(0),
+        electra_fork_version: ForkVersion::from_array([5, 0, 0, 1]),
+        electra_fork_epoch: Epoch::new(0),
+        fulu_fork_version: ForkVersion::from_array([6, 0, 0, 1]),
+        fulu_fork_epoch: Epoch::new(0),
+        seconds_per_slot: 6,
+        blob_schedule: BlobSchedule::try_from_entries(vec![BlobParameters {
+            epoch: Epoch::new(0),
+            max_blobs_per_block: 9,
+        }])
+        .unwrap(),
+        deposit_chain_id: 0,
+        deposit_contract_address: ExecutionAddress::ZERO,
+        churn_limit_quotient: 32,
+        min_per_epoch_churn_limit_electra: 64_000_000_000,
+        max_per_epoch_activation_exit_churn_limit: 128_000_000_000,
+        shard_committee_period: Epoch::new(64),
+        max_blobs_per_block_electra: 9,
+    }
+}
 
 fn active_validator(i: u64, valid_bls: bool) -> Validator {
     let pubkey = if valid_bls {
@@ -169,13 +208,14 @@ fn registry_updates_uses_balance_based_exit_churn() {
     }
     state.balances_set(0, EJECTION_BALANCE).unwrap();
 
-    let churn = get_activation_exit_churn_limit(&state).unwrap();
+    let config = minimal_config();
+    let churn = get_activation_exit_churn_limit(&state, &config).unwrap();
     // Count-based phase0 style: max(MIN_PER_EPOCH_CHURN_LIMIT, active/quotient).
     // On minimal with 4 validators that would be 1–4 validators; balance-based
     // is Gwei and used by initiate_validator_exit.
-    assert!(churn.as_u64() >= network::min_per_epoch_churn_limit_electra::<Minimal>().as_u64());
+    assert!(churn.as_u64() >= config.min_per_epoch_churn_limit_electra);
 
-    process_registry_updates(&mut state).unwrap();
+    process_registry_updates(&mut state, &config).unwrap();
     let v = state.validators_get(0).unwrap();
     assert_ne!(
         v.exit_epoch, FAR_FUTURE_EPOCH,
@@ -187,6 +227,16 @@ fn registry_updates_uses_balance_based_exit_churn() {
             || v.exit_epoch.as_u64() > get_current_epoch(&state).as_u64(),
         "balance-based exit path should set exit epoch"
     );
+}
+
+/// `CHURN_LIMIT_QUOTIENT: 0` is an error, not a `/ 0` panic.
+#[test]
+fn zero_churn_limit_quotient_is_arithmetic_overflow() {
+    let state = seed_state(4, 5);
+    let mut config = minimal_config();
+    config.churn_limit_quotient = 0;
+    let err = get_balance_churn_limit(&state, &config).unwrap_err();
+    assert!(matches!(err, BlockError::ArithmeticOverflow));
 }
 
 /// process_pending_deposits postpones (does not drop) a deposit for an exiting validator.
@@ -217,7 +267,7 @@ fn pending_deposits_postpones_exiting_validator() {
     });
 
     let bal_before = state.balances_get(0).unwrap();
-    process_pending_deposits(&mut state).unwrap();
+    process_pending_deposits(&mut state, &minimal_config()).unwrap();
 
     // Deposit postponed, not applied, not dropped.
     assert_eq!(state.pending_deposits_len(), 1);

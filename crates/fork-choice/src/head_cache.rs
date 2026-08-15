@@ -440,10 +440,46 @@ mod tests {
 
     use std::sync::Arc;
 
+    use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
     use cc_types::containers::{BeaconBlockHeader, Checkpoint};
     use cc_types::preset::Minimal;
-    use cc_types::primitives::{Epoch, Gwei, Hash256, Root, Slot, ValidatorIndex};
+    use cc_types::primitives::{
+        Epoch, ExecutionAddress, ForkVersion, Gwei, Hash256, Root, Slot, ValidatorIndex,
+    };
     use cc_types::{BeaconBlock, BeaconState};
+
+    fn test_config() -> ChainConfig {
+        ChainConfig {
+            preset_base: PresetName::Minimal,
+            config_name: "minimal".into(),
+            genesis_fork_version: ForkVersion::from_array([0, 0, 0, 1]),
+            altair_fork_version: ForkVersion::from_array([1, 0, 0, 1]),
+            altair_fork_epoch: Epoch::new(0),
+            bellatrix_fork_version: ForkVersion::from_array([2, 0, 0, 1]),
+            bellatrix_fork_epoch: Epoch::new(0),
+            capella_fork_version: ForkVersion::from_array([3, 0, 0, 1]),
+            capella_fork_epoch: Epoch::new(0),
+            deneb_fork_version: ForkVersion::from_array([4, 0, 0, 1]),
+            deneb_fork_epoch: Epoch::new(0),
+            electra_fork_version: ForkVersion::from_array([5, 0, 0, 1]),
+            electra_fork_epoch: Epoch::new(0),
+            fulu_fork_version: ForkVersion::from_array([6, 0, 0, 1]),
+            fulu_fork_epoch: Epoch::new(0),
+            seconds_per_slot: 6,
+            blob_schedule: BlobSchedule::try_from_entries(vec![BlobParameters {
+                epoch: Epoch::new(0),
+                max_blobs_per_block: 9,
+            }])
+            .unwrap(),
+            deposit_chain_id: 0,
+            deposit_contract_address: ExecutionAddress::ZERO,
+            churn_limit_quotient: 32,
+            min_per_epoch_churn_limit_electra: 64_000_000_000,
+            max_per_epoch_activation_exit_churn_limit: 128_000_000_000,
+            shard_committee_period: Epoch::new(64),
+            max_blobs_per_block_electra: 9,
+        }
+    }
     use tree_hash::TreeHash;
 
     use super::*;
@@ -631,7 +667,7 @@ mod tests {
             },
             signature: Default::default(),
         };
-        on_attestation(&mut store, &att, true).unwrap();
+        on_attestation(&mut store, &att, true, &test_config()).unwrap();
         assert!(store.head_cache().is_none(), "attestation must invalidate");
         let _ = get_head(&mut store).unwrap();
 

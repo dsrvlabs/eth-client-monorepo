@@ -98,9 +98,43 @@ mod tests {
     use super::*;
     use crate::root_measure::take_canonical_root_call_count;
     use crate::slots::process_slots;
+    use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
     use cc_types::containers::{BeaconBlockHeader, Validator};
-    use cc_types::primitives::{Gwei, Slot, ValidatorIndex};
+    use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Gwei, Slot, ValidatorIndex};
     use cc_types::{BeaconBlock, BeaconState, Minimal};
+
+    fn test_config() -> ChainConfig {
+        ChainConfig {
+            preset_base: PresetName::Minimal,
+            config_name: "minimal".into(),
+            genesis_fork_version: ForkVersion::from_array([0, 0, 0, 1]),
+            altair_fork_version: ForkVersion::from_array([1, 0, 0, 1]),
+            altair_fork_epoch: Epoch::new(0),
+            bellatrix_fork_version: ForkVersion::from_array([2, 0, 0, 1]),
+            bellatrix_fork_epoch: Epoch::new(0),
+            capella_fork_version: ForkVersion::from_array([3, 0, 0, 1]),
+            capella_fork_epoch: Epoch::new(0),
+            deneb_fork_version: ForkVersion::from_array([4, 0, 0, 1]),
+            deneb_fork_epoch: Epoch::new(0),
+            electra_fork_version: ForkVersion::from_array([5, 0, 0, 1]),
+            electra_fork_epoch: Epoch::new(0),
+            fulu_fork_version: ForkVersion::from_array([6, 0, 0, 1]),
+            fulu_fork_epoch: Epoch::new(0),
+            seconds_per_slot: 6,
+            blob_schedule: BlobSchedule::try_from_entries(vec![BlobParameters {
+                epoch: Epoch::new(0),
+                max_blobs_per_block: 9,
+            }])
+            .unwrap(),
+            deposit_chain_id: 0,
+            deposit_contract_address: ExecutionAddress::ZERO,
+            churn_limit_quotient: 32,
+            min_per_epoch_churn_limit_electra: 64_000_000_000,
+            max_per_epoch_activation_exit_churn_limit: 128_000_000_000,
+            shard_committee_period: Epoch::new(64),
+            max_blobs_per_block_electra: 9,
+        }
+    }
 
     fn seed(state: &mut BeaconState<Minimal>) {
         for i in 0..state.proposer_lookahead_len() {
@@ -137,7 +171,8 @@ mod tests {
         seed(&mut state);
 
         let _ = take_canonical_root_call_count();
-        let pre_root = process_slots(&mut state, Slot::new(1)).unwrap();
+        let config = test_config();
+        let pre_root = process_slots(&mut state, Slot::new(1), &config).unwrap();
         assert_eq!(state.state_roots_get(0), Some(pre_root));
         // process_slot already filled header.state_root with pre_root.
         assert_eq!(state.latest_block_header().state_root, pre_root);

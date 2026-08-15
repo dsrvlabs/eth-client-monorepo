@@ -1091,6 +1091,7 @@ fn core_loop<P: Preset>(
                     &metrics,
                     &mut snapshot_sequence,
                     request,
+                    &config,
                 );
                 // Attestations can move head; re-point EL when they do.
                 if outcome.is_ok() {

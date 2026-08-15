@@ -182,7 +182,7 @@ fn short_chain_generation_sidecar_and_proposer() {
     let seed = params.seed_bytes().unwrap();
     let keys = derive_keys(&seed, params.validator_count).unwrap();
     let mut state = build_genesis::<Minimal>(&params, &keys, &cfg).unwrap();
-    process_slots(&mut state, Slot::new(1)).unwrap();
+    process_slots(&mut state, Slot::new(1), &cfg).unwrap();
     let expected_proposer = get_beacon_proposer_index(&state).unwrap();
 
     let first_root = result.block_roots[0];

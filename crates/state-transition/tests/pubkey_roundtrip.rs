@@ -8,9 +8,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use cc_state_transition::{
+    BlockError, EngineError, ExecutionEngine, NewPayloadRequest, PayloadStatus, TransitionContext,
     compute_time_at_slot, get_beacon_proposer_index, get_current_epoch, get_randao_mix,
-    process_block, process_slots, BlockError, EngineError, ExecutionEngine, NewPayloadRequest,
-    PayloadStatus, TransitionContext,
+    process_block, process_slots,
 };
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::containers::{BeaconBlockHeader, Validator};
@@ -130,8 +130,8 @@ fn matching_empty_block(
 /// decode these bytes.
 fn ssz_fixture() -> (Vec<u8>, BeaconBlock<Minimal>, Root) {
     let mut state = seed_slot_zero();
-    let pre_root = process_slots(&mut state, Slot::new(1)).unwrap();
     let config = minimal_test_config();
+    let pre_root = process_slots(&mut state, Slot::new(1), &config).unwrap();
     let block = matching_empty_block(&state, &config);
     (state.as_ssz_bytes(), block, pre_root)
 }

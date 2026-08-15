@@ -20,6 +20,7 @@ pub mod slashings_reset;
 pub mod sync_committee_updates;
 
 use cc_types::BeaconState;
+use cc_types::config::ChainConfig;
 use cc_types::preset::Preset;
 
 use crate::error::{BlockError, EpochError};
@@ -74,14 +75,17 @@ pub(crate) fn block_to_epoch(err: BlockError) -> EpochError {
 /// 13. process_participation_flag_updates
 /// 14. process_sync_committee_updates
 /// 15. process_proposer_lookahead
-pub fn process_epoch<P: Preset>(state: &mut BeaconState<P>) -> Result<(), EpochError> {
+pub fn process_epoch<P: Preset>(
+    state: &mut BeaconState<P>,
+    config: &ChainConfig,
+) -> Result<(), EpochError> {
     process_justification_and_finalization(state)?;
     process_inactivity_updates(state)?;
     process_rewards_and_penalties(state)?;
-    process_registry_updates(state)?;
+    process_registry_updates(state, config)?;
     process_slashings(state)?;
     process_eth1_data_reset(state)?;
-    process_pending_deposits(state)?;
+    process_pending_deposits(state, config)?;
     process_pending_consolidations(state)?;
     process_effective_balance_updates(state)?;
     process_slashings_reset(state)?;

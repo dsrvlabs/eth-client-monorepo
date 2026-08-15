@@ -99,10 +99,10 @@ pub fn process_operations<P: Preset>(
     }
 
     for slashing in body.proposer_slashings.iter() {
-        process_proposer_slashing(state, slashing, verify_signatures)?;
+        process_proposer_slashing(state, slashing, config, verify_signatures)?;
     }
     for slashing in body.attester_slashings.iter() {
-        process_attester_slashing(state, slashing, verify_signatures)?;
+        process_attester_slashing(state, slashing, config, verify_signatures)?;
     }
     for attestation in body.attestations.iter() {
         process_attestation(
@@ -112,7 +112,7 @@ pub fn process_operations<P: Preset>(
         )?;
     }
     for deposit in body.deposits.iter() {
-        process_deposit(state, deposit)?;
+        process_deposit(state, deposit, config)?;
     }
     for exit in body.voluntary_exits.iter() {
         process_voluntary_exit(state, exit, config, verify_signatures)?;
@@ -126,10 +126,10 @@ pub fn process_operations<P: Preset>(
         process_deposit_request(state, req)?;
     }
     for req in body.execution_requests.withdrawals.iter() {
-        process_withdrawal_request(state, req)?;
+        process_withdrawal_request(state, req, config)?;
     }
     for req in body.execution_requests.consolidations.iter() {
-        process_consolidation_request(state, req)?;
+        process_consolidation_request(state, req, config)?;
     }
 
     Ok(())
@@ -142,7 +142,7 @@ fn assert_op_count(op: &'static str, count: usize, max: u64) -> Result<(), Block
     Ok(())
 }
 
-/// Helper for unit tests that need a config-less deposit path.
+/// Build a [`TransitionContext`] and run [`process_operations`].
 #[inline]
 pub fn process_operations_with_config<P: Preset>(
     state: &mut BeaconState<P>,

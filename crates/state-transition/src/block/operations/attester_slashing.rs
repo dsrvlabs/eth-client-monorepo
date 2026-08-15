@@ -1,6 +1,7 @@
 //! Spec `process_attester_slashing`.
 
 use cc_types::BeaconState;
+use cc_types::config::ChainConfig;
 use cc_types::operations::AttesterSlashing;
 use cc_types::preset::Preset;
 use cc_types::primitives::ValidatorIndex;
@@ -21,6 +22,7 @@ fn invalid(detail: impl Into<String>) -> BlockError {
 pub fn process_attester_slashing<P: Preset>(
     state: &mut BeaconState<P>,
     attester_slashing: &AttesterSlashing<P>,
+    config: &ChainConfig,
     verify_signatures: bool,
 ) -> Result<(), BlockError> {
     let attestation_1 = &attester_slashing.attestation_1;
@@ -60,7 +62,7 @@ pub fn process_attester_slashing<P: Preset>(
             return Err(invalid(format!("index {} out of range", index.as_u64())));
         };
         if is_slashable_validator(validator, epoch) {
-            slash_validator(state, index, None)?;
+            slash_validator(state, index, None, config)?;
             slashed_any = true;
         }
     }
