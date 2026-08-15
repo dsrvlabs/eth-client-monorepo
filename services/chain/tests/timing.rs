@@ -259,6 +259,7 @@ async fn metrics_exposition_server_lists_section_11_1_families() {
         "cc_chain_finalized_epoch",
         "cc_chain_import_total",
         "cc_chain_import_queue_depth",
+        "cc_chain_lane_queue_depth",
         "cc_chain_event_buffer_occupancy",
         "cc_chain_event_buffer_bytes",
         "cc_chain_event_buffer_bytes_bound",

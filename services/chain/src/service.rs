@@ -1,6 +1,6 @@
 //! gRPC `ChainService` implementation (CC-18b / CC-1E / CC-1F / CC-19b / CC-27a / CC-3B).
 //!
-//! - `ImportBlock` → core command channel (`send_timeout` 2 s)
+//! - `ImportBlock` → import lane (`send_timeout` 2 s)
 //! - `ApplyAttestations` → attestation LIFO lane (batched `on_attestation`, CC-1E)
 //! - `GetHead` → [`HeadSnapshotStore`] pointer load (no core interaction)
 //! - `SubscribeEvents` → events task (CC-18c)

@@ -1,8 +1,7 @@
 //! Loop B lane registry and work-type labels ([ARCH] §3.2).
 //!
-//! [`LOOP_B_LANES`] is the first-match-wins selection chain. Core producers
-//! for tick / import / query_p0 / attestation / query_p1 are wired in
-//! `cc-chain`; mixed leftovers stay until S0-A-17.
+//! [`LOOP_B_LANES`] is the first-match-wins selection chain. Every core
+//! producer is wired through the manager in `cc-chain` (S0-A-17).
 
 use crate::config::{
     Depth, IMPORT_LANE_DEPTH, LaneKey, LaneSpec, QUERY_P0_LANE_DEPTH, QUERY_P1_LANE_DEPTH,

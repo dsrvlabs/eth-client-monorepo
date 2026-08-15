@@ -238,6 +238,12 @@ pub const BUFFER_RING: &str = "ring";
 /// Deepest per-subscriber live-queue occupancy.
 pub const BUFFER_SUBSCRIBER: &str = "subscriber";
 
+/// Labels for `cc_chain_lane_queue_depth` (one series per Loop B lane).
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct LaneLabels {
+    pub lane: String,
+}
+
 // ── metric handles ──────────────────────────────────────────────────────────
 
 /// All chain Phase-1 + Phase-3 metric families (CC-1C / §11.1; CC-3Aa / §9.1).
@@ -262,6 +268,8 @@ pub struct ChainMetrics {
     pub finalized_epoch: Gauge,
     pub import_total: Family<ImportResultLabels, Counter>,
     pub import_queue_depth: Gauge,
+    /// Per-lane depth. A five-lane manager has no single `capacity()`.
+    pub lane_queue_depth: Family<LaneLabels, Gauge>,
     pub event_buffer_occupancy: Family<BufferLabels, Gauge>,
     /// Accounted ring occupancy in bytes (CC-44a; separate from occupancy labels).
     pub event_buffer_bytes: Gauge,
@@ -337,6 +345,7 @@ impl ChainMetrics {
         let finalized_epoch = Gauge::default();
         let import_total = Family::<ImportResultLabels, Counter>::default();
         let import_queue_depth = Gauge::default();
+        let lane_queue_depth = Family::<LaneLabels, Gauge>::default();
         let event_buffer_occupancy = Family::<BufferLabels, Gauge>::default();
         let event_buffer_bytes = Gauge::default();
         let event_buffer_bytes_bound = Gauge::default();
@@ -416,8 +425,13 @@ impl ChainMetrics {
         );
         registry.register(
             "cc_chain_import_queue_depth",
-            "In-flight / queued import requests",
+            "In-flight / queued import requests (import lane)",
             import_queue_depth.clone(),
+        );
+        registry.register(
+            "cc_chain_lane_queue_depth",
+            "Loop B lane occupancy (lane=tick|import|query_p0|attestation|query_p1)",
+            lane_queue_depth.clone(),
         );
         registry.register(
             "cc_chain_event_buffer_occupancy",
@@ -574,6 +588,7 @@ impl ChainMetrics {
             finalized_epoch,
             import_total,
             import_queue_depth,
+            lane_queue_depth,
             event_buffer_occupancy,
             event_buffer_bytes,
             event_buffer_bytes_bound,
@@ -667,6 +682,13 @@ impl ChainMetrics {
         self.head_lag_slots.set(0);
         self.finalized_epoch.set(0);
         self.import_queue_depth.set(0);
+        for lane in ["tick", "import", "query_p0", "attestation", "query_p1"] {
+            self.lane_queue_depth
+                .get_or_create(&LaneLabels {
+                    lane: lane.to_owned(),
+                })
+                .set(0);
+        }
         self.resident_states.set(0);
         self.subscribers.set(0);
         self.body_ring_len.set(0);
@@ -966,6 +988,16 @@ impl ChainMetrics {
     /// Set import queue depth.
     pub fn set_import_queue_depth(&self, depth: u64) {
         self.import_queue_depth.set(depth as i64);
+        self.set_lane_queue_depth("import", depth);
+    }
+
+    /// Set one Loop B lane's occupancy (S0-A-17).
+    pub fn set_lane_queue_depth(&self, lane: &str, depth: u64) {
+        self.lane_queue_depth
+            .get_or_create(&LaneLabels {
+                lane: lane.to_owned(),
+            })
+            .set(depth as i64);
     }
 
     /// Set resident state count.

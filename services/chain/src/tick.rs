@@ -1,8 +1,8 @@
 //! Never-shed tick-lane helpers (S0-A-14 / [PRD] P0-12).
 //!
 //! The producer lives in [`crate::core`]: a `thread::sleep` loop aligned to
-//! genesis-derived slot boundaries, `blocking_send` into a
-//! [`cc_scheduler::TICK_LANE_DEPTH`] channel. This module owns the clock math
+//! genesis-derived slot boundaries, `blocking_push` into the never-shed
+//! [`cc_scheduler::TICK_LANE_DEPTH`] manager lane. This module owns the clock math
 //! and import-path `on_tick(store, wall_clock_now)`. Disparity is applied
 //! only when *this* block's slot is still future
 //! ([`admit_block_slot_if_within_disparity`]), never as an unconditional

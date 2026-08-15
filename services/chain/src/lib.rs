@@ -57,11 +57,10 @@ pub use checkpoint_sync::{
     validate_provider_base, verify_checkpoint, warm_canonical_root,
 };
 pub use core::{
-    AttestationEnqueue, AttestationSender, AttestationWork, COMMAND_CHANNEL_CAPACITY, CoreCommand,
-    CoreConfig, CoreHandle, CoreThread, IMPORT_SEND_TIMEOUT, ImportWork,
-    MAX_VALIDATOR_PUBKEYS_PER_REQUEST, MAX_VALIDATOR_RECORDS_PER_REQUEST, QueryP0Work, QueryP1Work,
-    QueryReply, QueryRequest, SHUTDOWN_JOIN_TIMEOUT, WakingSender, spawn_core_thread,
-    spawn_core_thread_with_epoch,
+    AttestationEnqueue, AttestationSender, AttestationWork, CoreCommand, CoreConfig, CoreHandle,
+    CoreThread, IMPORT_SEND_TIMEOUT, ImportWork, MAX_VALIDATOR_PUBKEYS_PER_REQUEST,
+    MAX_VALIDATOR_RECORDS_PER_REQUEST, QueryP0Work, QueryP1Work, QueryReply, QueryRequest,
+    SHUTDOWN_JOIN_TIMEOUT, WakingSender, spawn_core_thread, spawn_core_thread_with_epoch,
 };
 pub use da::{
     BlockBranchTrigger, CELL_PAYLOAD_SOFT_MIN, DEFAULT_DA_PENDING_TIMEOUT_SLOTS,

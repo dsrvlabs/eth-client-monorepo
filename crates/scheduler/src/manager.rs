@@ -307,8 +307,29 @@ impl<K: LaneKey, T> Manager<K, T> {
     }
 
     #[must_use]
+    pub fn depth(&self, id: K) -> Option<usize> {
+        self.lanes.iter().find(|l| l.spec.id == id).map(|l| l.depth)
+    }
+
+    #[must_use]
     pub fn deferred_len(&self) -> usize {
         self.deferred.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.deferred.is_empty() && self.lanes.iter().all(|l| l.queue.len() == 0)
+    }
+
+    /// Pop every queued item (including deferred). Resets the worker-idle gate.
+    pub fn drain(&mut self) -> Vec<T> {
+        self.busy_workers = 0;
+        let mut out = Vec::new();
+        while let Some(sel) = self.select() {
+            self.note_idle();
+            out.push(sel.item);
+        }
+        out
     }
 
     /// Resolved depth for a [`Depth::FromValidators`] lane after a validator-set change.
@@ -484,6 +505,19 @@ mod tests {
         let got = m.select().unwrap();
         assert_eq!(got.source, WorkSource::Lane(ChainLane::Attestation));
         assert_eq!(got.item, "fresh");
+    }
+
+    #[test]
+    fn drain_empties_every_lane() {
+        let mut m = mgr();
+        assert!(m.is_empty());
+        assert!(m.push(ChainLane::Import, "imp").accepted());
+        assert!(m.push(ChainLane::QueryP1, "p1").accepted());
+        assert!(!m.is_empty());
+        assert_eq!(m.depth(ChainLane::Import), Some(IMPORT_LANE_DEPTH));
+        let drained = m.drain();
+        assert_eq!(drained, ["imp", "p1"]);
+        assert!(m.is_empty());
     }
 
     #[test]

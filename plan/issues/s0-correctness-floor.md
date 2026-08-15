@@ -467,6 +467,13 @@ hazard, `[q1]` §4): the queue-depth gauges derived from `cmd_tx.capacity()` ✓
 backpressure tests at `services/chain/tests/import_path.rs`. A PR that lands the manager and leaves
 either behind ships a metric that reads a channel that no longer exists.
 
+- [x] Mixed 64-deep command channel deleted; every producer uses the five-lane manager.
+- [x] Queue-depth gauges come from manager snapshots; backpressure fills the import lane.
+
+- [x] Mixed 64-deep command channel deleted; every producer pushes through the five-lane manager.
+- [x] Queue-depth gauges come from manager snapshots (`cc_chain_lane_queue_depth` + import alias).
+- [x] `import_path.rs` backpressure fills the import lane and asserts the 2 s policy-A deadline.
+
 #### `S0-A-18` — ⟡ D-4 flush-trigger test · 0.75–1.25 pd / 2 pts
 Closes `[q1]` §5's explicitly-open item. Re-ordering *commands* is safe for the `SubscribeEvents`
 cursor — `seq` is assigned monotonically by the single-threaded events task at the point of receipt ✓

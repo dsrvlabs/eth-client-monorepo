@@ -1530,8 +1530,8 @@ mod tests {
             signature: Default::default(),
         };
         let mut child_pre = snapshot.clone();
-        let _ = cc_state_transition::process_slots(&mut child_pre, Slot::new(1)).unwrap();
         let config = minimal_config();
+        let _ = cc_state_transition::process_slots(&mut child_pre, Slot::new(1), &config).unwrap();
         let child = payload_carrying_child(&child_pre, &config);
         let child_root = Root::from_hash256(TreeHash::tree_hash_root(&child.message));
 

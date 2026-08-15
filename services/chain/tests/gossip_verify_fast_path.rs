@@ -929,7 +929,7 @@ fn valid_signed_gap_block(
     let parent_state = store.block_state(&parent).expect("parent state").clone();
     let mut st = parent_state.clone();
     let target = Slot::new(slot);
-    let pre_root = process_slots(&mut st, target).expect("process_slots across gap");
+    let pre_root = process_slots(&mut st, target, config).expect("process_slots across gap");
     let proposer = get_beacon_proposer_index(&st).expect("proposer after process_slots");
     assert_ne!(
         proposer.as_u64(),

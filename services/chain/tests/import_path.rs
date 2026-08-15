@@ -307,21 +307,20 @@ async fn snapshot_published_before_head_event() {
     events.shutdown().await;
 }
 
-// ── Backpressure: fill channel → RESOURCE_EXHAUSTED ────────────────────────
+// ── Backpressure: fill import lane → RESOURCE_EXHAUSTED after 2 s ───────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backpressure_returns_resource_exhausted() {
     let (core, events, anchor, metrics, _head) = spawn_test_core();
 
-    // Block the core so the import lane fills.
+    // Stall the core so the import lane can fill. BlockFor rides query_p0
+    // and does not consume import capacity.
     let h = core.handle.clone();
     let blocker = tokio::spawn(async move {
         h.block_for(Duration::from_secs(5)).await.unwrap();
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Fill the import lane with ImportBlock; hold reply channels so the
-    // oneshots stay alive until after the backpressure send.
     let tx = core.handle.import_sender();
     let mut held_replies = Vec::new();
     for _ in 0..IMPORT_LANE_DEPTH {
@@ -333,7 +332,6 @@ async fn backpressure_returns_resource_exhausted() {
             root: anchor.as_slice().to_vec(),
             source: 0,
         };
-        // try_send so we don't wait — lane must fill.
         match tx.try_send(ImportWork::ImportBlock {
             request: req,
             reply,
@@ -343,6 +341,11 @@ async fn backpressure_returns_resource_exhausted() {
             Err(e) => panic!("unexpected send error: {e}"),
         }
     }
+    assert_eq!(
+        tx.max_capacity(),
+        IMPORT_LANE_DEPTH,
+        "import backpressure is the import lane, not a mixed channel"
+    );
 
     let before = metrics.import_rejected_backpressure_count();
     let req = ImportBlockRequest {
@@ -351,30 +354,25 @@ async fn backpressure_returns_resource_exhausted() {
         root: anchor.as_slice().to_vec(),
         source: 0,
     };
-    // send_timeout(2s) should fire.
+    let started = std::time::Instant::now();
     let err = core.handle.import_block(req).await.unwrap_err();
+    let elapsed = started.elapsed();
     assert_eq!(
         err.code(),
         tonic::Code::ResourceExhausted,
         "expected RESOURCE_EXHAUSTED, got {err}"
     );
     assert!(
+        elapsed >= Duration::from_secs(2),
+        "policy A: send_timeout must wait the 2 s deadline, got {elapsed:?}"
+    );
+    assert!(
         metrics.import_rejected_backpressure_count() > before,
         "backpressure counter must increment"
     );
 
-    // Drop held replies / unblock.
     drop(held_replies);
-    // Unblock by letting BlockFor finish — but channel is full of imports that
-    // will run after. Shutdown instead.
-    // Note: BlockFor is first in queue; after 5s it completes. Force shutdown
-    // by dropping the handle's ability... CoreHandle::shutdown also needs a
-    // free slot. Use try_send path: wait for BlockFor then drain.
     let _ = blocker.await;
-    // Drain queued imports.
-    for _ in 0..IMPORT_LANE_DEPTH + 2 {
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
     core.handle.shutdown().await;
     core.join();
     events.shutdown().await;
