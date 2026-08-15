@@ -361,6 +361,10 @@ the trap, not the test.
 3. A deliberately reverted `S0-A-09` hunk makes at least one assertion against that fixture **fail**.
    Demonstrated once in the PR. Without this, the fixture proves nothing.
 
+- [x] Fixture differs from mainnet on all five P0-02 constants.
+- [x] Official vector suites stay green (official per-preset configs).
+- [x] Production-path tests against the fixture fail if values are read from the deleted preset table.
+
 ---
 
 ### `S0-A-12` · ⟡ D-8 ch.1 — ordered `ChainConfig` fork accessors, delete the five schedule walks

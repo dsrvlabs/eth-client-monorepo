@@ -822,6 +822,91 @@ mod tests {
         assert_eq!(cfg.next_fork_after(Epoch::new(1)), None);
     }
 
+    #[test]
+    fn differing_config_yaml_differs_from_mainnet_on_all_five_p002_keys() {
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/differing-config.yaml"
+        );
+        let mainnet_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/mainnet-config.yaml"
+        );
+        let hoodi_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/hoodi-config.yaml"
+        );
+        let differing = ChainConfig::from_yaml_file(fixture)
+            .unwrap_or_else(|e| panic!("parse differing-config.yaml: {e}"));
+        let mainnet = ChainConfig::from_yaml_file(mainnet_path)
+            .unwrap_or_else(|e| panic!("parse mainnet-config.yaml: {e}"));
+        let hoodi = ChainConfig::from_yaml_file(hoodi_path)
+            .unwrap_or_else(|e| panic!("parse hoodi-config.yaml: {e}"));
+
+        assert_eq!(differing.config_name, "differing");
+        assert_eq!(differing.preset_base, PresetName::Mainnet);
+        assert_eq!(
+            differing.genesis_fork_version,
+            ForkVersion::from_array([0xcc, 0x00, 0x00, 0x01])
+        );
+        assert_eq!(differing.churn_limit_quotient, 4);
+        assert_eq!(differing.min_per_epoch_churn_limit_electra, 16_000_000_000);
+        assert_eq!(
+            differing.max_per_epoch_activation_exit_churn_limit,
+            32_000_000_000
+        );
+        assert_eq!(differing.shard_committee_period, Epoch::new(8));
+
+        // Hoodi is the trap: same four churn/exit keys as mainnet.
+        assert_eq!(hoodi.churn_limit_quotient, mainnet.churn_limit_quotient);
+        assert_eq!(
+            hoodi.min_per_epoch_churn_limit_electra,
+            mainnet.min_per_epoch_churn_limit_electra
+        );
+        assert_eq!(
+            hoodi.max_per_epoch_activation_exit_churn_limit,
+            mainnet.max_per_epoch_activation_exit_churn_limit
+        );
+        assert_eq!(hoodi.shard_committee_period, mainnet.shard_committee_period);
+        assert_ne!(hoodi.genesis_fork_version, mainnet.genesis_fork_version);
+
+        assert_ne!(
+            differing.genesis_fork_version, mainnet.genesis_fork_version,
+            "GENESIS_FORK_VERSION"
+        );
+        assert_ne!(
+            differing.churn_limit_quotient, mainnet.churn_limit_quotient,
+            "CHURN_LIMIT_QUOTIENT"
+        );
+        assert_ne!(
+            differing.min_per_epoch_churn_limit_electra, mainnet.min_per_epoch_churn_limit_electra,
+            "MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA"
+        );
+        assert_ne!(
+            differing.max_per_epoch_activation_exit_churn_limit,
+            mainnet.max_per_epoch_activation_exit_churn_limit,
+            "MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT"
+        );
+        assert_ne!(
+            differing.shard_committee_period, mainnet.shard_committee_period,
+            "SHARD_COMMITTEE_PERIOD"
+        );
+
+        // Also disagree with the deleted `network` minimal table so neither
+        // compile-time preset can satisfy the production assertions.
+        assert_ne!(
+            differing.genesis_fork_version,
+            ForkVersion::from_array([0, 0, 0, 1])
+        );
+        assert_ne!(differing.churn_limit_quotient, 32);
+        assert_ne!(differing.min_per_epoch_churn_limit_electra, 64_000_000_000);
+        assert_ne!(
+            differing.max_per_epoch_activation_exit_churn_limit,
+            128_000_000_000
+        );
+        assert_ne!(differing.shard_committee_period, Epoch::new(64));
+    }
+
     fn minimal_yaml_body() -> &'static str {
         r#"
 PRESET_BASE: mainnet
