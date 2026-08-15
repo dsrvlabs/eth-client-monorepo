@@ -1235,6 +1235,10 @@ run_self_test() {
   assert_no_down_v_in_self
   log "self-test: script never uses compose down -v"
 
+  log "self-test: faults.sh default compose file matches CC-4N clause"
+  bash "${REPO_ROOT}/devnet/faults.sh" --self-test \
+    || die "self-test: faults.sh --self-test failed (compose file vs CC-4N clause)"
+
   log "self-test: branch detection"
   local branch el opt
   branch="$(detect_branch)"

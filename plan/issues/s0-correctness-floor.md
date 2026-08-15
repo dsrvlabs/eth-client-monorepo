@@ -814,6 +814,8 @@ Pinned to `devnet/compose.yml`, but the CC-4N kill-9 clause documents it against
 **Acceptance** — the script takes the compose file as a parameter defaulting to the stack the clause
 names; the clause doc and the script agree, asserted by the clause's own runner.
 
+- [x] `faults.sh` takes `-f` and defaults to `docker-compose.yml`; self-test asserts the effective pin.
+
 ---
 
 ### `S0-B-04` · P0-04 — `BeaconBlocksByRange` v2 encodes 24 bytes

@@ -8,8 +8,15 @@
 #   restart <container> [--hold <s>]    kill -s SIGKILL, optional hold, then up -d
 #   clock-jump <container> <seconds>    advance container wall clock (CC-4D)
 #
-# Container names are compose *service* names (publisher | node-a | node-b | anchor)
-# or full container ids/names from `docker ps`.
+# Container names are compose *service* names: main-stack `storage` (CC-4N
+# kill-9) or self-devnet `publisher | node-a | node-b | anchor`. Full container
+# ids/names from `docker ps` also resolve.
+#
+# Compose file is a parameter (`-f` / `--compose-file` / `CC_FAULTS_COMPOSE`).
+# Default is the main stack the CC-4N kill-9 clause names
+# (`docker-compose.yml`), not the self-devnet file. Ambient Docker
+# `COMPOSE_FILE` is ignored so `restart storage` stays pinned. Pass
+# `-f devnet/compose.yml` for node-a / publisher drills.
 #
 # CC-4N: restart must never use `docker compose down` (and never the volumes
 # flag that deletes named volumes). Named volumes (`cc-store-data`,
@@ -24,19 +31,25 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE_FILE="${ROOT}/devnet/compose.yml"
+# CC-4N kill-9 clause (docs/running.md) names the main stack, not the self-devnet.
+# Dedicated pin — never Docker Compose's COMPOSE_FILE (ambient exports retarget -f).
+DEFAULT_COMPOSE_FILE="${ROOT}/docker-compose.yml"
+FAULTS_COMPOSE="${CC_FAULTS_COMPOSE:-${DEFAULT_COMPOSE_FILE}}"
 NETWORK_NAME="${CC_DEVNET_NETWORK:-cc-devnet}"
 
 usage() {
   cat <<EOF
 Usage:
-  $0 offline-gap <container> <minutes>
-  $0 pause <container> <seconds>
-  $0 restart <container> [--hold <seconds>]
-  $0 clock-jump <container> <seconds>
-  $0 exercise-once   # run each primitive once against node-a (acceptance)
+  $0 [-f FILE|--compose-file FILE] offline-gap <container> <minutes>
+  $0 [-f FILE|--compose-file FILE] pause <container> <seconds>
+  $0 [-f FILE|--compose-file FILE] restart <container> [--hold <seconds>]
+  $0 [-f FILE|--compose-file FILE] clock-jump <container> <seconds>
+  $0 [-f FILE|--compose-file FILE] exercise-once   # each primitive once (acceptance)
+  $0 --self-test   # assert effective compose pin matches the CC-4N clause
 
 Environment:
+  CC_FAULTS_COMPOSE   compose file (default: <repo>/docker-compose.yml)
+                      Ambient COMPOSE_FILE is ignored.
   CC_DEVNET_NETWORK   docker network name (default: cc-devnet)
 
 restart uses: docker compose kill -s SIGKILL <service>
@@ -56,13 +69,34 @@ need() {
     exit 1
   }
 }
-need docker
+
+# Compose service names only (no leading '-' → docker CLI flags).
+require_service_name() {
+  local s="$1"
+  if ! [[ "${s}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo "error: invalid compose service name: ${s:-<empty>}" >&2
+    exit 2
+  fi
+}
+
+# Regular file only — `-` is Compose stdin YAML.
+require_compose_file() {
+  local path="$1"
+  if [[ -z "${path}" || "${path}" == "-" ]]; then
+    echo "error: compose file must be a regular file, not stdin (-)" >&2
+    exit 2
+  fi
+  if [[ ! -f "${path}" ]]; then
+    echo "error: compose file is not a regular file: ${path}" >&2
+    exit 2
+  fi
+}
 
 resolve_container() {
   local name="$1"
   # Prefer compose service name resolution.
   local cid
-  cid="$(docker compose -f "${COMPOSE_FILE}" ps -q "${name}" 2>/dev/null || true)"
+  cid="$(docker compose -f "${FAULTS_COMPOSE}" ps -q "${name}" 2>/dev/null || true)"
   if [[ -n "${cid}" ]]; then
     echo "${cid}"
     return 0
@@ -95,6 +129,7 @@ PY
 cmd_offline_gap() {
   local name="$1"
   local minutes="$2"
+  require_service_name "${name}"
   if ! [[ "${minutes}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     echo "error: minutes must be a number, got ${minutes}" >&2
     exit 2
@@ -114,6 +149,7 @@ cmd_offline_gap() {
 cmd_pause() {
   local name="$1"
   local seconds="$2"
+  require_service_name "${name}"
   if ! [[ "${seconds}" =~ ^[0-9]+$ ]]; then
     echo "error: seconds must be an integer, got ${seconds}" >&2
     exit 2
@@ -135,6 +171,7 @@ cmd_restart() {
   # CC-4D: optional --hold <seconds> between kill and up for clause-2 ring depth.
   local name="$1"
   local hold="${2:-0}"
+  require_service_name "${name}"
   if ! [[ "${hold}" =~ ^[0-9]+$ ]]; then
     echo "error: --hold seconds must be an integer, got ${hold}" >&2
     exit 2
@@ -146,12 +183,12 @@ cmd_restart() {
   else
     echo "==> restart ${name} via kill -s SIGKILL then up -d (hold=${hold}s)"
   fi
-  docker compose -f "${COMPOSE_FILE}" kill -s SIGKILL "${name}"
+  docker compose -f "${FAULTS_COMPOSE}" kill -s SIGKILL "${name}"
   if (( hold > 0 )); then
     echo "  holding ${hold}s before up (CC-4D --hold)"
     sleep "${hold}"
   fi
-  docker compose -f "${COMPOSE_FILE}" up -d "${name}"
+  docker compose -f "${FAULTS_COMPOSE}" up -d "${name}"
   echo "  restarted (named volumes retained)"
 }
 
@@ -160,6 +197,7 @@ cmd_restart() {
 cmd_clock_jump() {
   local name="$1"
   local seconds="$2"
+  require_service_name "${name}"
   if ! [[ "${seconds}" =~ ^-?[0-9]+$ ]]; then
     echo "error: seconds must be an integer, got ${seconds}" >&2
     exit 2
@@ -226,10 +264,138 @@ wait_peers_recovered() {
   return 1
 }
 
+# S0-B-03 / P1-A/29: the *effective* compose pin (what kill/up would use)
+# must be the stack the CC-4N kill-9 clause names. Offline — no docker.
+# Invoked by the clause runner (`scripts/restart-trials.sh --self-test`).
+cmd_self_test() {
+  local clause="${ROOT}/docs/running.md"
+  local want="${DEFAULT_COMPOSE_FILE}"
+  local want_base="docker-compose.yml"
+  local script="${ROOT}/devnet/faults.sh"
+  local pin rc clause_file
+
+  if [[ "$(basename "${want}")" != "${want_base}" ]]; then
+    echo "error: DEFAULT_COMPOSE_FILE is ${want}, want …/${want_base}" >&2
+    exit 1
+  fi
+  if [[ ! -f "${want}" ]]; then
+    echo "error: default compose file missing: ${want}" >&2
+    exit 1
+  fi
+  if ! grep -Eq '^[[:space:]]*storage:[[:space:]]*$' "${want}"; then
+    echo "error: ${want_base} has no storage service (CC-4N kill-9 targets storage)" >&2
+    exit 1
+  fi
+
+  # Effective pin: documented argv, even with ambient COMPOSE_FILE set.
+  pin="$(
+    env -u CC_FAULTS_COMPOSE COMPOSE_FILE=/tmp/not-the-stack.yml \
+      bash "${script}" --print-compose-file
+  )"
+  if [[ "${pin}" != "${want}" ]]; then
+    echo "error: effective pin is ${pin}, want ${want} (ambient COMPOSE_FILE must be ignored)" >&2
+    exit 1
+  fi
+
+  pin="$(
+    env -u CC_FAULTS_COMPOSE \
+      bash "${script}" -f "${ROOT}/devnet/compose.yml" --print-compose-file
+  )"
+  if [[ "${pin}" != "${ROOT}/devnet/compose.yml" ]]; then
+    echo "error: -f did not pin to devnet/compose.yml (got ${pin})" >&2
+    exit 1
+  fi
+
+  pin="$(
+    CC_FAULTS_COMPOSE="${ROOT}/devnet/compose.yml" \
+      bash "${script}" --print-compose-file
+  )"
+  if [[ "${pin}" != "${ROOT}/devnet/compose.yml" ]]; then
+    echo "error: CC_FAULTS_COMPOSE did not pin (got ${pin})" >&2
+    exit 1
+  fi
+
+  pin="$(
+    CC_FAULTS_COMPOSE="${ROOT}/devnet/compose.yml" \
+      bash "${script}" -f "${want}" --print-compose-file
+  )"
+  if [[ "${pin}" != "${want}" ]]; then
+    echo "error: -f should win over CC_FAULTS_COMPOSE (got ${pin})" >&2
+    exit 1
+  fi
+
+  rc=0
+  env -u CC_FAULTS_COMPOSE bash "${script}" -f - --print-compose-file >/dev/null 2>&1 || rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
+    echo "error: compose file '-' (stdin) must be rejected" >&2
+    exit 1
+  fi
+
+  rc=0
+  env -u CC_FAULTS_COMPOSE bash "${script}" -f /tmp/cc-faults-no-such-compose.yml \
+    --print-compose-file >/dev/null 2>&1 || rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
+    echo "error: missing compose file must be rejected" >&2
+    exit 1
+  fi
+
+  # Leading '-' is a docker compose flag, not a service (CC-4N must not
+  # `--remove-orphans` the whole project including el).
+  rc=0
+  ( require_service_name --remove-orphans ) >/dev/null 2>&1 || rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
+    echo "error: --remove-orphans must be rejected as a service name" >&2
+    exit 1
+  fi
+  rc=0
+  ( require_service_name -f ) >/dev/null 2>&1 || rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
+    echo "error: service name starting with '-' must be rejected" >&2
+    exit 1
+  fi
+  require_service_name storage
+  require_service_name node-a
+
+  clause_file="$(
+    awk '
+      /^### kill -9 clause/ {p=1; next}
+      p && /^### / {exit}
+      p && $0 ~ /default compose file:/ {
+        sub(/.*default compose file:[[:space:]]*/, "")
+        gsub(/[`()]/, "")
+        split($0, a, /[[:space:]]+/)
+        print a[1]
+        exit
+      }
+    ' "${clause}"
+  )"
+  if [[ -z "${clause_file}" ]]; then
+    echo "error: ${clause} kill-9 clause does not name a default compose file" >&2
+    exit 1
+  fi
+  if [[ "${clause_file}" != "${want_base}" ]]; then
+    echo "error: clause names ${clause_file}, script defaults to ${want_base}" >&2
+    exit 1
+  fi
+  if ! awk '
+      /^### kill -9 clause/ {p=1; next}
+      p && /^### / {exit}
+      p && /faults\.sh restart storage/ {found=1}
+      END {exit found ? 0 : 1}
+    ' "${clause}"; then
+    echo "error: kill-9 clause must document faults.sh restart storage" >&2
+    exit 1
+  fi
+
+  echo "self-test: effective pin ${want_base} agrees with CC-4N clause (COMPOSE_FILE ignored)"
+  echo "self-test: PASS"
+}
+
 # Acceptance: exercise each primitive once (short durations).
 # H2: offline-gap recovery must succeed *without* a process restart.
 cmd_exercise_once() {
   local target="${1:-node-a}"
+  require_service_name "${target}"
   echo "==> exercise-once against ${target}"
 
   echo "-- pause 2s --"
@@ -262,10 +428,54 @@ cmd_exercise_once() {
 }
 
 main() {
+  local print_compose=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -f|--compose-file)
+        [[ $# -ge 2 ]] || { echo "error: $1 needs a value" >&2; exit 2; }
+        FAULTS_COMPOSE="$2"
+        shift 2
+        ;;
+      --print-compose-file)
+        print_compose=1
+        shift
+        ;;
+      --self-test)
+        cmd_self_test
+        return
+        ;;
+      -h|--help|help)
+        usage
+        exit 0
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        echo "error: unknown option: $1" >&2
+        usage
+        exit 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  require_compose_file "${FAULTS_COMPOSE}"
+  if (( print_compose )); then
+    echo "${FAULTS_COMPOSE}"
+    return
+  fi
+
   if [[ $# -lt 1 ]]; then
     usage
     exit 2
   fi
+
+  need docker
+
   local op="$1"
   shift
   case "${op}" in

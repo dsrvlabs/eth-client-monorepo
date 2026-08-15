@@ -552,11 +552,14 @@ not use `-v` in restart trials, soak recoveries, or the kill-9 acceptance
 clauses.
 
 The same path is encoded in `devnet/faults.sh restart <service>` so the clause
-cannot be run wrongly by hand:
+cannot be run wrongly by hand. The script takes `--compose-file` / `-f` (or
+`CC_FAULTS_COMPOSE`) and defaults to the main stack this clause names
+(`docker-compose.yml`). Ambient Docker `COMPOSE_FILE` is ignored.
 
 ```bash
 bash devnet/faults.sh restart storage
-# → docker compose kill -s SIGKILL storage && docker compose up -d storage
+# default compose file: docker-compose.yml
+# → docker compose -f docker-compose.yml kill -s SIGKILL storage && docker compose -f docker-compose.yml up -d storage
 ```
 
 `CC-4D` later appends `clock-jump` and `restart --hold` on top of this

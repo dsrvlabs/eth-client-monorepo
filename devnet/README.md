@@ -73,7 +73,7 @@ export CC_DEVNET_SMOKE_SLOT_N=4
 
 ./devnet/up.sh          # gen keys + bootnodes + build + genesis-after-build + up
 ./devnet/smoke.sh       # M2.1 wire gate
-./devnet/faults.sh exercise-once   # offline-gap recovery without restart
+./devnet/faults.sh -f devnet/compose.yml exercise-once   # self-devnet primitives
 ./devnet/down.sh
 ```
 
@@ -157,9 +157,10 @@ Seams (Track D, greppable):
 Example (clause 4 rehearsal uses 10 minutes; CI uses sub-minute):
 
 ```bash
-./devnet/faults.sh offline-gap node-a 10
-./devnet/faults.sh pause node-a 30
-./devnet/faults.sh restart node-a
+# Self-devnet: pass the topology file. Default -f is docker-compose.yml (CC-4N).
+./devnet/faults.sh -f devnet/compose.yml offline-gap node-a 10
+./devnet/faults.sh -f devnet/compose.yml pause node-a 30
+./devnet/faults.sh -f devnet/compose.yml restart node-a
 ```
 
 ## Anchor endpoints (CC-19)

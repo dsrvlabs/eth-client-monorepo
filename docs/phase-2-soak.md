@@ -140,7 +140,7 @@ Kinds map to attributable `cc_p2p_peer_penalty_total{reason}` labels:
 
 **Owner:** CC-26b  
 **Venue (discharging):** self-devnet  
-**Booking:** (e) — `faults.sh offline-gap node-a 10` (CC-2Jd docker `network disconnect` primitive)  
+**Booking:** (e) — `faults.sh -f devnet/compose.yml offline-gap node-a 10` (CC-2Jd docker `network disconnect` primitive)  
 **Status:** **`_NOT_RUN_`** — planner + no-DA-bypass unit path landed; live self-devnet discharge waits on M2.3 exit / operator run (CC-2Jb ideally green for full booking matrix; clause 4 itself needs only the planner + offline-gap primitive).
 
 | Field | Value |
