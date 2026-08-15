@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cc_fork_choice::{Store, on_tick};
 use cc_types::preset::Preset;
+use tokio::sync::oneshot;
 
 /// Spec default `MAXIMUM_GOSSIP_CLOCK_DISPARITY`. Config is the source at the
 /// service boundary; this is only `CoreConfig::default`. Written as a product
@@ -23,6 +24,8 @@ pub const DEFAULT_MAXIMUM_GOSSIP_CLOCK_DISPARITY: Duration = Duration::from_mill
 pub enum TickWork {
     /// Per-slot fcU floor + pending_* expiry + wall-clock `on_tick`.
     SlotTick,
+    /// Process exit. Never-shed so SIGTERM is not stuck behind import/`query_p0`.
+    Shutdown { done: oneshot::Sender<()> },
 }
 
 /// Clock inputs for the future-slot *admission* check (not a fork-choice tick).

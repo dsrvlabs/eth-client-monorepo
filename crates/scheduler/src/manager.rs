@@ -369,7 +369,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use crate::config::{Depth, IMPORT_LANE_DEPTH, QUERY_P1_LANE_DEPTH, TICK_LANE_DEPTH};
+    use crate::config::{
+        Depth, IMPORT_LANE_DEPTH, QUERY_P0_LANE_DEPTH, QUERY_P1_LANE_DEPTH, TICK_LANE_DEPTH,
+    };
 
     fn mgr() -> Manager<ChainLane, &'static str> {
         Manager::loop_b(QueueSizes::new(30, 32)).unwrap()
@@ -492,6 +494,8 @@ mod tests {
         assert_eq!(snaps[0].id, ChainLane::Tick);
         assert_eq!(snaps[0].depth, TICK_LANE_DEPTH);
         assert_eq!(snaps[1].depth, IMPORT_LANE_DEPTH);
+        assert_eq!(snaps[2].id, ChainLane::QueryP0);
+        assert_eq!(snaps[2].depth, QUERY_P0_LANE_DEPTH);
         assert_eq!(snaps[4].depth, QUERY_P1_LANE_DEPTH);
         assert_eq!(snaps[3].kind, QueueKind::Lifo);
         assert_eq!(m.max_workers(), 1);

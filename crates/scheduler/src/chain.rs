@@ -181,6 +181,16 @@ mod tests {
         assert!(by_id(ChainLane::Tick).never_shed);
         assert_eq!(by_id(ChainLane::Import).queue, QueueKind::Fifo);
         assert!(!by_id(ChainLane::Import).never_shed);
+        assert_eq!(
+            by_id(ChainLane::Import).depth,
+            Depth::Fixed(IMPORT_LANE_DEPTH)
+        );
+        assert_eq!(by_id(ChainLane::QueryP0).queue, QueueKind::Fifo);
+        assert!(!by_id(ChainLane::QueryP0).never_shed);
+        assert_eq!(
+            by_id(ChainLane::QueryP0).depth,
+            Depth::Fixed(QUERY_P0_LANE_DEPTH)
+        );
         assert_eq!(by_id(ChainLane::Attestation).queue, QueueKind::Lifo);
         assert_eq!(by_id(ChainLane::Attestation).depth, Depth::FromValidators);
         assert_eq!(by_id(ChainLane::QueryP1).queue, QueueKind::Fifo);

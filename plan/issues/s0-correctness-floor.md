@@ -434,6 +434,10 @@ in its slot is not IGNOREd as `future_slot`.
 promoting it gains nothing and risks starving imports (`[q1]` §2.3). `query_p0` mirrors Lighthouse's
 `ApiRequestP0`: a `GetHead` behind three block imports currently waits for three state transitions.
 
+- [x] Import lane (FIFO) carries ImportBlock / ImportBlockGossip / DataAvailable.
+- [x] query_p0 lane serves GetHead / IsOptimistic / StoreClock without waiting on mixed p1.
+- [x] Shutdown rides the never-shed tick lane.
+
 #### `S0-A-16` — `query_p1` + `attestation` lanes · 1–2 pd / 3 pts
 `attestation` is **LIFO**, sized from active validators, evict-oldest.
 

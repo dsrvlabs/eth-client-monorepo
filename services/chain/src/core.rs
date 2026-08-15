@@ -1,23 +1,31 @@
 //! Dedicated OS core thread owning fork-choice [`Store`] by value (ADR-P1-09).
 //!
-//! Communication: `tokio::sync::mpsc` (capacity 64) with `blocking_recv` on the
-//! thread side and `oneshot` replies. `ImportBlock` uses `send_timeout(2 s)` →
-//! `RESOURCE_EXHAUSTED` on backpressure.
+//! Communication: dedicated Loop B lanes plus the leftover mixed
+//! `tokio::sync::mpsc` (capacity 64). The core thread first-match-wins across
+//! tick → import → query_p0 → mixed, then parks until a producer notifies.
+//! `oneshot` replies. `ImportBlock` uses `send_timeout(2 s)` →
+//! `RESOURCE_EXHAUSTED` on backpressure (policy A).
 //!
-//! `SlotTick` rides a separate never-shed tick lane ([ARCH] §3.2 / S0-A-14)
-//! alongside this channel (the mixed channel is deleted at S0-A-17).
+//! Wired lanes ([ARCH] §3.2):
+//! - `tick` — never-shed `SlotTick` + `Shutdown` ([S0-A-14] / S0-A-15)
+//! - `import` — `ImportBlock` / `ImportBlockGossip` / `DataAvailable` (FIFO 64)
+//! - `query_p0` — `Query{Head, IsOptimistic}` + head probes (FIFO 64)
+//!
+//! The mixed channel stays for commands not yet moved (S0-A-16 / deleted at
+//! S0-A-17). First-match-wins: tick → import → query_p0 → mixed.
 //!
 //! ```text
 //! loop { recv(); handle(); /* snapshot + events inside import */ }
 //! ```
 //!
 //! CC-1F state-requiring reads (`GetCommitteeShuffling`, `GetValidatorPubkeys`)
-//! and CC-27a `GetValidatorRecords` go through the single FIFO
-//! [`CoreCommand::Query`] path (§7.1) — no second copy of the head state is held
-//! on the gRPC side. Epoch-scoped data for `ChainView` is published via
-//! [`EpochContextStore`] (second `ArcSwap`, Architecture §16/4).
+//! and CC-27a `GetValidatorRecords` stay on the mixed
+//! [`CoreCommand::Query`] path until S0-A-16 — no second copy of the head
+//! state is held on the gRPC side. Epoch-scoped data for `ChainView` is
+//! published via [`EpochContextStore`] (second `ArcSwap`, Architecture §16/4).
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -26,7 +34,10 @@ use cc_proto::chain::{
     ApplyAttestationsRequest, ApplyAttestationsResponse, ImportBlockRequest, ImportBlockResponse,
 };
 use cc_proto::common::Source;
-use cc_scheduler::{ChainLane, Enqueue, Manager, QueueSizes, TICK_LANE_DEPTH};
+use cc_scheduler::{
+    ChainLane, Enqueue, IMPORT_LANE_DEPTH, Manager, QUERY_P0_LANE_DEPTH, QueueSizes,
+    TICK_LANE_DEPTH,
+};
 use cc_state_transition::helpers::accessors::get_active_validator_indices;
 use cc_state_transition::helpers::misc::compute_start_slot_at_epoch;
 use cc_state_transition::{
@@ -92,7 +103,9 @@ pub enum CoreCommand {
         request: ApplyAttestationsRequest,
         reply: oneshot::Sender<Result<ApplyAttestationsResponse, Status>>,
     },
-    /// State-requiring read (single FIFO queue in Phase 1; priority lane is Phase 6).
+    /// State-requiring read. `query_p0` variants
+    /// ([`QueryRequest::is_query_p0`]) ride their own lane; the rest stay on
+    /// this mixed channel until S0-A-16.
     ///
     /// Used by CC-1F (`GetCommitteeShuffling`, `GetValidatorPubkeys`) and head probes.
     Query {
@@ -115,6 +128,149 @@ pub enum CoreCommand {
     Shutdown { done: oneshot::Sender<()> },
 }
 
+/// Work that rides the `import` lane ([ARCH] §3.2 / S0-A-15).
+///
+/// FIFO depth [`IMPORT_LANE_DEPTH`], policy A (can shed). `DataAvailable`
+/// stays here — it re-drives a parked block, so promoting it starves imports.
+#[derive(Debug)]
+pub enum ImportWork {
+    ImportBlock {
+        request: ImportBlockRequest,
+        reply: oneshot::Sender<Result<ImportBlockResponse, Status>>,
+    },
+    ImportBlockGossip {
+        request: ImportBlockRequest,
+        early_accept: Option<oneshot::Sender<()>>,
+        reply: oneshot::Sender<Result<ImportOutcome, Status>>,
+    },
+    DataAvailable {
+        root: Root,
+        slot: u64,
+    },
+}
+
+impl From<ImportWork> for CoreCommand {
+    fn from(work: ImportWork) -> Self {
+        match work {
+            ImportWork::ImportBlock { request, reply } => Self::ImportBlock { request, reply },
+            ImportWork::ImportBlockGossip {
+                request,
+                early_accept,
+                reply,
+            } => Self::ImportBlockGossip {
+                request,
+                early_accept,
+                reply,
+            },
+            ImportWork::DataAvailable { root, slot } => Self::DataAvailable { root, slot },
+        }
+    }
+}
+
+/// Work that rides the `query_p0` lane (Lighthouse `ApiRequestP0`).
+///
+/// FIFO depth [`QUERY_P0_LANE_DEPTH`]. Head probes must not wait behind a
+/// mixed-channel attestation flood or a `query_p1` read.
+#[derive(Debug)]
+pub enum QueryP0Work {
+    Query {
+        request: QueryRequest,
+        reply: oneshot::Sender<Result<QueryReply, Status>>,
+    },
+}
+
+impl From<QueryP0Work> for CoreCommand {
+    fn from(work: QueryP0Work) -> Self {
+        match work {
+            QueryP0Work::Query { request, reply } => Self::Query { request, reply },
+        }
+    }
+}
+
+/// First-match-wins inbound from the wired lanes plus the leftover mixed channel.
+enum Incoming {
+    Tick(TickWork),
+    Import(ImportWork),
+    QueryP0(QueryP0Work),
+    Mixed(CoreCommand),
+}
+
+/// Park/unpark so dedicated-lane sends wake an idle core without a second runtime.
+#[derive(Debug)]
+struct LaneWake {
+    signaled: AtomicBool,
+    parked: Mutex<Option<thread::Thread>>,
+}
+
+impl LaneWake {
+    fn new() -> Self {
+        Self {
+            signaled: AtomicBool::new(false),
+            parked: Mutex::new(None),
+        }
+    }
+
+    fn notify(&self) {
+        self.signaled.store(true, Ordering::SeqCst);
+        if let Some(t) = self.parked_lock().clone() {
+            t.unpark();
+        }
+    }
+
+    fn park_current(&self) {
+        *self.parked_lock() = Some(thread::current());
+        if !self.signaled.swap(false, Ordering::SeqCst) {
+            thread::park();
+            self.signaled.store(false, Ordering::SeqCst);
+        }
+    }
+
+    fn parked_lock(&self) -> std::sync::MutexGuard<'_, Option<thread::Thread>> {
+        self.parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Wakes a parked core after this clone's channel sender is dropped.
+#[derive(Debug, Clone)]
+struct NotifyOnDrop(Arc<LaneWake>);
+
+impl Drop for NotifyOnDrop {
+    fn drop(&mut self) {
+        self.0.notify();
+    }
+}
+
+/// Test/producer sender that unparks the core after a successful send (and on drop).
+#[derive(Debug, Clone)]
+pub struct WakingSender<T> {
+    tx: mpsc::Sender<T>,
+    wake: Arc<LaneWake>,
+}
+
+impl<T> WakingSender<T> {
+    fn new(tx: mpsc::Sender<T>, wake: Arc<LaneWake>) -> Self {
+        Self { tx, wake }
+    }
+
+    /// `try_send` then unpark so an idle core observes the item.
+    pub fn try_send(&self, msg: T) -> Result<(), mpsc::error::TrySendError<T>> {
+        self.tx.try_send(msg).inspect(|()| self.wake.notify())
+    }
+
+    #[must_use]
+    pub fn max_capacity(&self) -> usize {
+        self.tx.max_capacity()
+    }
+}
+
+impl<T> Drop for WakingSender<T> {
+    fn drop(&mut self) {
+        self.wake.notify();
+    }
+}
+
 /// Request variants for [`CoreCommand::Query`].
 #[derive(Debug, Clone)]
 pub enum QueryRequest {
@@ -135,6 +291,19 @@ pub enum QueryRequest {
     CanonicalRoots { start_slot: u64, end_slot: u64 },
     /// Fork-choice store clock (`store.time` / `get_current_slot`).
     StoreClock,
+}
+
+impl QueryRequest {
+    /// `query_p0` / Lighthouse `ApiRequestP0`: head, optimistic status, clock.
+    ///
+    /// `query_p1` variants stay on the mixed channel until S0-A-16.
+    #[must_use]
+    pub const fn is_query_p0(&self) -> bool {
+        matches!(
+            self,
+            Self::Head | Self::IsOptimistic { .. } | Self::StoreClock
+        )
+    }
 }
 
 /// Reply for the Phase-1 / CC-27a / CC-3B / CC-44a `Query` command.
@@ -220,6 +389,13 @@ pub struct CoreHandle {
     cmd_tx: mpsc::Sender<CoreCommand>,
     /// Never-shed tick lane ([ARCH] §3.2). Depth [`TICK_LANE_DEPTH`].
     tick_tx: mpsc::Sender<TickWork>,
+    /// Import lane ([ARCH] §3.2). Depth [`IMPORT_LANE_DEPTH`], policy A.
+    import_tx: mpsc::Sender<ImportWork>,
+    /// `query_p0` lane ([ARCH] §3.2). Depth [`QUERY_P0_LANE_DEPTH`].
+    query_p0_tx: mpsc::Sender<QueryP0Work>,
+    /// After the senders so last-handle drop closes channels, then unparks.
+    _close_wake: NotifyOnDrop,
+    lane_wake: Arc<LaneWake>,
     head: HeadSnapshotStore,
     epoch: EpochContextStore,
     metrics: ChainMetrics,
@@ -247,7 +423,7 @@ impl CoreHandle {
         self.counters.transition_count()
     }
 
-    /// Clone of the command sender (tests that fill the channel).
+    /// Clone of the leftover mixed-channel sender (tests that fill the channel).
     pub fn command_sender(&self) -> mpsc::Sender<CoreCommand> {
         self.cmd_tx.clone()
     }
@@ -257,13 +433,27 @@ impl CoreHandle {
         self.tick_tx.clone()
     }
 
+    /// Clone of the import-lane sender (tests that fill the lane).
+    pub fn import_sender(&self) -> WakingSender<ImportWork> {
+        WakingSender::new(self.import_tx.clone(), Arc::clone(&self.lane_wake))
+    }
+
+    /// Clone of the `query_p0` sender (tests that fill the lane).
+    pub fn query_p0_sender(&self) -> WakingSender<QueryP0Work> {
+        WakingSender::new(self.query_p0_tx.clone(), Arc::clone(&self.lane_wake))
+    }
+
     /// `try_send` a [`TickWork::SlotTick`]. `false` if the lane is full or closed.
     ///
     /// The production ticker uses `blocking_send` so a full lane waits rather
     /// than shedding. Tests use this to observe capacity without blocking.
     #[must_use]
     pub fn try_send_slot_tick(&self) -> bool {
-        self.tick_tx.try_send(TickWork::SlotTick).is_ok()
+        let ok = self.tick_tx.try_send(TickWork::SlotTick).is_ok();
+        if ok {
+            self.lane_wake.notify();
+        }
+        ok
     }
 
     /// Import a block via the core channel with the 2 s send timeout.
@@ -272,8 +462,8 @@ impl CoreHandle {
         request: ImportBlockRequest,
     ) -> Result<ImportBlockResponse, Status> {
         let (reply, rx) = oneshot::channel();
-        let cmd = CoreCommand::ImportBlock { request, reply };
-        match self.cmd_tx.send_timeout(cmd, IMPORT_SEND_TIMEOUT).await {
+        let cmd = ImportWork::ImportBlock { request, reply };
+        match self.import_tx.send_timeout(cmd, IMPORT_SEND_TIMEOUT).await {
             Ok(()) => {}
             Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
                 self.metrics.inc_import_rejected_backpressure();
@@ -287,8 +477,9 @@ impl CoreHandle {
         }
         // Queue depth gauge: approximate via capacity residual.
         self.metrics.set_import_queue_depth(
-            (COMMAND_CHANNEL_CAPACITY.saturating_sub(self.cmd_tx.capacity())) as u64,
+            (IMPORT_LANE_DEPTH.saturating_sub(self.import_tx.capacity())) as u64,
         );
+        self.lane_wake.notify();
         rx.await
             .map_err(|_| Status::unavailable("core thread dropped import reply"))?
     }
@@ -305,12 +496,12 @@ impl CoreHandle {
         early_accept: Option<oneshot::Sender<()>>,
     ) -> Result<ImportOutcome, Status> {
         let (reply, rx) = oneshot::channel();
-        let cmd = CoreCommand::ImportBlockGossip {
+        let cmd = ImportWork::ImportBlockGossip {
             request,
             early_accept,
             reply,
         };
-        match self.cmd_tx.send_timeout(cmd, IMPORT_SEND_TIMEOUT).await {
+        match self.import_tx.send_timeout(cmd, IMPORT_SEND_TIMEOUT).await {
             Ok(()) => {}
             Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
                 self.metrics.inc_import_rejected_backpressure();
@@ -323,8 +514,9 @@ impl CoreHandle {
             }
         }
         self.metrics.set_import_queue_depth(
-            (COMMAND_CHANNEL_CAPACITY.saturating_sub(self.cmd_tx.capacity())) as u64,
+            (IMPORT_LANE_DEPTH.saturating_sub(self.import_tx.capacity())) as u64,
         );
+        self.lane_wake.notify();
         rx.await
             .map_err(|_| Status::unavailable("core thread dropped gossip import reply"))?
     }
@@ -350,31 +542,49 @@ impl CoreHandle {
                 return Err(Status::unavailable("chain core thread is shut down"));
             }
         }
-        self.metrics.set_import_queue_depth(
-            (COMMAND_CHANNEL_CAPACITY.saturating_sub(self.cmd_tx.capacity())) as u64,
-        );
+        self.lane_wake.notify();
         rx.await
             .map_err(|_| Status::unavailable("core thread dropped apply_attestations reply"))?
     }
 
-    /// `Query` command (single FIFO queue in Phase 1).
+    /// `Query` command. P0 variants go to `query_p0`; the rest stay mixed.
     ///
     /// Uses the same 2 s send timeout as [`Self::import_block`] so a stalled
     /// core does not hang gRPC workers on state reads (CC-1F / CC-27a).
     pub async fn query(&self, request: QueryRequest) -> Result<QueryReply, Status> {
         let (reply, rx) = oneshot::channel();
-        let cmd = CoreCommand::Query { request, reply };
-        match self.cmd_tx.send_timeout(cmd, IMPORT_SEND_TIMEOUT).await {
-            Ok(()) => {}
-            Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
-                return Err(Status::resource_exhausted(
-                    "query command channel full after 2s send_timeout",
-                ));
+        if request.is_query_p0() {
+            let cmd = QueryP0Work::Query { request, reply };
+            match self
+                .query_p0_tx
+                .send_timeout(cmd, IMPORT_SEND_TIMEOUT)
+                .await
+            {
+                Ok(()) => {}
+                Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
+                    return Err(Status::resource_exhausted(
+                        "query command channel full after 2s send_timeout",
+                    ));
+                }
+                Err(mpsc::error::SendTimeoutError::Closed(_)) => {
+                    return Err(Status::unavailable("chain core thread is shut down"));
+                }
             }
-            Err(mpsc::error::SendTimeoutError::Closed(_)) => {
-                return Err(Status::unavailable("chain core thread is shut down"));
+        } else {
+            let cmd = CoreCommand::Query { request, reply };
+            match self.cmd_tx.send_timeout(cmd, IMPORT_SEND_TIMEOUT).await {
+                Ok(()) => {}
+                Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
+                    return Err(Status::resource_exhausted(
+                        "query command channel full after 2s send_timeout",
+                    ));
+                }
+                Err(mpsc::error::SendTimeoutError::Closed(_)) => {
+                    return Err(Status::unavailable("chain core thread is shut down"));
+                }
             }
         }
+        self.lane_wake.notify();
         rx.await
             .map_err(|_| Status::unavailable("core thread dropped query reply"))?
     }
@@ -386,6 +596,7 @@ impl CoreHandle {
             .send(CoreCommand::BlockFor { duration, reply })
             .await
             .map_err(|_| Status::unavailable("chain core thread is shut down"))?;
+        self.lane_wake.notify();
         rx.await
             .map_err(|_| Status::unavailable("core thread dropped block_for reply"))?;
         Ok(())
@@ -393,12 +604,15 @@ impl CoreHandle {
 
     /// Notify the core that sampling completed for `root` (CC-24d).
     ///
-    /// Fire-and-forget on the command channel (no reply). Uses the same 2 s
+    /// Fire-and-forget on the import lane (no reply). Uses the same 2 s
     /// send timeout as import so a stalled core surfaces as unavailable.
     pub async fn notify_data_available(&self, root: Root, slot: u64) -> Result<(), Status> {
-        let cmd = CoreCommand::DataAvailable { root, slot };
-        match self.cmd_tx.send_timeout(cmd, IMPORT_SEND_TIMEOUT).await {
-            Ok(()) => Ok(()),
+        let cmd = ImportWork::DataAvailable { root, slot };
+        match self.import_tx.send_timeout(cmd, IMPORT_SEND_TIMEOUT).await {
+            Ok(()) => {
+                self.lane_wake.notify();
+                Ok(())
+            }
             Err(mpsc::error::SendTimeoutError::Timeout(_)) => Err(Status::resource_exhausted(
                 "data_available command channel full after 2s send_timeout",
             )),
@@ -408,14 +622,19 @@ impl CoreHandle {
         }
     }
 
-    /// Enqueue [`CoreCommand::Shutdown`] and return the done receiver (no wait).
+    /// Enqueue [`TickWork::Shutdown`] on the never-shed tick lane.
     ///
-    /// Prefer [`CoreThread::shutdown_and_join`] for production teardown so the
+    /// Does not share the mixed or import FIFOs, so SIGTERM pre-drain cannot
+    /// wait behind a busy import / `query_p0` lane. Prefer
+    /// [`CoreThread::shutdown_and_join`] for production teardown so the
     /// oneshot wait and OS join share a **single** [`SHUTDOWN_JOIN_TIMEOUT`].
     pub async fn begin_shutdown(&self) -> Option<oneshot::Receiver<()>> {
         let (done, rx) = oneshot::channel();
-        match self.cmd_tx.send(CoreCommand::Shutdown { done }).await {
-            Ok(()) => Some(rx),
+        match self.tick_tx.send(TickWork::Shutdown { done }).await {
+            Ok(()) => {
+                self.lane_wake.notify();
+                Some(rx)
+            }
             Err(_) => None,
         }
     }
@@ -537,6 +756,9 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
 ) -> CoreThread {
     let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
     let (tick_tx, tick_rx) = mpsc::channel(TICK_LANE_DEPTH);
+    let (import_tx, import_rx) = mpsc::channel(IMPORT_LANE_DEPTH);
+    let (query_p0_tx, query_p0_rx) = mpsc::channel(QUERY_P0_LANE_DEPTH);
+    let lane_wake = Arc::new(LaneWake::new());
     let counters = Arc::new(ImportCounters::default());
     let counters_thread = Arc::clone(&counters);
     let head_thread = head.clone();
@@ -550,12 +772,13 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
 
     // Genesis-aligned never-shed ticker (P0-12 / S0-A-14). `blocking_send` on
     // the tick lane; a droppable `SlotTick` on the mixed channel is only a
-    // wakeup for an idle `blocking_recv`. Gated by `slot_tick_enabled` so
+    // wakeup for leftover mixed work. Gated by `slot_tick_enabled` so
     // fixture tests keep exclusive control of store time.
     let _fcu_ticker = if core_cfg.slot_tick_enabled {
         Some(spawn_slot_tick_driver(
             tick_tx.clone(),
             cmd_tx.clone(),
+            Arc::clone(&lane_wake),
             store.genesis_time(),
             config.seconds_per_slot,
         ))
@@ -566,6 +789,7 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
     // Capture multi-threaded runtime handle for GrpcFcuSink (§2.4). Absent in
     // pure unit tests that spawn the core off a runtime → fcU stays disabled.
     let rt_handle = tokio::runtime::Handle::try_current().ok();
+    let lane_wake_thread = Arc::clone(&lane_wake);
 
     let join = thread::Builder::new()
         .name("chain-core".into())
@@ -581,6 +805,9 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
                 core_cfg,
                 cmd_rx,
                 tick_rx,
+                import_rx,
+                query_p0_rx,
+                lane_wake_thread,
                 rt_handle,
             );
         })
@@ -594,6 +821,10 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
         handle: CoreHandle {
             cmd_tx,
             tick_tx,
+            import_tx,
+            query_p0_tx,
+            _close_wake: NotifyOnDrop(Arc::clone(&lane_wake)),
+            lane_wake,
             head,
             epoch,
             metrics,
@@ -909,6 +1140,9 @@ fn core_loop<P: Preset>(
     core_cfg: CoreConfig,
     mut cmd_rx: mpsc::Receiver<CoreCommand>,
     mut tick_rx: mpsc::Receiver<TickWork>,
+    mut import_rx: mpsc::Receiver<ImportWork>,
+    mut query_p0_rx: mpsc::Receiver<QueryP0Work>,
+    lane_wake: Arc<LaneWake>,
     rt_handle: Option<tokio::runtime::Handle>,
 ) {
     let mut residency =
@@ -961,9 +1195,8 @@ fn core_loop<P: Preset>(
             }
         };
 
-    while let Some(cmd) = cmd_rx.blocking_recv() {
-        metrics.set_import_queue_depth(cmd_rx.len() as u64);
-        drain_tick_lane(
+    loop {
+        if let Some(done) = drain_tick_lane(
             &mut tick_mgr,
             &mut tick_rx,
             &mut store,
@@ -972,7 +1205,10 @@ fn core_loop<P: Preset>(
             da_timeout_slots,
             engine_timeout_slots,
             &metrics,
-        );
+        ) {
+            let _ = done.send(());
+            break;
+        }
         // Slot-bounded timeout: drop permanently unavailable parked blocks.
         expire_pending_da(
             &mut pending_da,
@@ -989,6 +1225,43 @@ fn core_loop<P: Preset>(
         if let Some(ref da) = peer_das {
             metrics.set_da_available_occupancy(da.len() as u64);
         }
+        let incoming =
+            match try_recv_first_match(&mut tick_rx, &mut import_rx, &mut query_p0_rx, &mut cmd_rx)
+            {
+                Some(w) => w,
+                None if tick_rx.is_closed()
+                    && import_rx.is_closed()
+                    && query_p0_rx.is_closed()
+                    && cmd_rx.is_closed() =>
+                {
+                    break;
+                }
+                None => {
+                    lane_wake.park_current();
+                    continue;
+                }
+            };
+        metrics.set_import_queue_depth(import_rx.len() as u64);
+        let cmd = match incoming {
+            Incoming::Tick(TickWork::Shutdown { done }) => {
+                let _ = done.send(());
+                break;
+            }
+            Incoming::Tick(TickWork::SlotTick) => {
+                apply_tick_clock(
+                    &mut store,
+                    &mut pending_da,
+                    &mut pending_engine,
+                    da_timeout_slots,
+                    engine_timeout_slots,
+                    &metrics,
+                );
+                continue;
+            }
+            Incoming::Import(work) => CoreCommand::from(work),
+            Incoming::QueryP0(work) => CoreCommand::from(work),
+            Incoming::Mixed(cmd) => cmd,
+        };
         match cmd {
             CoreCommand::ImportBlock { request, reply } => {
                 if slot_tick_enabled {
@@ -1165,7 +1438,7 @@ fn core_loop<P: Preset>(
                 break;
             }
         }
-        drain_tick_lane(
+        if let Some(done) = drain_tick_lane(
             &mut tick_mgr,
             &mut tick_rx,
             &mut store,
@@ -1174,8 +1447,11 @@ fn core_loop<P: Preset>(
             da_timeout_slots,
             engine_timeout_slots,
             &metrics,
-        );
-        metrics.set_import_queue_depth(cmd_rx.len() as u64);
+        ) {
+            let _ = done.send(());
+            break;
+        }
+        metrics.set_import_queue_depth(import_rx.len() as u64);
     }
 }
 
@@ -1191,6 +1467,7 @@ fn import_gossip_clock(enabled: bool, disparity: Duration) -> Option<GossipClock
 fn spawn_slot_tick_driver(
     tick_tx: mpsc::Sender<TickWork>,
     wakeup: mpsc::Sender<CoreCommand>,
+    lane_wake: Arc<LaneWake>,
     genesis_time: u64,
     seconds_per_slot: u64,
 ) -> thread::JoinHandle<()> {
@@ -1207,7 +1484,8 @@ fn spawn_slot_tick_driver(
                 if tick_tx.blocking_send(TickWork::SlotTick).is_err() {
                     break;
                 }
-                // Wake an idle `blocking_recv`. Full mixed channel: drop — the
+                lane_wake.notify();
+                // Wake an idle mixed `try_recv`. Full mixed channel: drop — the
                 // real tick is already on the never-shed lane.
                 if wakeup.try_send(CoreCommand::SlotTick).is_err() && wakeup.is_closed() {
                     break;
@@ -1218,6 +1496,28 @@ fn spawn_slot_tick_driver(
             tracing::error!(error = %e, "failed to spawn chain-slot-tick thread");
             std::process::abort();
         })
+}
+
+/// First-match-wins across tick → import → query_p0 → mixed ([ARCH] §3.2).
+fn try_recv_first_match(
+    tick_rx: &mut mpsc::Receiver<TickWork>,
+    import_rx: &mut mpsc::Receiver<ImportWork>,
+    query_p0_rx: &mut mpsc::Receiver<QueryP0Work>,
+    cmd_rx: &mut mpsc::Receiver<CoreCommand>,
+) -> Option<Incoming> {
+    if let Ok(work) = tick_rx.try_recv() {
+        return Some(Incoming::Tick(work));
+    }
+    if let Ok(work) = import_rx.try_recv() {
+        return Some(Incoming::Import(work));
+    }
+    if let Ok(work) = query_p0_rx.try_recv() {
+        return Some(Incoming::QueryP0(work));
+    }
+    match cmd_rx.try_recv() {
+        Ok(cmd) => Some(Incoming::Mixed(cmd)),
+        Err(_) => None,
+    }
 }
 
 fn pop_tick_work(
@@ -1254,20 +1554,26 @@ fn drain_tick_lane<P: Preset>(
     da_timeout_slots: u64,
     engine_timeout_slots: u64,
     metrics: &ChainMetrics,
-) {
-    while let Some(TickWork::SlotTick) = pop_tick_work(manager, tick_rx) {
-        // Lane work is clock-only so a saturated mixed channel cannot stall
-        // `store.time` behind an engine dial. fcU / engine redrive stay on
-        // the command-path `SlotTick` wakeup (idle) until S0-A-17.
-        apply_tick_clock(
-            store,
-            pending_da,
-            pending_engine,
-            da_timeout_slots,
-            engine_timeout_slots,
-            metrics,
-        );
+) -> Option<oneshot::Sender<()>> {
+    while let Some(work) = pop_tick_work(manager, tick_rx) {
+        match work {
+            TickWork::SlotTick => {
+                // Lane clock-only so a saturated mixed channel cannot stall
+                // `store.time` behind an engine dial. fcU / engine redrive stay
+                // on the command-path `SlotTick` wakeup until S0-A-17.
+                apply_tick_clock(
+                    store,
+                    pending_da,
+                    pending_engine,
+                    da_timeout_slots,
+                    engine_timeout_slots,
+                    metrics,
+                );
+            }
+            TickWork::Shutdown { done } => return Some(done),
+        }
     }
+    None
 }
 
 fn apply_tick_clock<P: Preset>(
@@ -1595,7 +1901,7 @@ mod tests {
 
     use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
     use cc_proto::chain::ImportBlockRequest;
-    use cc_scheduler::TICK_LANE_DEPTH;
+    use cc_scheduler::{IMPORT_LANE_DEPTH, QUERY_P0_LANE_DEPTH, TICK_LANE_DEPTH};
     use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
     use cc_types::preset::Minimal;
     use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Slot, ValidatorIndex};
@@ -1851,8 +2157,8 @@ mod tests {
         events.shutdown().await;
     }
 
-    /// Saturating the mixed command channel (stand-in for the other lanes until
-    /// S0-A-15) still advances `store.time` within one slot.
+    /// Saturating the leftover mixed command channel still advances
+    /// `store.time` within one slot.
     #[tokio::test]
     async fn slot_tick_advances_store_time_when_other_work_saturated() {
         let (store, _anchor, config) = seeded_store();
@@ -1998,6 +2304,330 @@ mod tests {
 
         core.handle.shutdown().await;
         core.join();
+        events.shutdown().await;
+    }
+
+    #[test]
+    fn query_p0_variants_are_head_probes() {
+        assert!(QueryRequest::Head.is_query_p0());
+        assert!(QueryRequest::IsOptimistic { root: None }.is_query_p0());
+        assert!(QueryRequest::StoreClock.is_query_p0());
+        assert!(!QueryRequest::CommitteeShuffling { epoch: 0 }.is_query_p0());
+        assert!(!QueryRequest::ValidatorPubkeys { indices: vec![] }.is_query_p0());
+        assert!(!QueryRequest::ValidatorRecords { indices: vec![] }.is_query_p0());
+        assert!(
+            !QueryRequest::CanonicalRoots {
+                start_slot: 0,
+                end_slot: 0
+            }
+            .is_query_p0()
+        );
+    }
+
+    #[tokio::test]
+    async fn query_p0_head_is_served_before_mixed_p1() {
+        let (store, _anchor, config) = seeded_store();
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig::default());
+        let head = HeadSnapshotStore::new();
+        let core = spawn_core_thread(
+            store,
+            config,
+            head,
+            events.event_sender(),
+            metrics,
+            CoreConfig::default(),
+        );
+
+        let h = core.handle.clone();
+        let blocker = tokio::spawn(async move {
+            h.block_for(Duration::from_millis(200)).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mixed = core.handle.command_sender();
+        let mut p1_rxs = Vec::new();
+        for _ in 0..3 {
+            let (reply, rx) = oneshot::channel();
+            p1_rxs.push(rx);
+            mixed
+                .try_send(CoreCommand::Query {
+                    request: QueryRequest::CommitteeShuffling { epoch: 0 },
+                    reply,
+                })
+                .expect("mixed channel must accept query_p1");
+        }
+
+        let (head_reply, head_rx) = oneshot::channel();
+        core.handle
+            .query_p0_sender()
+            .try_send(QueryP0Work::Query {
+                request: QueryRequest::Head,
+                reply: head_reply,
+            })
+            .expect("query_p0 must accept Head while mixed holds p1");
+
+        let (order_tx, mut order_rx) = mpsc::channel(4);
+        let order_head = order_tx.clone();
+        tokio::spawn(async move {
+            let _ = head_rx.await;
+            let _ = order_head.send("head").await;
+        });
+        let p1_first = p1_rxs.remove(0);
+        tokio::spawn(async move {
+            let _ = p1_first.await;
+            let _ = order_tx.send("p1").await;
+        });
+
+        let _ = blocker.await;
+        let first = tokio::time::timeout(Duration::from_secs(2), order_rx.recv())
+            .await
+            .expect("lane reply timed out")
+            .expect("order channel closed");
+        assert_eq!(
+            first, "head",
+            "query_p0 must not wait behind mixed query_p1"
+        );
+
+        drop(p1_rxs);
+        core.handle.shutdown().await;
+        core.join();
+        events.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn get_head_behind_three_imports_waits_for_import_lane() {
+        let (store, _anchor, config) = seeded_store();
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig::default());
+        let head = HeadSnapshotStore::new();
+        let core = spawn_core_thread(
+            store,
+            config,
+            head,
+            events.event_sender(),
+            metrics,
+            CoreConfig::default(),
+        );
+
+        let h = core.handle.clone();
+        let blocker = tokio::spawn(async move {
+            h.block_for(Duration::from_millis(200)).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let import = core.handle.import_sender();
+        let mut import_rxs = Vec::new();
+        for _ in 0..3 {
+            let (reply, rx) = oneshot::channel();
+            import_rxs.push(rx);
+            import
+                .try_send(ImportWork::ImportBlock {
+                    request: ImportBlockRequest {
+                        ssz: vec![],
+                        fork: 0,
+                        root: vec![0; 32],
+                        source: 0,
+                    },
+                    reply,
+                })
+                .expect("import lane must accept");
+        }
+
+        let (head_reply, head_rx) = oneshot::channel();
+        core.handle
+            .query_p0_sender()
+            .try_send(QueryP0Work::Query {
+                request: QueryRequest::Head,
+                reply: head_reply,
+            })
+            .expect("query_p0 must accept Head behind imports");
+
+        let (order_tx, mut order_rx) = mpsc::channel(4);
+        let order_import = order_tx.clone();
+        let first_import = import_rxs.remove(0);
+        tokio::spawn(async move {
+            let _ = first_import.await;
+            let _ = order_import.send("import").await;
+        });
+        tokio::spawn(async move {
+            let _ = head_rx.await;
+            let _ = order_tx.send("head").await;
+        });
+
+        let _ = blocker.await;
+        let first = tokio::time::timeout(Duration::from_secs(2), order_rx.recv())
+            .await
+            .expect("lane reply timed out")
+            .expect("order channel closed");
+        assert_eq!(
+            first, "import",
+            "import outranks query_p0; GetHead still waits for queued imports"
+        );
+
+        drop(import_rxs);
+        core.handle.shutdown().await;
+        core.join();
+        events.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn data_available_shares_import_lane_capacity() {
+        let (store, _anchor, config) = seeded_store();
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig::default());
+        let head = HeadSnapshotStore::new();
+        let core = spawn_core_thread(
+            store,
+            config,
+            head,
+            events.event_sender(),
+            metrics,
+            CoreConfig::default(),
+        );
+
+        let h = core.handle.clone();
+        let blocker = tokio::spawn(async move {
+            h.block_for(Duration::from_millis(300)).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let import = core.handle.import_sender();
+        let mut held = Vec::new();
+        for _ in 0..(IMPORT_LANE_DEPTH - 1) {
+            let (reply, rx) = oneshot::channel();
+            held.push(rx);
+            import
+                .try_send(ImportWork::ImportBlock {
+                    request: ImportBlockRequest::default(),
+                    reply,
+                })
+                .expect("import lane has room");
+        }
+        import
+            .try_send(ImportWork::DataAvailable {
+                root: Root::ZERO,
+                slot: 0,
+            })
+            .expect("DataAvailable takes the last import slot");
+        assert!(
+            matches!(
+                import.try_send(ImportWork::DataAvailable {
+                    root: Root::ZERO,
+                    slot: 1,
+                }),
+                Err(mpsc::error::TrySendError::Full(_))
+            ),
+            "DataAvailable must share the import FIFO, not sit above it"
+        );
+        assert_eq!(import.max_capacity(), IMPORT_LANE_DEPTH);
+
+        let (reply, _rx) = oneshot::channel();
+        core.handle
+            .query_p0_sender()
+            .try_send(QueryP0Work::Query {
+                request: QueryRequest::Head,
+                reply,
+            })
+            .expect("query_p0 stays independent of a full import lane");
+        assert_eq!(
+            core.handle.query_p0_sender().max_capacity(),
+            QUERY_P0_LANE_DEPTH
+        );
+
+        drop(held);
+        let _ = blocker.await;
+        core.handle.shutdown().await;
+        core.join();
+        events.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_is_served_while_import_lane_is_full() {
+        let (store, _anchor, config) = seeded_store();
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig::default());
+        let head = HeadSnapshotStore::new();
+        let core = spawn_core_thread(
+            store,
+            config,
+            head,
+            events.event_sender(),
+            metrics,
+            CoreConfig::default(),
+        );
+
+        let h = core.handle.clone();
+        let blocker = tokio::spawn(async move {
+            h.block_for(Duration::from_millis(200)).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let import = core.handle.import_sender();
+        let mut held = Vec::new();
+        for _ in 0..IMPORT_LANE_DEPTH {
+            let (reply, rx) = oneshot::channel();
+            held.push(rx);
+            import
+                .try_send(ImportWork::ImportBlock {
+                    request: ImportBlockRequest::default(),
+                    reply,
+                })
+                .expect("import lane has room");
+        }
+
+        let sent_at = std::time::Instant::now();
+        let rx = core
+            .handle
+            .begin_shutdown()
+            .await
+            .expect("shutdown must enqueue on the tick lane");
+        assert!(
+            sent_at.elapsed() < Duration::from_millis(200),
+            "begin_shutdown send must not wait behind a full import lane ({:?})",
+            sent_at.elapsed()
+        );
+
+        drop(held);
+        let _ = blocker.await;
+        tokio::time::timeout(Duration::from_secs(2), rx)
+            .await
+            .expect("shutdown oneshot")
+            .expect("core dropped shutdown reply");
+        core.join();
+        events.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn last_handle_drop_unparks_idle_core() {
+        let (store, _anchor, config) = seeded_store();
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig::default());
+        let head = HeadSnapshotStore::new();
+        let mut core = spawn_core_thread(
+            store,
+            config,
+            head,
+            events.event_sender(),
+            metrics,
+            CoreConfig::default(),
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let join = core.join.take();
+        drop(core.handle);
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio::task::spawn_blocking(move || join.expect("join handle").join()),
+        )
+        .await
+        .expect("core stayed parked after last sender drop")
+        .expect("join task")
+        .expect("core thread panicked");
         events.shutdown().await;
     }
 }

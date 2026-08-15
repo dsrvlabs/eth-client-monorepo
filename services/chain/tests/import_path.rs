@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use cc_chain::core::{COMMAND_CHANNEL_CAPACITY, CoreCommand, CoreConfig, spawn_core_thread};
+use cc_chain::core::{CoreConfig, ImportWork, spawn_core_thread};
 use cc_chain::events::{EventsConfig, EventsHandle};
 use cc_chain::head::HeadSnapshotStore;
 use cc_chain::import::{encode_signed_block, publish_snapshot_then_events};
@@ -17,6 +17,7 @@ use cc_chain::residency::{DEFAULT_BODY_RING_CAPACITY, DEFAULT_MAX_RESIDENT_STATE
 use cc_chain::{BodyRingEntry, HeadSnapshot, ResidentRole, StateProvider};
 use cc_fork_choice::{HarnessAvailability, get_forkchoice_store};
 use cc_proto::chain::{EventKind, ImportBlockRequest, ImportBlockVerdict};
+use cc_scheduler::IMPORT_LANE_DEPTH;
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::preset::Minimal;
 use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, Root, Slot, ValidatorIndex};
@@ -312,19 +313,18 @@ async fn snapshot_published_before_head_event() {
 async fn backpressure_returns_resource_exhausted() {
     let (core, events, anchor, metrics, _head) = spawn_test_core();
 
-    // Block the core so the command channel fills.
+    // Block the core so the import lane fills.
     let h = core.handle.clone();
     let blocker = tokio::spawn(async move {
         h.block_for(Duration::from_secs(5)).await.unwrap();
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Fill the channel with Query commands that have no receivers waiting —
-    // actually Query will queue behind BlockFor. Fill with ImportBlock that
-    // holds reply channels we don't drop until after.
-    let tx = core.handle.command_sender();
+    // Fill the import lane with ImportBlock; hold reply channels so the
+    // oneshots stay alive until after the backpressure send.
+    let tx = core.handle.import_sender();
     let mut held_replies = Vec::new();
-    for _ in 0..COMMAND_CHANNEL_CAPACITY {
+    for _ in 0..IMPORT_LANE_DEPTH {
         let (reply, rx) = oneshot::channel();
         held_replies.push(rx);
         let req = ImportBlockRequest {
@@ -333,8 +333,8 @@ async fn backpressure_returns_resource_exhausted() {
             root: anchor.as_slice().to_vec(),
             source: 0,
         };
-        // try_send so we don't wait — channel must fill.
-        match tx.try_send(CoreCommand::ImportBlock {
+        // try_send so we don't wait — lane must fill.
+        match tx.try_send(ImportWork::ImportBlock {
             request: req,
             reply,
         }) {
@@ -372,7 +372,7 @@ async fn backpressure_returns_resource_exhausted() {
     // free slot. Use try_send path: wait for BlockFor then drain.
     let _ = blocker.await;
     // Drain queued imports.
-    for _ in 0..COMMAND_CHANNEL_CAPACITY + 2 {
+    for _ in 0..IMPORT_LANE_DEPTH + 2 {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     core.handle.shutdown().await;
