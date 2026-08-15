@@ -519,7 +519,7 @@ duplicates: a cross-cutting program and one of its constituent line items are di
 | **P2-B** | 8 | [RV] low quality — **enumerated in §5.3.1** | opportunistic |
 | **P2-C** | 1 | [RV] convention: `services/p2p/src/fault_mode.rs:16` — file-wide `#![allow(clippy::unwrap_used, expect_used)]` exempts ~1,600 lines of **production** code, far beyond the test-module allowance in `docs/dev-conventions.md` | with P1-D/18 |
 | **P2-D** | 2 | [AS] §4 Low: **19** engine policy edges (fail-open fork-schedule default `osaka_time=0`; gate-bypassing Synced-edge fcU resend; terminal `AuthFailed` with no operator escape) · **20** brittle self-referential tests and observability smells ✳ (tests that grep their own source; 1,600-line god-metric facades; racy hand-rolled gauges; a lag metric that never emits — that last one is P1-B/1) | 19 `patch @ S1`; 20 opportunistic |
-| **P2-E** | 35 | [RV] §4 unverified — **enumerated in §5.3.2** | **triage pass first** — 5 judged at `S0-B-17` (2026-08-16); 30 pending `S1-B-19`/`S1-B-20` |
+| **P2-E** | 35 | [RV] §4 unverified — **enumerated in §5.3.2** | **triage pass first** — 22 judged (`S0-B-17` × 5 + `S1-B-19` × 17, 2026-08-16); 13 pending `S1-B-20` (22–30, 32–35) |
 
 **Total: 8 + 8 + 1 + 2 + 35 = 54.**
 
@@ -545,25 +545,25 @@ dismissed (with a reason) by R-P2-triage. `C` = correctness · `Q` = quality · 
 | # | Location | Kind | Issue as-found |
 |---|---|---|---|
 | 1 | `services/chain/src/core.rs:776` | C | `CanonicalRoots` fabricates the head root for slots where `get_ancestor` fails. **`S0-B-17`: promoted P1 `patch @ S0`** (live site `:1031-1034`) |
-| 2 | `services/engine/src/capabilities.rs:25` | C | `ADVERTISED_CAPABILITIES` includes unimplemented `eth_chainId` and non-Engine `eth_syncing` |
-| 3 | `crates/state-transition/src/helpers/mutators.rs:152` | Q | Consolidation churn uses saturating arithmetic where the exit twin deliberately uses checked |
-| 4 | `crates/types/src/state/caches.rs:492` | Q | Container-root computation swallows hasher errors into an all-zero state root |
-| 5 | `crates/types/src/state/accessors.rs:65` | Q | `StateAccessError::from` maps unrelated `ssz_types` errors to `OutOfBounds { index: 0, len: 0 }` |
+| 2 | `services/engine/src/capabilities.rs:25` | C | `ADVERTISED_CAPABILITIES` includes unimplemented `eth_chainId` and non-Engine `eth_syncing`. **`S1-B-19`: promoted P2 `patch @ S1`** (live site `:25-30`) |
+| 3 | `crates/state-transition/src/helpers/mutators.rs:152` | Q | Consolidation churn uses saturating arithmetic where the exit twin deliberately uses checked. **`S1-B-19`: promoted P2 `patch @ S4`** (live site `:154-162`) |
+| 4 | `crates/types/src/state/caches.rs:492` | Q | Container-root computation swallows hasher errors into an all-zero state root. **`S1-B-19`: dismissed** (`finish()` cannot fail on 38×32-byte writes) |
+| 5 | `crates/types/src/state/accessors.rs:65` | Q | `StateAccessError::from` maps unrelated `ssz_types` errors to `OutOfBounds { index: 0, len: 0 }`. **`S1-B-19`: dismissed** (`VariableList` only returns `OutOfBounds`) |
 | 6 | `crates/types/src/config.rs:58` | C | Empty `BLOB_SCHEDULE` (spec-legal) rejected at load; `serde(default)` guarantees the confusing error. **`S0-B-17`: promoted P1 `patch @ S0`** |
-| 7 | `crates/state-transition/src/signatures.rs:205` | Q | `push_randao_signature` swallows proposer-lookahead failure with `unwrap_or` |
+| 7 | `crates/state-transition/src/signatures.rs:205` | Q | `push_randao_signature` swallows proposer-lookahead failure with `unwrap_or`. **`S1-B-19`: dismissed** (header still `?`s the same lookahead; miss cannot hide an import) |
 | 8 | `crates/state-transition/src/helpers/accessors.rs:545` | Q | Unused helpers; `deposit_domain()` disagrees with the real deposit-domain computation — **`S0-B-17`: dismissed** (P0-02/`S0-A-09` closed the live path; helper has zero callers) |
-| 9 | `crates/state-transition/src/shuffling.rs:271` | Q | `committee_from_shuffling` has no callers; duplicates `get_beacon_committee` with a weaker bounds check |
-| 10 | `crates/state-transition/src/epoch/justification_and_finalization.rs:157` | Q | Private `block_to_epoch` copies shadow the shared `pub(crate)` helper |
-| 11 | `crates/state-transition/src/epoch/proposer_lookahead.rs:54` | Q | Vestigial `last_epoch_start` suppressed with `let _` in the write loop |
-| 12 | `crates/state-transition/src/block/operations/attestation.rs:165` | V | Test-only helpers exported unconditionally from the production API |
-| 13 | `crates/fork-choice/src/store.rs:443` | Q | `clear_proposer_boost_root` has an if/else with byte-identical arms |
-| 14 | `services/chain/src/import.rs:480` | Q | `pending_engine` parks a re-encoded block, violating the F2 arrival-bytes discipline |
-| 15 | `services/engine/src/methods/fcu.rs:252` | Q | `prepare_fcu_params` version gate can never fire |
-| 16 | `services/engine/src/inject.rs:157` | Q | `new_session_id` fallback entropy is always ~zero |
-| 17 | `services/storage/src/writer.rs:275` | Q | `p0_capacity_hint` always returns 0; `map_put_error` has no callers |
-| 18 | `services/storage/src/durable_set.rs:440` | Q | Snapshot degradation fallback can pick a **newer** ring member while reporting next-older |
-| 19 | `services/storage/src/serve.rs:557` | Q | Serve error paths bypass `record_serve`, so `serve_total`/`serve_seconds` undercount failures |
-| 20 | `services/storage/src/restore_client.rs:96` | Q | `push_restore_with_retry` retries non-retryable RPC failures for the full budget |
+| 9 | `crates/state-transition/src/shuffling.rs:271` | Q | `committee_from_shuffling` has no callers; duplicates `get_beacon_committee` with a weaker bounds check. **`S1-B-19`: dismissed** (zero callers; not in `lib.rs` re-exports) |
+| 10 | `crates/state-transition/src/epoch/justification_and_finalization.rs:157` | Q | Private `block_to_epoch` copies shadow the shared `pub(crate)` helper. **`S1-B-19`: dismissed** (copies gone; sole helper is P1-B/10 / `S0-A-34`) |
+| 11 | `crates/state-transition/src/epoch/proposer_lookahead.rs:54` | Q | Vestigial `last_epoch_start` suppressed with `let _` in the write loop. **`S1-B-19`: dismissed** (unused local; no behavior) |
+| 12 | `crates/state-transition/src/block/operations/attestation.rs:165` | V | Test-only helpers exported unconditionally from the production API. **`S1-B-19`: dismissed** (reachable as `block::operations::…`; zero callers; leftover wrap of `get_attesting_indices`) |
+| 13 | `crates/fork-choice/src/store.rs:443` | Q | `clear_proposer_boost_root` has an if/else with byte-identical arms. **`S1-B-19`: dismissed** (intentional same mutation; cosmetic) |
+| 14 | `services/chain/src/import.rs:480` | Q | `pending_engine` parks a re-encoded block, violating the F2 arrival-bytes discipline. **`S1-B-19`: promoted P2 `patch @ S1`** (live site `:497-502`) |
+| 15 | `services/engine/src/methods/fcu.rs:252` | Q | `prepare_fcu_params` version gate can never fire. **`S1-B-19`: promoted P2 `patch @ S1`** (live site `:259-266`; rides `S1-B-04`) |
+| 16 | `services/engine/src/inject.rs:157` | Q | `new_session_id` fallback entropy is always ~zero. **`S1-B-19`: promoted P2 `deleted @ S1`** (live site `:155-157`; `inject.rs` dies at `S1-A-06`) |
+| 17 | `services/storage/src/writer.rs:275` | Q | `p0_capacity_hint` always returns 0; `map_put_error` has no callers. **`S1-B-19`: dismissed** (both have zero callers) |
+| 18 | `services/storage/src/durable_set.rs:440` | Q | Snapshot degradation fallback can pick a **newer** ring member while reporting next-older. **`S1-B-19`: promoted P2 `patch @ S2`** (live site `:443-458`) |
+| 19 | `services/storage/src/serve.rs:557` | Q | Serve error paths bypass `record_serve`, so `serve_total`/`serve_seconds` undercount failures. **`S1-B-19`: promoted P2 `patch @ S2`** (live `?` paths `:548-559` and siblings) |
+| 20 | `services/storage/src/restore_client.rs:96` | Q | `push_restore_with_retry` retries non-retryable RPC failures for the full budget. **`S1-B-19`: promoted P2 `deleted @ S2`** (live site `:89-115`; RestoreFromStore dies at S2) |
 | 21 | `services/storage/src/prune/mod.rs:155` | Q | `PruneConfig::default` maps a failed floor computation to 0 — **maximally destructive retention**. **`S0-B-17`: dismissed** (`Default` cannot produce 0 from `(256, 65_536)`; production 0-floor is P1-A/5) |
 | 22 | `services/storage/src/prune/mod.rs:57` | V | Blanket `#![allow(dead_code)]` on three production modules masks real dead code |
 | 23 | `services/storage/src/columns.rs` / `crates/store/src/columns.rs:517` | Q | `columns_for_block` carries a dead `seen` bitmap |
@@ -583,8 +583,9 @@ dismissed (with a reason) by R-P2-triage. `C` = correctness · `Q` = quality · 
 **P2 requirement R-P2-triage:** run one adversarial verification pass over all 35 rows above **before
 Stage 2 opens**; each is promoted to P0/P1 with a disposition or dismissed with a recorded reason. No
 unverified finding is silently dropped and none is scheduled as work until it is promoted. Rows **1,
-6, 8, 21, 31** were pulled into S0 (`S0-B-17`) because 8 and 31 bear on P0-02 and P0-06; the remaining
-30 stay pending `S1-B-19`/`S1-B-20`.
+6, 8, 21, 31** were pulled into S0 (`S0-B-17`) because 8 and 31 bear on P0-02 and P0-06. Rows **2–5,
+7, 9–20** were judged at `S1-B-19` (2026-08-16; 17 rows — the issue's "16" under-counted `9–20`).
+The remaining 13 stay pending `S1-B-20`.
 
 ##### S0-B-17 early triage — 2026-08-16 · M12 35 → 30 unknown
 
@@ -601,7 +602,35 @@ as `S1-B-19`/`S1-B-20`). This write does not ship those patches.
 | **21** | `services/storage/src/prune/mod.rs:148-151` | **dismissed** | — | — | Same *shape* as P1-A/5 (`S0-B-11`), not the same live path. `Default` calls `compute_min_epochs_for_block_requests(&BlockServeWindowCfg::new(256, 65_536)).unwrap_or(0)`. That compute cannot return `Err` on those constants: `checked_div(2)` never fails (divisor is 2) and `256 + 32_768` does not overflow `u64`, so the value stored is always **33_024**, never 0. Every `PruneConfig::default()` site is a `#[cfg(test)]` `..Default` fill in this file. Production builds the struct field-wise in `main.rs::prune_config` (that is P1-A/5). Residual `unwrap_or(0)` is opportunistic hygiene, not a 0-floor. |
 | **31** | `bin/serve-probe/src/protocols.rs:416-418` | **promoted** | P0-class (P0-06 sibling) | **discharged by `S0-B-07`** (`5eebbbb`) | Confirmed the pre-fix shape: empty `ColumnsByRootRequest` wrote a lone `4u32` offset and returned it. Same class as P0-06 (probe encodes the list wrapper the spec does not). `S0-B-07` already shipped the independent fix — empty returns `Vec::new()`, asserted by `columns_by_root_empty_list_is_zero_bytes`; commit subject even names *"Empty ColumnsByRoot is zero bytes."* The issue said *if it promotes, it lands in `S0-B-07`*; that PR already landed, so **this PR does not re-patch**. P0 stays at 19 (J-11 rule: do not double-count a sibling discharged by an existing P0). |
 
-`S1-B-19` covers rows 2–5, 7, 9–20. `S1-B-20` covers rows 22–30, 32–35.
+`S1-B-19` (2026-08-16) judged rows 2–5, 7, 9–20 (17 rows; M12 30 → 13 unknown). `S1-B-20` covers rows 22–30, 32–35.
+
+##### S1-B-19 R-P2-triage 1/2 — 2026-08-16 · M12 30 → 13 unknown
+
+Adversarial pass over the listed range (2–5, 7, 9–20: **17** rows; the issue header's "16"
+under-counted `9–20`). Line numbers below are the live sites on `develop` `4b3eff0` (several have
+drifted from the [RV] citations). Promoted rows become follow-up issues against their owning stage
+and are **not** added to the P0=19 / P1=58 counts here (same rule as `S0-B-17` / `S1-B-20`). This
+write does not ship those patches. Rows 1, 6, 8, 21, 31 stay as `S0-B-17` judged them.
+
+| # | Live site | Judgement | Tier | Disposition | Reason |
+|---|---|---|---|---|---|
+| **2** | `services/engine/src/capabilities.rs:25-30` | **promoted** | P2 (C) | `patch @ S1` | Still the five-entry const: three `engine_*` plus `eth_syncing` and `eth_chainId`. `eth_chainId` has **zero** impl in the crate (grep). `eth_syncing` exists only as an *outbound* upcheck (`methods/eth_syncing.rs`), not as a method this CL serves. `REQUIRED_CAPABILITIES` is already the three `engine_*` methods; advertising the `eth_*` pair does not trip geth's `BlobCache().SetCellMode` (that is `engine_getBlobsV4`, which is correctly absent). The file's own contract (*DO NOT ADD A METHOD HERE BEFORE IT IS IMPLEMENTED*) is still violated. Drop both from the advertised list when `S1-A-03` moves this file. Not P1 — no live EL cache side-effect. Not patched in this PR. |
+| **3** | `crates/state-transition/src/helpers/mutators.rs:154-162` | **promoted** | P2 (Q) | `patch @ S4` | Live twin of `compute_exit_epoch_and_update_churn` (`:79-93`), which uses `checked_add`/`checked_mul` and returns `ArithmeticOverflow`. Consolidation still `saturating_add`/`saturating_mul` and returns `Ok` with a clamped epoch. Spec-bounded Gwei cannot overflow `u64` on Hoodi, so this is not a live wrong-epoch. Align the twin at S4 (STF / fork-seam) rather than leave a second overflow policy. Not patched in this PR. |
+| **4** | `crates/types/src/state/caches.rs:487-492` | **dismissed** | — | — | `container_root_from_leaves` writes exactly `BEACON_STATE_FIELD_COUNT` (38) `Hash256` slices into `MerkleHasher::with_leaves(38)`. `tree_hash 0.12.1` `finish()` errors only if a leftover buffer would exceed max leaves; 32-byte writes leave the buffer empty, so `unwrap_or(ZERO)` cannot fire. Schema-drift wrong-root is already P1-D/15. Residual `unwrap_or` is opportunistic hygiene, not scheduled. |
+| **5** | `crates/types/src/state/accessors.rs:54-66` | **dismissed** | — | — | `ssz_types 0.14.1` `Error` is `OutOfBounds \| MissingLengthInformation \| ExcessBits \| InvalidByteCount`. Every `StateAccessError::from` site is `VariableList::push`/`new`, which only ever return `OutOfBounds` (`variable_list.rs:89-100,140-149`). The `_ => OutOfBounds { index: 0, len: 0 }` arm cannot run on the live mapping. BitList-only variants never enter this `From`. Residual diagnostic default. |
+| **7** | `crates/state-transition/src/signatures.rs:204-205` | **dismissed** | — | — | Still `get_beacon_proposer_index(state).unwrap_or(block.proposer_index)`. That helper is a Fulu lookahead read (`accessors.rs:54-60`) and fails only if `proposer_lookahead` is shorter than `slot % SPE`. Production `state_transition` (`block/mod.rs:128-131`) verifies signatures *then* `process_block_header`, which uses the same helper with `?` — a miss still fails the import. After `process_slots` a Fulu lookahead is `SPE * (MIN_SEED_LOOKAHEAD+1)` long, so the offset cannot miss. Comment about "after header checks" is stale (signatures run first) but the swallow does not hide a failed import. Residual `unwrap_or`. |
+| **9** | `crates/state-transition/src/shuffling.rs:268-288` | **dismissed** | — | — | `committee_from_shuffling` has **zero callers** (grep). Not in `lib.rs` re-exports. Weaker than `get_beacon_committee` (`:119` also checks `end < start`). Dead duplicate. Opportunistic dead-code, not scheduled. |
+| **10** | `crates/state-transition/src/epoch/justification_and_finalization.rs:155-157` | **dismissed** | — | — | No private `block_to_epoch` remains in this file (`:155-157` is now `epochs_add`). Tree-wide only `epoch/mod.rs:55` `pub(crate) fn block_to_epoch`, made exhaustive by P1-B/10 / `S0-A-34` (`ffc32cdfd83d`). Finding's live site is gone. |
+| **11** | `crates/state-transition/src/epoch/proposer_lookahead.rs:25,51-52` | **dismissed** | — | — | `last_epoch_start` is computed and immediately unused except `let _ = last_epoch_start` inside the write loop. Shift+extend already rebuilds the whole vector. Vestigial local, no behavior. Residual unused binding, not scheduled. |
+| **12** | `crates/state-transition/src/block/operations/attestation.rs:169-175` | **dismissed** | — | — | `mod operations` is `pub` (`block/mod.rs:9`); the helper is on the crate API as `cc_state_transition::block::operations::get_attesting_indices_for_test` (`operations/mod.rs:14-16` `pub use`). Omitted from the crate-root and `block/mod.rs` convenience `pub use` lists. Zero callers (grep). It is a one-line wrap of `get_attesting_indices`. Leftover export, not a private module. Opportunistic `#[cfg(test)]` / unexport, not scheduled. |
+| **13** | `crates/fork-choice/src/store.rs:443-452` | **dismissed** | — | — | Both arms set `proposer_boost_root = Root::ZERO` and `bump_mutation_counter()`. Comment says a new slot is a mutation even when already zero — that is the intended behavior. Identical arms are redundant structure, not a behavioral bug. Cosmetic collapse, not scheduled. |
+| **14** | `services/chain/src/import.rs:497-502` | **promoted** | P2 (Q) | `patch @ S1` | `pending_da` parks `request.ssz` (`:423-427`) with an F2 comment. `pending_engine` still parks `signed.as_ssz_bytes()` — a re-encode of the decoded container. F2 (*byte-identical to what crossed the RPC*) is live on the engine-unavailable path. `pending_engine` survives S1 (ADR-P3-05); one-line swap to arrival bytes. Not P1 — SSZ round-trip is usually identical; the discipline is the issue. Not patched in this PR. |
+| **15** | `services/engine/src/methods/fcu.rs:259-266` | **promoted** | P2 (Q) | `patch @ S1` | `prepare_fcu_params` calls `forkchoice_method_for(schedule.osaka_time, schedule)`. `fork_at(osaka_time)` is Osaka whenever `amsterdam_time` is unset or `> osaka_time` (Hoodi `config/engine.toml`: `osaka_time = 1761677592`, amsterdam unset). The `UnsupportedFork` arm cannot fire on a legal schedule; null attributes also give geth nothing to timestamp-gate. Dead "fail loud" that rides with P2-D/19 / `S1-B-04` (wire a real attributes timestamp at Phase 7, or delete the call). Distinct from P2-B/5 (unreachable retry). Not patched in this PR. |
+| **16** | `services/engine/src/inject.rs:155-157` | **promoted** | P2 (Q) | `deleted @ S1` | Fallback is `Instant::now().elapsed().as_nanos() as u64 ^ pid`. `Instant::now().elapsed()` is ~0, so the id is the process id. S1 deletes `services/engine/src/inject.rs` (`S1-A-06` / EngineStream engine half). Do not patch a dying surface (`[PRD]` §5.0 `deleted @ Sn`). p2p's twin (`chain_stream/client.rs:200`) is out of this batch. |
+| **17** | `services/storage/src/writer.rs:273-276` / `:767-775` | **dismissed** | — | — | `p0_capacity_hint` always returns 0 and has **zero callers**. `map_put_error` has **zero callers**. Neither can lie to metrics or miss a collision. Dead stubs. Residual unused helpers, not scheduled. |
+| **18** | `services/storage/src/durable_set.rs:443-458` | **promoted** | P2 (Q) | `patch @ S2` | `list_snapshot_slots` is ascending (`snapshots.rs:60-71`). Fallback is `find` next slot `< preferred`, else `slots.last()`. If preferred is missing and every remaining member is *newer*, `or_else` picks the newest while the degrade message says "next-older". Assessment lie. S2 owns the snapshot ring. Not patched in this PR. |
+| **19** | `services/storage/src/serve.rs:548-559` (and sibling `?` paths) | **promoted** | P2 (Q) | `patch @ S2` | Admission timeouts now `record_serve` (`:361-371`). `engine()?`, `engine.read().map_err(store_status)?`, `parse_root()?`, `get_block_by_root`/`slot_at_offset` `?` still return without recording — same on by-root columns, snapshot, history. `serve_total`/`serve_seconds` still undercount store/parse failures. P1-B/2 already owns this file at S2 (permit lifetime); fold the counters in. Not P1 — serve is still the P0-17c `ResourceUnavailable` island. Not patched in this PR. |
+| **20** | `services/storage/src/restore_client.rs:89-115` | **promoted** | P2 (Q) | `deleted @ S2` | Retry loop retries every `Err`, including `RestoreClientError::Rpc(Status)` (InvalidArgument / FailedPrecondition / Internal). Only dial races were meant to retry (`:71-74`). 30 s boot delay on a permanent reject, not silent corruption. `RestoreFromStore` is `deleted @ S2` (P1-A/22–23, ADR-P4-07). Do not patch. |
 
 ---
 
@@ -678,7 +707,7 @@ remove `NOT_RUN` without a run is a §7.5 anti-metric violation, not progress.
 | **M9** | Whole-node integration test importing a block from gossip receipt through to durable storage | **not writable** — the path crosses three process boundaries | exists and runs in CI | Engineering |
 | **M10** | Dead internal edges | **4 of 6** dead, **1 of 6** unauthenticated **✓** | 0 dead; every surviving edge authenticated on the Engine-API JWT template | Engineering |
 | **M11** | Unresolvable authority citations | **~745 occurrences** (541 `Architecture §` + ~204 ADR, the latter being 45 hyphenated + 159 spaced) across **~59 distinct ADR ids**, against **0** ADR files ✓ᴸ. *(Revision 1 reported 472 / 13 ids; it counted lines not occurrences and missed the dominant spaced `ADR P3-02` spelling — D-6.)* | every cited id resolves to a committed document **and the reconciliation table has no unclassified rows** — the achievable form of the gate, not "write 59 ADRs" | Engineering |
-| **M12** | Unverified findings in an unknown state | 35 | 0 — each promoted with a disposition or dismissed with a reason. **5 judged at `S0-B-17` (2026-08-16); 30 remain for `S1-B-19`/`S1-B-20`.** | Engineering |
+| **M12** | Unverified findings in an unknown state | 35 | 0 — each promoted with a disposition or dismissed with a reason. **22 judged (`S0-B-17` × 5 + `S1-B-19` × 17, 2026-08-16); 13 remain for `S1-B-20` (22–30, 32–35).** | Engineering |
 | **M13** | **`pubkey_cache_len` vs `validators_len` gauge** — the honest alarm for P0-19. Same species as M8: a failure the node currently cannot report. Note the existing `linear_scan_count` instrumentation is **silent in exactly this failure mode**, because `process_sync_aggregate` never scans — it errors ([Q3] §5). | does not exist | exists; alerts when `pubkey_cache_len < validators_len` on a state the core is importing against | Operator + correctness owner |
 
 ### 7.5 Explicit anti-metrics

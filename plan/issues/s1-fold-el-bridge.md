@@ -523,6 +523,28 @@ triage gate.
 from the `[PRD]` §5.0 vocabulary; every dismissal carries a reason. `[PRD]` §7.5's anti-metric applies
 — a row cleared without a recorded judgement is not progress.
 
+**Judged 2026-08-16** in `[PRD]` §5.3.2 (S1-B-19). Line numbers re-verified on
+`develop` `4b3eff0`. This issue is a triage write: no code patch. `S1-B-20` still owns rows 22–35.
+
+- [x] Seventeen P2-E rows (2–5, 7, 9–20) judged in PRD §5.3.2; none unknown. Issue header said 16; `9–20` is 12 rows.
+- [x] Row 2 promoted P2 `patch @ S1` — `ADVERTISED_CAPABILITIES` still lists unimplemented `eth_chainId` and non-Engine `eth_syncing`; drop both when `S1-A-03` moves the file.
+- [x] Row 3 promoted P2 `patch @ S4` — consolidation churn still saturates where the exit twin is checked; not a live Hoodi overflow.
+- [x] Row 4 dismissed — `MerkleHasher::finish` cannot fail on 38×32-byte writes; `unwrap_or(ZERO)` is unreachable.
+- [x] Row 5 dismissed — every `StateAccessError::from` site is `VariableList`, which only returns `OutOfBounds`.
+- [x] Row 7 dismissed — lookahead miss still fails `process_block_header`; `unwrap_or` does not hide an import.
+- [x] Row 9 dismissed — `committee_from_shuffling` has zero callers and is not re-exported.
+- [x] Row 10 dismissed — private `block_to_epoch` copies are gone; sole helper is P1-B/10 / `S0-A-34`.
+- [x] Row 11 dismissed — vestigial `last_epoch_start`; no behavior.
+- [x] Row 12 dismissed — leftover `block::operations` export of a `get_attesting_indices` wrap; zero callers; not a private module.
+- [x] Row 13 dismissed — identical `clear_proposer_boost_root` arms are the intended same mutation.
+- [x] Row 14 promoted P2 `patch @ S1` — `pending_engine` still parks `signed.as_ssz_bytes()`; `pending_da` already uses arrival `request.ssz`.
+- [x] Row 15 promoted P2 `patch @ S1` — `forkchoice_method_for(osaka_time)` cannot hit Amsterdam on a legal schedule; rides `S1-B-04`.
+- [x] Row 16 promoted P2 `deleted @ S1` — fallback session id is `pid`; `inject.rs` dies at `S1-A-06`.
+- [x] Row 17 dismissed — `p0_capacity_hint` and `map_put_error` have zero callers.
+- [x] Row 18 promoted P2 `patch @ S2` — snapshot degrade `or_else` can pick a newer ring member while saying next-older.
+- [x] Row 19 promoted P2 `patch @ S2` — store/parse `?` paths still skip `record_serve`.
+- [x] Row 20 promoted P2 `deleted @ S2` — retry loop does not classify RPC errors; RestoreFromStore dies at S2.
+
 ---
 
 ### `S1-B-21` · M3 ledger maintenance · 0.5 pd / **1 pt**
