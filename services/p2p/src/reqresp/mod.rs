@@ -199,10 +199,10 @@ impl Protocol {
             // (start_slot, count, step) — three uint64s. `step` is deprecated
             // but still required by the SSZ schema and MUST be 1.
             Self::BeaconBlocksByRangeV2 => SszLimits { min: 24, max: 24 },
-            // List[Root, 1024] ≈ 4 + 1024×32 (not 10 MiB).
+            // List[Root, 1024] of fixed-size elements: bare 32×n (not 10 MiB).
             Self::BeaconBlocksByRootV2 => SszLimits {
-                min: 4,
-                max: 4 + 1024 * 32,
+                min: 0,
+                max: 1024 * 32,
             },
             // (beacon_root, count) = 32 + 8.
             Self::BeaconBlocksByHeadV1 => SszLimits { min: 40, max: 40 },

@@ -166,46 +166,28 @@ pub struct BlocksByRootRequest {
 }
 
 impl BlocksByRootRequest {
-    /// SSZ-encode as `List[Root, N]` (offset + concatenated 32-byte roots).
+    /// SSZ-encode a top-level `List[Root, N]` of fixed-size elements:
+    /// concatenated 32-byte roots, no list offset.
     #[must_use]
     pub fn to_ssz_bytes(&self) -> Vec<u8> {
-        // VariableList SSZ: 4-byte offset to elements, then elements.
-        let mut out = Vec::with_capacity(4 + self.roots.len() * 32);
-        out.extend_from_slice(&4u32.to_le_bytes());
+        let mut out = Vec::with_capacity(self.roots.len() * 32);
         for r in &self.roots {
             out.extend_from_slice(r.as_slice());
         }
         out
     }
 
-    /// SSZ-decode a `List[Root, …]`. Does **not** enforce the 128 bound —
-    /// call [`validate_root_list_len`] before allocating a response.
+    /// SSZ-decode a `List[Root, …]`. Length must be a multiple of 32.
+    /// Does **not** enforce the 128 bound — call [`validate_root_list_len`]
+    /// before allocating a response.
     pub fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, io::Error> {
-        if bytes.len() < 4 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "by_root SSZ too short for list offset",
-            ));
-        }
-        let offset = u32::from_le_bytes(
-            bytes[0..4]
-                .try_into()
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "list offset"))?,
-        ) as usize;
-        if offset != 4 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("by_root unexpected list offset {offset}"),
-            ));
-        }
-        let rest = &bytes[4..];
-        if !rest.len().is_multiple_of(32) {
+        if !bytes.len().is_multiple_of(32) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "by_root payload not a multiple of 32",
             ));
         }
-        let n = rest.len() / 32;
+        let n = bytes.len() / 32;
         // Cap decode work at the framing max (1024) so a hostile list cannot
         // force unbounded parse work before the semantic 128 check.
         if n > 1024 {
@@ -217,7 +199,7 @@ impl BlocksByRootRequest {
         let mut roots = Vec::with_capacity(n);
         for i in 0..n {
             let mut arr = [0u8; 32];
-            arr.copy_from_slice(&rest[i * 32..(i + 1) * 32]);
+            arr.copy_from_slice(&bytes[i * 32..(i + 1) * 32]);
             roots.push(Root::from_array(arr));
         }
         Ok(Self { roots })
@@ -766,7 +748,38 @@ mod tests {
             roots: vec![root_for(1), root_for(2)],
         };
         let bytes = r.to_ssz_bytes();
+        assert_eq!(bytes.len(), 64);
         assert_eq!(BlocksByRootRequest::from_ssz_bytes(&bytes).unwrap(), r);
+    }
+
+    /// Spec schema is a top-level `List[Root]` of fixed-size elements:
+    /// concatenated 32-byte roots, no 4-byte list offset. Bytes are assembled
+    /// here by hand so the codec is checked against the schema, not itself.
+    #[test]
+    fn by_root_ssz_matches_handwritten_96_byte_fixture() {
+        let mut fixture = [0u8; 96];
+        fixture[0..8].copy_from_slice(&1u64.to_le_bytes());
+        fixture[32..40].copy_from_slice(&2u64.to_le_bytes());
+        fixture[64..72].copy_from_slice(&3u64.to_le_bytes());
+
+        let decoded = BlocksByRootRequest::from_ssz_bytes(&fixture).expect("96-byte fixture");
+        assert_eq!(decoded.roots, vec![root_for(1), root_for(2), root_for(3)]);
+        assert_eq!(decoded.to_ssz_bytes(), fixture);
+    }
+
+    #[test]
+    fn by_root_ssz_accepts_multiple_of_32_rejects_otherwise() {
+        assert!(BlocksByRootRequest::from_ssz_bytes(&[]).is_ok());
+        assert!(BlocksByRootRequest::from_ssz_bytes(&[0u8; 32]).is_ok());
+        assert!(BlocksByRootRequest::from_ssz_bytes(&[0u8; 64]).is_ok());
+        assert!(BlocksByRootRequest::from_ssz_bytes(&[0u8; 1]).is_err());
+        assert!(BlocksByRootRequest::from_ssz_bytes(&[0u8; 4]).is_err());
+        assert!(BlocksByRootRequest::from_ssz_bytes(&[0u8; 31]).is_err());
+        assert!(BlocksByRootRequest::from_ssz_bytes(&[0u8; 33]).is_err());
+        // Old encoder: 4-byte offset + one root is 36 bytes, not 32·n.
+        let mut prefixed = vec![4, 0, 0, 0];
+        prefixed.extend_from_slice(&[0u8; 32]);
+        assert!(BlocksByRootRequest::from_ssz_bytes(&prefixed).is_err());
     }
 
     #[test]
