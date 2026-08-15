@@ -11,8 +11,8 @@ mod support;
 use std::fs;
 
 use support::{
-    cache_env_is_set, hoodi_config_path, load_anchor, load_hoodi_config, load_pin,
-    resolve_anchor_paths, resolve_anchor_paths_in, CACHE_ENV, FETCH_HINT,
+    CACHE_ENV, FETCH_HINT, cache_env_is_set, hoodi_config_path, load_anchor, load_hoodi_config,
+    load_pin, resolve_anchor_paths, resolve_anchor_paths_in,
 };
 
 /// A missing cache tree must fail with the fetch hint — never invent bytes.
