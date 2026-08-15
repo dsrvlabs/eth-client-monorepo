@@ -158,6 +158,10 @@ check-env: ## No std::env::var outside crates/config (CC-09/3)
 check-remodelling: ## No consensus containers remodelled as protos (CC-02/4)
 	bash $(SCRIPTS)/check-no-remodelling.sh
 
+.PHONY: check-gha-pins
+check-gha-pins: ## GitHub Actions pinned to commit SHAs (S0a-B-06)
+	bash $(SCRIPTS)/check-gha-sha-pins.sh
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Proto (required CI: proto job)
 # ══════════════════════════════════════════════════════════════════════════════

@@ -144,9 +144,9 @@ The repo's own `docs/supply-chain.md` states an exact-pin policy that `ci.yml` c
 **Touch points** — `.github/workflows/ci.yml:49` and every other `uses:` line in `.github/workflows/`
 
 **Acceptance**
-1. No `uses:` line in `.github/workflows/` carries a mutable tag.
-2. A grep-based check for `uses: .*@v[0-9]` is added to the gate list from `S0a-B-04`, so this cannot
-   silently regress.
+1. [x] No `uses:` line in `.github/workflows/` carries a mutable tag.
+2. [x] A grep-based check for `uses: .*@v[0-9]` is added to the gate list from `S0a-B-04`, so this cannot
+   silently regress. (Standalone `scripts/check-gha-sha-pins.sh` + clippy step; `make ci` wiring is S0a-B-04.)
 
 ---
 

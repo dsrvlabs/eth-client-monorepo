@@ -46,17 +46,17 @@ jobs:
     name: fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
       # Reads rust-toolchain.toml (channel + rustfmt/clippy components).
       # cache: false — avoid double-invoking Swatinem/rust-cache (setup-rust-toolchain defaults cache: true).
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           cache: false
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: cargo fmt
         run: cargo fmt --all --check
@@ -65,15 +65,15 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           cache: false
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: cargo clippy
         # --locked: R-5 (Cargo.lock is source of truth for binary workspaces).
@@ -91,6 +91,10 @@ jobs:
       - name: check no HTTP on import path
         run: bash scripts/check-no-http-import-path.sh
 
+      # S0a-B-06: Actions must be SHA-pinned (docs/supply-chain.md exact-pin policy).
+      - name: check GitHub Actions SHA pins
+        run: bash scripts/check-gha-sha-pins.sh
+
   # CC-10h — unit tests + all minimal-preset suites; keep inside Phase 0's 10-minute
   # CC-07/4 budget. Mainnet + general suites move to the sharded `vectors` job.
   test:
@@ -99,17 +103,17 @@ jobs:
     env:
       HOODI_FIXTURES_CACHE: /home/runner/.cache/cc-hoodi-fixtures
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           cache: false
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
         with:
           tool: cargo-nextest
 
@@ -146,7 +150,7 @@ jobs:
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
 
       # R-3 / §7.5: cache _dl/ tarballs only — never the unpacked tree (tests/, markers).
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ steps.vectors.outputs.dl_dir }}
           key: ${{ hashFiles('spec-vectors.lock') }}
@@ -159,7 +163,7 @@ jobs:
       # CC-10b Hoodi fixture cache — defined in
       # crates/types/tests/fixtures/README.md; installed by CC-10h.
       - name: Hoodi fixtures cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.HOODI_FIXTURES_CACHE }}
           key: hoodi-fixtures-3649472-a87477f2d26512114cea60cab285733b61b1a5aab1a12df3dc73105b510b4a96
@@ -185,7 +189,7 @@ jobs:
     name: proto
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
           # CC-03/3: local history for push-path ref=HEAD~1 breaking baseline.
@@ -208,7 +212,7 @@ jobs:
           fi
           echo "url=${url}" >> "${GITHUB_OUTPUT}"
 
-      - uses: bufbuild/buf-action@v1
+      - uses: bufbuild/buf-action@8c6a16e16f12ba20b6470afa9c2ba9b5ba8c97c3 # v1.5.0
         with:
           input: proto
           lint: true
@@ -254,17 +258,17 @@ jobs:
     env:
       HOODI_FIXTURES_CACHE: /home/runner/.cache/cc-hoodi-fixtures
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           cache: false
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
         with:
           tool: cargo-nextest
 
@@ -302,7 +306,7 @@ jobs:
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
 
       # R-3 / §7.5: cache _dl/ tarballs only — never the unpacked tree (tests/, markers).
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ steps.vectors.outputs.dl_dir }}
           key: ${{ hashFiles('spec-vectors.lock') }}
@@ -315,7 +319,7 @@ jobs:
       # CC-10b Hoodi fixture cache — defined in
       # crates/types/tests/fixtures/README.md; installed by CC-10h.
       - name: Hoodi fixtures cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.HOODI_FIXTURES_CACHE }}
           key: hoodi-fixtures-3649472-a87477f2d26512114cea60cab285733b61b1a5aab1a12df3dc73105b510b4a96
@@ -343,17 +347,17 @@ jobs:
     name: deps
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           cache: false
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
         with:
           tool: cargo-deny
 
@@ -402,7 +406,7 @@ jobs:
     name: compose
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
           # Full history so the PR path filter can diff against the base SHA.
