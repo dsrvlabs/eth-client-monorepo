@@ -1,0 +1,7 @@
+# cc-chain is HTTP-grandfathered, never JWT (E1.4 / [ARCH] §9.2).
+[package]
+name = "fixture-chain-jwt"
+version = "0.0.0"
+
+[dependencies]
+jsonwebtoken = { workspace = true }

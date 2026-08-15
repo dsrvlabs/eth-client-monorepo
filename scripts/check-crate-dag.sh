@@ -4,10 +4,178 @@
 # Portable: no bash-4 associative arrays (macOS /bin/bash is 3.2).
 #
 # Requires: bash, cargo, jq (and rust-toolchain.toml / Cargo.lock present).
+# `--self-test` needs only bash (JWT/HTTP fixtures under scripts/fixtures/).
+#
+# Usage:
+#   bash scripts/check-crate-dag.sh              # JWT/HTTP fixtures, then live DAG
+#   bash scripts/check-crate-dag.sh --self-test  # JWT/HTTP fixtures only
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+
+ARG="${1:-}"
+if [[ "$ARG" == "-h" || "$ARG" == "--help" ]]; then
+  echo "Usage: bash scripts/check-crate-dag.sh [--self-test]"
+  echo "Enforce the workspace crate DAG and JWT/HTTP isolation (ADR P3-16 / [ARCH] §6.2)."
+  exit 0
+fi
+if [[ -n "$ARG" && "$ARG" != "--self-test" ]]; then
+  echo "error: unknown argument: $ARG (want --self-test)" >&2
+  exit 1
+fi
+
+# --- ADR P3-16 / [ARCH] §6.2: Engine API HTTP client + JWT signer isolation ---
+# Same shape as the libp2p rule: the project's first real credential and its
+# Engine API transport live in exactly one crate, so a JWT signer appearing
+# outside that crate is a build failure, not a review comment.
+#
+# S1-A-01 re-points the named crate to cc-engine-api. cc-engine still holds
+# the signer until S1-A-03/S1-A-06 move the files; both are allowed HTTP+JWT.
+# Grandfathered HTTP (never JWT): cc-chain, cc-bootstrap. Workspace root pins.
+# `sha2` is deliberately not listed — cc-crypto legitimately uses hashing.
+# The rule is about *declaring* the dependency; transitive hyper under tonic
+# is unaffected (metadata walk selects direct edges).
+FORBIDDEN_OUTSIDE_ENGINE='^(reqwest|hyper|hyper-util|jsonwebtoken|hmac|sha2-jwt)$'
+FORBIDDEN_JWT_ONLY='^(jsonwebtoken|hmac|sha2-jwt)$'
+
+http_or_jwt_allowed() {
+  # $1 = package name, $2 = dependency name
+  local pkg="$1" dep="$2"
+  if [[ "$pkg" == "cc-engine-api" ]]; then
+    return 0
+  fi
+  # Transitional: signer/HTTP still live in the process binary (S1-A-02..06).
+  if [[ "$pkg" == "cc-engine" ]]; then
+    return 0
+  fi
+  if [[ "$dep" =~ $FORBIDDEN_JWT_ONLY ]]; then
+    return 1
+  fi
+  # HTTP client crates: grandfather chain + bootstrap. Never JWT.
+  case "$pkg" in
+    cc-chain|cc-bootstrap) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# $1 = path to Cargo.toml to read, $2 = logical workspace-relative path.
+# Prints grep hits (line:text). Empty = allowed for this rel.
+http_jwt_manifest_hits() {
+  local manifest="$1" rel="$2"
+  case "$rel" in
+    services/engine/Cargo.toml|crates/engine-api/Cargo.toml|Cargo.toml)
+      return 0
+      ;;
+  esac
+  local pat='reqwest|hyper|hyper-util|jsonwebtoken|hmac|sha2-jwt'
+  case "$rel" in
+    services/chain/Cargo.toml|crates/bootstrap/Cargo.toml)
+      pat='jsonwebtoken|hmac|sha2-jwt'
+      ;;
+  esac
+  grep -nE \
+    "^[[:space:]]*(${pat})[[:space:]]*=|^[[:space:]]*\[dependencies\.(${pat})\]" \
+    "$manifest" 2>/dev/null || true
+}
+
+# ── Fixture self-test (S1-A-01 E1.4) ────────────────────────────────────────
+# Fixtures live outside services/crates/bin so they cannot weaken the live scan.
+FIXTURE_ROOT="${ROOT}/scripts/fixtures/check-crate-dag"
+FAIL_DIR="${FIXTURE_ROOT}/expect-fail"
+PASS_DIR="${FIXTURE_ROOT}/expect-pass"
+
+if [[ ! -d "${FAIL_DIR}" || ! -d "${PASS_DIR}" ]]; then
+  echo "error: missing fixture dirs under ${FIXTURE_ROOT#"$ROOT"/}" >&2
+  exit 1
+fi
+
+selftest_failed=0
+
+for required in third-crate-reqwest chain-jwt; do
+  if [[ ! -f "${FAIL_DIR}/${required}/Cargo.toml" || ! -f "${FAIL_DIR}/${required}/rel" ]]; then
+    echo "error: self-test: missing negative fixture ${FAIL_DIR#"$ROOT"/}/${required}" >&2
+    selftest_failed=1
+  fi
+done
+for required_pass in engine-api-reqwest chain-http; do
+  if [[ ! -f "${PASS_DIR}/${required_pass}/Cargo.toml" || ! -f "${PASS_DIR}/${required_pass}/rel" ]]; then
+    echo "error: self-test: missing positive fixture ${PASS_DIR#"$ROOT"/}/${required_pass}" >&2
+    selftest_failed=1
+  fi
+done
+
+# Function-level: the rule names cc-engine-api; cc-chain is not JWT-grandfathered.
+if ! http_or_jwt_allowed cc-engine-api reqwest \
+  || ! http_or_jwt_allowed cc-engine-api jsonwebtoken; then
+  echo "error: self-test: http_or_jwt_allowed must allow cc-engine-api (E1.4)" >&2
+  selftest_failed=1
+fi
+if http_or_jwt_allowed cc-chain jsonwebtoken; then
+  echo "error: self-test: cc-chain must not be on the JWT grandfather list (E1.4)" >&2
+  selftest_failed=1
+fi
+if http_or_jwt_allowed cc-scheduler reqwest; then
+  echo "error: self-test: a third crate must not be allowed an HTTP client" >&2
+  selftest_failed=1
+fi
+
+n_fail=0
+for dir in "${FAIL_DIR}"/*/; do
+  [[ -d "$dir" ]] || continue
+  n_fail=$((n_fail + 1))
+  if [[ ! -f "${dir}rel" || ! -f "${dir}Cargo.toml" ]]; then
+    echo "error: self-test: fixture ${dir#"$ROOT"/} needs Cargo.toml and rel" >&2
+    selftest_failed=1
+    continue
+  fi
+  rel="$(tr -d '[:space:]' < "${dir}rel")"
+  hits="$(http_jwt_manifest_hits "${dir}Cargo.toml" "$rel")"
+  if [[ -z "${hits}" ]]; then
+    echo "error: self-test: expected HTTP/JWT hit in ${dir#"$ROOT"/} (rel=${rel})" >&2
+    selftest_failed=1
+  else
+    echo "ok: self-test ${dir#"$ROOT"/} is red (${rel})"
+  fi
+done
+
+n_pass=0
+for dir in "${PASS_DIR}"/*/; do
+  [[ -d "$dir" ]] || continue
+  n_pass=$((n_pass + 1))
+  if [[ ! -f "${dir}rel" || ! -f "${dir}Cargo.toml" ]]; then
+    echo "error: self-test: fixture ${dir#"$ROOT"/} needs Cargo.toml and rel" >&2
+    selftest_failed=1
+    continue
+  fi
+  rel="$(tr -d '[:space:]' < "${dir}rel")"
+  hits="$(http_jwt_manifest_hits "${dir}Cargo.toml" "$rel")"
+  if [[ -n "${hits}" ]]; then
+    echo "error: self-test: unexpected HTTP/JWT hit in ${dir#"$ROOT"/} (rel=${rel}):" >&2
+    echo "${hits}" >&2
+    selftest_failed=1
+  else
+    echo "ok: self-test ${dir#"$ROOT"/} is green (${rel})"
+  fi
+done
+
+if [[ "${n_fail}" -lt 2 ]]; then
+  echo "error: self-test: need >=2 negative fixtures in ${FAIL_DIR#"$ROOT"/} (found ${n_fail})" >&2
+  selftest_failed=1
+fi
+if [[ "${n_pass}" -lt 2 ]]; then
+  echo "error: self-test: need >=2 positive fixtures in ${PASS_DIR#"$ROOT"/} (found ${n_pass})" >&2
+  selftest_failed=1
+fi
+
+if [[ "${selftest_failed}" -ne 0 ]]; then
+  exit 1
+fi
+
+if [[ "$ARG" == "--self-test" ]]; then
+  echo "ok: check-crate-dag JWT/HTTP fixtures"
+  exit 0
+fi
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "error: jq is required" >&2
@@ -17,28 +185,17 @@ fi
 # --- ADR P3-16 early manifest scan (before cargo metadata --locked) ----------
 # Pure filesystem grep so adding a forbidden dep names the offending
 # Cargo.toml even when the lockfile is not yet updated (negative-test shape).
-# Engine is exempt; chain/bootstrap may declare HTTP clients but never JWT
-# signers; workspace root may pin.
+# cc-engine-api / cc-engine are exempt; chain/bootstrap may declare HTTP
+# clients but never JWT signers; workspace root may pin.
 EARLY_FAILED=0
 while IFS= read -r manifest; do
   [[ -z "$manifest" || ! -f "$manifest" ]] && continue
   rel="${manifest#"$ROOT"/}"
-  case "$rel" in
-    services/engine/Cargo.toml|Cargo.toml) continue ;;
-  esac
-  pat='reqwest|hyper|hyper-util|jsonwebtoken|hmac|sha2-jwt'
-  case "$rel" in
-    services/chain/Cargo.toml|crates/bootstrap/Cargo.toml)
-      pat='jsonwebtoken|hmac|sha2-jwt'
-      ;;
-  esac
   while IFS= read -r hit; do
     [[ -z "$hit" ]] && continue
-    echo "error: $rel: only cc-engine may declare an HTTP client or JWT signer (ADR P3-16; $hit)" >&2
+    echo "error: $rel: only cc-engine-api may declare an HTTP client or JWT signer (ADR P3-16; $hit)" >&2
     EARLY_FAILED=1
-  done < <(grep -nE \
-    "^[[:space:]]*(${pat})[[:space:]]*=|^[[:space:]]*\[dependencies\.(${pat})\]" \
-    "$manifest" 2>/dev/null || true)
+  done < <(http_jwt_manifest_hits "$manifest" "$rel")
 done < <(find "$ROOT/services" "$ROOT/crates" "$ROOT/bin" -name Cargo.toml 2>/dev/null | sort)
 
 # --- Phase 4: services/storage may never depend on cc-fork-choice (D-P4-3) ---
@@ -132,6 +289,8 @@ allowed_deps() {
     cc-store-tool)        echo "cc-store" ;;
     # S0-A-13: leaf crate, no workspace deps ([ARCH] §1.5 / §3.1).
     cc-scheduler)         echo "" ;;
+    # S1-A-01: skeleton, no workspace deps. JWT/HTTP isolation re-points here.
+    cc-engine-api)        echo "" ;;
     *)
       echo "error: unknown workspace member: $1" >&2
       return 1
@@ -444,41 +603,10 @@ else
   fi
 fi
 
-# --- ADR P3-16 / CC-32/7: Engine API HTTP client + JWT signer isolation -------
-# Same shape as the libp2p rule: the project's first real credential and its
-# Engine API transport live in exactly one manifest, so "the JWT never enters
-# the consensus process" is a build failure, not a review comment.
-#
-# FORBIDDEN_OUTSIDE_ENGINE (Architecture §1.2):
-#   reqwest|hyper|hyper-util|jsonwebtoken|hmac|sha2-jwt
-#
-# Grandfathered (pre-Phase-3 legitimate uses; not Engine API transport):
-#   - cc-chain: checkpoint-sync HTTP (reqwest) + test hyper (CC-15 / CC-28)
-#   - cc-bootstrap: metrics/health HTTP server (hyper/hyper-util, Phase 0)
-#   - workspace root: [workspace.dependencies] pins only
-# JWT signers (jsonwebtoken|hmac|sha2-jwt) are engine-only with no grandfather.
-# `sha2` is deliberately not listed — cc-crypto legitimately uses hashing.
-# The rule is about *declaring* the dependency; transitive hyper under tonic
-# is unaffected (metadata walk selects direct edges).
-FORBIDDEN_OUTSIDE_ENGINE='^(reqwest|hyper|hyper-util|jsonwebtoken|hmac|sha2-jwt)$'
-FORBIDDEN_JWT_ONLY='^(jsonwebtoken|hmac|sha2-jwt)$'
-
-http_or_jwt_allowed() {
-  # $1 = package name, $2 = dependency name
-  local pkg="$1" dep="$2"
-  if [[ "$pkg" == "cc-engine" ]]; then
-    return 0
-  fi
-  if [[ "$dep" =~ $FORBIDDEN_JWT_ONLY ]]; then
-    return 1
-  fi
-  # HTTP client crates: grandfather chain + bootstrap.
-  case "$pkg" in
-    cc-chain|cc-bootstrap) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
+# --- ADR P3-16 / [ARCH] §6.2: metadata walk + manifest-scan backup ------------
+# http_or_jwt_allowed / http_jwt_manifest_hits defined above (S1-A-01 re-point).
+# Grandfathered HTTP (never JWT): cc-chain checkpoint-sync + test hyper
+# (CC-15 / CC-28); cc-bootstrap metrics/health server (Phase 0).
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
   pkg="${line%%$'\t'*}"
@@ -486,7 +614,7 @@ while IFS= read -r line; do
   if http_or_jwt_allowed "$pkg" "$dep"; then
     continue
   fi
-  echo "error: $pkg: only cc-engine may declare an HTTP client or JWT signer (ADR P3-16; found $dep)" >&2
+  echo "error: $pkg: only cc-engine-api may declare an HTTP client or JWT signer (ADR P3-16; found $dep)" >&2
   FAILED=1
 done < <(echo "$METADATA" | jq -r --arg re "$FORBIDDEN_OUTSIDE_ENGINE" '
   .packages[]
@@ -498,27 +626,15 @@ done < <(echo "$METADATA" | jq -r --arg re "$FORBIDDEN_OUTSIDE_ENGINE" '
 ')
 
 # Manifest-scan backup (renamed keys / direct tables). Workspace root pin OK;
-# engine OK; chain/bootstrap may declare HTTP clients but never JWT signers.
+# cc-engine-api + transitional cc-engine OK; chain/bootstrap HTTP-only.
 while IFS= read -r manifest; do
   [[ -z "$manifest" ]] && continue
-  case "$manifest" in
-    */services/engine/Cargo.toml) continue ;;
-    "$ROOT/Cargo.toml") continue ;;
-  esac
-  # Grandfathered HTTP users: only flag JWT signers in the scan.
-  local_pat='reqwest|hyper|hyper-util|jsonwebtoken|hmac|sha2-jwt'
-  case "$manifest" in
-    */services/chain/Cargo.toml|*/crates/bootstrap/Cargo.toml)
-      local_pat='jsonwebtoken|hmac|sha2-jwt'
-      ;;
-  esac
+  rel="${manifest#"$ROOT"/}"
   while IFS= read -r hit; do
     [[ -z "$hit" ]] && continue
-    echo "error: ${manifest#"$ROOT"/}: only cc-engine may declare an HTTP client or JWT signer (ADR P3-16; $hit)" >&2
+    echo "error: ${rel}: only cc-engine-api may declare an HTTP client or JWT signer (ADR P3-16; $hit)" >&2
     FAILED=1
-  done < <(grep -nE \
-    "^[[:space:]]*(${local_pat})[[:space:]]*=|^[[:space:]]*\[dependencies\.(${local_pat})\]" \
-    "$manifest" 2>/dev/null || true)
+  done < <(http_jwt_manifest_hits "$manifest" "$rel")
 done < <(echo "$METADATA" | jq -r '
   .packages[]
   | select(.source == null)

@@ -1,0 +1,7 @@
+# cc-engine-api may declare an HTTP client after the JWT re-point (E1.4).
+[package]
+name = "fixture-engine-api"
+version = "0.0.0"
+
+[dependencies]
+reqwest = { workspace = true }

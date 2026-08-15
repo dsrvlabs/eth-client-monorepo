@@ -1,0 +1,14 @@
+[package]
+name = "cc-engine-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Skeleton: no workspace edges until S1-A-02..05 move transport/JWT ([ARCH] §6.2).

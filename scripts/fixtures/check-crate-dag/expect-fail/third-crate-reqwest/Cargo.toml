@@ -1,0 +1,7 @@
+# Deliberate HTTP client on a third crate — must fail (S1-A-01 AC 3).
+[package]
+name = "fixture-third-crate"
+version = "0.0.0"
+
+[dependencies]
+reqwest = { workspace = true }

@@ -111,12 +111,12 @@ re-decided.
 - `Cargo.toml:3-27` — workspace members (20 today ✓)
 
 **Acceptance (falsifiable)**
-1. `check-crate-dag.sh` names `cc-engine-api` in the JWT rule (E1.4).
-2. **`cc-chain` is NOT on the grandfather list** (E1.4, and `[ARCH]` §9.2's S1 prohibition).
-3. A deliberate test edit adding an HTTP client to a third crate makes the script fail —
-   demonstrated in the PR.
-4. `S1-B-11` (ADR-R-03) is opened in the same sprint; the rule change without the record is half the
-   deliverable.
+1. [x] `check-crate-dag.sh` names `cc-engine-api` in the JWT rule (E1.4).
+2. [x] **`cc-chain` is NOT on the grandfather list** (E1.4, and `[ARCH]` §9.2's S1 prohibition).
+3. [x] A deliberate test edit adding an HTTP client to a third crate makes the script fail —
+   demonstrated by `scripts/fixtures/check-crate-dag/expect-fail/third-crate-reqwest/` (self-test).
+4. [x] `S1-B-11` (ADR-R-03) is opened in the same sprint; the rule change without the record is half the
+   deliverable. (Same-sprint record; ADR not written in this issue.)
 
 ---
 

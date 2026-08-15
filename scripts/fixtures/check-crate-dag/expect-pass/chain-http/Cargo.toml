@@ -1,0 +1,7 @@
+# cc-chain remains HTTP-grandfathered (checkpoint-sync / test hyper).
+[package]
+name = "fixture-chain-http"
+version = "0.0.0"
+
+[dependencies]
+reqwest = { workspace = true }

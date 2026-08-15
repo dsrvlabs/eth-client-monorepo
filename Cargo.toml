@@ -26,6 +26,8 @@ members = [
   "bin/cc-store",
   # S0-A-13 work-scheduler substrate ([ARCH] §3.1): 20 → 21.
   "crates/scheduler",
+  # S1-A-01 Engine API crate ([ARCH] §6.2 JWT re-point): 21 → 22.
+  "crates/engine-api",
 ]
 
 [workspace.package]
@@ -180,6 +182,9 @@ parking_lot = "0.12.5"
 
 # S0-A-13 work-scheduler substrate ([ARCH] §3.1). Leaf: no workspace edges.
 cc-scheduler = { path = "crates/scheduler" }
+
+# S1-A-01 Engine API crate ([ARCH] §6.2). Skeleton: no workspace edges.
+cc-engine-api = { path = "crates/engine-api" }
 
 [profile.release]
 opt-level = 3
