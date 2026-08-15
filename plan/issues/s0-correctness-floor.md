@@ -486,6 +486,11 @@ therefore the commit-unit boundary ✓ (`write_behind.rs:64-70`).
 event still arrives within one slot, so `commit_max_latency` (4 s) is not silently promoted from a
 backstop to the primary trigger.
 
+- [x] Saturated `query_p1` (`QUERY_P1_LANE_DEPTH`) while driving a slot-0 → slot-1 head change via `ApplyAttestations` (production `recompute_and_publish_head`).
+- [x] `EventKind::Head` for slot `S+1` arrives on the production events handle.
+- [x] Arrival is within one slot (`seconds_per_slot`) and strictly less than `commit_max_latency` (4 s).
+- [x] `query_p1` is `Full` at apply submit; apply/HEAD completes on the core thread before the first queued `query_p1`.
+
 #### `S0-A-19` — P1-D/14, fire the shutdown watch · 0.5–1 pd / 2 pts
 `Shutdown` rides the never-shed `tick` lane. Storage's shutdown watch never fires; biased selects
 hot-spin on `watch` Err; drain-timeout exits 0. **Only the "fire the watch" half is S0**; the rest of

@@ -5,9 +5,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use cc_chain::MAX_APPLY_ATTESTATIONS;
-use cc_chain::core::{CoreConfig, spawn_core_thread};
+use cc_chain::core::{CoreConfig, QueryP1Work, QueryRequest, spawn_core_thread};
 use cc_chain::events::{EventsConfig, EventsHandle};
 use cc_chain::head::HeadSnapshotStore;
 use cc_chain::metrics::ChainMetrics;
@@ -16,7 +17,10 @@ use cc_fork_choice::{
     ExecutionStatus, HarnessAvailability, ProtoNodeBlock, Store, get_forkchoice_store, on_tick,
 };
 use cc_proto::chain::chain_service_server::ChainService;
-use cc_proto::chain::{ApplyAttestationsRequest, AttestationApplyVerdict, GetHeadRequest};
+use cc_proto::chain::{
+    ApplyAttestationsRequest, AttestationApplyVerdict, EventKind, GetHeadRequest,
+};
+use cc_scheduler::QUERY_P1_LANE_DEPTH;
 use cc_state_transition::helpers::constants::{FAR_FUTURE_EPOCH, MAX_EFFECTIVE_BALANCE};
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::containers::{AttestationData, BeaconBlockHeader, Checkpoint, Validator};
@@ -29,8 +33,12 @@ use cc_types::{BeaconBlock, BeaconState};
 use prometheus_client::registry::Registry;
 use ssz::Encode;
 use ssz_types::VariableList;
+use tokio::sync::{mpsc, oneshot};
 use tonic::{Code, Request};
 use tree_hash::TreeHash;
+
+/// Must match `DEFAULT_COMMIT_MAX_LATENCY` in `services/storage/src/write_behind.rs`.
+const COMMIT_MAX_LATENCY: Duration = Duration::from_secs(4);
 
 /// Private always-Valid test harness (CC-32b: production stub deleted; not exported).
 #[derive(Debug, Default, Clone, Copy)]
@@ -435,5 +443,125 @@ async fn apply_without_core_is_not_bootstrapped() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), Code::FailedPrecondition);
+    events.shutdown().await;
+}
+
+// ── S0-A-18 / D-4: HEAD for S+1 under saturated query_p1 ───────────────────
+
+/// [ARCH] §3.3: a full `query_p1` lane must not delay the `ApplyAttestations`
+/// `HEAD` for slot `S+1` past one slot, so `commit_max_latency` stays a backstop.
+#[tokio::test]
+async fn head_for_next_slot_arrives_within_one_slot_when_query_p1_saturated() {
+    let (store, anchor, fork_a, _fork_b, config) = forked_store(4);
+    let slot_bound = Duration::from_secs(config.seconds_per_slot.max(1));
+    let (svc, core, events) = spawn_svc(store, config);
+    let mut sub = events.subscribe(None).await.unwrap();
+
+    let h = core.handle.clone();
+    let blocker = tokio::spawn(async move {
+        h.block_for(Duration::from_millis(200)).await.unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let p1 = core.handle.query_p1_sender();
+    let mut held = Vec::with_capacity(QUERY_P1_LANE_DEPTH);
+    for _ in 0..QUERY_P1_LANE_DEPTH {
+        let (reply, rx) = oneshot::channel();
+        held.push(rx);
+        p1.try_send(QueryP1Work::Query {
+            request: QueryRequest::CommitteeShuffling { epoch: 0 },
+            reply,
+        })
+        .expect("query_p1 has room");
+    }
+    let (reply, _overflow) = oneshot::channel();
+    assert!(
+        matches!(
+            p1.try_send(QueryP1Work::Query {
+                request: QueryRequest::CanonicalRoots {
+                    start_slot: 0,
+                    end_slot: 0,
+                },
+                reply,
+            }),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_))
+        ),
+        "query_p1 must be full when ApplyAttestations is submitted"
+    );
+
+    let req = ApplyAttestationsRequest {
+        attestations_ssz: vec![indexed(&[0], 1, fork_a, cp(0, anchor)).as_ssz_bytes()],
+    };
+    let (order_tx, mut order_rx) = mpsc::channel(4);
+    // Oneshot readiness is core-thread order; do not infer it from event fan-out.
+    let p1_first = held.remove(0);
+    let order_p1 = order_tx.clone();
+    tokio::spawn(async move {
+        let _ = p1_first.await;
+        let _ = order_p1.send("p1").await;
+    });
+    let apply_handle = core.handle.clone();
+    let order_apply = order_tx;
+    let submitted_at = Instant::now();
+    let apply_task = tokio::spawn(async move {
+        let resp = apply_handle.apply_attestations(req).await.unwrap();
+        let _ = order_apply.send("apply").await;
+        resp
+    });
+
+    let wait_head = tokio::time::timeout(slot_bound, async {
+        loop {
+            match sub.recv().await {
+                Ok(Some(ev)) if ev.kind == EventKind::Head as i32 && ev.slot == 1 => return ev,
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("event stream ended before HEAD for S+1"),
+                Err(e) => panic!("event recv failed: {e}"),
+            }
+        }
+    });
+    let wait_order = tokio::time::timeout(slot_bound, order_rx.recv());
+    let (head_res, order_res) = tokio::join!(wait_head, wait_order);
+
+    let ev = head_res
+        .unwrap_or_else(|_| panic!("HEAD for S+1 did not arrive within one slot ({slot_bound:?})"));
+    let elapsed = submitted_at.elapsed();
+    assert!(
+        elapsed < slot_bound,
+        "HEAD for S+1 took {elapsed:?}, longer than one slot ({slot_bound:?})"
+    );
+    assert!(
+        elapsed < COMMIT_MAX_LATENCY,
+        "HEAD for S+1 took {elapsed:?}; commit_max_latency ({COMMIT_MAX_LATENCY:?}) \
+         would have become the primary flush trigger"
+    );
+    assert_eq!(ev.payload.as_slice(), 1u64.to_le_bytes());
+
+    let first = order_res
+        .expect("core-thread order timed out")
+        .expect("order channel closed");
+    assert_eq!(
+        first, "apply",
+        "ApplyAttestations/HEAD must finish on the core thread before the first queued query_p1"
+    );
+
+    let resp = apply_task.await.unwrap();
+    assert_eq!(
+        resp.results[0].verdict,
+        AttestationApplyVerdict::Applied as i32,
+        "{}",
+        resp.results[0].reason
+    );
+    let head = svc
+        .get_head(Request::new(GetHeadRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(head.head_slot, 1);
+    assert_eq!(head.head_root, fork_a.as_slice());
+
+    drop(held);
+    let _ = blocker.await;
+    core.handle.shutdown().await;
+    core.join();
     events.shutdown().await;
 }
