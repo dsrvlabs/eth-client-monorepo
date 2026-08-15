@@ -393,6 +393,11 @@ document that proposes to reconcile them.
    (`[PLAN]` X-5: 541 `Architecture §` + 207 ADR). This settles `[PRD]` J-15's ±1 id / ∓3 citation
    disagreement as a side effect.
 
+- [x] `docs/adr/` MADR format (`[ARCH]` §10.2) and id scheme (§10.3); house files stay `docs/adr/<id>.md`.
+- [x] Reconciliation table file enumerates the 58 ids (43 a / 12 b / 3 c); parseable columns.
+- [x] `docs/adr/README.md` records the 8 never-cited ids; they need no ADR.
+- [x] M11 baseline is 748 occurrences (541 `Architecture §` + 207 ADR); unit is occurrences, not lines.
+
 ---
 
 ### `S1-B-06` · Gate 2 — the CI resolver gate
