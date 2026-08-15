@@ -448,6 +448,16 @@ fn integrate_block<P: Preset>(
         store.insert_block(block_root, block_to_header(block), state.clone());
     }
 
+    // Grow vote / balance tables from the trusted post-state registry.
+    // Seeded once at the anchor (`get_forkchoice_store`); the registry is
+    // append-only after deposits. Without this, post-anchor attestations hit
+    // non-deferrable `ValidatorIndexOutOfRange` and `justified_balances_snapshot`
+    // truncates to stale capacity.
+    let n = state.validators_len();
+    if n > store.vote_capacity() {
+        store.resize_votes(n);
+    }
+
     // --- Checkpoint updates ------------------------------------------------
     store.update_checkpoints(justified, finalized);
     let cp_ctx = CheckpointContext::from_state(&state, justified);
@@ -643,19 +653,24 @@ mod tests {
     use std::sync::Arc;
 
     use cc_state_transition::BlockSignatureStrategy;
+    use cc_state_transition::helpers::constants::{FAR_FUTURE_EPOCH, MAX_EFFECTIVE_BALANCE};
     use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
-    use cc_types::containers::{BeaconBlockHeader, Checkpoint};
+    use cc_types::containers::{AttestationData, BeaconBlockHeader, Checkpoint, Validator};
+    use cc_types::operations::IndexedAttestation;
     use cc_types::preset::Minimal;
     use cc_types::primitives::{
-        Epoch, ExecutionAddress, ForkVersion, Hash256, Root, Slot, ValidatorIndex,
+        BlsPublicKey, Epoch, ExecutionAddress, ForkVersion, Hash256, Root, Slot, ValidatorIndex,
     };
     use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
+    use ssz_types::VariableList;
 
     use super::*;
     use crate::da_seam::{DataAvailability, DeferralReason, HarnessAvailability};
     use crate::execution_status::ExecutionStatus;
+    use crate::head_cache::justified_balances_snapshot;
+    use crate::on_attestation::on_attestation;
     use crate::proto_array::ProtoNodeBlock;
-    use crate::store::Store;
+    use crate::store::{LatestMessage, Store};
 
     /// Test-only DA that always reports unavailable.
     #[derive(Debug, Default, Clone, Copy)]
@@ -1286,5 +1301,133 @@ mod tests {
             assert_eq!(node.execution_status, want, "tag={tag:#x}");
             assert_eq!(node.execution_block_hash, exec);
         }
+    }
+
+    fn push_test_validator(state: &mut BeaconState<Minimal>, i: u64) {
+        let mut pubkey = [0u8; 48];
+        pubkey[0..8].copy_from_slice(&i.to_le_bytes());
+        pubkey[47] = 0x01;
+        state
+            .validators_push(Validator {
+                pubkey: BlsPublicKey::from_array(pubkey),
+                withdrawal_credentials: Root::from_array({
+                    let mut c = [0u8; 32];
+                    c[0] = 0x01;
+                    c
+                }),
+                effective_balance: MAX_EFFECTIVE_BALANCE,
+                slashed: false,
+                activation_eligibility_epoch: Epoch::new(0),
+                activation_epoch: Epoch::new(0),
+                exit_epoch: FAR_FUTURE_EPOCH,
+                withdrawable_epoch: FAR_FUTURE_EPOCH,
+            })
+            .unwrap();
+        state.balances_push(MAX_EFFECTIVE_BALANCE).unwrap();
+    }
+
+    /// P0-09: `integrate_block` grows vote / balance tables from the trusted
+    /// post-state so a post-anchor validator can attest without
+    /// `ValidatorIndexOutOfRange`, and `justified_balances_snapshot` tracks
+    /// the grown registry.
+    #[test]
+    fn integrate_block_grows_votes_and_balances_from_post_state() {
+        const ANCHOR_VALIDATORS: usize = 2;
+        const GROWN_VALIDATORS: usize = 4;
+        const POST_ANCHOR_INDEX: u64 = 3;
+
+        let config = minimal_config();
+        let mut anchor_state = BeaconState::<Minimal>::default();
+        anchor_state.set_genesis_time(0);
+        anchor_state.set_slot(Slot::new(0));
+        for i in 0..ANCHOR_VALIDATORS {
+            push_test_validator(&mut anchor_state, i as u64);
+        }
+
+        let anchor_block = BeaconBlock {
+            slot: Slot::new(0),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: Root::ZERO,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        let mut store = get_forkchoice_store(
+            anchor_state,
+            &anchor_block,
+            Arc::new(AcceptEngine),
+            Arc::new(HarnessAvailability),
+            config.seconds_per_slot,
+        )
+        .unwrap();
+        let anchor = Root::from_hash256(TreeHash::tree_hash_root(&anchor_block));
+        assert_eq!(store.vote_capacity(), ANCHOR_VALIDATORS);
+        assert_eq!(store.justified_balances().len(), ANCHOR_VALIDATORS);
+
+        store.set_time(12); // slot 2 so a slot-1 attestation is in the past
+
+        let mut post = store.block_state(&anchor).unwrap().clone();
+        post.set_slot(Slot::new(1));
+        for i in ANCHOR_VALIDATORS..GROWN_VALIDATORS {
+            push_test_validator(&mut post, i as u64);
+        }
+        assert_eq!(post.validators_len(), GROWN_VALIDATORS);
+
+        let child = root(0x42);
+        let block = BeaconBlock {
+            slot: Slot::new(1),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: anchor,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        integrate_block(
+            &mut store,
+            child,
+            &block,
+            post,
+            ExecutionStatus::Valid,
+            Hash256::from([0x42; 32]),
+        )
+        .unwrap();
+
+        assert_eq!(
+            store.vote_capacity(),
+            GROWN_VALIDATORS,
+            "vote table must grow with the trusted post-state registry"
+        );
+        assert_eq!(
+            store.justified_balances().len(),
+            GROWN_VALIDATORS,
+            "justified_balances must grow with the vote table"
+        );
+
+        let justified = store.justified_checkpoint();
+        let snap = justified_balances_snapshot(&mut store, justified).unwrap();
+        assert_eq!(
+            snap.len(),
+            GROWN_VALIDATORS,
+            "justified_balances_snapshot must track the registry after growth"
+        );
+
+        let att = IndexedAttestation {
+            attesting_indices: VariableList::new(vec![ValidatorIndex::new(POST_ANCHOR_INDEX)])
+                .unwrap(),
+            data: AttestationData {
+                slot: Slot::new(1),
+                index: Default::default(),
+                beacon_block_root: child,
+                source: cp(0, anchor),
+                target: cp(0, anchor),
+            },
+            signature: Default::default(),
+        };
+        on_attestation(&mut store, &att, false).unwrap();
+        assert_eq!(
+            store.latest_message(ValidatorIndex::new(POST_ANCHOR_INDEX)),
+            Some(LatestMessage {
+                epoch: Epoch::new(0),
+                root: child,
+            })
+        );
     }
 }

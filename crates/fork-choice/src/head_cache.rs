@@ -263,7 +263,11 @@ pub fn compute_proposer_boost_score<P: Preset>(
     ((committee_weight.saturating_mul(PROPOSER_SCORE_BOOST)) / 100) as i64
 }
 
-fn justified_balances_snapshot<P: Preset>(
+/// Effective-balance snapshot aligned to current vote capacity.
+///
+/// After `integrate_block` grows the tables from a trusted post-state, the
+/// returned length tracks the registry (no truncate to a stale anchor size).
+pub(crate) fn justified_balances_snapshot<P: Preset>(
     store: &mut Store<P>,
     justified: Checkpoint,
 ) -> Result<Vec<u64>, GetHeadError> {

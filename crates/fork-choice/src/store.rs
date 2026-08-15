@@ -595,9 +595,11 @@ impl<P: Preset> Store<P> {
 
     /// Resize the vote-tracker and balance tables to exactly `count` entries.
     ///
-    /// Controlled grow/shrink for registry changes and test seeding. Attestation
-    /// handlers must **not** grow unbounded from arbitrary indices (SEC-16-2) —
-    /// they reject out-of-range validator indices instead.
+    /// Production: [`crate::on_block::get_forkchoice_store`] seeds at the
+    /// anchor; [`crate::on_block::on_block`] grows from the trusted post-state
+    /// when the registry expands. Attestation handlers must **not** grow
+    /// unbounded from arbitrary indices (SEC-16-2) — they reject out-of-range
+    /// validator indices instead.
     pub fn resize_votes(&mut self, count: usize) {
         self.votes.resize(count, VoteTracker::default());
         self.justified_balances.resize(count, 0);
