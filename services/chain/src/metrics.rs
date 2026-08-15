@@ -14,6 +14,8 @@
 
 use std::time::Instant;
 
+use cc_types::BeaconState;
+use cc_types::preset::Preset;
 use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
@@ -22,6 +24,13 @@ use prometheus_client::metrics::histogram::Histogram;
 use prometheus_client::registry::{Registry, Unit};
 
 use crate::events::Occupancy;
+
+/// OpenMetrics name for the pubkey-cache length gauge (M13 / S0-A-04).
+pub const PUBKEY_CACHE_LEN_METRIC: &str = "cc_chain_pubkey_cache_len";
+/// OpenMetrics name for the validator-registry length gauge (M13 / S0-A-04).
+pub const VALIDATORS_LEN_METRIC: &str = "cc_chain_validators_len";
+/// Prometheus alert expression. Must match `alerts/m13-pubkey-cache.yml`.
+pub const PUBKEY_CACHE_ALERT_EXPR: &str = "cc_chain_pubkey_cache_len < cc_chain_validators_len";
 
 // ── budgets (production bar; CI uses 2× ceilings — see tests/timing.rs) ─────
 
@@ -300,6 +309,10 @@ pub struct ChainMetrics {
     pub pending_engine_occupancy: Gauge,
     /// Blocks dropped from `pending_engine` (timeout or capacity).
     pub pending_engine_dropped: Counter,
+    /// `caches.pubkeys.len()` on the state the core is importing against (M13).
+    pub pubkey_cache_len: Gauge,
+    /// `validators_len()` on the state the core is importing against (M13).
+    pub validators_len: Gauge,
 }
 
 impl ChainMetrics {
@@ -351,6 +364,8 @@ impl ChainMetrics {
         let invalidated_nodes = Counter::default();
         let pending_engine_occupancy = Gauge::default();
         let pending_engine_dropped = Counter::default();
+        let pubkey_cache_len = Gauge::default();
+        let validators_len = Gauge::default();
 
         registry.register_with_unit(
             "cc_chain_process_block",
@@ -537,6 +552,16 @@ impl ChainMetrics {
             "Blocks dropped from pending_engine (timeout or capacity eviction)",
             pending_engine_dropped.clone(),
         );
+        registry.register(
+            PUBKEY_CACHE_LEN_METRIC,
+            "PubkeyIndexMap length on the state the core is importing against (M13 / P0-19)",
+            pubkey_cache_len.clone(),
+        );
+        registry.register(
+            VALIDATORS_LEN_METRIC,
+            "Validator registry length on the state the core is importing against (M13 / P0-19)",
+            validators_len.clone(),
+        );
 
         let metrics = Self {
             process_block,
@@ -574,6 +599,8 @@ impl ChainMetrics {
             invalidated_nodes,
             pending_engine_occupancy,
             pending_engine_dropped,
+            pubkey_cache_len,
+            validators_len,
         };
         metrics.seed_exposition();
         metrics
@@ -689,6 +716,8 @@ impl ChainMetrics {
         let _ = self.invalidated_nodes.get();
         self.pending_engine_occupancy.set(0);
         let _ = self.pending_engine_dropped.get();
+        self.pubkey_cache_len.set(0);
+        self.validators_len.set(0);
     }
 
     /// Increment `cc_chain_da_pending_dropped_total` by `n`.
@@ -1088,6 +1117,39 @@ impl ChainMetrics {
     /// Read `cc_chain_invalidated_nodes_total` (tests).
     pub fn invalidated_nodes_count(&self) -> u64 {
         self.invalidated_nodes.get()
+    }
+
+    /// Emit M13 gauges from a state the core is about to import against.
+    ///
+    /// Must run **before** `on_block` / STF so a short cache is visible even
+    /// when `process_sync_aggregate` returns `CachePoisoned`.
+    pub fn observe_import_state<P: Preset>(&self, state: &BeaconState<P>) {
+        let cache_len = state.caches().pubkeys.len() as u64;
+        let validators_len = state.validators_len() as u64;
+        self.pubkey_cache_len.set(cache_len as i64);
+        self.validators_len.set(validators_len as i64);
+        if cache_len < validators_len {
+            tracing::warn!(
+                pubkey_cache_len = cache_len,
+                validators_len,
+                "pubkey cache shorter than validator registry"
+            );
+        }
+    }
+
+    /// Whether the M13 alert predicate is true on the last observed state.
+    pub fn pubkey_cache_alert_firing(&self) -> bool {
+        (self.pubkey_cache_len.get() as u64) < (self.validators_len.get() as u64)
+    }
+
+    /// Read `cc_chain_pubkey_cache_len` (tests).
+    pub fn pubkey_cache_len_value(&self) -> i64 {
+        self.pubkey_cache_len.get()
+    }
+
+    /// Read `cc_chain_validators_len` (tests).
+    pub fn validators_len_value(&self) -> i64 {
+        self.validators_len.get()
     }
 }
 
@@ -1526,6 +1588,93 @@ mod tests {
         assert!(
             buf.contains("result=\"deferred_engine\""),
             "deferred_engine label must be seeded:\n{buf}"
+        );
+    }
+
+    #[test]
+    fn m13_gauges_register_and_seed_zero() {
+        let mut registry = Registry::default();
+        let m = ChainMetrics::register(&mut registry);
+        assert_eq!(m.pubkey_cache_len_value(), 0);
+        assert_eq!(m.validators_len_value(), 0);
+        assert!(!m.pubkey_cache_alert_firing());
+
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        assert!(
+            buf.contains(PUBKEY_CACHE_LEN_METRIC),
+            "missing pubkey cache gauge:\n{buf}"
+        );
+        assert!(
+            buf.contains(VALIDATORS_LEN_METRIC),
+            "missing validators_len gauge:\n{buf}"
+        );
+    }
+
+    #[test]
+    fn m13_alert_fires_when_cache_shorter_than_registry() {
+        let mut registry = Registry::default();
+        let m = ChainMetrics::register(&mut registry);
+        let mut state = cc_types::BeaconState::<cc_types::Minimal>::default();
+        for i in 0u8..3 {
+            let mut raw = [0u8; 48];
+            raw[0] = i.saturating_add(1);
+            state
+                .validators_push(cc_types::Validator {
+                    pubkey: cc_types::BlsPublicKey::from_array(raw),
+                    ..cc_types::Validator::default()
+                })
+                .unwrap();
+        }
+        assert!(state.caches().pubkeys.is_empty());
+        m.observe_import_state(&state);
+        assert_eq!(m.pubkey_cache_len_value(), 0);
+        assert_eq!(m.validators_len_value(), 3);
+        assert!(
+            m.pubkey_cache_alert_firing(),
+            "alert must fire when pubkey_cache_len < validators_len"
+        );
+
+        state.top_up_pubkey_cache();
+        m.observe_import_state(&state);
+        assert_eq!(m.pubkey_cache_len_value(), 3);
+        assert_eq!(m.validators_len_value(), 3);
+        assert!(
+            !m.pubkey_cache_alert_firing(),
+            "alert must be quiet when lengths match"
+        );
+    }
+
+    #[test]
+    fn m13_alert_rule_ships_with_the_gauges() {
+        let rule = include_str!("../alerts/m13-pubkey-cache.yml");
+        assert!(
+            rule.contains(PUBKEY_CACHE_ALERT_EXPR),
+            "alert rule must fire on {PUBKEY_CACHE_ALERT_EXPR}:\n{rule}"
+        );
+        assert!(
+            rule.contains("alert:"),
+            "file must be a Prometheus alert rule:\n{rule}"
+        );
+        assert!(
+            rule.contains(PUBKEY_CACHE_LEN_METRIC) && rule.contains(VALIDATORS_LEN_METRIC),
+            "rule must name both gauges:\n{rule}"
+        );
+    }
+
+    #[test]
+    fn import_observes_parent_state_before_on_block() {
+        let import_src = include_str!("import.rs");
+        let production = import_src.split("#[cfg(test)]").next().unwrap();
+        let observe = production
+            .find("observe_import_state(")
+            .expect("import must observe M13 gauges");
+        let on_block = production
+            .find("let outcome = on_block(")
+            .expect("import on_block site");
+        assert!(
+            observe < on_block,
+            "observe_import_state must run before on_block"
         );
     }
 

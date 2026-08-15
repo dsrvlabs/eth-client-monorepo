@@ -1124,6 +1124,7 @@ pub fn spawn_core_from_checkpoint_with_epoch<P: Preset + 'static>(
         slot = fetched.signed_block.message.slot.as_u64(),
         "anchor state caches warmed via canonical_root"
     );
+    metrics.observe_import_state(&fetched.state);
 
     // Shared PeerDAS available set: store DA + core mark/re-drive (CC-24d).
     let peer_das = Arc::new(PeerDasAvailability::new());
@@ -2298,6 +2299,20 @@ mod tests {
         assert!(
             !body.contains("from_ssz_bytes_with(ForkName::Fulu, &state_bytes)"),
             "checkpoint state decode must not use the raw fork constructor"
+        );
+        let spawn = production
+            .find("pub fn spawn_core_from_checkpoint_with_epoch")
+            .expect("checkpoint spawn");
+        let spawn_body = &production[spawn..];
+        let observe = spawn_body
+            .find("observe_import_state(&fetched.state)")
+            .expect("checkpoint spawn must emit M13 gauges");
+        let store = spawn_body
+            .find("get_forkchoice_store(")
+            .expect("checkpoint store seed");
+        assert!(
+            observe < store,
+            "M13 observe must run before the state is moved into the store"
         );
     }
 }

@@ -1,0 +1,16 @@
+# M13 / S0-A-04 — pubkey_cache_len vs validators_len.
+# Ships with the gauges. Do not defer this rule.
+groups:
+  - name: cc_chain_m13
+    rules:
+      - alert: PubkeyCacheLenBelowValidatorsLen
+        expr: cc_chain_pubkey_cache_len < cc_chain_validators_len
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: pubkey cache shorter than validator registry (P0-19)
+          description: >
+            process_sync_aggregate resolves committee indices only through
+            PubkeyIndexMap and returns CachePoisoned when the cache is short.
+            linear_scan_count is silent in this failure mode.

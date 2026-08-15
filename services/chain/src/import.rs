@@ -382,6 +382,20 @@ pub fn import_block_with_early<P: Preset>(
     counters
         .transition_invocations
         .fetch_add(1, Ordering::Relaxed);
+    // M13: emit cache vs registry lengths on the parent state *before* STF
+    // so a short cache is visible even if on_block returns CachePoisoned.
+    // Cheap gossip already required the header + `ensure_in_store`; a missing
+    // state here is a programming bug, not a skippable scrape.
+    let Some(parent_state) = store.block_state(&signed.message.parent_root) else {
+        debug_assert!(
+            false,
+            "parent state resident after cheap-gossip ensure_in_store"
+        );
+        return Err(Status::internal(
+            "parent state missing after cheap-gossip ensure_in_store",
+        ));
+    };
+    metrics.observe_import_state(parent_state);
     let on_block_start = Instant::now();
     let outcome = on_block(store, &signed, config, verify);
     let on_block_secs = on_block_start.elapsed().as_secs_f64();
@@ -1298,5 +1312,149 @@ mod tests {
             // Cross-check against OnBlockError's own method when present.
             assert_eq!(err.gossip_class(), *expected, "OnBlockError method {err:?}");
         }
+    }
+
+    /// M13 / F2: empty pubkey cache + non-empty registry must set the alert
+    /// through `import_block_with_early`, not only a source-order pin.
+    #[test]
+    fn import_block_with_early_fires_m13_when_parent_cache_empty() {
+        use crate::residency::Residency;
+        use cc_fork_choice::{HarnessAvailability, get_forkchoice_store, on_tick};
+        use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
+        use cc_types::containers::Validator;
+        use cc_types::primitives::{
+            BlsPublicKey, Epoch, ExecutionAddress, ForkVersion, ValidatorIndex,
+        };
+        use cc_types::{BeaconBlock, BeaconState};
+        use std::sync::Arc;
+
+        #[derive(Debug, Default, Clone, Copy)]
+        struct AcceptEngine;
+        impl<P: Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+            fn verify_and_notify_new_payload(
+                &self,
+                _request: cc_state_transition::NewPayloadRequest<'_, P>,
+            ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError>
+            {
+                Ok(cc_state_transition::PayloadStatus::Valid)
+            }
+        }
+
+        let config = ChainConfig {
+            preset_base: PresetName::Minimal,
+            config_name: "minimal".into(),
+            genesis_fork_version: ForkVersion::from_array([0x00, 0x00, 0x00, 0x01]),
+            altair_fork_version: ForkVersion::from_array([0x01, 0x00, 0x00, 0x01]),
+            altair_fork_epoch: Epoch::new(0),
+            bellatrix_fork_version: ForkVersion::from_array([0x02, 0x00, 0x00, 0x01]),
+            bellatrix_fork_epoch: Epoch::new(0),
+            capella_fork_version: ForkVersion::from_array([0x03, 0x00, 0x00, 0x01]),
+            capella_fork_epoch: Epoch::new(0),
+            deneb_fork_version: ForkVersion::from_array([0x04, 0x00, 0x00, 0x01]),
+            deneb_fork_epoch: Epoch::new(0),
+            electra_fork_version: ForkVersion::from_array([0x05, 0x00, 0x00, 0x01]),
+            electra_fork_epoch: Epoch::new(0),
+            fulu_fork_version: ForkVersion::from_array([0x06, 0x00, 0x00, 0x01]),
+            fulu_fork_epoch: Epoch::new(0),
+            seconds_per_slot: 6,
+            blob_schedule: BlobSchedule::try_from_entries(vec![BlobParameters {
+                epoch: Epoch::new(0),
+                max_blobs_per_block: 9,
+            }])
+            .unwrap(),
+            deposit_chain_id: 0,
+            deposit_contract_address: ExecutionAddress::ZERO,
+            churn_limit_quotient: 32,
+            min_per_epoch_churn_limit_electra: 64_000_000_000,
+            max_per_epoch_activation_exit_churn_limit: 128_000_000_000,
+            shard_committee_period: Epoch::new(64),
+            max_blobs_per_block_electra: 9,
+        };
+
+        let mut state = BeaconState::<Minimal>::default();
+        state.set_genesis_time(0);
+        state.set_slot(Slot::new(0));
+        for i in 0u8..3 {
+            let mut raw = [0u8; 48];
+            raw[0] = i.saturating_add(1);
+            state
+                .validators_push(Validator {
+                    pubkey: BlsPublicKey::from_array(raw),
+                    ..Validator::default()
+                })
+                .unwrap();
+        }
+        assert!(state.caches().pubkeys.is_empty());
+        assert!(state.validators_len() > 0);
+
+        let anchor_block = BeaconBlock {
+            slot: Slot::new(0),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: Root::ZERO,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        let mut store = get_forkchoice_store(
+            state,
+            &anchor_block,
+            Arc::new(AcceptEngine),
+            Arc::new(HarnessAvailability),
+            config.seconds_per_slot,
+        )
+        .unwrap();
+        on_tick(&mut store, config.seconds_per_slot * 2).unwrap();
+        let anchor_root = Root::from_hash256(TreeHash::tree_hash_root(&anchor_block));
+        let parent = store.block_state(&anchor_root).unwrap();
+        assert!(parent.caches().pubkeys.is_empty());
+        assert!(parent.validators_len() > 0);
+
+        let child = SignedBeaconBlock::<Minimal> {
+            message: BeaconBlock {
+                slot: Slot::new(1),
+                proposer_index: ValidatorIndex::new(0),
+                parent_root: anchor_root,
+                state_root: Root::ZERO,
+                body: Default::default(),
+            },
+            signature: Default::default(),
+        };
+        let true_root = Root::from_hash256(TreeHash::tree_hash_root(&child.message));
+        let request = ImportBlockRequest {
+            ssz: encode_signed_block(&child),
+            fork: 0,
+            root: true_root.as_slice().to_vec(),
+            source: 0,
+        };
+
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let head = HeadSnapshotStore::new();
+        let (event_tx, _) = mpsc::channel(4);
+        let counters = ImportCounters::default();
+        let mut residency = Residency::<Minimal>::new(64, 32);
+        let mut snap_seq = 0u64;
+        let _ = import_block_with_early(
+            &mut store,
+            &mut residency,
+            &config,
+            &head,
+            &event_tx,
+            &metrics,
+            &counters,
+            &mut snap_seq,
+            request,
+            BlockSignatureStrategy::NoVerification,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            metrics.pubkey_cache_alert_firing(),
+            "empty pubkey cache vs non-empty registry must fire M13"
+        );
     }
 }

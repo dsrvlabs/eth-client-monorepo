@@ -265,6 +265,8 @@ async fn metrics_exposition_server_lists_section_11_1_families() {
         "cc_chain_resident_states",
         "cc_chain_subscribers",
         "cc_chain_budget_exceeded_total",
+        "cc_chain_pubkey_cache_len",
+        "cc_chain_validators_len",
     ] {
         assert!(text.contains(needle), "missing {needle} in:\n{text}");
     }

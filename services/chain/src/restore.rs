@@ -397,6 +397,8 @@ pub struct RestoreApplyInput<'a, P: Preset> {
     /// Expected head from footer.
     pub expected_head_root: Root,
     pub expected_head_slot: u64,
+    /// M13 gauges — required so the snapshot decode cannot skip emission.
+    pub metrics: &'a ChainMetrics,
     /// Preset marker (state/block decode is preset-parameterised).
     pub _preset: PhantomData<P>,
 }
@@ -432,6 +434,7 @@ pub fn apply_restore_set<P: Preset + 'static>(
     // Decode snapshot state through the hydrated fork chokepoint (S0-A-02).
     let state = BeaconState::<P>::from_ssz_bytes_hydrated(ForkName::Fulu, input.state_ssz)
         .map_err(|e| Status::invalid_argument(format!("restore state SSZ decode failed: {e:?}")))?;
+    input.metrics.observe_import_state(&state);
 
     // Anchor block: real stored SSZ only — never invent a Default body (SEC).
     let anchor_ssz = input
@@ -759,6 +762,7 @@ async fn handle_restore_inner<P: Preset + 'static>(
         engine_uri: deps.core_cfg.engine_uri.clone(),
         expected_head_root,
         expected_head_slot,
+        metrics: &deps.metrics,
         _preset: PhantomData,
     })?;
 
@@ -1242,6 +1246,13 @@ mod tests {
         assert!(
             !production.contains("from_ssz_bytes(input.state_ssz)"),
             "restore must not call the raw SSZ constructor"
+        );
+        let observe = production
+            .find("observe_import_state(&state)")
+            .expect("restore must emit M13 gauges on the decoded state");
+        assert!(
+            decode < observe && observe < on_block,
+            "M13 observe must sit between hydrated decode and on_block"
         );
     }
 }

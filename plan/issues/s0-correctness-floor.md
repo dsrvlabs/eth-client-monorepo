@@ -182,6 +182,9 @@ detector if P0-19 somehow slips.
 **Acceptance** — two gauges emitted on every state the core imports against; an alert rule fires when
 `pubkey_cache_len < validators_len`. The alert rule ships with the gauge, not later.
 
+- [x] Two gauges (`cc_chain_pubkey_cache_len`, `cc_chain_validators_len`) emitted on every state the core imports against (live parent, restore snapshot, checkpoint spawn).
+- [x] Alert rule ships with the gauges and fires when `pubkey_cache_len < validators_len`.
+
 ---
 
 ### `S0-A-05` · **Spike Q-7** — audit `preset.rs` for other config-scoped values
