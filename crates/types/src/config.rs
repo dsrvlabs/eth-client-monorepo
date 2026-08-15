@@ -169,6 +169,8 @@ pub struct ChainConfig {
     /// Fulu activation epoch.
     pub fulu_fork_epoch: Epoch,
     /// Slot duration in seconds.
+    ///
+    /// Resolved from `SECONDS_PER_SLOT`, else `SLOT_DURATION_MS / 1000`, else 12.
     pub seconds_per_slot: u64,
     /// Validated blob parameter schedule.
     pub blob_schedule: BlobSchedule,
@@ -255,7 +257,7 @@ impl TryFrom<RawChainConfig> for ChainConfig {
             electra_fork_epoch: Epoch::new(raw.electra_fork_epoch),
             fulu_fork_version: fork_version(&raw.fulu_fork_version)?,
             fulu_fork_epoch: Epoch::new(raw.fulu_fork_epoch),
-            seconds_per_slot: raw.seconds_per_slot,
+            seconds_per_slot: resolve_seconds_per_slot(raw.seconds_per_slot, raw.slot_duration_ms)?,
             blob_schedule,
             deposit_chain_id: raw.deposit_chain_id,
             deposit_contract_address: execution_address(&raw.deposit_contract_address)?,
@@ -302,6 +304,17 @@ pub enum ConfigError {
     /// `BLOB_SCHEDULE` failed validation.
     #[error(transparent)]
     BlobSchedule(#[from] BlobScheduleError),
+    /// `SECONDS_PER_SLOT` and `SLOT_DURATION_MS` disagree.
+    #[error("SECONDS_PER_SLOT ({seconds}) and SLOT_DURATION_MS ({ms}) are inconsistent")]
+    SlotDurationMismatch {
+        /// `SECONDS_PER_SLOT` value.
+        seconds: u64,
+        /// `SLOT_DURATION_MS` value.
+        ms: u64,
+    },
+    /// `SLOT_DURATION_MS` is below one second, so `SECONDS_PER_SLOT` cannot be derived.
+    #[error("SLOT_DURATION_MS {0} is less than 1000")]
+    InvalidSlotDurationMs(u64),
 }
 
 /// Serde shape matching consensus-specs / eth-clients YAML keys.
@@ -323,7 +336,11 @@ struct RawChainConfig {
     electra_fork_epoch: u64,
     fulu_fork_version: String,
     fulu_fork_epoch: u64,
-    seconds_per_slot: u64,
+    #[serde(default)]
+    seconds_per_slot: Option<u64>,
+    /// Used when `SECONDS_PER_SLOT` is absent.
+    #[serde(default)]
+    slot_duration_ms: Option<u64>,
     #[serde(default)]
     blob_schedule: Vec<RawBlobParameters>,
     deposit_chain_id: u64,
@@ -360,6 +377,7 @@ fn is_known_chain_config_key(key: &str) -> bool {
             | "FULU_FORK_VERSION"
             | "FULU_FORK_EPOCH"
             | "SECONDS_PER_SLOT"
+            | "SLOT_DURATION_MS"
             | "BLOB_SCHEDULE"
             | "DEPOSIT_CHAIN_ID"
             | "DEPOSIT_CONTRACT_ADDRESS"
@@ -383,6 +401,31 @@ fn warn_unknown_yaml_keys(text: &str) -> Result<(), ConfigError> {
         }
     }
     Ok(())
+}
+
+/// Mainnet slot duration when neither YAML key is present.
+const DEFAULT_SECONDS_PER_SLOT: u64 = 12;
+
+/// `SECONDS_PER_SLOT`, else `SLOT_DURATION_MS / 1000`, else 12.
+fn resolve_seconds_per_slot(
+    seconds_per_slot: Option<u64>,
+    slot_duration_ms: Option<u64>,
+) -> Result<u64, ConfigError> {
+    match (seconds_per_slot, slot_duration_ms) {
+        (Some(seconds), Some(ms)) if seconds.checked_mul(1000) != Some(ms) => {
+            Err(ConfigError::SlotDurationMismatch { seconds, ms })
+        }
+        (Some(seconds), _) => Ok(seconds),
+        (None, Some(ms)) => {
+            let derived = ms / 1000;
+            if derived == 0 {
+                Err(ConfigError::InvalidSlotDurationMs(ms))
+            } else {
+                Ok(derived)
+            }
+        }
+        (None, None) => Ok(DEFAULT_SECONDS_PER_SLOT),
+    }
 }
 
 /// Mainnet `CHURN_LIMIT_QUOTIENT` (`configs/mainnet.yaml`).
@@ -632,6 +675,80 @@ BLOB_SCHEDULE:
 "#
     }
 
+    fn yaml_without_seconds_per_slot() -> String {
+        minimal_yaml_body()
+            .lines()
+            .filter(|line| !line.starts_with("SECONDS_PER_SLOT:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn slot_duration_ms_only_derives_seconds_per_slot() {
+        let yaml = format!(
+            "{}\nSLOT_DURATION_MS: 12000\n",
+            yaml_without_seconds_per_slot()
+        );
+        let cfg = ChainConfig::from_yaml_str(&yaml)
+            .unwrap_or_else(|e| panic!("SLOT_DURATION_MS-only must parse: {e}"));
+        assert_eq!(cfg.seconds_per_slot, 12);
+    }
+
+    #[test]
+    fn minimal_slot_duration_ms_derives_six_seconds() {
+        let yaml = format!(
+            "{}\nSLOT_DURATION_MS: 6000\n",
+            yaml_without_seconds_per_slot()
+        );
+        let cfg = ChainConfig::from_yaml_str(&yaml)
+            .unwrap_or_else(|e| panic!("minimal SLOT_DURATION_MS must parse: {e}"));
+        assert_eq!(cfg.seconds_per_slot, 6);
+    }
+
+    #[test]
+    fn omitted_slot_keys_default_to_twelve_seconds() {
+        let cfg = ChainConfig::from_yaml_str(&yaml_without_seconds_per_slot())
+            .unwrap_or_else(|e| panic!("neither slot key must parse: {e}"));
+        assert_eq!(cfg.seconds_per_slot, DEFAULT_SECONDS_PER_SLOT);
+    }
+
+    #[test]
+    fn agreeing_slot_keys_keep_seconds() {
+        let yaml = format!("{}\nSLOT_DURATION_MS: 12000\n", minimal_yaml_body());
+        let cfg = ChainConfig::from_yaml_str(&yaml)
+            .unwrap_or_else(|e| panic!("agreeing keys must parse: {e}"));
+        assert_eq!(cfg.seconds_per_slot, 12);
+    }
+
+    #[test]
+    fn disagreeing_slot_keys_fail() {
+        let yaml = format!("{}\nSLOT_DURATION_MS: 6000\n", minimal_yaml_body());
+        let err = ChainConfig::from_yaml_str(&yaml).expect_err("disagreeing keys must fail");
+        assert!(
+            matches!(
+                err,
+                ConfigError::SlotDurationMismatch {
+                    seconds: 12,
+                    ms: 6000
+                }
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn sub_second_slot_duration_ms_fails() {
+        let yaml = format!(
+            "{}\nSLOT_DURATION_MS: 500\n",
+            yaml_without_seconds_per_slot()
+        );
+        let err = ChainConfig::from_yaml_str(&yaml).expect_err("sub-second ms must fail");
+        assert!(
+            matches!(err, ConfigError::InvalidSlotDurationMs(500)),
+            "{err}"
+        );
+    }
+
     #[test]
     fn omitted_p002_keys_default_to_mainnet() {
         let cfg = ChainConfig::from_yaml_str(minimal_yaml_body())
@@ -762,6 +879,17 @@ BLOB_SCHEDULE:
         assert!(
             !logged.contains("WARN"),
             "known-only YAML must not WARN; got:\n{logged}"
+        );
+    }
+
+    #[test]
+    fn slot_duration_ms_is_a_known_key() {
+        let yaml = format!("{}\nSLOT_DURATION_MS: 12000\n", minimal_yaml_body());
+        let (result, logged) = capture_logs(|| ChainConfig::from_yaml_str(&yaml));
+        result.unwrap_or_else(|e| panic!("SLOT_DURATION_MS must parse: {e}"));
+        assert!(
+            !logged.contains("WARN"),
+            "SLOT_DURATION_MS must not WARN as unknown; got:\n{logged}"
         );
     }
 

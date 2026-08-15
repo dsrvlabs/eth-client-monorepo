@@ -227,6 +227,14 @@ removed upstream, or merely absent from `configs/mainnet.yaml`?* — which deter
 **Deliverable** — the upstream answer with a URL, a recommendation (accept-both vs migrate), and a
 one-line escalation to the lead with a proposed tier. Do not silently create or omit the P0.
 
+**Answered 2026-08-15** in [`spike-notes.md` § Q-6](spike-notes.md). Formally removed from
+consensus-specs YAML ([#4926](https://github.com/ethereum/consensus-specs/pull/4926)); both keys
+still exist in the spec family (eth-clients Hoodi/mainnet, Beacon API). **Accept both.** Escalation:
+**no new P0** — this loader default discharges the parse failure; residual ms migrate is P2.
+
+- [x] Upstream answer with URL: formally removed from consensus-specs YAML in #4926; both keys still exist in the spec family.
+- [x] Recommendation: accept-both (not migrate). Escalation: no new P0.
+
 ---
 
 ### `S0-A-07` · P0-02(a) — add the four missing `ChainConfig` fields

@@ -239,3 +239,59 @@ One row.
 - **`S0-A-07` estimate:** remains **2–3 pd / 5 pts**. Unchanged.
 
 Do not implement `S0-A-07` from this spike. No `ChainConfig` fields were added.
+
+## Q-6
+
+**Answer: formally removed from consensus-specs network YAML, but both keys still exist in the spec family. Accept both. Do not migrate. Do not open a new P0.**
+
+**Issue** `S0-A-06` · **date** 2026-08-15 · **discharges** `[PRD]` J-12's question (tier is still the lead's call)
+
+**Question.** Today's upstream `configs/mainnet.yaml` has `SLOT_DURATION_MS: 12000` and no `SECONDS_PER_SLOT`, while `RawChainConfig.seconds_per_slot` had no `#[serde(default)]`, so loading that file failed to parse. Is `SECONDS_PER_SLOT` formally removed upstream, or merely absent from that one file? That decides accept-both vs migrate.
+
+**Method.** Current `master` configs plus the deprecation/removal PRs, the spec-family copies, and one production client's loader.
+
+### Formal removal (consensus-specs YAML)
+
+Not a missing line. Two-step retirement:
+
+1. **Deprecated**, not deleted — [`ethereum/consensus-specs#4476`](https://github.com/ethereum/consensus-specs/pull/4476) (merged 2025-08-11): *"Deprecate `SECONDS_PER_SLOT` in favor of `SLOT_DURATION_MS`."* Both keys coexisted so slot-component times could be expressed as basis points of a millisecond duration (EIP-7782 / shorter slots).
+2. **Deleted from specs, tests, and `configs/*.yaml`** — [`ethereum/consensus-specs#4926`](https://github.com/ethereum/consensus-specs/pull/4926) (merged 2026-03-02, commit [`84a6428`](https://github.com/ethereum/consensus-specs/commit/84a6428bcc5b7c36ea2ff554931f055e4dfb74d5)). Author: *"This config was deprecated but still used in a few places. It's time to fix these & remove the config."* Merge comment: *"it makes sense to finally delete `SECONDS_PER_SLOT`."*
+
+Fetched 2026-08-15:
+
+- [`configs/mainnet.yaml`](https://github.com/ethereum/consensus-specs/blob/master/configs/mainnet.yaml) — `SLOT_DURATION_MS: 12000`, **no** `SECONDS_PER_SLOT`
+- [`configs/minimal.yaml`](https://github.com/ethereum/consensus-specs/blob/master/configs/minimal.yaml) — `SLOT_DURATION_MS: 6000`, **no** `SECONDS_PER_SLOT`
+
+A GitHub code search for the YAML key `SECONDS_PER_SLOT` on `ethereum/consensus-specs` `master` returns no config/spec hits (only an unrelated Python helper field).
+
+### Still present in the spec family
+
+| Source | `SECONDS_PER_SLOT` | `SLOT_DURATION_MS` |
+|---|---|---|
+| consensus-specs `configs/*.yaml` (post-#4926) | gone | canonical |
+| [`eth-clients/mainnet` `metadata/config.yaml`](https://github.com/eth-clients/mainnet/blob/master/metadata/config.yaml) | `12` with `# 12 seconds (*deprecated*)` | `12000` |
+| [`eth-clients/hoodi` `metadata/config.yaml`](https://github.com/eth-clients/hoodi/blob/main/metadata/config.yaml) | same deprecated pair | `12000` |
+| Beacon API `/eth/v1/config/spec` | still returned; [`OffchainLabs/prysm#16484`](https://github.com/OffchainLabs/prysm/issues/16484) still open (breaking to drop) | not yet the API replacement |
+| [`ethereum/beacon-APIs` `validator-flow.md`](https://github.com/ethereum/beacon-APIs/blob/master/validator-flow.md) | still used as the pre-Gloas wait | — |
+| This repo's Hoodi / mainnet fixtures | both | both |
+
+[#4926 review](https://github.com/ethereum/consensus-specs/pull/4926#pullrequestreview-3841191433) (nflaig / Lodestar): *"clients still return `SECONDS_PER_SLOT` as part of their config until the next hard fork to avoid interop issues."*
+
+Lighthouse `stable` `consensus/types/src/core/chain_spec.rs` already **accepts both**: both fields are `Option`; if both are set and `seconds * 1000 != ms` the apply fails; otherwise `seconds = seconds.or(ms / 1000)` ([`chain_spec.rs:2811-2844`](https://github.com/sigp/lighthouse/blob/stable/consensus/types/src/core/chain_spec.rs#L2811-L2844)).
+
+### Recommendation
+
+**Accept both.** A migrate-only loader (`SLOT_DURATION_MS` required, `SECONDS_PER_SLOT` dropped) would refuse Hoodi, this repo's fixtures, older operator YAML, and the Beacon API interop window Lodestar asked to keep. The clock still stores whole seconds; a full internal `slot_duration_ms` migrate is EIP-7782 work, not a serde default.
+
+Loader rule (matches Lighthouse, plus the mainnet 12 s default used for the other P0-02 keys):
+
+1. Both present and `seconds * 1000 != ms` → fail
+2. `SECONDS_PER_SLOT` present → use it
+3. else `SLOT_DURATION_MS / 1000` (fail if `< 1000`)
+4. else `12`
+
+`SLOT_DURATION_MS` is a known key (no unknown-key WARN). Implemented in `crates/types/src/config.rs`.
+
+### Escalation (J-12)
+
+**No new P0.** The boot-blocking parse of upstream `configs/mainnet.yaml` is P0-severity and is discharged by this default. Residual millisecond-precision migrate is **P2** (EIP-7782 / sub-second slots), not S0. Do not silently create or omit a row — this is the proposed tier.
