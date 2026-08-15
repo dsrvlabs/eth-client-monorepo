@@ -664,8 +664,8 @@ pub fn spawn_core_from_restore<P: Preset + 'static>(
     mut core_cfg: CoreConfig,
 ) -> RestoreInstall {
     core_cfg.peer_das = Some(applied.peer_das);
-    // Restore path already skipped BLS; keep core at NoVerification default.
-    core_cfg.verify = BlockSignatureStrategy::NoVerification;
+    // Replay already used NoVerification in `apply_restore_set`. Keep the
+    // caller's strategy for live import (production default: VerifyIndividual).
     let core = spawn_core_thread_with_epoch(
         applied.store,
         chain_config,

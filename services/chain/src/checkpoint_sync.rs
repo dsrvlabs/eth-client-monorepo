@@ -34,7 +34,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use cc_fork_choice::{PeerDasAvailability, Store, get_forkchoice_store, on_tick};
-use cc_state_transition::BlockSignatureStrategy;
 use cc_types::config::{BlobParameters, BlobSchedule, BlobScheduleError, ChainConfig};
 use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, ForkVersion, Root, parse_hex_bytes};
@@ -1156,8 +1155,6 @@ pub fn spawn_core_from_checkpoint_with_epoch<P: Preset + 'static>(
         tracing::warn!(error = %e, now, "on_tick during anchor seed failed; continuing");
     }
 
-    // CoreConfig.verify defaults to NoVerification; soak/prod may raise later.
-    let _ = BlockSignatureStrategy::NoVerification;
     let mut core_cfg = core_cfg;
     core_cfg.peer_das = Some(peer_das);
     Ok(spawn_core_thread_with_epoch(

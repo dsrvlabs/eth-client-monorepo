@@ -157,6 +157,11 @@ pub enum QueryReply {
 pub struct CoreConfig {
     pub max_resident_states: usize,
     pub body_ring_capacity: usize,
+    /// Unary `ImportBlock` / `on_block` signature strategy.
+    ///
+    /// Default [`BlockSignatureStrategy::VerifyIndividual`]. Restore replay
+    /// overrides to [`BlockSignatureStrategy::NoVerification`] in
+    /// [`crate::restore::apply_restore_set`] (already-verified stored blocks).
     pub verify: BlockSignatureStrategy,
     /// Shared PeerDAS available-root set (same `Arc` as the store's DA).
     ///
@@ -183,7 +188,7 @@ impl Default for CoreConfig {
         Self {
             max_resident_states: DEFAULT_MAX_RESIDENT_STATES,
             body_ring_capacity: DEFAULT_BODY_RING_CAPACITY,
-            verify: BlockSignatureStrategy::NoVerification,
+            verify: BlockSignatureStrategy::VerifyIndividual,
             peer_das: None,
             da_pending_timeout_slots: DEFAULT_DA_PENDING_TIMEOUT_SLOTS,
             engine_pending_timeout_slots: DEFAULT_ENGINE_PENDING_TIMEOUT_SLOTS,
@@ -1400,6 +1405,14 @@ mod tests {
             deposit_chain_id: 0,
             deposit_contract_address: ExecutionAddress::ZERO,
         }
+    }
+
+    #[test]
+    fn core_config_default_verify_is_verify_individual() {
+        assert_eq!(
+            CoreConfig::default().verify,
+            BlockSignatureStrategy::VerifyIndividual
+        );
     }
 
     fn seeded_store() -> (Store<Minimal>, Root, ChainConfig) {

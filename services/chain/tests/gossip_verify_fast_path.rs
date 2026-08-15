@@ -284,6 +284,142 @@ fn gossip_path_no_early_accept_without_valid_proposer_sig() {
     assert!(!outcome.transition_invoked);
 }
 
+// ── S0-A-25 / P0-03: unary ImportBlock verifies proposer signature ─────────
+
+#[test]
+fn unary_path_verifies_proposer_signature_under_default_config() {
+    let (mut store, anchor, config, _sk) = seeded_store_signed(Arc::new(HarnessAvailability));
+    let block = SignedBeaconBlock::<Minimal> {
+        message: BeaconBlock {
+            slot: Slot::new(1),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: anchor,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        },
+        signature: Default::default(),
+    };
+    let true_root = Root::from_hash256(TreeHash::tree_hash_root(&block.message));
+    let request = cc_proto::chain::ImportBlockRequest {
+        ssz: encode_signed_block(&block),
+        fork: 0,
+        root: true_root.as_slice().to_vec(),
+        source: 0,
+    };
+
+    let mut registry = Registry::default();
+    let metrics = ChainMetrics::register(&mut registry);
+    let head = HeadSnapshotStore::new();
+    let (event_tx, _) = tokio::sync::mpsc::channel(4);
+    let counters = ImportCounters::default();
+    let mut residency = Residency::<Minimal>::new(64, 32);
+    let mut snap_seq = 0u64;
+
+    // Unary path: no early-accept oneshot. Strategy is the production default.
+    assert_eq!(
+        CoreConfig::default().verify,
+        cc_state_transition::BlockSignatureStrategy::VerifyIndividual
+    );
+    let outcome = import_block_with_early(
+        &mut store,
+        &mut residency,
+        &config,
+        &head,
+        &event_tx,
+        &metrics,
+        &counters,
+        &mut snap_seq,
+        request,
+        CoreConfig::default().verify,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("outcome");
+
+    assert_eq!(
+        outcome.response.verdict,
+        cc_proto::chain::ImportBlockVerdict::Invalid as i32,
+        "unary default must reject a missing proposer signature; reason={}",
+        outcome.response.reason
+    );
+    assert!(
+        !outcome.transition_invoked,
+        "proposer-sig failure must be a cheap-path terminal (no ST)"
+    );
+    assert!(!outcome.early_accept);
+    assert!(
+        outcome.response.reason.contains("signature")
+            || outcome.response.reason.contains("bls")
+            || outcome.response.reason.contains("proposer"),
+        "reason should name the proposer-sig failure, got {:?}",
+        outcome.response.reason
+    );
+}
+
+/// M5: default unary strategy is threaded into `on_block` / ST, not only the
+/// cheap-path proposer check. Valid proposer + junk RANDAO must invoke ST and
+/// fail closed on a body signature (`S0-A-33` / sync-aggregate is out of scope).
+#[test]
+fn unary_default_config_verifies_body_signatures_in_state_transition() {
+    let (mut store, anchor, config, sk) = seeded_store_signed(Arc::new(HarnessAvailability));
+    let block = signed_child(&store, anchor, &sk, 1);
+    let true_root = Root::from_hash256(TreeHash::tree_hash_root(&block.message));
+    let request = cc_proto::chain::ImportBlockRequest {
+        ssz: encode_signed_block(&block),
+        fork: 0,
+        root: true_root.as_slice().to_vec(),
+        source: 0,
+    };
+
+    let mut registry = Registry::default();
+    let metrics = ChainMetrics::register(&mut registry);
+    let head = HeadSnapshotStore::new();
+    let (event_tx, _) = tokio::sync::mpsc::channel(4);
+    let counters = ImportCounters::default();
+    let mut residency = Residency::<Minimal>::new(64, 32);
+    let mut snap_seq = 0u64;
+
+    let outcome = import_block_with_early(
+        &mut store,
+        &mut residency,
+        &config,
+        &head,
+        &event_tx,
+        &metrics,
+        &counters,
+        &mut snap_seq,
+        request,
+        CoreConfig::default().verify,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("outcome");
+
+    assert!(
+        outcome.transition_invoked,
+        "valid proposer sig must reach on_block / ST; reason={}",
+        outcome.response.reason
+    );
+    assert_eq!(
+        outcome.response.verdict,
+        cc_proto::chain::ImportBlockVerdict::Invalid as i32,
+        "junk RANDAO under VerifyIndividual must fail ST; reason={}",
+        outcome.response.reason
+    );
+    let reason = outcome.response.reason.to_ascii_lowercase();
+    assert!(
+        reason.contains("randao") || reason.contains("invalid signature") || reason.contains("bls"),
+        "ST failure must be a body-signature reject, got {:?}",
+        outcome.response.reason
+    );
+}
+
 // ── Early ACCEPT before stalled transition (signed) ────────────────────────
 
 #[test]

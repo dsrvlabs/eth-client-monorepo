@@ -627,7 +627,8 @@ fn cheap_gossip_terminal<P: Preset>(
 
     // Block proposer signature.
     // H1: gossip path **always** verifies with VerifyIndividual and fails closed.
-    // Unary ImportBlock keeps the configured strategy (may be NoVerification).
+    // Unary ImportBlock uses the configured strategy (`CoreConfig::default` is
+    // VerifyIndividual). Restore replay overrides via `on_block`, not this path.
     let sig_strategy = if gossip_path {
         BlockSignatureStrategy::VerifyIndividual
     } else {
