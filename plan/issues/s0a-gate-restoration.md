@@ -174,7 +174,7 @@ against S3a.
 `earliest_available_slot: u64::MAX` at `services/storage/src/serve.rs:1086-1087` has been verified ✓
 (`[PRD]` J-3). Those are different claims. Find the publish path, or establish there is none.
 
-**Deliverable** — a finding naming either the publisher's file:line or the absence, committed to the
+**Deliverable** — [x] a finding naming either the publisher's file:line or the absence, committed to the
 spike notes. `[PRD]` J-3 asks for exactly this before S3.
 
 ---
