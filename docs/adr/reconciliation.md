@@ -19,7 +19,7 @@ see [`README.md`](README.md). Their resolving token `uncited` is README-only.
 ## Parse contract
 
 The GFM table whose header is `| id | bucket | status | resolving |` is the
-data. A later script should:
+data. A later ratchet (S2 / ⟡ D-13, not this file's S1-B-06 gate) should:
 
 1. Take body rows of that table (skip the header and the `---` separator).
 2. Split on `|` and strip cells. No cell contains `|`.
@@ -31,6 +31,10 @@ data. A later script should:
 6. `resolving` is a repo-relative path or `-` (no document yet). The token
    `uncited` is README-only (never-cited numbering gaps); it does not appear
    in this table.
+
+`scripts/check-adr-resolver.sh` (S1-B-06) reads the `id` column as an
+allowlist (plus `docs/adr/ADR-*.md` filenames). It does not check bucket,
+status, or resolving, and an unwritten row still resolves.
 
 ### Status vocabulary
 

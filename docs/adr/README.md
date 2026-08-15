@@ -47,7 +47,15 @@ them.
 
 New citations use the hyphenated form. Existing space-separated citations
 (`ADR P3-02`) stay until that file is touched for another reason. A resolver
-accepts both spellings.
+accepts both spellings. That resolver is `scripts/check-adr-resolver.sh`
+(S1-B-06; `make lint` / clippy job). It fails an ADR id that is in neither
+the reconciliation `id` column nor a `docs/adr/ADR-*.md` file. It does not
+enforce the table's bucket / status / resolving columns.
+`Architecture §<n>` is extracted for the census only — those hits do not
+resolve under `docs/adr/`. `ADR-R-*` is out of the extractor: that series
+is the refactor records; `plan/` already cites unwritten `ADR-R-01`… and
+extracting them would go red before the bodies exist. Landed files
+(`ADR-R-05.md`, `ADR-R-06.md`) still count as resolvable by filename.
 
 ## Filename
 
