@@ -479,7 +479,7 @@ impl<'a, P: Preset> ColumnServeCtx<'a, P> {
 /// Serve `data_column_sidecars_by_range/1/`.
 ///
 /// Validates projected sidecar count **before** allocating the response vec.
-/// Window check is on `start_slot`. Response order is `(slot, column_index)`.
+/// Window check is on `start_slot`. Response order is ascending `(slot, column_index)`.
 ///
 /// A column requested inside the window that we do not hold →
 /// [`BlockServeError::ResourceUnavailable`] (never silently omitted).
@@ -535,7 +535,8 @@ pub fn serve_columns_by_range<P: Preset>(
                 }
             }
         }
-        // Spec: (slot, column_index) order — columns as requested, slots ascending.
+        // Spec: MUST send in (slot, column_index) order; slots already ascend.
+        slot_ssz.sort_unstable_by_key(|(idx, _)| *idx);
         for (_idx, ssz) in slot_ssz {
             chunks.push(success_chunk_for_slot(
                 ctx.fork_ctx,
@@ -1024,6 +1025,40 @@ mod tests {
             }
         }
         assert_eq!(returned, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn by_range_emits_chunks_ascending_slot_then_column_index() {
+        // Out-of-order column list must still emit (slot, column_index) ascending.
+        let cache = filled_cache(100, 105, &[0, 1, 2, 3]);
+        let mut fork_ctx = fork_ctx_at(60_000);
+        let mut ctx = serve_ctx(&cache, &mut fork_ctx);
+
+        let planned = serve_columns_by_range(
+            &mut ctx,
+            &ColumnsByRangeRequest {
+                start_slot: Slot::new(100),
+                count: 3,
+                columns: vec![3, 0, 2],
+            },
+        )
+        .unwrap();
+        assert_eq!(planned.chunks.len(), 9);
+
+        let mut got = Vec::new();
+        for c in &planned.chunks {
+            match c {
+                ResponseChunk::Success { ssz, .. } => {
+                    let sc = DataColumnSidecar::<Mainnet>::from_ssz_bytes(ssz).unwrap();
+                    got.push((sc.signed_block_header.message.slot.as_u64(), sc.index));
+                }
+                ResponseChunk::Error { .. } => panic!("expected success"),
+            }
+        }
+        let expected: Vec<(u64, u64)> = (100..=102)
+            .flat_map(|slot| [0u64, 2, 3].into_iter().map(move |col| (slot, col)))
+            .collect();
+        assert_eq!(got, expected, "must be ascending (slot, column_index)");
     }
 
     #[test]
