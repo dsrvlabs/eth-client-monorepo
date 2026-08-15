@@ -529,6 +529,9 @@ Overwritten from the **importing block's post-state**, not the checkpoint state.
 **Acceptance** — a test where the two states differ asserts the stored context matches the checkpoint
 state's effective balances.
 
+- [x] Justified context is built from the checkpoint post-state, not the importing post-state.
+- [x] Test where the two states differ asserts stored balances match the checkpoint state.
+
 ### `S0-A-24` · P1-A/21 — `get_proposer_head`'s invented equivocation branch
 **Est** 1–1.5 pd / **3 pts** (≈) · **Touch** `crates/fork-choice/src/head_cache.rs:151`
 A branch with no spec basis that bypasses the spec's safety conditions.

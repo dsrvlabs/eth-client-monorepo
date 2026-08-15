@@ -460,8 +460,12 @@ fn integrate_block<P: Preset>(
 
     // --- Checkpoint updates ------------------------------------------------
     store.update_checkpoints(justified, finalized);
-    let cp_ctx = CheckpointContext::from_state(&state, justified);
-    store.insert_checkpoint_context(justified, Arc::new(cp_ctx));
+    // Context is the justified checkpoint's post-state, not this block.
+    // A miss leaves any LRU entry alone — do not fall back to `&state`.
+    if let Some(cp_state) = store.block_state(&justified.root) {
+        let cp_ctx = CheckpointContext::from_state(cp_state, justified);
+        store.insert_checkpoint_context(justified, Arc::new(cp_ctx));
+    }
     store.update_unrealized_checkpoints(unrealized_justified, unrealized_finalized);
 
     // If the block is from a prior epoch, apply the pulled-up values as realized.
@@ -659,7 +663,8 @@ mod tests {
     use cc_types::operations::IndexedAttestation;
     use cc_types::preset::Minimal;
     use cc_types::primitives::{
-        BlsPublicKey, Epoch, ExecutionAddress, ForkVersion, Hash256, Root, Slot, ValidatorIndex,
+        BlsPublicKey, Epoch, ExecutionAddress, ForkVersion, Gwei, Hash256, Root, Slot,
+        ValidatorIndex,
     };
     use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
     use ssz_types::VariableList;
@@ -1433,6 +1438,205 @@ mod tests {
                 epoch: Epoch::new(0),
                 root: child,
             })
+        );
+    }
+
+    /// P1-A/20: justified `CheckpointContext` is built from the checkpoint
+    /// state, not the importing block's post-state.
+    #[test]
+    fn justified_checkpoint_context_uses_checkpoint_state_balances() {
+        const N: usize = 2;
+        // Distinct from `MAX_EFFECTIVE_BALANCE` so the two states disagree.
+        const DIVERGED_BALANCE: Gwei = Gwei::new(1_000_000_000);
+
+        let config = minimal_config();
+        let mut anchor_state = BeaconState::<Minimal>::default();
+        anchor_state.set_genesis_time(0);
+        anchor_state.set_slot(Slot::new(0));
+        for i in 0..N {
+            push_test_validator(&mut anchor_state, i as u64);
+        }
+
+        let anchor_block = BeaconBlock {
+            slot: Slot::new(0),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: Root::ZERO,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        let mut store = get_forkchoice_store(
+            anchor_state,
+            &anchor_block,
+            Arc::new(AcceptEngine),
+            Arc::new(HarnessAvailability),
+            config.seconds_per_slot,
+        )
+        .unwrap();
+        let anchor = Root::from_hash256(TreeHash::tree_hash_root(&anchor_block));
+        let justified = cp(0, anchor);
+        let finalized = cp(0, anchor);
+
+        let mut post = store.block_state(&anchor).unwrap().clone();
+        post.set_slot(Slot::new(1));
+        post.set_current_justified_checkpoint(justified);
+        post.set_finalized_checkpoint(finalized);
+        post.validators_get_mut(0).unwrap().effective_balance = DIVERGED_BALANCE;
+
+        let checkpoint_balances = CheckpointContext::from_state(
+            store.block_state(&anchor).expect("checkpoint post-state"),
+            justified,
+        )
+        .effective_balances;
+        let importing_balances = CheckpointContext::from_state(&post, justified).effective_balances;
+        assert_ne!(
+            importing_balances, checkpoint_balances,
+            "fixture must differ so a wrong source is observable"
+        );
+
+        let child = root(0x43);
+        let block = BeaconBlock {
+            slot: Slot::new(1),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: anchor,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        integrate_block(
+            &mut store,
+            child,
+            &block,
+            post,
+            ExecutionStatus::Valid,
+            Hash256::from([0x43; 32]),
+        )
+        .unwrap();
+
+        assert_eq!(store.justified_checkpoint(), justified);
+        let stored = store
+            .checkpoint_context(justified)
+            .expect("justified context");
+        assert_eq!(
+            stored.effective_balances, checkpoint_balances,
+            "stored context must match the checkpoint state's effective balances"
+        );
+        assert_ne!(
+            stored.effective_balances, importing_balances,
+            "stored context must not come from the importing post-state"
+        );
+    }
+
+    /// P1-A/20: a *new* justified checkpoint is first-inserted from that
+    /// checkpoint's post-state (not skip-if-exists on the genesis key).
+    #[test]
+    fn justified_checkpoint_context_first_inserts_from_checkpoint_state() {
+        const N: usize = 2;
+        const DIVERGED_BALANCE: Gwei = Gwei::new(1_000_000_000);
+
+        let config = minimal_config();
+        let mut anchor_state = BeaconState::<Minimal>::default();
+        anchor_state.set_genesis_time(0);
+        anchor_state.set_slot(Slot::new(0));
+        for i in 0..N {
+            push_test_validator(&mut anchor_state, i as u64);
+        }
+
+        let anchor_block = BeaconBlock {
+            slot: Slot::new(0),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: Root::ZERO,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        let mut store = get_forkchoice_store(
+            anchor_state,
+            &anchor_block,
+            Arc::new(AcceptEngine),
+            Arc::new(HarnessAvailability),
+            config.seconds_per_slot,
+        )
+        .unwrap();
+        let anchor = Root::from_hash256(TreeHash::tree_hash_root(&anchor_block));
+        let genesis_justified = cp(0, anchor);
+
+        // Ancestor C at epoch 1; its justified stays the genesis key, so this
+        // integrate does not insert a context for C.
+        let checkpoint_root = root(0x44);
+        let mut c_state = store.block_state(&anchor).unwrap().clone();
+        c_state.set_slot(Slot::new(8));
+        c_state.set_current_justified_checkpoint(genesis_justified);
+        c_state.set_finalized_checkpoint(genesis_justified);
+        let c_block = BeaconBlock {
+            slot: Slot::new(8),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: anchor,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        integrate_block(
+            &mut store,
+            checkpoint_root,
+            &c_block,
+            c_state,
+            ExecutionStatus::Valid,
+            Hash256::from([0x44; 32]),
+        )
+        .unwrap();
+
+        let new_justified = cp(1, checkpoint_root);
+        assert!(
+            store.checkpoint_context(new_justified).is_none(),
+            "C must be a first-insert key"
+        );
+
+        let mut post = store.block_state(&checkpoint_root).unwrap().clone();
+        post.set_slot(Slot::new(9));
+        post.set_current_justified_checkpoint(new_justified);
+        post.set_finalized_checkpoint(genesis_justified);
+        post.validators_get_mut(0).unwrap().effective_balance = DIVERGED_BALANCE;
+
+        let checkpoint_balances = CheckpointContext::from_state(
+            store
+                .block_state(&checkpoint_root)
+                .expect("checkpoint post-state"),
+            new_justified,
+        )
+        .effective_balances;
+        let importing_balances =
+            CheckpointContext::from_state(&post, new_justified).effective_balances;
+        assert_ne!(
+            importing_balances, checkpoint_balances,
+            "fixture must differ so a wrong source is observable"
+        );
+
+        let child = root(0x45);
+        let block = BeaconBlock {
+            slot: Slot::new(9),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: checkpoint_root,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        integrate_block(
+            &mut store,
+            child,
+            &block,
+            post,
+            ExecutionStatus::Valid,
+            Hash256::from([0x45; 32]),
+        )
+        .unwrap();
+
+        assert_eq!(store.justified_checkpoint(), new_justified);
+        let stored = store
+            .checkpoint_context(new_justified)
+            .expect("first-inserted justified context");
+        assert_eq!(
+            stored.effective_balances, checkpoint_balances,
+            "first insert must come from the checkpoint post-state"
+        );
+        assert_ne!(
+            stored.effective_balances, importing_balances,
+            "first insert must not come from the importing post-state"
         );
     }
 }
