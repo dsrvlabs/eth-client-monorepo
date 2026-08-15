@@ -26,9 +26,9 @@ use cc_state_transition::BlockSignatureStrategy;
 use cc_types::BeaconState;
 use cc_types::config::ChainConfig;
 use cc_types::containers::Checkpoint;
+use cc_types::fork::ForkName;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Root, Slot};
-use ssz::Decode;
 use tokio::sync::Notify;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{info, warn};
@@ -429,10 +429,9 @@ pub struct RestoreApplyResult<P: Preset> {
 pub fn apply_restore_set<P: Preset + 'static>(
     input: RestoreApplyInput<'_, P>,
 ) -> Result<RestoreApplyResult<P>, Status> {
-    // Decode snapshot state. Caches are SSZ-skipped; fill before on_block.
-    let mut state = BeaconState::<P>::from_ssz_bytes(input.state_ssz)
+    // Decode snapshot state through the hydrated fork chokepoint (S0-A-02).
+    let state = BeaconState::<P>::from_ssz_bytes_hydrated(ForkName::Fulu, input.state_ssz)
         .map_err(|e| Status::invalid_argument(format!("restore state SSZ decode failed: {e:?}")))?;
-    state.top_up_pubkey_cache();
 
     // Anchor block: real stored SSZ only — never invent a Default body (SEC).
     let anchor_ssz = input
@@ -1234,17 +1233,15 @@ mod tests {
         let src = include_str!("restore.rs");
         let production = src.split("#[cfg(test)]").next().unwrap();
         let decode = production
-            .find("from_ssz_bytes(input.state_ssz)")
+            .find("from_ssz_bytes_hydrated(ForkName::Fulu, input.state_ssz)")
             .expect("restore decode site");
-        let top_up = production
-            .find("top_up_pubkey_cache")
-            .expect("restore must call top_up_pubkey_cache");
         let on_block = production
             .find("match on_block(")
             .expect("restore on_block site");
+        assert!(decode < on_block, "hydrated decode must precede on_block");
         assert!(
-            decode < top_up && top_up < on_block,
-            "top-up must sit between SSZ decode and on_block"
+            !production.contains("from_ssz_bytes(input.state_ssz)"),
+            "restore must not call the raw SSZ constructor"
         );
     }
 }

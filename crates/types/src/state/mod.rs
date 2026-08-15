@@ -61,6 +61,9 @@ pub type ParticipationFlags = u8;
 ///
 /// All spec fields are private. `caches` is excluded from SSZ, tree-hash, and
 /// equality.
+///
+/// Production SSZ decode must use [`Self::from_ssz_bytes_hydrated`] (S0-A-02 /
+/// P0-19/1b). Raw [`ssz::Decode::from_ssz_bytes`] leaves `caches` empty.
 #[derive(Clone, Encode, Decode, TreeHash)]
 pub struct BeaconState<P: Preset> {
     genesis_time: u64,
@@ -216,17 +219,39 @@ impl<P: Preset> PartialEq for BeaconState<P> {
 impl<P: Preset> Eq for BeaconState<P> {}
 
 impl<P: Preset> BeaconState<P> {
+    /// Decode SSZ bytes under an explicit fork context **and** hydrate caches.
+    ///
+    /// Production chokepoint (S0-A-02 / P0-19/1b). Routes through
+    /// [`Self::from_ssz_bytes_with`] (fork gate) then
+    /// [`Self::top_up_pubkey_cache`].
+    pub fn from_ssz_bytes_hydrated(fork_name: ForkName, bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut state = Self::from_ssz_bytes_with(fork_name, bytes)?;
+        state.top_up_pubkey_cache();
+        Ok(state)
+    }
+
     /// Decode SSZ bytes under an explicit fork context.
     ///
-    /// Phase 1 supports only [`ForkName::Fulu`]. Same long-term boundary as
+    /// Leaves `caches` empty (`#[ssz(skip_deserializing)]`). Production must
+    /// use [`Self::from_ssz_bytes_hydrated`]. Phase 1 supports only
+    /// [`ForkName::Fulu`]. Same long-term boundary as
     /// [`crate::SignedBeaconBlock::from_ssz_bytes_with`].
     pub fn from_ssz_bytes_with(fork_name: ForkName, bytes: &[u8]) -> Result<Self, DecodeError> {
         match fork_name {
-            ForkName::Fulu => <Self as ssz::Decode>::from_ssz_bytes(bytes),
+            ForkName::Fulu => Self::from_ssz_bytes(bytes),
             other => Err(DecodeError::BytesInvalid(format!(
                 "unsupported fork for BeaconState SSZ decode: {other} (Phase 1 is Fulu-only)"
             ))),
         }
+    }
+
+    /// Raw SSZ decode (S0-A-02 / P0-19/1b).
+    ///
+    /// Leaves `caches` empty and skips the fork gate. Production must use
+    /// [`Self::from_ssz_bytes_hydrated`].
+    #[doc(hidden)]
+    pub(crate) fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
+        <Self as ssz::Decode>::from_ssz_bytes(bytes)
     }
 
     /// Fill `caches.pubkeys` from the validator registry.
@@ -255,7 +280,7 @@ mod tests {
     use crate::containers::Validator;
     use crate::preset::{Mainnet, Minimal};
     use crate::primitives::BlsPublicKey;
-    use ssz::{Decode, Encode};
+    use ssz::Encode;
     use tree_hash::TreeHash;
     use typenum::Unsigned;
 
@@ -325,6 +350,34 @@ mod tests {
         let bytes = state.as_ssz_bytes();
         let err =
             BeaconState::<Minimal>::from_ssz_bytes_with(ForkName::Electra, &bytes).unwrap_err();
+        match err {
+            DecodeError::BytesInvalid(msg) => assert!(msg.contains("unsupported fork"), "{msg}"),
+            other => panic!("expected BytesInvalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_ssz_bytes_hydrated_fills_pubkey_cache() {
+        let state = registry_state(4);
+        let bytes = state.as_ssz_bytes();
+        let decoded = BeaconState::<Minimal>::from_ssz_bytes_hydrated(ForkName::Fulu, &bytes)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(decoded.caches().pubkeys.len(), decoded.validators_len());
+        for i in 0..4 {
+            let pk = decoded.validators_get(i).unwrap().pubkey;
+            assert_eq!(
+                decoded.caches().pubkeys.get(&pk),
+                Some(ValidatorIndex::new(i as u64))
+            );
+        }
+    }
+
+    #[test]
+    fn from_ssz_bytes_hydrated_rejects_non_fulu() {
+        let state = BeaconState::<Minimal>::default();
+        let bytes = state.as_ssz_bytes();
+        let err =
+            BeaconState::<Minimal>::from_ssz_bytes_hydrated(ForkName::Electra, &bytes).unwrap_err();
         match err {
             DecodeError::BytesInvalid(msg) => assert!(msg.contains("unsupported fork"), "{msg}"),
             other => panic!("expected BytesInvalid, got {other:?}"),
