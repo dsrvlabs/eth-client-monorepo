@@ -46,7 +46,7 @@ FIXTURE_ROOT = ROOT / "scripts" / "fixtures" / "check-m3-discharged-by"
 
 # Stages whose claimed rows must have a Discharged-by cell. Later stage
 # exits append here (S1-B-21 → S1, S2-B-16 → S2, S3a-B-27 → S3/S3a, …).
-CLAIM_STAGES = ("S0a", "S0")
+CLAIM_STAGES = ("S0a", "S0", "S1")
 
 # Disposition still names a later stage, but S0 already discharged the row
 # ([PLAN] C-11). Keep the extra so a reader tracking @ S4 cannot drop it.
@@ -408,6 +408,7 @@ def self_test() -> int:
     required_fail = (
         "missing-column",
         "blank-s0-row",
+        "blank-s1-row",
         "blank-p1b8",
         "pending-s0-patch",
         "fake-issue-id",
@@ -469,6 +470,7 @@ def self_test() -> int:
 
     expect_fail("missing-column", "missing a `Discharged by` column")
     expect_fail("blank-s0-row", "P0-01", "blank")
+    expect_fail("blank-s1-row", "P0-01", "blank")
     expect_fail("blank-p1b8", "P1-B/8")
     expect_fail("pending-s0-patch", "P0-01", "pending")
     expect_fail("fake-issue-id", "P0-01", "S0-ZZZ-1")

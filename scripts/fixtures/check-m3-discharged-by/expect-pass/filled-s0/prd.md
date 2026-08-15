@@ -1,4 +1,4 @@
-# fixture — S0-claimed cells filled; later-stage patches may stay blank
+# fixture — S0/S1-claimed cells filled; later-stage patches may stay blank
 
 ## 5. Requirement ledger
 
@@ -7,7 +7,9 @@
 | ID | Requirement | Disposition | Discharged by |
 |---|---|---|---|
 | **P0-01** | drop publishes | `patch @ S0` | `aaaaaaaaaaaa` |
+| **P0-15** | engine deadlines | `patch @ S0 → deleted @ S1` | `aaaaaaaaaaaa` → S1 |
 | **P0-16** | DA signaling | `wire @ S3` | |
+| **P0-25** | kzg none | `patch @ S1` | `eeeeeeeeeeee` |
 
 #### 5.1.2 P0-19 — disposition detail
 

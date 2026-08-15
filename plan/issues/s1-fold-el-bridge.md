@@ -527,6 +527,10 @@ with the commit SHA or the stage id. Zero blank cells for rows this stage claime
 Also append `S1` to `CLAIM_STAGES` in `scripts/check-m3-discharged-by.sh` so a blank S1-claimed cell
 is a CI failure, not a review note. That is the program's *no-P0-vanishes-silently* check.
 
+- [x] `S1` appended to `CLAIM_STAGES` in `scripts/check-m3-discharged-by.sh`.
+- [x] `[PRD]` §5.1/§5.2 `Discharged by` filled for every S1-claimed row (owning issue id until SHA lands).
+- [x] Fixture self-test includes an S1 case and is green.
+
 ### `S1-B-22` · **Spike Q-1** — `check-crate-dag.sh` allowlist minimality
 **Est** 0.5–1 pd / **2 pts** · ⌂ `[ARCH]` B.2 = **S** · **Scheduled** S1 open · **Blocks** nothing;
 hygiene. Run `--check-unused`; report whether the allowlist carries entries no crate needs.
