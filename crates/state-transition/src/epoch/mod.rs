@@ -46,12 +46,41 @@ pub use slashings::process_slashings;
 pub use slashings_reset::process_slashings_reset;
 pub use sync_committee_updates::process_sync_committee_updates;
 
-/// Map common block-path errors into [`EpochError`].
+/// Map block-path errors into [`EpochError`].
+///
+/// Exhaustive: no `_ =>` arm. Adding a [`BlockError`] variant without a
+/// mapping is a compile failure. Non-arithmetic errors keep their own
+/// [`EpochError`] identity instead of being relabelled
+/// [`EpochError::ArithmeticOverflow`] (P1-B/10).
 pub(crate) fn block_to_epoch(err: BlockError) -> EpochError {
     match err {
         BlockError::ArithmeticOverflow => EpochError::ArithmeticOverflow,
         BlockError::StateAccess(e) => EpochError::StateAccess(e),
-        _ => EpochError::ArithmeticOverflow,
+        BlockError::NotYetImplemented(s) => EpochError::NotYetImplemented(s),
+        BlockError::Epoch(e) => e,
+        BlockError::CachePoisoned => EpochError::CachePoisoned,
+        BlockError::StateNotResident => EpochError::StateNotResident,
+        BlockError::StateBlsMaterial(s) => EpochError::StateBlsMaterial(s),
+        BlockError::InvalidOperation(e) => EpochError::InvalidOperation(e),
+        other @ (BlockError::SlotNotLater { .. }
+        | BlockError::BlockSlotMismatch { .. }
+        | BlockError::BlockSlotNotNewer { .. }
+        | BlockError::ProposerMismatch { .. }
+        | BlockError::ParentRootMismatch { .. }
+        | BlockError::ProposerSlashed { .. }
+        | BlockError::ProposerUnknown { .. }
+        | BlockError::StateRootMismatch { .. }
+        | BlockError::InvalidSignature { .. }
+        | BlockError::BlsMaterial(_)
+        | BlockError::OperationCountOverflow { .. }
+        | BlockError::BlobBoundExceeded { .. }
+        | BlockError::InvalidPayload
+        | BlockError::Engine(_)
+        | BlockError::UnknownParent
+        | BlockError::FutureSlot { .. }
+        | BlockError::AlreadyKnown
+        | BlockError::NotDescendedFromFinalized
+        | BlockError::DataNotAvailable) => EpochError::BlockPath(Box::new(other)),
     }
 }
 
@@ -95,4 +124,59 @@ pub fn process_epoch<P: Preset>(
     process_sync_committee_updates(state)?;
     process_proposer_lookahead(state)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use cc_types::state::StateAccessError;
+
+    use super::block_to_epoch;
+    use crate::error::{BlockError, EpochError};
+
+    /// P1-B/10: a non-arithmetic [`BlockError`] must not become
+    /// [`EpochError::ArithmeticOverflow`].
+    #[test]
+    fn injected_cache_poisoned_keeps_own_variant() {
+        let mapped = block_to_epoch(BlockError::CachePoisoned);
+        assert_eq!(mapped, EpochError::CachePoisoned);
+        assert_ne!(mapped, EpochError::ArithmeticOverflow);
+    }
+
+    #[test]
+    fn state_bls_material_preserves_payload() {
+        let mapped = block_to_epoch(BlockError::StateBlsMaterial("registry pk".into()));
+        assert_eq!(mapped, EpochError::StateBlsMaterial("registry pk".into()));
+    }
+
+    #[test]
+    fn arithmetic_and_state_access_map_directly() {
+        assert_eq!(
+            block_to_epoch(BlockError::ArithmeticOverflow),
+            EpochError::ArithmeticOverflow
+        );
+        let access = StateAccessError::OutOfBounds { index: 1, len: 0 };
+        assert_eq!(
+            block_to_epoch(BlockError::StateAccess(access)),
+            EpochError::StateAccess(access)
+        );
+        assert_eq!(
+            block_to_epoch(BlockError::NotYetImplemented("process_foo")),
+            EpochError::NotYetImplemented("process_foo")
+        );
+        assert_eq!(
+            block_to_epoch(BlockError::Epoch(EpochError::NotYetImplemented("nested"))),
+            EpochError::NotYetImplemented("nested")
+        );
+    }
+
+    #[test]
+    fn unexpected_block_path_error_is_not_arithmetic_overflow() {
+        let mapped = block_to_epoch(BlockError::UnknownParent);
+        assert_eq!(
+            mapped,
+            EpochError::BlockPath(Box::new(BlockError::UnknownParent))
+        );
+    }
 }

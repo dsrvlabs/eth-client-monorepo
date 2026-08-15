@@ -11,7 +11,7 @@ use cc_types::state::JustificationBitsLength;
 use ssz_types::BitVector;
 
 use crate::epoch_cache::total_active_balance_cached;
-use crate::error::{BlockError, EpochError};
+use crate::error::EpochError;
 use crate::helpers::accessors::{
     get_block_root, get_current_epoch, get_previous_epoch, get_total_balance,
     get_unslashed_participating_indices,
@@ -19,6 +19,8 @@ use crate::helpers::accessors::{
 use crate::helpers::constants::{
     GENESIS_EPOCH, JUSTIFICATION_BITS_LENGTH, TIMELY_TARGET_FLAG_INDEX,
 };
+
+use super::block_to_epoch;
 
 /// Spec `process_justification_and_finalization` (Altair+).
 ///
@@ -152,16 +154,4 @@ fn checked_supermajority(target: u64, total: u64) -> Result<bool, EpochError> {
 
 fn epochs_add(epoch: Epoch, n: u64) -> Epoch {
     Epoch::new(epoch.as_u64().saturating_add(n))
-}
-
-fn block_to_epoch(err: BlockError) -> EpochError {
-    match err {
-        BlockError::ArithmeticOverflow => EpochError::ArithmeticOverflow,
-        BlockError::StateAccess(e) => EpochError::StateAccess(e),
-        other => {
-            // Unexpected block-path error during epoch FFG — treat as internal overflow surface.
-            let _ = other;
-            EpochError::ArithmeticOverflow
-        }
-    }
 }

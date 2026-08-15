@@ -742,6 +742,8 @@ Every unexpected error is relabelled `ArithmeticOverflow`.
 **Acceptance** — the catch-all is replaced by explicit arms; an injected non-arithmetic error
 surfaces with its own variant.
 
+- [x] `block_to_epoch` is exhaustive; `CachePoisoned` is not relabelled `ArithmeticOverflow`.
+
 ### `S0-A-35` · P1-B/12 — `SignatureSet` batch bypasses `BLS_VERIFY_COUNT`
 **Est** 1–1.5 pd / **3 pts** (≈) · **Touch** `crates/crypto/src/bls/batch.rs:127`
 **Acceptance** — batch verification increments the instrumentation by the number of signatures

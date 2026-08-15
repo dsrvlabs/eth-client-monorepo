@@ -65,6 +65,26 @@ pub enum EpochError {
     /// State list/vector access failed.
     #[error("state access: {0}")]
     StateAccess(#[from] StateAccessError),
+    /// Pubkey-cache invariant broken (from a shared helper).
+    ///
+    /// Distinct from [`Self::ArithmeticOverflow`] so P1-B/10 cannot relabel it.
+    #[error("epoch cache poisoned")]
+    CachePoisoned,
+    /// Required state is not resident in the body/state cache.
+    #[error("state not resident")]
+    StateNotResident,
+    /// State-resident BLS material failed deserialize/validate.
+    #[error("state bls material invalid: {0}")]
+    StateBlsMaterial(String),
+    /// Typed operation failure leaked from a shared helper.
+    #[error("invalid operation: {0}")]
+    InvalidOperation(OperationError),
+    /// Block-path error with no epoch analogue.
+    ///
+    /// Boxed to break the `BlockError`/`EpochError` cycle. Must not collapse
+    /// to [`Self::ArithmeticOverflow`] (P1-B/10).
+    #[error("block-path error during epoch processing: {0}")]
+    BlockPath(Box<BlockError>),
 }
 
 /// Per-operation errors (folded into [`BlockError::InvalidOperation`]).
