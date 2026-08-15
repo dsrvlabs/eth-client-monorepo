@@ -131,21 +131,28 @@ moving, not being re-derived. A new numeric literal in a moved file is a review-
 
 | Id | Moves | pd | Note |
 |---|---|---:|---|
-| `S1-A-02` | `transport.rs`, `config.rs` | 2–3 | the three-lane transport and `TransportTimeouts` ✓ (`services/engine/src/config.rs:37-67`) — the EL's own HTTP timeouts already modelled here become the callee-side overflow story for E3 |
+| `S1-A-02` | `transport.rs`, `config.rs` | 2–3 | the three-lane transport and `TransportTimeouts` ✓ (`crates/engine-api/src/config.rs:37-67`) — the EL's own HTTP timeouts already modelled here become the callee-side overflow story for E3 |
 | `S1-A-03` | `jwt.rs`, `version.rs`, `errors.rs`, `capabilities.rs` | 1.5–2 | `errors.rs:6` carries ADR-P3-09 (*the transport never retries `newPayload`*), which S1's deadline design depends on — do not "improve" it |
 | `S1-A-04` | `state.rs` (health machine) | 1.5–2.5 | |
 | `S1-A-05` | `methods/`, `fastpath/` | 2–3 | `fastpath/cells.rs:1` carries ADR-P3-12 (cell extension on the blocking pool); `fastpath/filter.rs:346` carries ADR-P3-15, the `cfg(test)`-only `verify_cell_kzg_proof_batch` → `S1-B-13` |
 | `S1-A-06` | `services/engine/main.rs` → thin constructor over `cc-engine-api`; delete `service.rs`, `inject.rs` | 1.5–2 | **`services/engine` stays a workspace member** so the 4-container topology can still be run for A/B (`[ARCH]` §9.1) |
+
+**Acceptance (`S1-A-02` only)**
+- [x] `transport.rs` and `config.rs` live in `crates/engine-api`, verbatim with tests
+- [x] Queue bounds moved (git rename), not re-derived; no new numeric literal in a moved file
+- [x] `cargo test -p cc-engine-api` covers the moved tests
+- [x] `services/engine` compiles via `pub use` from `cc-engine-api`
+- [x] `cc-engine-api` appended to `cc-engine` `allowed_deps`
 
 **Also deleted in `S1-A-06`** — `services/chain/src/engine_client.rs` (the whole `block_on` bridge,
 E3, P0-15's and P1-B/11's surface) and the `trusted_local` bool. E3 becomes a direct
 `cc-engine-api` call from the core thread with an explicit `Duration` argument.
 
 **Acceptance for the group**
-1. `cargo test -p cc-engine-api` passes with the tests that moved with the code.
-2. `services/chain/src/engine_client.rs` no longer exists; no `handle.block_on` remains on any
+1. [x] `cargo test -p cc-engine-api` passes with the tests that moved with the code.
+2. [ ] `services/chain/src/engine_client.rs` no longer exists; no `handle.block_on` remains on any
    chain→engine path.
-3. The `trusted_local` bool and its proto comment recording the security residual ✓
+3. [ ] The `trusted_local` bool and its proto comment recording the security residual ✓
    (`p2p.proto:240-249`) are gone.
 
 ---

@@ -26,7 +26,10 @@
 
 #![allow(missing_docs)]
 
+use cc_engine_api as _;
+
 pub mod capabilities;
+#[path = "../../../crates/engine-api/src/config.rs"]
 pub mod config;
 pub mod errors;
 pub mod fastpath;
@@ -36,6 +39,7 @@ pub mod methods;
 pub mod metrics;
 pub mod service;
 pub mod state;
+#[path = "../../../crates/engine-api/src/transport.rs"]
 pub mod transport;
 pub mod version;
 

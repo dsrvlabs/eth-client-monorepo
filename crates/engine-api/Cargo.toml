@@ -11,4 +11,18 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-# Skeleton: no workspace edges until S1-A-02..05 move transport/JWT ([ARCH] §6.2).
+# S1-A-02: sources live here; `cc-engine` compiles them via `#[path]`.
+# No JWT signer. HTTP client is test-only (moved transport unit tests).
+
+[dev-dependencies]
+futures = { workspace = true }
+prometheus-client = { workspace = true }
+proptest = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+wiremock = { workspace = true }

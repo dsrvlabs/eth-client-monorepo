@@ -1082,6 +1082,7 @@ dependencies = [
  "cc-bootstrap",
  "cc-config",
  "cc-crypto",
+ "cc-engine-api",
  "cc-proto",
  "cc-types",
  "crc32fast",
@@ -1111,6 +1112,19 @@ dependencies = [
 [[package]]
 name = "cc-engine-api"
 version = "0.1.0"
+dependencies = [
+ "futures",
+ "prometheus-client",
+ "proptest",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "wiremock",
+]
 
 [[package]]
 name = "cc-fork-choice"

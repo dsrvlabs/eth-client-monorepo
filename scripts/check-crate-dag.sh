@@ -282,7 +282,8 @@ allowed_deps() {
     cc-p2p)               echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-libp2p cc-seam" ;;
     cc-attestation)       echo "cc-bootstrap cc-config cc-proto" ;;
     # CC-32b: append cc-types (never re-sort). CC-37b: append cc-crypto (never re-sort).
-    cc-engine)            echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto" ;;
+    # S1-A-02: append cc-engine-api (transport + config move).
+    cc-engine)            echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-engine-api" ;;
     cc-beacon-api)        echo "cc-bootstrap cc-config cc-proto" ;;
     # Phase 4 store DAG: permanent cc-types-only rule; storage gains cc-store + ST.
     cc-store)             echo "cc-types" ;;
