@@ -1,0 +1,16 @@
+# Negative: key present but still the localhost TOML default (import dead).
+services:
+  chain:
+    environment:
+      CC_CHAIN_ENGINE_URI: http://127.0.0.1:9004
+  engine:
+    environment:
+      CC_ENGINE_P2P_URI: http://p2p:9002
+  p2p:
+    environment:
+      CC_P2P_PEERS__STORAGE: http://storage:9006
+  storage:
+    environment:
+      CC_STORAGE_NODE_KEY_PATH: /identity/node_key
+    volumes:
+      - cc-p2p-identity:/identity:ro

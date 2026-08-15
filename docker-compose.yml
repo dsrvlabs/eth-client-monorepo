@@ -33,6 +33,8 @@ services:
       <<: *cc-env
       CC_CHAIN_GRPC_ADDR: 0.0.0.0:9001
       CC_CHAIN_METRICS_ADDR: 0.0.0.0:9101
+      # P0-07: engine is a sibling on `cc`, not this container's localhost.
+      CC_CHAIN_ENGINE_URI: http://engine:9004
     ports: ["127.0.0.1:9101:9101"]
     healthcheck:
       <<: *hc
@@ -50,6 +52,8 @@ services:
       CC_P2P_GRPC_ADDR: 0.0.0.0:9002
       CC_P2P_METRICS_ADDR: 0.0.0.0:9102
       CC_P2P_PEERS__CHAIN: http://chain:9001
+      # P0-07: WatchServeWindow / serve path — TOML localhost fail-closes to NOT_SERVING.
+      CC_P2P_PEERS__STORAGE: http://storage:9006
       # CC-4N / §1.7: persist node_key (CC-20b) + enr_seq (CC-4E) on the named volume.
       CC_P2P_NODE_KEY_PATH: /app/data/node_key
     volumes:
@@ -94,6 +98,8 @@ services:
       CC_ENGINE_GRPC_ADDR: 0.0.0.0:9004
       CC_ENGINE_METRICS_ADDR: 0.0.0.0:9104
       CC_ENGINE_PEERS__CHAIN: http://chain:9001
+      # P0-07 / CC-38a: EngineStream to p2p on `cc` (not a health peer).
+      CC_ENGINE_P2P_URI: http://p2p:9002
       # Engine API auth (CC-30a/b, Architecture §7). Mount matches el's /jwt/jwt.hex
       # so `docker compose logs | grep -i crc32` shows the matching pair.
       CC_ENGINE_EL_ENDPOINT: http://el:8551
@@ -125,10 +131,13 @@ services:
       CC_STORAGE_GRPC_ADDR: 0.0.0.0:9006
       CC_STORAGE_METRICS_ADDR: 0.0.0.0:9106
       CC_STORAGE_PEERS__CHAIN: http://chain:9001
+      # P1-A/27 / ADR-P4-13: I-node-id against p2p's persisted key (same volume, :ro).
+      CC_STORAGE_NODE_KEY_PATH: /identity/node_key
       # CC-4N / §1.7: redb datadir on the named volume (~59 GiB steady, 128 GiB provisioned).
       CC_STORAGE_DATA_DIR: /app/data
     volumes:
       - cc-store-data:/app/data
+      - cc-p2p-identity:/identity:ro
     ports: ["127.0.0.1:9106:9106"]
     depends_on:
       chain:
@@ -218,4 +227,4 @@ volumes:
   # (docs/running.md): restore them together; a store beside a different node_key
   # is wrong-index columns and must refuse (I-node-id / ADR P4-13).
   cc-store-data:      # storage: the redb file, ~59 GiB steady, 128 GiB provisioned (§9)
-  cc-p2p-identity:    # p2p: node_key (CC-20b) + enr_seq (CC-4E). Two small files, mode 0600.
+  cc-p2p-identity:    # p2p: node_key (CC-20b) + enr_seq (CC-4E). storage mounts :ro at /identity.

@@ -697,9 +697,8 @@ fn check_node_id(
         return Ok(Some(InvariantViolation {
             invariant: StoreInvariant::NodeId,
             detail: format!(
-                "AnchorInfo.node_id {found} does not match node key NodeId {expected}",
-                found = anchor.node_id,
-                expected = expected
+                "AnchorInfo.node_id {found} does not match the configured node key",
+                found = anchor.node_id
             ),
         }));
     }
@@ -1254,7 +1253,7 @@ mod tests {
         let f = Fixture::new("node-id");
         // Simulate a real key-file id: write a 32-byte secret and treat its bytes as
         // the expected NodeId surface the storage process would pass after derivation.
-        // The mismatch is AnchorInfo vs that expected id (both named in the detail).
+        // The mismatch names stored AnchorInfo.node_id, not the key-file bytes.
         let key_path = f.dir.join("node_key");
         let key_bytes = [0xBBu8; 32];
         std::fs::write(&key_path, key_bytes).unwrap();
@@ -1274,8 +1273,12 @@ mod tests {
         assert_eq!(sink.count(StoreInvariant::NodeId), 1);
         let detail = &sink.violations()[0].detail;
         assert!(
-            detail.contains(&f.node_id.to_string()) && detail.contains(&from_key.to_string()),
-            "detail must name both ids: {detail}"
+            detail.contains(&f.node_id.to_string()),
+            "detail must name stored AnchorInfo.node_id: {detail}"
+        );
+        assert!(
+            !detail.contains(&from_key.to_string()),
+            "detail must not print key-file bytes: {detail}"
         );
         // Fatal open path names both as well.
         let err = check_invariants(f.engine(), InvariantCheckMode::Open, &ctx, None).unwrap_err();
@@ -1291,8 +1294,12 @@ mod tests {
             "err={err:?}"
         );
         assert!(
-            msg.contains(&f.node_id.to_string()) && msg.contains(&from_key.to_string()),
-            "fatal must name both ids: {msg}"
+            msg.contains(&f.node_id.to_string()),
+            "fatal must name stored AnchorInfo.node_id: {msg}"
+        );
+        assert!(
+            !msg.contains(&from_key.to_string()),
+            "fatal must not print key-file bytes: {msg}"
         );
         // Key file exists for the durable-surface criterion.
         assert_eq!(std::fs::read(&key_path).unwrap(), key_bytes);

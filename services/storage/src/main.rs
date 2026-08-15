@@ -172,9 +172,11 @@ struct StorageConfig {
     ///
     /// When set and the file exists, `Store::open` runs **I-node-id** against
     /// the 32-byte key surface so a store restored beside a different key
-    /// **refuses to start** rather than silently re-backfilling. Same path as
-    /// `p2p.node_key_path` when the identity volume is mounted (or a host path
-    /// for local dev). Override: `CC_STORAGE_NODE_KEY_PATH`.
+    /// **refuses to start** rather than silently re-backfilling. When set and
+    /// the file is missing, first boot (no `AnchorInfo`) still skips; a
+    /// populated store **refuses**. Same path as `p2p.node_key_path` when the
+    /// identity volume is mounted (or a host path for local dev). Override:
+    /// `CC_STORAGE_NODE_KEY_PATH`.
     #[serde(default)]
     node_key_path: Option<PathBuf>,
 }
@@ -412,11 +414,11 @@ fn open_store(cfg: &StorageConfig) -> anyhow::Result<Store> {
     let expected_node_id =
         durable_set::load_expected_node_id_from_key_path(cfg.node_key_path.as_deref())
             .map_err(|e| anyhow::anyhow!("node_key_path: {e}"))?;
-    if let Some(id) = expected_node_id {
+    if expected_node_id.is_some() {
+        // Path only — the 32-byte file is the secp256k1 secret, not a derived id.
         tracing::info!(
             path = ?cfg.node_key_path,
-            node_id = %id,
-            "I-node-id expected NodeId loaded from node_key_path"
+            "I-node-id node key loaded from node_key_path"
         );
     }
     let opts = StoreOpenOptions::from_config(
@@ -426,7 +428,10 @@ fn open_store(cfg: &StorageConfig) -> anyhow::Result<Store> {
     .with_check_invariants(cfg.check_invariants)
     .with_snapshot_ring(cfg.snapshot_ring.max(1))
     .with_expected_node_id(expected_node_id);
-    Store::open(&cfg.data_dir, opts).map_err(|e| anyhow::anyhow!("store open: {e}"))
+    let store = Store::open(&cfg.data_dir, opts).map_err(|e| anyhow::anyhow!("store open: {e}"))?;
+    durable_set::refuse_missing_key_if_anchor_present(store.engine(), cfg.node_key_path.as_deref())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(store)
 }
 
 fn parse_gvr(s: Option<&str>) -> anyhow::Result<Root> {
@@ -550,6 +555,7 @@ async fn main() -> anyhow::Result<()> {
                     )
                     .ok()
                     .flatten(),
+                    node_key_path: cfg.node_key_path.clone(),
                     enr_seq_path: None,
                     snapshot_ring: cfg.snapshot_ring.max(1),
                     da_status_roots: Vec::new(),
@@ -1057,9 +1063,131 @@ mod config_tests {
             "error must name I-node-id: {msg}"
         );
         assert!(
-            msg.contains(&anchor_id.to_string()) && msg.contains(&key_id.to_string()),
-            "error must name both node ids: {msg}"
+            msg.contains(&anchor_id.to_string()),
+            "error must name stored AnchorInfo.node_id: {msg}"
         );
+        assert!(
+            !msg.contains(&key_id.to_string()),
+            "error must not print key-file bytes: {msg}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Path set, file missing, store already has AnchorInfo → refuse (H1).
+    #[test]
+    fn open_store_missing_key_with_anchor_refuses() {
+        use cc_store::engine::{Durability, EngineOptions};
+        use cc_store::meta::{AnchorInfo, KEY_ANCHOR_INFO, TABLE_META};
+        use cc_store::{
+            ConfigDigestInput, SszEncode, Store, StoreOpenOptions, compute_config_digest,
+        };
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("cc-storage-open-missing-key-{nanos}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let anchor_id = Root::from_array([0xAAu8; 32]);
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/types/tests/fixtures/hoodi-config.yaml");
+        let chain = ChainConfig::from_yaml_file(&fixture).unwrap_or_else(|_| {
+            ChainConfig::from_yaml_str(include_str!(
+                "../../../crates/types/tests/fixtures/hoodi-config.yaml"
+            ))
+            .unwrap()
+        });
+        let digest_input = ConfigDigestInput::with_mainnet_scalars(chain, Root::ZERO);
+        let digest = compute_config_digest(&digest_input).unwrap();
+        let store = Store::open(
+            &dir,
+            StoreOpenOptions::with_digest(
+                EngineOptions::default().with_durability(Durability::None),
+                digest,
+            )
+            .with_check_invariants(false),
+        )
+        .unwrap();
+        let engine = store.into_engine();
+        let anchor = AnchorInfo {
+            anchor_slot: cc_store::Slot::new(10),
+            anchor_root: Root::from_array([0x10; 32]),
+            anchor_state_root: Root::from_array([0x11; 32]),
+            node_id: anchor_id,
+            oldest_block_slot: cc_store::Slot::new(10),
+            oldest_block_parent: Root::from_array([0x09; 32]),
+        };
+        let mut b = engine.batch();
+        b.put(
+            TABLE_META,
+            KEY_ANCHOR_INFO.as_bytes(),
+            &anchor.as_ssz_bytes(),
+        );
+        engine.commit(b).unwrap();
+        drop(engine);
+
+        let key_path = dir.join("node_key");
+        let _ = std::fs::remove_file(&key_path);
+
+        let mut cfg = {
+            let path = storage_toml_path();
+            let _g = env_lock();
+            unsafe {
+                std::env::remove_var("CC_STORAGE_NODE_KEY_PATH");
+            }
+            cc_config::load_from::<StorageConfig>("storage", &path).unwrap()
+        };
+        cfg.data_dir = dir.clone();
+        cfg.node_key_path = Some(key_path);
+        cfg.check_invariants = false;
+        cfg.durability = "immediate".into();
+        let err = open_store(&cfg).expect_err("missing key with AnchorInfo must refuse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("I-node-id") && msg.contains("AnchorInfo"),
+            "error must cite I-node-id and AnchorInfo: {msg}"
+        );
+        assert!(
+            !msg.contains(&anchor_id.to_string()) || msg.contains("AnchorInfo"),
+            "error must not be a silent skip: {msg}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Path set, file missing, empty store (no AnchorInfo) → first boot still opens.
+    #[test]
+    fn open_store_missing_key_without_anchor_ok() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("cc-storage-open-first-boot-{nanos}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let key_path = dir.join("node_key");
+        let _ = std::fs::remove_file(&key_path);
+
+        let mut cfg = {
+            let path = storage_toml_path();
+            let _g = env_lock();
+            unsafe {
+                std::env::remove_var("CC_STORAGE_NODE_KEY_PATH");
+            }
+            cc_config::load_from::<StorageConfig>("storage", &path).unwrap()
+        };
+        cfg.data_dir = dir.clone();
+        cfg.node_key_path = Some(key_path);
+        cfg.check_invariants = false;
+        cfg.durability = "immediate".into();
+        open_store(&cfg).expect("first boot with missing key must still open");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

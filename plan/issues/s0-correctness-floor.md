@@ -757,6 +757,10 @@ mount, no `CC_STORAGE_NODE_KEY_PATH`, so storage can never enforce `I-node-id`, 
 assert a block imports. `[PRD]` P0-07 asks for exactly this, and it is the only acceptance criterion
 here that is not re-reading the compose file.
 
+- [x] Three URI overrides: `CC_CHAIN_ENGINE_URI`, `CC_ENGINE_P2P_URI`, `CC_P2P_PEERS__STORAGE`.
+- [x] Storage identity mount (`CC_STORAGE_NODE_KEY_PATH` + `cc-p2p-identity:/identity:ro`).
+- [x] CI asserts the keys and `:ro` identity mount (`scripts/check-compose-uri-overrides.sh`); live Hoodi import smoke deferred (needs a synced EL).
+
 ---
 
 ### `S0-B-03` · P1-A/29 — `devnet/faults.sh` pinned to the wrong compose file

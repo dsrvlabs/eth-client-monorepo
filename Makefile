@@ -146,7 +146,7 @@ clippy: ## Clippy with -D warnings (CI: clippy job)
 	$(CARGO) clippy $(CLIPPY_FLAGS) -- -D warnings
 
 .PHONY: lint
-lint: fmt-check clippy check-dag check-env check-http check-gha-pins check-ci-jobs ## Local lint suite (fmt + clippy + guards)
+lint: fmt-check clippy check-dag check-env check-http check-gha-pins check-ci-jobs check-compose-uris ## Local lint suite (fmt + clippy + guards)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Policy guards (scripts/ — wired into the matching CI job and `make ci`)
@@ -175,6 +175,10 @@ check-gha-pins: ## GitHub Actions pinned to commit SHAs (S0a-B-06)
 .PHONY: check-ci-jobs
 check-ci-jobs: ## Makefile CI_JOBS matches ci.yml job ids (S0a-B-04)
 	bash $(SCRIPTS)/check-ci-job-list.sh
+
+.PHONY: check-compose-uris
+check-compose-uris: ## P0-07 / P1-A/27 compose URI overrides + identity mount
+	bash $(SCRIPTS)/check-compose-uri-overrides.sh
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Proto (required CI: proto job)
@@ -261,8 +265,12 @@ prove-health: ## Mutual-health proof (stop chain → NOT_SERVING → recover)
 .PHONY: compose
 compose: compose-build compose-up wait-healthy ## Build, up, and wait-healthy
 
+.PHONY: check-compose-uris-runtime
+check-compose-uris-runtime: ## P0-07 keys + identity mount inside a running stack
+	bash $(SCRIPTS)/check-compose-uri-overrides.sh --runtime
+
 .PHONY: compose-proof
-compose-proof: compose prove-health ## Full mutual-health proof (compose CI path)
+compose-proof: compose check-compose-uris-runtime prove-health ## Full mutual-health proof (compose CI path)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Meta

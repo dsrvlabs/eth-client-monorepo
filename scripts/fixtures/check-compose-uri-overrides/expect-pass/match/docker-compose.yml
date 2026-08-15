@@ -1,0 +1,24 @@
+# Positive fixture: all three P0-07 URIs + P1-A/27 identity mount.
+services:
+  chain:
+    environment:
+      CC_CHAIN_ENGINE_URI: http://engine:9004
+  engine:
+    environment:
+      CC_ENGINE_P2P_URI: http://p2p:9002
+  p2p:
+    environment:
+      CC_P2P_PEERS__STORAGE: http://storage:9006
+    volumes:
+      - cc-p2p-identity:/app/data
+  storage:
+    environment:
+      CC_STORAGE_NODE_KEY_PATH: /identity/node_key
+      CC_STORAGE_DATA_DIR: /app/data
+    volumes:
+      - cc-store-data:/app/data
+      - cc-p2p-identity:/identity:ro
+
+volumes:
+  cc-store-data: {}
+  cc-p2p-identity: {}

@@ -185,6 +185,9 @@ impl ItemAssessment {
 pub(crate) struct DurableSetContext {
     /// Node id derived from the node key file (`p2p.node_key_path`) for **I-node-id**.
     pub expected_node_id: Option<Root>,
+    /// Configured node-key path. When set and the file is missing, a store
+    /// that already has `AnchorInfo` must refuse (not skip I-node-id).
+    pub node_key_path: Option<PathBuf>,
     /// Path to `<node_key>.seq` (CC-4E). When `None`, ENR assessment is skipped.
     pub enr_seq_path: Option<PathBuf>,
     /// Snapshot ring depth (`storage.snapshot_ring`).
@@ -206,6 +209,7 @@ impl DurableSetContext {
     pub(crate) fn new() -> Self {
         Self {
             expected_node_id: None,
+            node_key_path: None,
             enr_seq_path: None,
             snapshot_ring: DEFAULT_SNAPSHOT_RING,
             da_status_roots: Vec::new(),
@@ -793,20 +797,29 @@ fn assess_split(engine: &Engine, ctx: &DurableSetContext) -> Result<ItemAssessme
 
 /// 12. Node key vs AnchorInfo.node_id — cites **I-node-id** (`crates/store/src/invariants.rs`).
 ///
-/// On mismatch the error always names **both** `AnchorInfo.node_id` and the
-/// expected NodeId from the key file (never a silent re-backfill).
+/// On mismatch the error names stored `AnchorInfo.node_id` (already in the
+/// store) and cites I-node-id. It does **not** print the key-file bytes
+/// (the secp256k1 secret). A configured path whose file is missing is a
+/// named failure when `AnchorInfo` is already present.
 fn assess_node_id_pairing(
     engine: &Engine,
     ctx: &DurableSetContext,
 ) -> Result<ItemAssessment, StoreError> {
     let item = DurableItem::NodeIdPairing;
+    if let Some(msg) = missing_key_with_anchor_detail(engine, ctx.node_key_path.as_deref())? {
+        return Ok(named_fail(
+            item,
+            format!("durable item `{}`: {msg}", item.as_str()),
+        ));
+    }
     let Some(expected) = ctx.expected_node_id else {
-        // Optional when no key is supplied (same as I-node-id skip).
+        // No key supplied, or first boot (path set, file missing, no AnchorInfo).
         return Ok(ItemAssessment::Present);
     };
 
-    // Prefer a direct read so both ids are always named even when another
-    // invariant would fire first under Open mode.
+    // Prefer a direct read so the stored id is named even when another
+    // invariant would fire first under Open mode. Do not print `expected`
+    // (raw key-file bytes).
     if let Some(anchor) = read_meta_ssz::<AnchorInfo>(engine, KEY_ANCHOR_INFO)?
         && anchor.node_id != expected
     {
@@ -814,7 +827,7 @@ fn assess_node_id_pairing(
             item,
             format!(
                 "durable item `{}`: I-node-id (crates/store/src/invariants.rs): \
-                 AnchorInfo.node_id {} does not match node key NodeId {expected}",
+                 AnchorInfo.node_id {} does not match the configured node key",
                 item.as_str(),
                 anchor.node_id
             ),
@@ -828,14 +841,10 @@ fn assess_node_id_pairing(
             invariant: "node_id",
             detail,
         }) => {
-            // Ensure both ids appear even if the invariant detail is truncated.
             let mut msg = format!(
                 "durable item `{}`: I-node-id violation (crates/store/src/invariants.rs): {detail}",
                 item.as_str()
             );
-            if !msg.contains(&expected.to_string()) {
-                msg.push_str(&format!(" (expected node id {expected})"));
-            }
             if let Some(anchor) = read_meta_ssz::<AnchorInfo>(engine, KEY_ANCHOR_INFO)?
                 && !msg.contains(&anchor.node_id.to_string())
             {
@@ -844,13 +853,10 @@ fn assess_node_id_pairing(
             Ok(named_fail(item, msg))
         }
         Err(e) if e.to_string().contains("node_id") => {
-            let mut msg = format!(
+            let msg = format!(
                 "durable item `{}`: I-node-id related failure: {e}",
                 item.as_str()
             );
-            if !msg.contains(&expected.to_string()) {
-                msg.push_str(&format!(" (expected {expected})"));
-            }
             Ok(named_fail(item, msg))
         }
         Err(_) | Ok(_) => Ok(ItemAssessment::Present),
@@ -862,7 +868,8 @@ fn assess_node_id_pairing(
 /// Matches the CC-4H / `I-node-id` pairing surface used by
 /// [`StoreOpenOptions::expected_node_id`]: the 32 raw bytes of the key file are
 /// the Root compared against `AnchorInfo.node_id`. Missing path / missing file
-/// → `Ok(None)` so open skips I-node-id (bootstrap / offline tools).
+/// → `Ok(None)`. Callers must then [`refuse_missing_key_if_anchor_present`] so a
+/// populated store does not skip I-node-id; first boot (no `AnchorInfo`) may.
 pub(crate) fn load_expected_node_id_from_key_path(
     path: Option<&Path>,
 ) -> Result<Option<Root>, String> {
@@ -873,7 +880,8 @@ pub(crate) fn load_expected_node_id_from_key_path(
         return Ok(None);
     }
     if !path.exists() {
-        // Key not yet materialised (first boot before p2p creates it) — skip.
+        // First boot before p2p creates the key — skip here; the caller
+        // fail-closes if AnchorInfo is already present.
         return Ok(None);
     }
     let bytes = std::fs::read(path)
@@ -888,6 +896,42 @@ pub(crate) fn load_expected_node_id_from_key_path(
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&bytes);
     Ok(Some(Root::from_array(arr)))
+}
+
+/// Configured `node_key_path` is set, the file is missing, and `AnchorInfo`
+/// is already in the store — I-node-id must refuse, not skip.
+fn missing_key_with_anchor_detail(
+    engine: &Engine,
+    path: Option<&Path>,
+) -> Result<Option<String>, StoreError> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    if path.as_os_str().is_empty() || path.exists() {
+        return Ok(None);
+    }
+    if read_meta_ssz::<AnchorInfo>(engine, KEY_ANCHOR_INFO)?.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "I-node-id (crates/store/src/invariants.rs): node key missing at {} \
+         but store has AnchorInfo",
+        path.display()
+    )))
+}
+
+/// Fail-closed after `Store::open` when the key path is configured, the file
+/// is gone, and the store already has `AnchorInfo`. First boot (no anchor)
+/// still skips.
+pub(crate) fn refuse_missing_key_if_anchor_present(
+    engine: &Engine,
+    path: Option<&Path>,
+) -> Result<(), String> {
+    match missing_key_with_anchor_detail(engine, path) {
+        Ok(None) => Ok(()),
+        Ok(Some(msg)) => Err(msg),
+        Err(e) => Err(format!("I-node-id: failed to read AnchorInfo: {e}")),
+    }
 }
 
 /// Derive `<node_key_path>.seq` the same way p2p does (CC-4E).
@@ -1036,6 +1080,7 @@ mod tests {
         fn ctx(&self) -> DurableSetContext {
             DurableSetContext {
                 expected_node_id: Some(self.node_id),
+                node_key_path: Some(self.node_key_path.clone()),
                 enr_seq_path: Some(self.enr_seq_path.clone()),
                 snapshot_ring: DEFAULT_SNAPSHOT_RING,
                 da_status_roots: vec![self.available_root, self.deferred_root],
@@ -1498,8 +1543,12 @@ mod tests {
                 "must cite I-node-id: {detail}"
             );
             assert!(
-                detail.contains(&f.node_id.to_string()) && detail.contains(&from_key.to_string()),
-                "must name **both** AnchorInfo.node_id and key NodeId: {detail}"
+                detail.contains(&f.node_id.to_string()),
+                "must name stored AnchorInfo.node_id: {detail}"
+            );
+            assert!(
+                !detail.contains(&from_key.to_string()),
+                "must not print key-file bytes: {detail}"
             );
         }
 
@@ -1528,8 +1577,12 @@ mod tests {
             "err={err:?}"
         );
         assert!(
-            msg.contains(&f.node_id.to_string()) && msg.contains(&from_key.to_string()),
-            "fatal must name both ids: {msg}"
+            msg.contains(&f.node_id.to_string()),
+            "fatal must name stored AnchorInfo.node_id: {msg}"
+        );
+        assert!(
+            !msg.contains(&from_key.to_string()),
+            "fatal must not print key-file bytes: {msg}"
         );
 
         // End-to-end Store::open with expected_node_id from key file refuses.
@@ -1553,10 +1606,50 @@ mod tests {
             "Store::open must refuse on key mismatch: {err:?}"
         );
         assert!(
-            msg.contains(&anchor_id.to_string()) && msg.contains(&from_key2.to_string()),
-            "open refuse must name both ids: {msg}"
+            msg.contains(&anchor_id.to_string()),
+            "open refuse must name stored AnchorInfo.node_id: {msg}"
+        );
+        assert!(
+            !msg.contains(&from_key2.to_string()),
+            "open refuse must not print key-file bytes: {msg}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Configured path, missing file, AnchorInfo present → named I-node-id failure.
+    #[test]
+    fn missing_key_with_anchor_named_failure() {
+        let f = Fixture::new("missing-key-anchor");
+        std::fs::remove_file(&f.node_key_path).unwrap();
+        let mut ctx = f.ctx();
+        ctx.expected_node_id = None;
+        let a = assess_item(f.engine(), DurableItem::NodeIdPairing, &ctx).unwrap();
+        assert!(
+            a.is_named_failure_for(DurableItem::NodeIdPairing),
+            "expected named failure, got {a:?}"
+        );
+        if let ItemAssessment::NamedFailure { detail, .. } = &a {
+            assert!(
+                detail.contains("I-node-id") && detail.contains("AnchorInfo"),
+                "must cite I-node-id and AnchorInfo: {detail}"
+            );
+        }
+        refuse_missing_key_if_anchor_present(f.engine(), Some(&f.node_key_path))
+            .expect_err("populated store must refuse a missing key");
+    }
+
+    /// Configured path, missing file, no AnchorInfo → first boot still skips.
+    #[test]
+    fn missing_key_without_anchor_skips() {
+        let f = Fixture::new("missing-key-fresh");
+        f.delete_meta(KEY_ANCHOR_INFO);
+        std::fs::remove_file(&f.node_key_path).unwrap();
+        let mut ctx = f.ctx();
+        ctx.expected_node_id = None;
+        let a = assess_item(f.engine(), DurableItem::NodeIdPairing, &ctx).unwrap();
+        assert_eq!(a, ItemAssessment::Present);
+        refuse_missing_key_if_anchor_present(f.engine(), Some(&f.node_key_path))
+            .expect("first boot may skip");
     }
 
     // ── da_status both directions (CC-45 /4) ────────────────────────────────

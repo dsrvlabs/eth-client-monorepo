@@ -593,3 +593,26 @@ and `cc-p2p-identity` and voids the proof. A 19/20 does not discharge; the
 failing run names its `cc_storage_restart_seconds{phase}` term and the full set
 is re-run after the fix.
 
+## Compose URI overrides (P0-07 / P1-A/27)
+
+`config/*.toml` localhost defaults must not apply inside compose. The stack
+sets the three cross-service URIs that were previously missing:
+
+- `CC_CHAIN_ENGINE_URI=http://engine:9004` — without this, `chain` dials its
+  own `:9004` and import is dead
+- `CC_ENGINE_P2P_URI=http://p2p:9002` — EngineStream to `p2p` on the `cc`
+  network (not a health peer)
+- `CC_P2P_PEERS__STORAGE=http://storage:9006` — `WatchServeWindow` / serve
+  path; the TOML default fail-closes the advertised window
+
+`storage` mounts `cc-p2p-identity` read-only at `/identity` and sets
+`CC_STORAGE_NODE_KEY_PATH=/identity/node_key` so `I-node-id` can run
+(ADR-P4-13). `p2p` is the only writer of `node_key` (volume mounted RW at
+`/app/data`) and does **not** wait on `storage`. A missing key file skips
+the check only on first boot (no `AnchorInfo`); a populated store refuses.
+
+`scripts/check-compose-uri-overrides.sh` is the CI gate (clippy, always).
+`--runtime` is the same assertion against a running stack (compose job,
+after `wait-healthy`). A Hoodi block-import smoke needs a synced EL and is
+not in the required budget.
+
