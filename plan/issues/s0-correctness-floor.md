@@ -340,6 +340,8 @@ plumbing, not a constant swap**.
 Rides with P0-02 per `[PRD]` §5.3.1. Bypasses scan accounting.
 **Touch point** — `crates/state-transition/src/block/operations/deposit.rs:119`
 
+- [x] `apply_deposit` uses `get_validator_index_by_pubkey` (scan accounting / cache backfill).
+
 ---
 
 ### `S0-A-11` · E0.3 — a config fixture that differs from mainnet on all five

@@ -1326,6 +1326,72 @@ fn deposit_new_validator_appends_registry_and_pubkey_map() {
     let _ = TreeHash::tree_hash_root(state.validators_get(0).unwrap());
 }
 
+/// S0-A-10 / P2-B/3: `apply_deposit` must use `get_validator_index_by_pubkey`
+/// so a cache miss increments `linear_scan_count` and backfills the map.
+#[test]
+fn apply_deposit_cache_miss_counts_linear_scan() {
+    use cc_state_transition::block::operations::apply_deposit;
+    use cc_types::containers::Validator;
+    use cc_types::primitives::{BlsPublicKey, BlsSignature, Gwei, ValidatorIndex};
+
+    let mut state = BeaconState::<Minimal>::default();
+    let pk = BlsPublicKey::from_array([0xABu8; 48]);
+    let creds = Root::from_array([0x01u8; 32]);
+    state
+        .validators_push(Validator {
+            pubkey: pk,
+            withdrawal_credentials: creds,
+            effective_balance: Gwei::new(32_000_000_000),
+            slashed: false,
+            activation_eligibility_epoch: Epoch::new(0),
+            activation_epoch: Epoch::new(0),
+            exit_epoch: Epoch::new(u64::MAX),
+            withdrawable_epoch: Epoch::new(u64::MAX),
+        })
+        .unwrap();
+    state.balances_push(Gwei::new(32_000_000_000)).unwrap();
+    // Validator is in the registry; leave the map empty so the lookup must scan.
+    assert!(state.caches().pubkeys.is_empty());
+    let _ = state.caches_mut().pubkeys.take_linear_scan_count();
+
+    apply_deposit(
+        &mut state,
+        pk,
+        creds,
+        Gwei::new(1_000_000_000),
+        BlsSignature::default(),
+        &spec_config_for_preset(PresetName::Minimal),
+    )
+    .unwrap();
+
+    assert_eq!(
+        state.caches().pubkeys.linear_scan_count(),
+        1,
+        "cache-miss apply_deposit must count the registry scan"
+    );
+    assert_eq!(
+        state.caches().pubkeys.get(&pk),
+        Some(ValidatorIndex::new(0))
+    );
+    assert_eq!(state.pending_deposits_len(), 1);
+
+    apply_deposit(
+        &mut state,
+        pk,
+        creds,
+        Gwei::new(1_000_000_000),
+        BlsSignature::default(),
+        &spec_config_for_preset(PresetName::Minimal),
+    )
+    .unwrap();
+    assert_eq!(
+        state.caches().pubkeys.linear_scan_count(),
+        1,
+        "cache hit must not scan again"
+    );
+    assert_eq!(state.pending_deposits_len(), 2);
+}
+
 #[test]
 fn multi_committee_electra_attestation_and_nonzero_index_from_vectors() {
     // `multiple_committees` is emitted for minimal (spans ≥2 committees via

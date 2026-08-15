@@ -11,6 +11,7 @@ use tree_hash::TreeHash;
 
 use crate::epoch_cache::note_registry_or_effective_balance_change;
 use crate::error::{BlockError, OperationError};
+use crate::helpers::accessors::get_validator_index_by_pubkey;
 use crate::helpers::constants::{
     DEPOSIT_CONTRACT_TREE_DEPTH, EFFECTIVE_BALANCE_INCREMENT, FAR_FUTURE_EPOCH, GENESIS_SLOT,
 };
@@ -113,16 +114,7 @@ pub fn apply_deposit<P: Preset>(
     signature: cc_types::primitives::BlsSignature,
     config: &ChainConfig,
 ) -> Result<(), BlockError> {
-    // Prefer pubkey map; fall back to linear scan and backfill the map.
-    let existing = state.caches().pubkeys.get(&pubkey).or_else(|| {
-        state
-            .validators_iter()
-            .enumerate()
-            .find(|(_, v)| v.pubkey == pubkey)
-            .map(|(i, _)| ValidatorIndex::new(i as u64))
-    });
-
-    if existing.is_none() {
+    if get_validator_index_by_pubkey(state, &pubkey).is_none() {
         // Proof-of-possession; invalid signature → silently drop (spec).
         if is_valid_deposit_signature(&pubkey, &withdrawal_credentials, amount, &signature, config)?
         {
@@ -131,9 +123,6 @@ pub fn apply_deposit<P: Preset>(
         } else {
             return Ok(());
         }
-    } else if let Some(idx) = existing {
-        // Ensure map is populated for subsequent lookups.
-        state.caches_mut().pubkeys.insert(pubkey, idx);
     }
 
     // Electra: always queue pending deposit (new or top-up).
