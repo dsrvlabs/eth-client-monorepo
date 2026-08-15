@@ -416,7 +416,8 @@ impl<'a, P: Preset> BlockServeCtx<'a, P> {
 /// Serve `beacon_blocks_by_range/2/`.
 ///
 /// Validates `count` **before** allocating the response vec. Window check is
-/// on `start_slot`. Missing slots are omitted; zero blocks → ResourceUnavailable.
+/// on `start_slot`. Missing slots are omitted; an in-window range with no
+/// blocks is an empty success stream (zero chunks), not `ResourceUnavailable`.
 pub fn serve_blocks_by_range<P: Preset>(
     ctx: &mut BlockServeCtx<'_, P>,
     req: BlocksByRangeRequest,
@@ -453,11 +454,8 @@ pub fn serve_blocks_by_range<P: Preset>(
         }
     }
 
-    if chunks.is_empty() {
-        return Err(BlockServeError::ResourceUnavailable(
-            "no blocks in requested range",
-        ));
-    }
+    // In-window: omit missing slots. Zero results is a well-formed empty
+    // success stream — a closed body with no result bytes, not code 3.
     Ok(PlannedBlocks::new(chunks))
 }
 
@@ -847,6 +845,56 @@ mod tests {
         for c in &planned.chunks {
             assert!(matches!(c, ResponseChunk::Success { .. }));
         }
+    }
+
+    /// P1-A/12: in-window skipped slots are omitted, not answered with code 3.
+    #[test]
+    fn in_window_empty_range_is_empty_success_stream() {
+        // Block at 100 + empty markers through 110: window starts at 100,
+        // slots 105..=106 are in-window and have no payload.
+        let mut cache = BackfillCache::with_bounds(
+            Slot::new(0),
+            0u64..8,
+            std::iter::empty(),
+            1 << 20,
+            64,
+            64 * 8,
+        );
+        let block = block_at(100, Root::ZERO);
+        let root = Root::from(block.canonical_root());
+        cache.insert_block(Slot::new(100), root, block);
+        cache.set_head_slot(Slot::new(110));
+        for s in 101u64..=110 {
+            cache.mark_empty(Slot::new(s));
+        }
+        cache.seed_advertised_from_floor();
+        assert_eq!(cache.earliest_available_slot(), Slot::new(100));
+
+        let mut fork_ctx = fork_ctx_at(60_000);
+        let mut ctx = serve_ctx(&cache, &mut fork_ctx);
+        let planned = serve_blocks_by_range(
+            &mut ctx,
+            BlocksByRangeRequest {
+                start_slot: Slot::new(105),
+                count: 2,
+            },
+        )
+        .expect("in-window empty range is success, not ResourceUnavailable");
+        assert!(planned.chunks.is_empty());
+
+        // Wire: zero chunks encode to an empty body. Spec-compliant decoders
+        // (including serve-probe's independent codec) treat that as a
+        // well-formed empty success stream, not result-byte 3.
+        let enc = SszSnappyFraming::encode_response(
+            &planned.chunks,
+            Protocol::BeaconBlocksByRangeV2,
+        )
+        .unwrap();
+        assert!(enc.is_empty(), "zero-chunk success is an empty stream body");
+        let dec =
+            SszSnappyFraming::decode_response(&enc, Protocol::BeaconBlocksByRangeV2)
+                .unwrap();
+        assert!(dec.is_empty());
     }
 
     #[test]

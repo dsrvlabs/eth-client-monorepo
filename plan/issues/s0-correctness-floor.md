@@ -1044,6 +1044,8 @@ exists to fix. See also the `X-6` finding in [`README.md`](README.md).
 **Acceptance** — an in-window request with no results returns an **empty success stream**; a foreign
 client's decoder sees a well-formed zero-chunk response. Falsified live at `S3b-W-10`.
 
+- [x] In-window empty ByRange is a zero-chunk success, not error code 3.
+
 ### `S0-B-16` · P1-A/13 — column by-range chunks served in request order
 **Est** 1.5–2 pd / **3 pts** (≈) · **Touch** `services/p2p/src/reqresp/columns.rs:536`
 Served in request order, not ascending `(slot, column_index)`; **the comment contradicts the code**.
