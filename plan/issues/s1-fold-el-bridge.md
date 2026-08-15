@@ -545,6 +545,28 @@ from the `[PRD]` §5.0 vocabulary; every dismissal carries a reason. `[PRD]` §7
 - [x] Row 19 promoted P2 `patch @ S2` — store/parse `?` paths still skip `record_serve`.
 - [x] Row 20 promoted P2 `deleted @ S2` — retry loop does not classify RPC errors; RestoreFromStore dies at S2.
 
+##### `S1-B-20` judged 2026-08-16
+
+Rows 22–30, 32–35 (**13**) judged in `[PRD]` §5.3.2. The work-item's "14" included
+row 31, already judged at `S0-B-17` and not re-opened — the 22–35 set is now fully
+known. Line numbers re-verified on `develop` `4b3eff0`. This issue is a triage
+write: no code patch. Combined with `S1-B-19` and `S0-B-17`, **M12 = 0**.
+
+- [x] Thirteen P2-E rows judged in PRD §5.3.2; none of 22–30, 32–35 left unknown.
+- [x] Row 22 promoted P2 `patch @ S2` — file-wide `#![allow(dead_code)]` still on production prune + five children; unexplained (unlike `writer.rs`).
+- [x] Row 23 dismissed — `seen` unreachable on the `0..NUMBER_OF_COLUMNS` walk; `services/storage/src/columns.rs` gone.
+- [x] Row 24 dismissed — requested/returned vecs discarded; serve already `ResourceUnavailable` on a miss.
+- [x] Row 25 promoted P2 `patch @ S3` — comment still claims sub-slot; period is `from_secs(seconds_per_slot)`.
+- [x] Row 26 dismissed — outer `#[allow]` on `mod tests` is equivalent lint scope.
+- [x] Row 27 promoted P1 `patch @ S3` — `find_node_predicate` still awaited inline; stalls shutdown / ENR / event drain.
+- [x] Row 28 promoted P1 `patch @ S3` — `try_send` drop is silent; comment's retry/accounting is not implemented.
+- [x] Row 29 dismissed — `# Panics` is stale; `min()` clamp is the live contract.
+- [x] Row 30 dismissed — same test-module allow nit as row 26 (`sampling.rs`, `engine_stream/{inject,server}.rs`).
+- [x] Row 32 dismissed — verdict is correct; only the success-chunk reason string says "empty success".
+- [x] Row 33 promoted P2 `patch @ S1` — only crate inlining `serde_json` instead of `workspace = true`.
+- [x] Row 34 dismissed — BLS creds discarded; GVR `unwrap_or_default` unreachable after `validators_push`.
+- [x] Row 35 dismissed — verbatim private `Default` helpers; no divergence.
+
 ---
 
 ### `S1-B-21` · M3 ledger maintenance · 0.5 pd / **1 pt**
