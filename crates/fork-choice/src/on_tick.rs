@@ -52,6 +52,8 @@ fn on_tick_per_slot<P: Preset>(store: &mut Store<P>, time: u64) {
     }
 
     // If a new epoch, pull-up justification and finalization from previous epoch.
+    // Do not prune here: tick has no get_head / REORG / FINALIZED publish
+    // (S0-A-21 H1). Compaction waits for the import FINALIZED path.
     if current_slot.as_u64() > previous_slot.as_u64()
         && Store::<P>::compute_slots_since_epoch_start(current_slot) == 0
     {

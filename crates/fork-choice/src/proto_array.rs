@@ -316,10 +316,11 @@ impl ProtoArray {
     /// # Production wiring
     ///
     /// CC-34 /9 asserts prune *capability* (derived occupancy, nothing to leak
-    /// as a second set). Calling this on finalization advance — and reclaiming
-    /// matching `Store.blocks` / `block_timeliness` keys — is **finalization
-    /// settle** work, not CC-34c. Until that lands, inter-finalization growth
-    /// of the single proto-array is unbounded by design of this card's scope.
+    /// as a second set). [`crate::store::Store::prune_on_finalized`] is the
+    /// production caller: it runs this on finalization advance and reclaims
+    /// matching `Store.blocks` / `block_timeliness` keys. The chain service
+    /// invokes that from the `FINALIZED_CHECKPOINT` publish path only, after
+    /// the REORG walk.
     pub fn prune(&mut self, finalized_root: Root) -> Result<(), ProtoArrayError> {
         let finalized_idx = *self
             .indices

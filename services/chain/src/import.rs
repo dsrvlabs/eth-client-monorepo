@@ -856,6 +856,10 @@ fn finish_imported<P: Preset>(
         finalized,
         finalized_state_root,
     );
+    // Prune may have dropped optimistic side-branches; refresh after events.
+    metrics
+        .optimistic_nodes
+        .set(store.proto_array().optimistic_node_count() as i64);
     metrics.observe_import_stage(ImportStage::Publish, publish_start.elapsed().as_secs_f64());
 
     metrics.inc_import_result(ImportResult::Imported);
@@ -886,7 +890,7 @@ fn finish_imported<P: Preset>(
 fn publish_import_events<P: Preset>(
     event_tx: &tokio::sync::mpsc::Sender<EventInput>,
     metrics: &ChainMetrics,
-    store: &Store<P>,
+    store: &mut Store<P>,
     slot: u64,
     block_root: Root,
     arrival_ssz: &[u8],
@@ -929,6 +933,10 @@ fn publish_import_events<P: Preset>(
         );
     }
     if finalized != prev_finalized {
+        // P0-10 / S0-A-21: proto-array prune hangs off FINALIZED, after the
+        // REORG walk above still had the pre-prune tree (old head may be a
+        // now-invalid side branch).
+        store.prune_on_finalized();
         let scalars = fork_choice_scalars_ssz(store, head_root, head_slot);
         publish_event_blocking(
             event_tx,
@@ -1102,10 +1110,16 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use cc_fork_choice::{
+        ExecutionStatus, HarnessAvailability, ProtoNodeBlock, get_forkchoice_store,
+    };
+    use cc_types::containers::BeaconBlockHeader;
     use cc_types::preset::Minimal;
-    use cc_types::primitives::Slot;
+    use cc_types::primitives::{Epoch, Hash256, Slot, ValidatorIndex};
+    use cc_types::{BeaconBlock, BeaconState};
     use prometheus_client::registry::Registry;
     use tokio::sync::mpsc;
+    use tree_hash::TreeHash;
 
     #[test]
     fn parse_root_rejects_wrong_length() {
@@ -1322,15 +1336,12 @@ mod tests {
         use cc_fork_choice::{HarnessAvailability, get_forkchoice_store, on_tick};
         use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
         use cc_types::containers::Validator;
-        use cc_types::primitives::{
-            BlsPublicKey, Epoch, ExecutionAddress, ForkVersion, ValidatorIndex,
-        };
-        use cc_types::{BeaconBlock, BeaconState};
+        use cc_types::primitives::{BlsPublicKey, ExecutionAddress, ForkVersion};
         use std::sync::Arc;
 
         #[derive(Debug, Default, Clone, Copy)]
-        struct AcceptEngine;
-        impl<P: Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+        struct M13AcceptEngine;
+        impl<P: Preset> cc_state_transition::ExecutionEngine<P> for M13AcceptEngine {
             fn verify_and_notify_new_payload(
                 &self,
                 _request: cc_state_transition::NewPayloadRequest<'_, P>,
@@ -1397,7 +1408,7 @@ mod tests {
         let mut store = get_forkchoice_store(
             state,
             &anchor_block,
-            Arc::new(AcceptEngine),
+            Arc::new(M13AcceptEngine),
             Arc::new(HarnessAvailability),
             config.seconds_per_slot,
         )
@@ -1456,5 +1467,178 @@ mod tests {
             metrics.pubkey_cache_alert_firing(),
             "empty pubkey cache vs non-empty registry must fire M13"
         );
+    }
+
+    #[derive(Debug, Default, Clone, Copy)]
+    struct AcceptEngine;
+
+    impl<P: cc_types::preset::Preset> cc_state_transition::ExecutionEngine<P> for AcceptEngine {
+        fn verify_and_notify_new_payload(
+            &self,
+            _request: cc_state_transition::NewPayloadRequest<'_, P>,
+        ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+            Ok(cc_state_transition::PayloadStatus::Valid)
+        }
+    }
+
+    fn test_root(b: u8) -> Root {
+        let mut a = [0u8; 32];
+        a[0] = b;
+        Root::from_array(a)
+    }
+
+    fn insert_child(store: &mut Store<Minimal>, parent: Root, child: Root, slot: u64) {
+        let justified = store.justified_checkpoint();
+        let finalized = store.finalized_checkpoint();
+        let mut child_state = store.block_state(&parent).unwrap().clone();
+        child_state.set_slot(Slot::new(slot));
+        store.insert_block(
+            child,
+            BeaconBlockHeader {
+                slot: Slot::new(slot),
+                proposer_index: ValidatorIndex::new(0),
+                parent_root: parent,
+                state_root: Root::ZERO,
+                body_root: Root::ZERO,
+            },
+            child_state,
+        );
+        store
+            .proto_array_mut()
+            .on_block(ProtoNodeBlock {
+                slot: Slot::new(slot),
+                root: child,
+                parent_root: Some(parent),
+                state_root: Root::ZERO,
+                target_root: child,
+                justified_checkpoint: justified,
+                finalized_checkpoint: finalized,
+                unrealized_justified_checkpoint: justified,
+                unrealized_finalized_checkpoint: finalized,
+                execution_status: ExecutionStatus::Valid,
+                execution_block_hash: Hash256::ZERO,
+            })
+            .unwrap();
+    }
+
+    fn drain_finalized(rx: &mut mpsc::Receiver<EventInput>) -> usize {
+        let mut n = 0;
+        while let Ok(ev) = rx.try_recv() {
+            if ev.kind == cc_proto::chain::EventKind::FinalizedCheckpoint {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// P0-10 / S0-A-21: two FINALIZED publishes shrink the proto-array.
+    #[test]
+    fn two_finalized_events_decrease_proto_array_node_count() {
+        let mut state = BeaconState::<Minimal>::default();
+        state.set_genesis_time(0);
+        state.set_slot(Slot::new(0));
+        let anchor_block = BeaconBlock {
+            slot: Slot::new(0),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: Root::ZERO,
+            state_root: Root::ZERO,
+            body: Default::default(),
+        };
+        let mut store = get_forkchoice_store(
+            state,
+            &anchor_block,
+            Arc::new(AcceptEngine),
+            Arc::new(HarnessAvailability),
+            6,
+        )
+        .unwrap();
+        let anchor = Root::from_hash256(TreeHash::tree_hash_root(&anchor_block));
+        let a = test_root(0xA1);
+        let b = test_root(0xB1);
+        let side = test_root(0x51);
+        let c = test_root(0xC1);
+        let d = test_root(0xD1);
+        insert_child(&mut store, anchor, a, 1);
+        insert_child(&mut store, a, b, 8);
+        insert_child(&mut store, a, side, 8);
+        insert_child(&mut store, b, c, 9);
+        let before_first = store.proto_array().len();
+        assert_eq!(before_first, 5);
+
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let (tx, mut rx) = mpsc::channel(16);
+        let prev0 = store.finalized_checkpoint();
+        store.update_checkpoints(
+            Checkpoint {
+                epoch: Epoch::new(1),
+                root: b,
+            },
+            Checkpoint {
+                epoch: Epoch::new(1),
+                root: b,
+            },
+        );
+        let f1 = store.finalized_checkpoint();
+        publish_import_events(
+            &tx,
+            &metrics,
+            &mut store,
+            9,
+            c,
+            &[],
+            BLOCK_PAYLOAD_VERDICT_IMPORTED,
+            c,
+            Slot::new(9),
+            None,
+            prev0,
+            f1,
+            Root::ZERO,
+        );
+        let after_first = store.proto_array().len();
+        assert!(
+            after_first < before_first,
+            "first FINALIZED must prune (before={before_first} after={after_first})"
+        );
+        assert_eq!(drain_finalized(&mut rx), 1);
+        assert!(!store.proto_array().contains(&side));
+
+        insert_child(&mut store, c, d, 16);
+        let before_second = store.proto_array().len();
+        let prev1 = store.finalized_checkpoint();
+        store.update_checkpoints(
+            Checkpoint {
+                epoch: Epoch::new(2),
+                root: d,
+            },
+            Checkpoint {
+                epoch: Epoch::new(2),
+                root: d,
+            },
+        );
+        let f2 = store.finalized_checkpoint();
+        publish_import_events(
+            &tx,
+            &metrics,
+            &mut store,
+            16,
+            d,
+            &[],
+            BLOCK_PAYLOAD_VERDICT_IMPORTED,
+            d,
+            Slot::new(16),
+            None,
+            prev1,
+            f2,
+            Root::ZERO,
+        );
+        let after_second = store.proto_array().len();
+        assert!(
+            after_second < before_second,
+            "second FINALIZED must prune (before={before_second} after={after_second})"
+        );
+        assert_eq!(drain_finalized(&mut rx), 1);
+        assert!(store.proto_array().contains(&d));
+        assert!(!store.proto_array().contains(&b));
     }
 }

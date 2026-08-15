@@ -533,6 +533,10 @@ impl<P: Preset> Store<P> {
     }
 
     /// Spec `update_checkpoints` — promote justified/finalized when newer.
+    ///
+    /// Does **not** prune the proto-array. Call [`Self::prune_on_finalized`]
+    /// from the FINALIZED publish path after any REORG walk — prune rewrites
+    /// indices and must not run while a pending walk still names the old head.
     pub fn update_checkpoints(
         &mut self,
         justified_checkpoint: Checkpoint,
@@ -553,6 +557,74 @@ impl<P: Preset> Store<P> {
         }
         if changed {
             self.bump_mutation_counter();
+        }
+    }
+
+    /// Compact the proto-array to the store's finalized root and drop matching
+    /// `blocks` / `block_states` / `block_timeliness` keys (P0-10 / S0-A-21).
+    ///
+    /// Production caller: `FINALIZED_CHECKPOINT` publish in the chain import
+    /// path, after the REORG walk. Idempotent if the array is already rooted
+    /// at `finalized_checkpoint.root`. Unknown finalized root is a no-op
+    /// (restore / foreign-checkpoint tests).
+    ///
+    /// Skips compaction when `justified_checkpoint.root` would not remain in
+    /// the array (finalized does not dominate justified).
+    ///
+    /// Returns the post-prune node count.
+    pub fn prune_on_finalized(&mut self) -> usize {
+        let finalized_root = self.finalized_checkpoint.root;
+        let before = self.proto_array.len();
+        if !self.justified_survives_prune(finalized_root) {
+            tracing::debug!(
+                ?finalized_root,
+                justified = ?self.justified_checkpoint.root,
+                "proto-array prune skipped (justified root would not survive)"
+            );
+            return before;
+        }
+        if let Err(e) = self.proto_array.prune(finalized_root) {
+            tracing::debug!(
+                error = %e,
+                ?finalized_root,
+                "proto-array prune skipped (finalized root not in array)"
+            );
+            return before;
+        }
+
+        self.blocks
+            .retain(|root, _| self.proto_array.contains(root));
+        self.block_states
+            .retain(|root, _| self.proto_array.contains(root));
+        self.block_timeliness
+            .retain(|root, _| self.proto_array.contains(root));
+
+        if self.proposer_boost_root != Root::ZERO
+            && !self.proto_array.contains(&self.proposer_boost_root)
+        {
+            self.proposer_boost_root = Root::ZERO;
+        }
+
+        let after = self.proto_array.len();
+        if after != before {
+            self.bump_mutation_counter();
+        }
+        after
+    }
+
+    /// Whether `justified_checkpoint.root` is `finalized_root` or a descendant
+    /// of it (so [`ProtoArray::prune`] would keep it).
+    fn justified_survives_prune(&self, finalized_root: Root) -> bool {
+        let justified_root = self.justified_checkpoint.root;
+        if justified_root == finalized_root {
+            return self.proto_array.contains(&finalized_root);
+        }
+        let Some(fin) = self.proto_array.get(&finalized_root) else {
+            return false;
+        };
+        match self.proto_array.get_ancestor(justified_root, fin.slot) {
+            Ok(ancestor) => ancestor == finalized_root,
+            Err(_) => false,
         }
     }
 
@@ -664,14 +736,16 @@ mod tests {
 
     use std::sync::Arc;
 
-    use cc_types::containers::Checkpoint;
+    use cc_types::containers::{BeaconBlockHeader, Checkpoint};
     use cc_types::fork::Fork;
     use cc_types::preset::Minimal;
-    use cc_types::primitives::{Epoch, Gwei, Root};
+    use cc_types::primitives::{Epoch, Gwei, Hash256, Root, Slot, ValidatorIndex};
 
     use super::*;
     use crate::checkpoint_context::{CheckpointContext, CommitteeCache};
     use crate::da_seam::HarnessAvailability;
+    use crate::execution_status::ExecutionStatus;
+    use crate::proto_array::ProtoNodeBlock;
 
     fn root(b: u8) -> Root {
         let mut a = [0u8; 32];
@@ -713,6 +787,118 @@ mod tests {
             Arc::new(AcceptEngine),
             Arc::new(HarnessAvailability),
         )
+    }
+
+    fn insert_node(store: &mut Store<Minimal>, slot: u64, r: u8, parent: Option<u8>) {
+        let this = root(r);
+        let parent_root = parent.map(root);
+        let justified = store.justified_checkpoint();
+        let finalized = store.finalized_checkpoint();
+        let state = match parent_root.and_then(|p| store.block_state(&p).cloned()) {
+            Some(mut s) => {
+                s.set_slot(Slot::new(slot));
+                s
+            }
+            None => BeaconState::default(),
+        };
+        store
+            .proto_array_mut()
+            .on_block(ProtoNodeBlock {
+                slot: Slot::new(slot),
+                root: this,
+                parent_root,
+                state_root: this,
+                target_root: this,
+                justified_checkpoint: justified,
+                finalized_checkpoint: finalized,
+                unrealized_justified_checkpoint: justified,
+                unrealized_finalized_checkpoint: finalized,
+                execution_status: ExecutionStatus::Valid,
+                execution_block_hash: Hash256::ZERO,
+            })
+            .unwrap();
+        store.insert_block(
+            this,
+            BeaconBlockHeader {
+                slot: Slot::new(slot),
+                proposer_index: ValidatorIndex::new(0),
+                parent_root: parent_root.unwrap_or(Root::ZERO),
+                state_root: this,
+                body_root: Root::ZERO,
+            },
+            state,
+        );
+        store.set_block_timeliness(this, true);
+    }
+
+    /// P0-10 / S0-A-21: two finalization advances must shrink the proto-array.
+    #[test]
+    fn two_finalizations_decrease_proto_array_node_count() {
+        // G(1) ─ A(2) ─ B(3) ─ C(4)
+        //            └─ X(5)          ← pruned on first finalization
+        let mut store = new_store();
+        insert_node(&mut store, 0, 1, None);
+        insert_node(&mut store, 1, 2, Some(1));
+        insert_node(&mut store, 8, 3, Some(2));
+        insert_node(&mut store, 9, 4, Some(3));
+        insert_node(&mut store, 9, 5, Some(2));
+        let before_first = store.proto_array().len();
+        assert_eq!(before_first, 5);
+
+        store.update_checkpoints(cp(1, root(3)), cp(1, root(3)));
+        let after_first = store.prune_on_finalized();
+        assert!(
+            after_first < before_first,
+            "first finalization must drop non-descendants (before={before_first} after={after_first})"
+        );
+        assert!(store.proto_array().contains(&root(3)));
+        assert!(store.proto_array().contains(&root(4)));
+        assert!(!store.proto_array().contains(&root(1)));
+        assert!(!store.proto_array().contains(&root(2)));
+        assert!(!store.proto_array().contains(&root(5)));
+        assert!(!store.blocks().contains_key(&root(5)));
+        assert!(store.block_timeliness(&root(5)).is_none());
+
+        // C(4) ─ D(6) ─ E(7)
+        insert_node(&mut store, 16, 6, Some(4));
+        insert_node(&mut store, 17, 7, Some(6));
+        let before_second = store.proto_array().len();
+        assert!(before_second > after_first);
+
+        store.update_checkpoints(cp(2, root(6)), cp(2, root(6)));
+        let after_second = store.prune_on_finalized();
+        assert!(
+            after_second < before_second,
+            "second finalization must decrease node count (before={before_second} after={after_second})"
+        );
+        assert_eq!(after_second, 2);
+        assert!(store.proto_array().contains(&root(6)));
+        assert!(store.proto_array().contains(&root(7)));
+        assert!(!store.proto_array().contains(&root(3)));
+        assert!(!store.proto_array().contains(&root(4)));
+    }
+
+    /// H2: do not compact to a finalized root that would drop justified.
+    #[test]
+    fn prune_skips_when_justified_would_not_survive() {
+        // G(1) ─ J(2)                 ← store justified (epoch 2)
+        //     └─ F(3) ─ C(4)          ← would-be finalized (epoch 1)
+        let mut store = new_store();
+        insert_node(&mut store, 0, 1, None);
+        insert_node(&mut store, 16, 2, Some(1));
+        insert_node(&mut store, 8, 3, Some(1));
+        insert_node(&mut store, 9, 4, Some(3));
+
+        store.update_checkpoints(cp(2, root(2)), cp(0, root(1)));
+        store.update_checkpoints(cp(2, root(2)), cp(1, root(3)));
+        assert_eq!(store.justified_checkpoint().root, root(2));
+        assert_eq!(store.finalized_checkpoint().root, root(3));
+
+        let before = store.proto_array().len();
+        assert_eq!(store.prune_on_finalized(), before);
+        assert!(store.proto_array().contains(&root(2)));
+        assert!(store.proto_array().contains(&root(1)));
+        assert_eq!(store.proto_array().len(), 4);
     }
 
     #[test]

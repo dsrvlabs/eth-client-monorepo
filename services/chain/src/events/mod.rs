@@ -181,6 +181,9 @@ impl EventInput {
     }
 
     /// `FINALIZED_CHECKPOINT` with payload = 8 B epoch LE ‖ 32 B state root ‖ SSZ scalars.
+    ///
+    /// Publishing this kind is the production trigger for
+    /// [`cc_fork_choice::Store::prune_on_finalized`] (P0-10 / S0-A-21).
     pub fn finalized_checkpoint(
         epoch: u64,
         finalized_root: impl Into<Bytes>,

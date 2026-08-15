@@ -512,6 +512,9 @@ Recovered here by grep:
 **Acceptance** — a test drives two finalizations and asserts the proto-array node count **decreases**;
 without a call site, fork-choice memory grows without bound.
 
+- [x] `ProtoArray::prune` is called from the FINALIZED publish path after the REORG walk.
+- [x] Two-finalization tests assert the proto-array node count decreases.
+
 ---
 
 ### `S0-A-22` · P1-A/19 — `update_latest_messages` partial mutation on OOB index
