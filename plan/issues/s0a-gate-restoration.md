@@ -80,13 +80,13 @@ the remainder of the file. The pattern also matches only `env::var`, missing `va
 - `scripts/check-no-env-reads.sh:17` (the awk exemption)
 
 **Acceptance (falsifiable)**
-1. A **negative fixture** is committed: a file containing a `#[cfg(test)] mod` followed by a
+1. [x] A **negative fixture** is committed: a file containing a `#[cfg(test)] mod` followed by a
    production `std::env::var` read. The script **fails** on it. This is the direct falsifier for the
    never-resetting exemption — without it, the fix is asserted, not demonstrated.
-2. Three further negative fixtures for `env::var_os`, `env::vars`, and a fully-qualified
+2. [x] Three further negative fixtures for `env::var_os`, `env::vars`, and a fully-qualified
    `std::env::var` each cause a failure.
-3. A positive fixture (a read genuinely inside `#[cfg(test)]`) still passes.
-4. The script exits 0 on `HEAD` after `S0a-B-01`.
+3. [x] A positive fixture (a read genuinely inside `#[cfg(test)]`) still passes.
+4. [x] The script exits 0 on `HEAD` after `S0a-B-01`.
 
 ---
 
