@@ -158,7 +158,7 @@ The repo's own `docs/supply-chain.md` states an exact-pin policy that `ci.yml` c
 continue) or *fail* the suite? M2a's clause 1 requires "suites green both presets, **skiplist
 empty**" — if the check only reports, "green" today does not mean what the clause needs it to mean.
 
-**Deliverable** — a one-paragraph finding committed to `plan/issues/spike-notes.md` naming
+**Deliverable** — [x] a one-paragraph finding committed to `plan/issues/spike-notes.md` naming
 the file:line of the check and its behaviour, plus a yes/no on whether W1's clause is measurable
 as the harness stands. If the answer is "reports", the follow-on work item is sized here and filed
 against S3a.
