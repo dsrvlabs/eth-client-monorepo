@@ -76,7 +76,8 @@ impl Protocol {
             Self::StatusV2 => SszLimits { min: 92, max: 92 },
             // (start_slot, count, step) — three uint64s.
             Self::BeaconBlocksByRangeV2 => SszLimits { min: 24, max: 24 },
-            // List[Root, 1024] of fixed-size elements: bare 32×n (not 10 MiB).
+            // `BeaconBlockRoots` = `List[Root, MAX_REQUEST_BLOCKS]`. Roots are
+            // fixed-size, so the body is `32 * n` with no offset table.
             Self::BeaconBlocksByRootV2 => SszLimits {
                 min: 0,
                 max: 1024 * 32,
@@ -258,55 +259,45 @@ pub struct BlocksByRootRequest {
 }
 
 impl BlocksByRootRequest {
-    /// SSZ-encode as `List[Root, 1024]` (offset + packed roots).
+    /// SSZ-encode `BeaconBlockRoots` (`List[Root, MAX_REQUEST_BLOCKS]`).
+    ///
+    /// consensus-specs SSZ: for a list of fixed-size elements, `serialize` is
+    /// the concatenation of `serialize(element)`. `Root` is `Bytes32`, so the
+    /// body is exactly `32 * n` bytes. Offset tables apply only when an
+    /// *element* is variable-size; a top-level list is not wrapped in one.
     #[must_use]
     pub fn to_ssz_bytes(&self) -> Vec<u8> {
-        // Variable list: 4-byte offset to elements (= 4), then 32-byte roots.
-        let mut out = Vec::with_capacity(4 + self.roots.len() * 32);
-        out.extend_from_slice(&4u32.to_le_bytes());
-        for r in &self.roots {
-            out.extend_from_slice(r.as_slice());
+        let mut out = vec![0u8; self.roots.len() * 32];
+        for (i, root) in self.roots.iter().enumerate() {
+            let off = i * 32;
+            out[off..off + 32].copy_from_slice(root.as_slice());
         }
         out
     }
 
-    /// SSZ-decode `List[Root, 1024]`.
+    /// SSZ-decode `BeaconBlockRoots`. Length must be a multiple of 32
+    /// (including the empty list: 0 bytes).
     pub fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, io::Error> {
-        if bytes.len() < 4 {
+        if !bytes.len().is_multiple_of(32) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "by_root list too short",
+                format!(
+                    "BeaconBlockRoots SSZ length {} is not a multiple of 32",
+                    bytes.len()
+                ),
             ));
         }
-        let offset = u32::from_le_bytes(
-            bytes[0..4]
-                .try_into()
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "by_root offset"))?,
-        ) as usize;
-        if offset != 4 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("by_root unexpected offset {offset}"),
-            ));
-        }
-        let rest = &bytes[4..];
-        if !rest.len().is_multiple_of(32) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "by_root roots not multiple of 32",
-            ));
-        }
-        let n = rest.len() / 32;
+        let n = bytes.len() / 32;
         if n > 1024 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "by_root list exceeds 1024",
+                "BeaconBlockRoots exceeds List limit 1024",
             ));
         }
         let mut roots = Vec::with_capacity(n);
-        for i in 0..n {
+        for chunk in bytes.chunks_exact(32) {
             let mut arr = [0u8; 32];
-            arr.copy_from_slice(&rest[i * 32..(i + 1) * 32]);
+            arr.copy_from_slice(chunk);
             roots.push(Root::from_array(arr));
         }
         Ok(Self { roots })
@@ -412,16 +403,23 @@ pub struct ColumnsByRootRequest {
 }
 
 impl ColumnsByRootRequest {
-    /// SSZ-encode as `List[DataColumnsByRootIdentifier, 128]`.
+    /// SSZ-encode `DataColumnsByRootIdentifiers`
+    /// (`List[DataColumnsByRootIdentifier, N]`).
     ///
-    /// Outer list is offset-based; each element is a container with fixed root
-    /// + offset to its column-index list.
+    /// Each identifier is a variable-size container (`Root` + `List[uint64]`),
+    /// so the outer list is `[offset_0 … offset_{n-1} ‖ body_0 … body_{n-1}]`
+    /// with `offset_0 = 4*n`. An empty list serializes to the empty byte
+    /// string — not a lone 4-byte offset.
     #[must_use]
     pub fn to_ssz_bytes(&self) -> Vec<u8> {
-        // Outer list: offset (=4) then concatenated element encodings.
-        let mut elements = Vec::new();
+        let n = self.identifiers.len();
+        if n == 0 {
+            return Vec::new();
+        }
+
+        let mut elements = Vec::with_capacity(n);
         for (root, cols) in &self.identifiers {
-            // Container: root(32) + offset(4) + columns body.
+            // Container: root(32) + offset-to-columns(4) + uint64 indices.
             let mut el = Vec::with_capacity(36 + cols.len() * 8);
             el.extend_from_slice(root.as_slice());
             el.extend_from_slice(&36u32.to_le_bytes());
@@ -430,22 +428,7 @@ impl ColumnsByRootRequest {
             }
             elements.push(el);
         }
-        // SSZ List of variable-size elements: offset table then bodies.
-        let n = elements.len();
-        let mut out = Vec::new();
-        // Single outer offset to first element of the list body = 4.
-        out.extend_from_slice(&4u32.to_le_bytes());
-        // Element offsets relative to start of list body (after the 4-byte outer offset).
-        // Actually for List[Container]: encoding is offset-to-elements (=4) then
-        // for variable elements, an offset table of n u32s then bodies.
-        // Simpler fixed path for empty list:
-        if n == 0 {
-            return out;
-        }
-        // Re-encode properly: List[T] for variable T uses offsets relative to
-        // the start of the list serialization.
-        // Layout: [offset_0, offset_1, ..., offset_{n-1}, body_0, body_1, ...]
-        // where offset_0 = 4*n.
+
         let mut bodies = Vec::new();
         let mut offsets = Vec::with_capacity(n);
         let mut cursor = (4 * n) as u32;
@@ -454,7 +437,7 @@ impl ColumnsByRootRequest {
             cursor = cursor.saturating_add(el.len() as u32);
             bodies.extend_from_slice(el);
         }
-        out.clear();
+        let mut out = Vec::with_capacity(4 * n + bodies.len());
         for o in offsets {
             out.extend_from_slice(&o.to_le_bytes());
         }
@@ -530,5 +513,86 @@ mod tests {
                 p.protocol_id()
             );
         }
+    }
+
+    /// consensus-specs: request type is `BeaconBlockRoots` =
+    /// `List[Root, MAX_REQUEST_BLOCKS]`. Fixed-size elements → packed roots.
+    /// Bytes are assembled here by hand so this crate is checked against the
+    /// schema, not against `services/p2p`.
+    #[test]
+    fn blocks_by_root_matches_handwritten_three_root_fixture() {
+        let r0 = Root::from_array({
+            let mut a = [0u8; 32];
+            a[0] = 0xaa;
+            a
+        });
+        let r1 = Root::from_array({
+            let mut a = [0u8; 32];
+            a[0] = 0xbb;
+            a
+        });
+        let r2 = Root::from_array({
+            let mut a = [0u8; 32];
+            a[0] = 0xcc;
+            a
+        });
+        let mut fixture = [0u8; 96];
+        fixture[0..32].copy_from_slice(r0.as_slice());
+        fixture[32..64].copy_from_slice(r1.as_slice());
+        fixture[64..96].copy_from_slice(r2.as_slice());
+
+        let req = BlocksByRootRequest {
+            roots: vec![r0, r1, r2],
+        };
+        assert_eq!(req.to_ssz_bytes(), fixture);
+        assert_eq!(BlocksByRootRequest::from_ssz_bytes(&fixture).unwrap(), req);
+    }
+
+    #[test]
+    fn blocks_by_root_empty_list_is_zero_bytes() {
+        let req = BlocksByRootRequest { roots: Vec::new() };
+        assert!(req.to_ssz_bytes().is_empty());
+        assert_eq!(BlocksByRootRequest::from_ssz_bytes(&[]).unwrap(), req);
+    }
+
+    #[test]
+    fn blocks_by_root_rejects_length_not_multiple_of_32() {
+        assert!(BlocksByRootRequest::from_ssz_bytes(&[0u8; 1]).is_err());
+        assert!(BlocksByRootRequest::from_ssz_bytes(&[0u8; 4]).is_err());
+        assert!(BlocksByRootRequest::from_ssz_bytes(&[0u8; 31]).is_err());
+        assert!(BlocksByRootRequest::from_ssz_bytes(&[0u8; 33]).is_err());
+        // Pre-fix shape: 4-byte offset + one root = 36, not 32·n.
+        let mut prefixed = vec![4, 0, 0, 0];
+        prefixed.extend_from_slice(&[0u8; 32]);
+        assert!(BlocksByRootRequest::from_ssz_bytes(&prefixed).is_err());
+    }
+
+    #[test]
+    fn blocks_by_root_request_limits_are_bare_32n() {
+        let lim = Protocol::BeaconBlocksByRootV2.request_limits();
+        assert_eq!(lim.min, 0);
+        assert_eq!(lim.max, 1024 * 32);
+    }
+
+    #[test]
+    fn columns_by_root_empty_list_is_zero_bytes() {
+        let req = ColumnsByRootRequest {
+            identifiers: Vec::new(),
+        };
+        assert!(req.to_ssz_bytes().is_empty());
+    }
+
+    #[test]
+    fn columns_by_root_one_identifier_matches_ssz_list_layout() {
+        let root = Root::from_array([0xab; 32]);
+        let req = ColumnsByRootRequest {
+            identifiers: vec![(root, vec![7])],
+        };
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&4u32.to_le_bytes());
+        expected.extend_from_slice(root.as_slice());
+        expected.extend_from_slice(&36u32.to_le_bytes());
+        expected.extend_from_slice(&7u64.to_le_bytes());
+        assert_eq!(req.to_ssz_bytes(), expected);
     }
 }
