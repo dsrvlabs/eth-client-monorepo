@@ -604,6 +604,15 @@ is a CI failure, not a review note. That is the program's *no-P0-vanishes-silent
 **Est** 0.5–1 pd / **2 pts** · ⌂ `[ARCH]` B.2 = **S** · **Scheduled** S1 open · **Blocks** nothing;
 hygiene. Run `--check-unused`; report whether the allowlist carries entries no crate needs.
 
+**Acceptance**
+1. [x] `bash scripts/check-crate-dag.sh --check-unused` exists (opt-in; default CI still ceiling-only).
+2. [x] Demonstrated 2026-08-16: allowlist is **not** minimal. Unused entries (**not deleted**;
+   append-only — do not silently drop live ceilings):
+   - `cc-devnet-gen` → `cc-config` — `allowed_deps` ceiling; `bin/devnet-gen/Cargo.toml` omits the
+     path dep (`# cc-config is intentionally omitted while unused`). No `cargo metadata` path edge.
+
+Finding: `plan/issues/spike-notes.md` ## Q-1. JWT rule untouched (S1-A-01).
+
 ---
 
 ## S1 exit criteria — and which issue earns each

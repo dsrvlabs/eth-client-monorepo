@@ -315,6 +315,9 @@ can be added and never removed. Recommend a `--check-unused` mode that fails whe
 `allowed_deps` entry has no corresponding edge in `cargo metadata`. Not scheduled by
 [PRD]; sized S.
 
+**Closed by S1-B-22.** `--check-unused` exists and is red: `cc-devnet-gen` → `cc-config` has
+no `cargo metadata` path edge. Recorded, not deleted. See `plan/issues/spike-notes.md` ## Q-1.
+
 ---
 
 ## 2. The seam inventory
@@ -2149,7 +2152,7 @@ and was not independently re-derived.
 
 | # | Question | Blocks | Owner / cost |
 |---|---|---|---|
-| **Q-1** | `check-crate-dag.sh` has no test that its allowlist is **minimal** — an edge can be added and never removed. Add a `--check-unused` mode? | nothing; hygiene | S; whoever opens S1 |
+| **Q-1** | **Closed by S1-B-22.** `--check-unused` exists. Allowlist is **not** minimal: `cc-devnet-gen` → `cc-config` has no `cargo metadata` path edge. Entry recorded, not deleted. Default CI stays ceiling-only. | nothing; hygiene | `plan/issues/spike-notes.md` ## Q-1 |
 | **Q-2** | **Closed by S0a-B-10.** redb 4.1.0 fail-fast exclusive open confirmed (second opener → `DatabaseLocked` in 12.5 ms; no `flock`). Backend of ADR-R-05 is **redb**; SQLite is a stated exception only. (Durability half was already answered: `Durability::Immediate` / `Paranoid`+`set_two_phase_commit` ✓ `crates/store/src/engine/redb.rs:476-493`.) | **ADR-R-05's non-negotiable (3)** — decided | `docs/adr/ADR-R-05.md`; `plan/issues/spike-notes.md` ## Q-2 |
 | **Q-2b** | **Execute the pubkey-cache failure** before quoting ⟡ D-15's severity publicly: decode the committed Hoodi anchor state from SSZ and call `process_block` with a real block (~30 lines). The claim is a traced code path, not an observed failure. | the framing of an S0 item, not the fix itself | XS; with the S0 work ([q3] §5) |
 | **Q-2c** | **Should the restore/replay path call the engine at all** (ADR-R-06)? Needs an argument about whether an independently-restored EL could legitimately disagree about a previously-accepted payload. | nothing — option 1 ships at S0 regardless | decide before S0 closes, or record the deferral |

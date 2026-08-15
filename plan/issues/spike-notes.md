@@ -295,3 +295,16 @@ Loader rule (matches Lighthouse, plus the mainnet 12 s default used for the othe
 ### Escalation (J-12)
 
 **No new P0.** The boot-blocking parse of upstream `configs/mainnet.yaml` is P0-severity and is discharged by this default. Residual millisecond-precision migrate is **P2** (EIP-7782 / sub-second slots), not S0. Do not silently create or omit a row — this is the proposed tier.
+
+## Q-1
+
+**Not minimal.** `bash scripts/check-crate-dag.sh --check-unused` exists and is red on current
+`develop` (S1-A-01 included). One `allowed_deps` entry has no `cargo metadata` path edge:
+
+| depender | unused allow | why it is unused |
+|---|---|---|
+| `cc-devnet-gen` | `cc-config` | Ceiling in `allowed_deps` (`scripts/check-crate-dag.sh` CC-2K row). Manifest omits the path dep: `bin/devnet-gen/Cargo.toml` *"cc-config is intentionally omitted while unused"*. |
+
+`--check-unused` prints `error: cc-devnet-gen: unused allowed_deps entry cc-config (no cargo metadata edge)` and exits 1. Default `check-crate-dag.sh` / CI is unchanged (ceiling-only; hygiene, blocks nothing). The unused row is **not deleted** — allowlist edits stay append-only with the commit that moves code. JWT / `http_or_jwt_allowed()` was not rewritten (S1-A-01).
+
+**Issue** `S1-B-22` · **date** 2026-08-16 · **blocks** nothing

@@ -7,8 +7,9 @@
 # `--self-test` needs only bash (JWT/HTTP fixtures under scripts/fixtures/).
 #
 # Usage:
-#   bash scripts/check-crate-dag.sh              # JWT/HTTP fixtures, then live DAG
-#   bash scripts/check-crate-dag.sh --self-test  # JWT/HTTP fixtures only
+#   bash scripts/check-crate-dag.sh                # JWT/HTTP fixtures, then live DAG
+#   bash scripts/check-crate-dag.sh --self-test    # JWT/HTTP fixtures only
+#   bash scripts/check-crate-dag.sh --check-unused # fixtures + metadata; fail on unused allowlist
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,12 +17,14 @@ cd "$ROOT"
 
 ARG="${1:-}"
 if [[ "$ARG" == "-h" || "$ARG" == "--help" ]]; then
-  echo "Usage: bash scripts/check-crate-dag.sh [--self-test]"
+  echo "Usage: bash scripts/check-crate-dag.sh [--self-test|--check-unused]"
   echo "Enforce the workspace crate DAG and JWT/HTTP isolation (ADR P3-16 / [ARCH] §6.2)."
+  echo "  --self-test      JWT/HTTP fixtures only"
+  echo "  --check-unused   fail if allowed_deps lists an edge cargo metadata does not have (Q-1)"
   exit 0
 fi
-if [[ -n "$ARG" && "$ARG" != "--self-test" ]]; then
-  echo "error: unknown argument: $ARG (want --self-test)" >&2
+if [[ -n "$ARG" && "$ARG" != "--self-test" && "$ARG" != "--check-unused" ]]; then
+  echo "error: unknown argument: $ARG (want --self-test or --check-unused)" >&2
   exit 1
 fi
 
@@ -313,6 +316,18 @@ is_allowed() {
   return 1
 }
 
+# Direct path deps (normal + dev + build). Same surface as the DAG walk, so
+# --check-unused cannot disagree with the ceiling check about what an edge is.
+path_deps_for() {
+  echo "$METADATA" | jq -r --arg n "$1" '
+    .packages[]
+    | select(.name == $n and .source == null)
+    | .dependencies[]?
+    | select(.path != null)
+    | .name
+  ' | sort -u
+}
+
 # Workspace member package names (path packages under this workspace only).
 MEMBERS=()
 while IFS= read -r name; do
@@ -326,6 +341,35 @@ done < <(echo "$METADATA" | jq -r '
 if [[ ${#MEMBERS[@]} -eq 0 ]]; then
   echo "error: no workspace members found" >&2
   exit 1
+fi
+
+# Opt-in: an allowlist entry can land and never be consumed (Q-1 / S1-B-22).
+# Default CI stays ceiling-only so unused edges do not block.
+if [[ "$ARG" == "--check-unused" ]]; then
+  unused_n=0
+  unused_failed=0
+  for pkg in "${MEMBERS[@]}"; do
+    if ! allow="$(allowed_deps "$pkg")"; then
+      unused_failed=1
+      continue
+    fi
+    deps="$(path_deps_for "$pkg")"
+    for a in $allow; do
+      if ! printf '%s\n' "$deps" | grep -qxF "$a"; then
+        echo "error: $pkg: unused allowed_deps entry $a (no cargo metadata edge)" >&2
+        unused_n=$((unused_n + 1))
+        unused_failed=1
+      fi
+    done
+  done
+  if [[ "$unused_n" -ne 0 ]]; then
+    echo "error: allowed_deps is not minimal (${unused_n} unused entries; not deleted)" >&2
+  fi
+  if [[ "$unused_failed" -ne 0 ]]; then
+    exit 1
+  fi
+  echo "check-crate-dag: allowlist is minimal (${#MEMBERS[@]} members)"
+  exit 0
 fi
 
 member_list() {
@@ -418,13 +462,7 @@ for pkg in "${MEMBERS[@]}"; do
   fi
 
   # --- (a) intra-workspace edges must be in the allowed table ---
-  deps="$(echo "$METADATA" | jq -r --arg n "$pkg" '
-    .packages[]
-    | select(.name == $n and .source == null)
-    | .dependencies[]?
-    | select(.path != null)
-    | .name
-  ' | sort -u)"
+  deps="$(path_deps_for "$pkg")"
 
   while IFS= read -r dep; do
     [[ -z "$dep" ]] && continue

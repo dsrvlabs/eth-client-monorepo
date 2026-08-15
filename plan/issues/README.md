@@ -198,7 +198,7 @@ table, not omitted.
 | **Q-3** | Does `superstruct` compose with milhouse's `List<T, N, U>`? | 1 h ⌂ | **`S0a-B-09`** | **wk 1** | **the S4a→S4b order — and it can invert it** (`S4-ALT`) |
 | **Q-2** | Does redb give a **fail-fast** cross-process exclusive open? | S ⌂ | **`S0a-B-10`** | **wk 1** | the backend clause of `S0-B-14` (P1-F/1, `write @ S0`) |
 | **Q-7** | Other config-scoped values in `preset.rs`? | S ⌂ | `S0-A-05` | **first task of P0-02** | completeness of the `pub mod network` deletion (R-9) |
-| **Q-1** | `check-crate-dag.sh` allowlist minimality | S ⌂ | `S1-B-22` | S1 open | nothing; hygiene |
+| **Q-1** | `check-crate-dag.sh` allowlist minimality | S ⌂ | `S1-B-22` | **closed** (not minimal: `cc-devnet-gen`→`cc-config`) | nothing; hygiene |
 | **Q-4** | superstruct's compile-time cost on this workspace | spike | `S4-Q-04` | wk 46 | superstruct-vs-hand-written |
 | **Q-5** | Does `specs/gloas/partial-columns/` change the DAS sidecar shape? | read | `S4-Q-05` | wk 46 | the scope of ⟡ D-7 (`S4c-03`) |
 
