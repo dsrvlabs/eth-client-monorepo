@@ -83,11 +83,13 @@ use cc_proto::storage::{
 use cc_store::canonical::put_canonical;
 use cc_store::engine::Engine;
 use cc_store::keys::BlockRegion;
-use cc_store::meta::{BackfillProgress, KEY_BACKFILL_PROG, KEY_SERVE_WINDOW, TABLE_META};
+use cc_store::meta::{
+    AnchorInfo, BackfillProgress, KEY_ANCHOR_INFO, KEY_BACKFILL_PROG, KEY_SERVE_WINDOW, TABLE_META,
+};
 use cc_store::{
     MAX_BLOCKS_BY_RANGE, MAX_COLUMNS_BY_RANGE_SLOTS, MAX_SNAPSHOT_BYTES, Root, Slot, SszDecode,
     SszEncode, StoreError, blocks_by_range, columns_by_range, columns_for_block, get_block_by_root,
-    get_column_by_root, load_split, put_block, put_column,
+    get_column_by_root, load_split, parent_root_at_offset, put_block, put_column,
 };
 use futures::Stream;
 use futures::StreamExt;
@@ -97,8 +99,10 @@ use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status};
 
 use crate::backfill::{
-    BackfillBlockRow, BatchAdmitError, admit_descending_contiguous, admit_progress_bound_to_batch,
-    admit_progress_monotone, observe_put_backfill_batch, proto_progress_to_store,
+    BackfillBlockRow, BatchAdmitError, admit_descending_contiguous, admit_extends_durable_frontier,
+    admit_progress_bound_to_batch, admit_progress_monotone,
+    admit_progress_only_preserves_block_frontier, admit_progress_required,
+    observe_put_backfill_batch, proto_progress_to_store,
 };
 use crate::history::{
     DEFAULT_STATE_CHUNK_BYTES, SnapshotLookup, finalized_checkpoint_history,
@@ -776,8 +780,8 @@ impl StorageService for StorageServer {
         let engine = self.engine()?;
 
         // Admit: descending contiguous parent chain (Architecture §6.2).
-        // Single-block / empty batches skip the parent-pair check; multi-block
-        // batches must be strictly descending with higher.parent → lower.root.
+        // A batch may only extend the durable frontier, never jump it.
+        // There is no empty-progress bypass.
         let rows: Vec<BackfillBlockRow> = req
             .blocks
             .iter()
@@ -795,6 +799,7 @@ impl StorageService for StorageServer {
             Some(p) => Some(proto_to_backfill_progress(p)?),
             None => None,
         };
+        admit_progress_required(progress.as_ref(), !ordered.is_empty()).map_err(admit_status)?;
 
         let column_slots: Vec<u64> = req.columns.iter().map(|c| c.slot).collect();
 
@@ -803,11 +808,28 @@ impl StorageService for StorageServer {
             let rt = engine.read().map_err(store_status)?;
 
             // Server-side monotony + frontier bind (CC-47b): refuse before staging.
+            let stored = cc_store::load_backfill_progress_txn(&rt).map_err(store_status)?;
             if let Some(ref p) = progress {
-                let stored = cc_store::load_backfill_progress_txn(&rt).map_err(store_status)?;
                 admit_progress_monotone(p, stored.as_ref()).map_err(admit_status)?;
                 admit_progress_bound_to_batch(p, &ordered, &column_slots).map_err(admit_status)?;
             }
+
+            let anchor = load_anchor_info_txn(&rt)?;
+            admit_progress_only_preserves_block_frontier(
+                progress.as_ref(),
+                !ordered.is_empty(),
+                stored.as_ref(),
+                anchor.as_ref(),
+            )
+            .map_err(admit_status)?;
+            let ssz_parent_is_durable = first_row_ssz_parent_is_durable(&rt, &ordered)?;
+            admit_extends_durable_frontier(
+                &ordered,
+                stored.as_ref(),
+                anchor.as_ref(),
+                ssz_parent_is_durable,
+            )
+            .map_err(admit_status)?;
 
             let mut batch = engine.batch();
             let mut blocks_written = 0u64;
@@ -1319,7 +1341,42 @@ fn admit_status(e: BatchAdmitError) -> Status {
         } => Status::invalid_argument(format!(
             "backfill progress not bound to admitted batch: {reason} (expected={expected}, got={got})"
         )),
+        BatchAdmitError::ProgressRequired => Status::invalid_argument(
+            "backfill progress is required; empty-progress batches are rejected",
+        ),
+        BatchAdmitError::FrontierJump { reason } => Status::failed_precondition(format!(
+            "a batch may only extend the durable frontier, never jump it ({reason})"
+        )),
     }
+}
+
+fn load_anchor_info_txn(rt: &cc_store::engine::ReadTxn) -> Result<Option<AnchorInfo>, Status> {
+    match rt
+        .get(TABLE_META, KEY_ANCHOR_INFO.as_bytes())
+        .map_err(store_status)?
+    {
+        Some(bytes) => AnchorInfo::from_ssz_bytes(&bytes)
+            .map(Some)
+            .map_err(|e| Status::internal(format!("AnchorInfo SSZ decode: {e:?}"))),
+        None => Ok(None),
+    }
+}
+
+fn first_row_ssz_parent_is_durable(
+    rt: &cc_store::engine::ReadTxn,
+    ordered: &[BackfillBlockRow],
+) -> Result<bool, Status> {
+    let Some(first) = ordered.first() else {
+        return Ok(false);
+    };
+    let parent = parent_root_at_offset(&first.ssz).map_err(|_| {
+        admit_status(BatchAdmitError::FieldMismatch {
+            slot: first.slot.as_u64(),
+        })
+    })?;
+    Ok(get_block_by_root(rt, &parent)
+        .map_err(store_status)?
+        .is_some())
 }
 
 /// Commit a staged backfill batch via the single writer when present, else
@@ -1420,6 +1477,20 @@ mod tests {
 
     fn root_n(n: u8) -> Root {
         Root::from_array([n; 32])
+    }
+
+    fn seed_anchor_oldest_parent(eng: &Engine, oldest_block_parent: Root) {
+        let mut b = eng.batch();
+        let anchor = AnchorInfo {
+            oldest_block_parent,
+            ..AnchorInfo::default()
+        };
+        b.put(
+            TABLE_META,
+            KEY_ANCHOR_INFO.as_bytes(),
+            &anchor.as_ssz_bytes(),
+        );
+        eng.commit(b).unwrap();
     }
 
     fn sha256(bytes: &[u8]) -> [u8; 32] {
@@ -1958,6 +2029,7 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let root = root_n(0x42);
+        seed_anchor_oldest_parent(&eng, root);
         let ssz = synth_block(7, &Root::ZERO, &root_n(1));
         let col = synth_column(7, 0);
         let err = srv
@@ -2002,6 +2074,7 @@ mod tests {
         let (dir, eng) = open_engine("bf-ok");
         let srv = server_with(Arc::clone(&eng), ServeConfig::default());
         let root = root_n(0x11);
+        seed_anchor_oldest_parent(&eng, root);
         let ssz = synth_block(3, &Root::ZERO, &root_n(1));
         let col = synth_column(3, 1);
         let resp = srv
@@ -2050,6 +2123,7 @@ mod tests {
         let srv = server_with(Arc::clone(&eng), ServeConfig::default());
         // Seed durable progress at slot 10.
         let root10 = root_n(0x10);
+        seed_anchor_oldest_parent(&eng, root10);
         let ssz10 = synth_block(10, &Root::ZERO, &root_n(1));
         srv.put_backfill_batch(Request::new(PutBackfillBatchRequest {
             blocks: vec![BackfillBlock {
@@ -2091,19 +2165,19 @@ mod tests {
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
         assert!(err.message().contains("non-monotone"));
 
-        // Descending commit still works.
-        let root5 = root_n(0x05);
-        let ssz5 = synth_block(5, &Root::ZERO, &root_n(1));
+        // Descending commit still works when it extends the frontier
+        // (first row root == stored blocks_oldest_parent).
+        let ssz5 = synth_block(5, &root_n(0x04), &root_n(1));
         srv.put_backfill_batch(Request::new(PutBackfillBatchRequest {
             blocks: vec![BackfillBlock {
                 slot: 5,
-                root: root5.as_slice().to_vec(),
+                root: Root::ZERO.as_slice().to_vec(),
                 ssz: ssz5,
             }],
             columns: vec![],
             progress: Some(ProtoBackfillProgress {
                 blocks_oldest: 5,
-                blocks_oldest_parent: Root::ZERO.as_slice().to_vec(),
+                blocks_oldest_parent: root_n(0x04).as_slice().to_vec(),
                 columns_oldest: 5,
                 per_index_oldest: vec![],
             }),
@@ -2119,6 +2193,7 @@ mod tests {
         let (dir, eng) = open_engine("bf-bind");
         let srv = server_with(Arc::clone(&eng), ServeConfig::default());
         let root = root_n(0x33);
+        seed_anchor_oldest_parent(&eng, root);
         let ssz = synth_block(9, &Root::ZERO, &root_n(1));
         // Progress claims oldest=1 but batch only has slot 9.
         let err = srv
@@ -2140,6 +2215,160 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
         assert!(err.message().contains("not bound"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_backfill_batch_empty_progress_single_block_batch_is_rejected() {
+        let (dir, eng) = open_engine("bf-empty-prog");
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+        let root = root_n(0x42);
+        seed_anchor_oldest_parent(&eng, root);
+        let ssz = synth_block(7, &Root::ZERO, &root_n(1));
+        let err = srv
+            .put_backfill_batch(Request::new(PutBackfillBatchRequest {
+                blocks: vec![BackfillBlock {
+                    slot: 7,
+                    root: root.as_slice().to_vec(),
+                    ssz,
+                }],
+                columns: vec![],
+                progress: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(
+            err.message().contains("progress is required"),
+            "empty-progress single-block batch must be rejected, not fast-pathed: {err}"
+        );
+
+        let rt = eng.read().unwrap();
+        assert!(get_block_by_root(&rt, &root).unwrap().is_none());
+        assert!(
+            rt.get(TABLE_META, KEY_BACKFILL_PROG.as_bytes())
+                .unwrap()
+                .is_none()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_backfill_batch_parent_not_durable_and_not_first_row_is_rejected() {
+        let (dir, eng) = open_engine("bf-jump");
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+        // Named frontier parent is 0xEE; this batch's first row is 0x33 and
+        // its SSZ parent (0xFF) is not a durable block.
+        seed_anchor_oldest_parent(&eng, root_n(0xEE));
+        let root = root_n(0x33);
+        let ssz = synth_block(9, &root_n(0xFF), &root_n(1));
+        let err = srv
+            .put_backfill_batch(Request::new(PutBackfillBatchRequest {
+                blocks: vec![BackfillBlock {
+                    slot: 9,
+                    root: root.as_slice().to_vec(),
+                    ssz,
+                }],
+                columns: vec![],
+                progress: Some(ProtoBackfillProgress {
+                    blocks_oldest: 9,
+                    blocks_oldest_parent: root_n(0xFF).as_slice().to_vec(),
+                    columns_oldest: 9,
+                    per_index_oldest: vec![],
+                }),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            err.message().contains("durable frontier") && err.message().contains("never jump"),
+            "must state the S2 invariant: {err}"
+        );
+        assert!(
+            err.message().contains("not durable") && err.message().contains("not the first row"),
+            "{err}"
+        );
+
+        let rt = eng.read().unwrap();
+        assert!(get_block_by_root(&rt, &root).unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_backfill_batch_progress_only_cannot_plant_blocks_oldest_parent() {
+        let (dir, eng) = open_engine("bf-prog-only");
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+        let frontier_parent = root_n(0xEE);
+        seed_anchor_oldest_parent(&eng, frontier_parent);
+
+        let planted_parent = root_n(0xAA);
+        let planted_slot = 99_999u64;
+        let err = srv
+            .put_backfill_batch(Request::new(PutBackfillBatchRequest {
+                blocks: vec![],
+                columns: vec![],
+                progress: Some(ProtoBackfillProgress {
+                    blocks_oldest: planted_slot,
+                    blocks_oldest_parent: planted_parent.as_slice().to_vec(),
+                    columns_oldest: planted_slot,
+                    per_index_oldest: vec![],
+                }),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            err.message().contains("durable frontier") && err.message().contains("never jump"),
+            "{err}"
+        );
+
+        {
+            let rt = eng.read().unwrap();
+            assert!(
+                rt.get(TABLE_META, KEY_BACKFILL_PROG.as_bytes())
+                    .unwrap()
+                    .is_none(),
+                "progress-only must not persist a fabricated named frontier"
+            );
+        }
+
+        // A later single-block batch must still bind to the real frontier parent,
+        // not the rejected plant — so put_canonical cannot land at planted_slot.
+        let ssz = synth_block(planted_slot, &root_n(0xFF), &root_n(1));
+        let err = srv
+            .put_backfill_batch(Request::new(PutBackfillBatchRequest {
+                blocks: vec![BackfillBlock {
+                    slot: planted_slot,
+                    root: planted_parent.as_slice().to_vec(),
+                    ssz,
+                }],
+                columns: vec![],
+                progress: Some(ProtoBackfillProgress {
+                    blocks_oldest: planted_slot,
+                    blocks_oldest_parent: root_n(0xFF).as_slice().to_vec(),
+                    columns_oldest: planted_slot,
+                    per_index_oldest: vec![],
+                }),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+
+        let rt = eng.read().unwrap();
+        assert!(get_block_by_root(&rt, &planted_parent).unwrap().is_none());
+        assert!(
+            cc_store::get_canonical(&rt, Slot::new(planted_slot))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            rt.get(TABLE_META, KEY_BACKFILL_PROG.as_bytes())
+                .unwrap()
+                .is_none()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

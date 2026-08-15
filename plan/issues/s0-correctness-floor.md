@@ -935,6 +935,10 @@ path; if the two are worded differently, the S0 work gets re-litigated at S2.
 whose parent is not durable and is not the first row of the same batch is rejected; both asserted by
 test.
 
+- [x] Empty-progress single-block batch is rejected.
+- [x] Parent not durable and not first row of the same batch is rejected.
+- [x] Progress-only RPC cannot plant an arbitrary `blocks_oldest_parent`.
+
 ---
 
 ### `S0-B-11` · P1-A/5 — CC-4A block floor from a build-machine fixture path

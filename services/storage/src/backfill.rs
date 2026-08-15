@@ -28,7 +28,7 @@ use cc_store::backfill_progress::{
     column_backfill_complete, ensure_per_index_len, oldest_custodied_column_slot,
     resume_block_frontier, resume_block_parent, resume_within_one_batch,
 };
-use cc_store::meta::BackfillProgress;
+use cc_store::meta::{AnchorInfo, BackfillProgress};
 use cc_store::{Root, Slot, parent_root_at_offset, slot_at_offset};
 
 use crate::metrics::{ClassLabels, StorageClass, StorageMetrics};
@@ -67,6 +67,13 @@ pub(crate) enum BatchAdmitError {
         expected: u64,
         /// Claimed value.
         got: u64,
+    },
+    /// Progress is required; there is no empty-progress bypass.
+    ProgressRequired,
+    /// A batch may only extend the durable frontier, never jump it.
+    FrontierJump {
+        /// Human-readable reason.
+        reason: &'static str,
     },
 }
 
@@ -252,6 +259,98 @@ pub(crate) fn admit_progress_bound_to_batch(
         });
     }
     Ok(())
+}
+
+// ── Anchor / frontier binding ───────────────────────────────────────────────
+
+/// Refuse a block batch that omits `progress`.
+///
+/// A single-block batch with empty progress must be rejected, not fast-pathed.
+pub(crate) fn admit_progress_required(
+    progress: Option<&BackfillProgress>,
+    has_blocks: bool,
+) -> Result<(), BatchAdmitError> {
+    if has_blocks && progress.is_none() {
+        return Err(BatchAdmitError::ProgressRequired);
+    }
+    Ok(())
+}
+
+/// Refuse a progress-only (empty block list) write that would plant or move
+/// the named block frontier.
+///
+/// A batch may only extend the durable frontier, never jump it. Without
+/// this check, `blocks_oldest_parent` can be set with no blocks, and the
+/// next single-block batch attaches to that fabricated pointer.
+pub(crate) fn admit_progress_only_preserves_block_frontier(
+    progress: Option<&BackfillProgress>,
+    has_blocks: bool,
+    stored: Option<&BackfillProgress>,
+    anchor: Option<&AnchorInfo>,
+) -> Result<(), BatchAdmitError> {
+    if has_blocks {
+        return Ok(());
+    }
+    let Some(proposed) = progress else {
+        return Ok(());
+    };
+    let Some((named_slot, named_parent)) = stored
+        .map(|s| (s.blocks_oldest, s.blocks_oldest_parent))
+        .or_else(|| anchor.map(|a| (a.oldest_block_slot, a.oldest_block_parent)))
+    else {
+        return Err(BatchAdmitError::FrontierJump {
+            reason: "progress-only request must not plant the named block frontier",
+        });
+    };
+    if proposed.blocks_oldest != named_slot || proposed.blocks_oldest_parent != named_parent {
+        return Err(BatchAdmitError::FrontierJump {
+            reason: "progress-only request must not move the named block frontier",
+        });
+    }
+    Ok(())
+}
+
+/// A batch may only extend the durable frontier, never jump it.
+///
+/// The writer rejects the batch unless the attachment parent is already
+/// durable, or is the first row of the same batch. There is no
+/// "progress optional" path and no empty-progress bypass.
+///
+/// Named frontier (stored progress, else [`AnchorInfo`]): the first
+/// (highest, frontier-adjacent) row **is** that parent. Unnamed first
+/// seed: the first row's SSZ parent must be durable, or must be the
+/// first row itself.
+pub(crate) fn admit_extends_durable_frontier(
+    ordered: &[BackfillBlockRow],
+    stored: Option<&BackfillProgress>,
+    anchor: Option<&AnchorInfo>,
+    ssz_parent_is_durable: bool,
+) -> Result<(), BatchAdmitError> {
+    let Some(first) = ordered.first() else {
+        return Ok(());
+    };
+
+    if let Some(expected) = stored
+        .map(|s| s.blocks_oldest_parent)
+        .or_else(|| anchor.map(|a| a.oldest_block_parent))
+    {
+        if first.root == expected {
+            return Ok(());
+        }
+        return Err(BatchAdmitError::FrontierJump {
+            reason: "parent is not durable and is not the first row of the same batch",
+        });
+    }
+
+    let parent = parent_root_at_offset(&first.ssz).map_err(|_| BatchAdmitError::FieldMismatch {
+        slot: first.slot.as_u64(),
+    })?;
+    if parent == first.root || ssz_parent_is_durable {
+        return Ok(());
+    }
+    Err(BatchAdmitError::FrontierJump {
+        reason: "parent is not durable and is not the first row of the same batch",
+    })
 }
 
 // ── Metrics ─────────────────────────────────────────────────────────────────
@@ -797,6 +896,177 @@ mod tests {
             admit_progress_bound_to_batch(&bad_col, &[], &[10, 12]),
             Err(BatchAdmitError::ProgressFrontierMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn admit_progress_required_rejects_empty_progress_when_blocks_present() {
+        assert!(matches!(
+            admit_progress_required(None, true),
+            Err(BatchAdmitError::ProgressRequired)
+        ));
+        assert!(admit_progress_required(None, false).is_ok());
+        let progress = BackfillProgress {
+            blocks_oldest: Slot::new(1),
+            blocks_oldest_parent: Root::from_array([1; 32]),
+            columns_oldest: Slot::new(1),
+            per_index_oldest: Default::default(),
+        };
+        assert!(admit_progress_required(Some(&progress), true).is_ok());
+    }
+
+    #[test]
+    fn admit_progress_only_preserves_named_block_frontier() {
+        let named_parent = Root::from_array([0xEE; 32]);
+        let stored = BackfillProgress {
+            blocks_oldest: Slot::new(10),
+            blocks_oldest_parent: named_parent,
+            columns_oldest: Slot::new(10),
+            per_index_oldest: Default::default(),
+        };
+        let restated = stored.clone();
+        assert!(
+            admit_progress_only_preserves_block_frontier(
+                Some(&restated),
+                false,
+                Some(&stored),
+                None
+            )
+            .is_ok()
+        );
+        assert!(
+            admit_progress_only_preserves_block_frontier(Some(&stored), true, Some(&stored), None)
+                .is_ok()
+        );
+
+        let planted = BackfillProgress {
+            blocks_oldest: Slot::new(0),
+            blocks_oldest_parent: Root::from_array([0xAA; 32]),
+            columns_oldest: Slot::new(0),
+            per_index_oldest: Default::default(),
+        };
+        assert!(matches!(
+            admit_progress_only_preserves_block_frontier(
+                Some(&planted),
+                false,
+                Some(&stored),
+                None
+            ),
+            Err(BatchAdmitError::FrontierJump { .. })
+        ));
+        assert!(matches!(
+            admit_progress_only_preserves_block_frontier(Some(&planted), false, None, None),
+            Err(BatchAdmitError::FrontierJump { .. })
+        ));
+
+        let anchor = AnchorInfo {
+            oldest_block_slot: Slot::new(100),
+            oldest_block_parent: named_parent,
+            ..AnchorInfo::default()
+        };
+        let matching_anchor = BackfillProgress {
+            blocks_oldest: Slot::new(100),
+            blocks_oldest_parent: named_parent,
+            columns_oldest: Slot::new(7),
+            per_index_oldest: Default::default(),
+        };
+        assert!(
+            admit_progress_only_preserves_block_frontier(
+                Some(&matching_anchor),
+                false,
+                None,
+                Some(&anchor)
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            admit_progress_only_preserves_block_frontier(
+                Some(&planted),
+                false,
+                None,
+                Some(&anchor)
+            ),
+            Err(BatchAdmitError::FrontierJump { .. })
+        ));
+    }
+
+    #[test]
+    fn admit_extends_durable_frontier_parent_must_be_durable_or_first_row() {
+        use cc_store::{PARENT_ROOT_SSZ_OFFSET, SLOT_SSZ_OFFSET, STATE_ROOT_SSZ_OFFSET};
+
+        fn synth(slot: u64, parent: &Root, root: Root) -> BackfillBlockRow {
+            let mut v = vec![0u8; STATE_ROOT_SSZ_OFFSET + 32];
+            v[0..4].copy_from_slice(&100u32.to_le_bytes());
+            v[SLOT_SSZ_OFFSET..SLOT_SSZ_OFFSET + 8].copy_from_slice(&slot.to_le_bytes());
+            v[PARENT_ROOT_SSZ_OFFSET..PARENT_ROOT_SSZ_OFFSET + 32]
+                .copy_from_slice(parent.as_slice());
+            BackfillBlockRow {
+                slot: Slot::new(slot),
+                root,
+                ssz: v,
+            }
+        }
+
+        let expected = Root::from_array([0xEE; 32]);
+        let first = synth(9, &Root::from_array([0x08; 32]), expected);
+        let stored = BackfillProgress {
+            blocks_oldest: Slot::new(10),
+            blocks_oldest_parent: expected,
+            columns_oldest: Slot::new(10),
+            per_index_oldest: Default::default(),
+        };
+        assert!(
+            admit_extends_durable_frontier(
+                std::slice::from_ref(&first),
+                Some(&stored),
+                None,
+                false
+            )
+            .is_ok()
+        );
+
+        let jumped = synth(
+            5,
+            &Root::from_array([0xFF; 32]),
+            Root::from_array([0x55; 32]),
+        );
+        assert!(matches!(
+            admit_extends_durable_frontier(
+                std::slice::from_ref(&jumped),
+                Some(&stored),
+                None,
+                false
+            ),
+            Err(BatchAdmitError::FrontierJump { .. })
+        ));
+
+        // Unnamed first seed: SSZ parent durable, or parent is the first row.
+        assert!(
+            admit_extends_durable_frontier(std::slice::from_ref(&jumped), None, None, true).is_ok()
+        );
+        let self_parent = synth(3, &expected, expected);
+        assert!(
+            admit_extends_durable_frontier(std::slice::from_ref(&self_parent), None, None, false)
+                .is_ok()
+        );
+        assert!(matches!(
+            admit_extends_durable_frontier(std::slice::from_ref(&jumped), None, None, false),
+            Err(BatchAdmitError::FrontierJump { .. })
+        ));
+
+        // Anchor binds the first seed the same way stored progress does.
+        let anchor = AnchorInfo {
+            oldest_block_parent: expected,
+            ..AnchorInfo::default()
+        };
+        assert!(
+            admit_extends_durable_frontier(
+                std::slice::from_ref(&first),
+                None,
+                Some(&anchor),
+                false
+            )
+            .is_ok()
+        );
     }
 
     /// CC-47 /6 block class: write-behind commit p99 during P2 backfill batches
