@@ -8,7 +8,7 @@
 //! Oldest-first eviction; pruned at finalization. Occupancy is exported via
 //! [`SeenSets::occupancy`] for gauge producers.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 
 /// Column seen-set capacity: 64 slots × 128 columns × 2 (two epochs of
@@ -131,6 +131,8 @@ pub struct SeenSets {
     ///
     /// Bounded with the block seen set's capacity (same lifecycle).
     pub block_roots: BoundedSeenSet<[u8; 32]>,
+    /// Slot of each known parent root (column `slot > parent.slot` REJECT).
+    block_slots: HashMap<[u8; 32], u64>,
 }
 
 impl SeenSets {
@@ -141,6 +143,7 @@ impl SeenSets {
             columns: BoundedSeenSet::new(COLUMN_SEEN_BOUND),
             blocks: BoundedSeenSet::new(BLOCK_SEEN_BOUND),
             block_roots: BoundedSeenSet::new(BLOCK_SEEN_BOUND),
+            block_slots: HashMap::new(),
         }
     }
 
@@ -161,7 +164,24 @@ impl SeenSets {
 
     /// Record an ACCEPTed block root as a known parent candidate.
     pub fn note_block_root(&mut self, root: [u8; 32]) {
+        self.note_known_block(root, None);
+    }
+
+    /// Record a known parent, optionally with its slot.
+    pub fn note_known_block(&mut self, root: [u8; 32], slot: Option<u64>) {
         let _ = self.block_roots.insert(root);
+        if let Some(s) = slot {
+            self.block_slots.insert(root, s);
+        }
+        if self.block_slots.len() > self.block_roots.bound() {
+            self.block_slots.retain(|r, _| self.block_roots.contains(r));
+        }
+    }
+
+    /// Slot of a previously noted parent, if recorded.
+    #[must_use]
+    pub fn known_block_slot(&self, root: &[u8; 32]) -> Option<u64> {
+        self.block_slots.get(root).copied()
     }
 
     /// Whether `root` has been observed as a valid/accepted block.

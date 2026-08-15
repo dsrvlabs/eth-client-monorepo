@@ -1025,6 +1025,10 @@ Split into separate issues if the sprint needs 1–2 day units.
 Note P1-A/9 interacts with `S3a-B-18` — the same validator consults the 1,900-line `fault_mode` global
 (P1-D/18), which is removed from production paths at S3a, not here.
 
+- [x] Disparity applied at configured ms; `+1ms` outside the window is IGNORE.
+- [x] Column validator REJECTs `slot <= parent.slot` and finalized-ancestor miss.
+- [x] Skipped epoch tick still converges the subscription set.
+
 ---
 
 ### `S0-B-14` · P1-F/1 — **ADR-R-05**, the backend-independent half

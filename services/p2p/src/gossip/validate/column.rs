@@ -29,6 +29,7 @@ use ssz::Decode;
 use tree_hash::TreeHash;
 
 use super::check_payload_len;
+use crate::clock::GossipTiming;
 use crate::gossip::pending::{PendingQueues, PendingSidecar, PendingSidecarReason};
 use crate::gossip::seen::{ColumnSeenKey, SeenSets};
 use crate::gossip::topics::TopicName;
@@ -278,8 +279,8 @@ pub struct ColumnValidateInput<'a> {
     pub current_slot: u64,
     /// Finalized slot lower bound (start of finalized epoch).
     pub finalized_slot: u64,
-    /// Gossip clock disparity in slots (ceil of ms disparity / slot duration).
-    pub disparity_slots: u64,
+    /// Wall-clock gossip window (`MAXIMUM_GOSSIP_CLOCK_DISPARITY` as a duration).
+    pub timing: GossipTiming,
     /// Shared chain view (lookahead, pubkeys, GVR).
     pub view: &'a ChainView,
     /// Network config for `get_blob_parameters` + fork versions.
@@ -397,11 +398,10 @@ pub fn validate_data_column_sidecar<P: Preset>(
         return ColumnOutcome::Done(Verdict::reject(Reason::Invalid, corr));
     }
 
-    // 5. slot window [finalized_slot, current_slot + disparity]
+    // 5. slot window [finalized_slot, now + disparity]
     steps.tick(ColumnStep::SlotWindow);
-    let upper = input.current_slot.saturating_add(input.disparity_slots);
-    if slot < input.finalized_slot || slot > upper {
-        let reason = if slot > upper {
+    if slot < input.finalized_slot || input.timing.is_future_slot(slot) {
+        let reason = if input.timing.is_future_slot(slot) {
             Reason::FutureSlot
         } else {
             Reason::AlreadyKnown
@@ -467,6 +467,23 @@ pub fn validate_data_column_sidecar<P: Preset>(
             );
         }
         return ColumnOutcome::Pending(Verdict::ignore(Reason::UnknownParent, corr));
+    }
+
+    let parent_slot = parent_slot_of(state, input.view, &parent_root);
+    // [REJECT] sidecar.slot > parent.slot
+    if let Some(ps) = parent_slot
+        && slot <= ps
+    {
+        return ColumnOutcome::Done(Verdict::reject(Reason::Invalid, corr));
+    }
+    // [REJECT] finalized checkpoint is an ancestor of the sidecar's block
+    if known_not_descended_from_finalized(
+        input.view,
+        input.finalized_slot,
+        &parent_root,
+        parent_slot,
+    ) {
+        return ColumnOutcome::Done(Verdict::reject(Reason::NotDescendedFromFinalized, corr));
     }
 
     // 10. expected proposer
@@ -704,6 +721,35 @@ fn parent_is_view_head(view: &ChainView, parent_root: &[u8; 32]) -> bool {
     view.head_root.as_slice() == parent_root.as_slice()
 }
 
+fn parent_root_eq(field: &[u8], parent_root: &[u8; 32]) -> bool {
+    field.len() == 32 && field == parent_root.as_slice()
+}
+
+fn parent_slot_of(
+    state: &ColumnValidatorState,
+    view: &ChainView,
+    parent_root: &[u8; 32],
+) -> Option<u64> {
+    if parent_is_view_head(view, parent_root) {
+        return Some(view.head_slot);
+    }
+    state.seen.known_block_slot(parent_root)
+}
+
+/// True only when local evidence shows the parent is **not** on the finalized
+/// chain. Unknown parent slot is not a REJECT (would punish honest peers).
+fn known_not_descended_from_finalized(
+    view: &ChainView,
+    finalized_slot: u64,
+    parent_root: &[u8; 32],
+    parent_slot: Option<u64>,
+) -> bool {
+    if parent_root_eq(&view.finalized_root, parent_root) || parent_is_view_head(view, parent_root) {
+        return false;
+    }
+    matches!(parent_slot, Some(ps) if ps < finalized_slot)
+}
+
 fn root_from_bytes(b: &[u8]) -> Root {
     if b.len() == 32 {
         let mut a = [0u8; 32];
@@ -776,6 +822,11 @@ mod tests {
     use cc_types::{BeaconBlockHeader, ChainConfig};
     use ssz::Encode;
     use ssz_types::{FixedVector, VariableList};
+    use std::time::Duration;
+
+    fn timing_at(slot: u64) -> GossipTiming {
+        GossipTiming::at_slot_start(slot, 12, Duration::from_millis(5 * 100))
+    }
 
     fn hoodi_config() -> ChainConfig {
         const YAML: &str =
@@ -829,7 +880,7 @@ mod tests {
             topic_subnet: subnet,
             current_slot: view.slot,
             finalized_slot: 0,
-            disparity_slots: 1,
+            timing: timing_at(view.slot),
             view,
             config,
             slots_per_epoch: 32,
@@ -1099,11 +1150,73 @@ mod tests {
     }
 
     #[test]
+    fn parent_slot_not_less_than_sidecar_rejects() {
+        let config = hoodi_config();
+        let (mut view, payload) = signed_sidecar_fixture(0, 100, 0);
+        view.head_root = vec![1u8; 32];
+        view.head_slot = 100;
+        view.finalized_root = vec![2u8; 32];
+        let mut state = ColumnValidatorState::new();
+        let inp = input(&payload, 0, &view, &config);
+        let out = validate_data_column_sidecar::<Mainnet>(
+            &mut state,
+            &inp,
+            &AlwaysValidKzg,
+            &NoopSamplingFeed,
+            None,
+        );
+        assert!(
+            matches!(
+                out,
+                ColumnOutcome::Done(ref v)
+                    if matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject)
+                        && v.reason == Reason::Invalid
+            ),
+            "got {out:?}"
+        );
+        assert_eq!(state.steps.get(ColumnStep::ParentSeen), 1);
+        assert_eq!(state.steps.get(ColumnStep::ExpectedProposer), 0);
+    }
+
+    #[test]
+    fn not_descended_from_finalized_rejects() {
+        let config = hoodi_config();
+        let (mut view, payload) = signed_sidecar_fixture(0, 100, 0);
+        view.head_root = vec![8u8; 32];
+        view.head_slot = 100;
+        view.finalized_root = vec![9u8; 32];
+        view.finalized_epoch = 1;
+        let mut state = ColumnValidatorState::new();
+        state.seen.note_known_block([1u8; 32], Some(10));
+        let mut inp = input(&payload, 0, &view, &config);
+        inp.finalized_slot = 32;
+        let out = validate_data_column_sidecar::<Mainnet>(
+            &mut state,
+            &inp,
+            &AlwaysValidKzg,
+            &NoopSamplingFeed,
+            None,
+        );
+        assert!(
+            matches!(
+                out,
+                ColumnOutcome::Done(ref v)
+                    if matches!(v.acceptance, cc_proto::p2p::Acceptance::Reject)
+                        && v.reason == Reason::NotDescendedFromFinalized
+            ),
+            "got {out:?}"
+        );
+        assert_eq!(state.steps.get(ColumnStep::ParentSeen), 1);
+        assert_eq!(state.steps.get(ColumnStep::ExpectedProposer), 0);
+    }
+
+    #[test]
     fn step10_unknown_proposer_ignores_and_queues() {
         let config = hoodi_config();
         let (mut view, payload) = signed_sidecar_fixture(0, 100, 0);
         // Parent known; lookahead empty → Unknown proposer.
         view.head_root = vec![1u8; 32]; // parent is [1;32] in fixture
+        view.head_slot = 99; // parent slot must be < sidecar slot (100)
         let mut state = ColumnValidatorState::new();
         state.seen.note_block_root([1u8; 32]);
         // Clear lookahead (fixture may have set it for signing).

@@ -2,8 +2,9 @@
 //!
 //! Owns `genesis_time` and `seconds_per_slot`. Until the first `ChainView`
 //! (CC-27a) both values come from config / tests. Every timing-dependent gossip
-//! condition must use [`SlotClock::maximum_gossip_clock_disparity`] — **never**
-//! an inlined disparity constant.
+//! condition must use [`SlotClock::maximum_gossip_clock_disparity`] via
+//! [`GossipTiming`] / [`within_gossip_disparity`] — **never** an inlined
+//! disparity constant and never a slot-quantized stand-in ([PRD] P1-A/8).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -63,6 +64,96 @@ fn default_maximum_gossip_clock_disparity_ms() -> u64 {
     SPEC_DEFAULT_MS
 }
 
+/// Wall-clock inputs for a gossip timeliness check.
+///
+/// `disparity` is the configured `MAXIMUM_GOSSIP_CLOCK_DISPARITY` duration.
+/// Callers must not convert it to a slot count — 500 ms is not one 12 s slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GossipTiming {
+    /// Unix milliseconds used for the comparison (devnet offset already applied).
+    pub now_millis: u64,
+    /// Unshifted genesis time (unix seconds).
+    pub genesis_time: u64,
+    /// Slot duration in seconds (clamped to ≥ 1 at use).
+    pub seconds_per_slot: u64,
+    /// Configured `MAXIMUM_GOSSIP_CLOCK_DISPARITY`.
+    pub disparity: Duration,
+}
+
+impl GossipTiming {
+    /// Snapshot from a [`SlotClock`].
+    #[must_use]
+    pub fn from_clock(clock: &SlotClock) -> Self {
+        Self {
+            now_millis: clock.now_millis(),
+            genesis_time: clock.genesis_time(),
+            seconds_per_slot: clock.seconds_per_slot(),
+            disparity: clock.maximum_gossip_clock_disparity(),
+        }
+    }
+
+    /// Clock sitting on the start of `slot` (genesis 0). Tests only.
+    #[must_use]
+    pub const fn at_slot_start(slot: u64, seconds_per_slot: u64, disparity: Duration) -> Self {
+        let sps = if seconds_per_slot == 0 {
+            1
+        } else {
+            seconds_per_slot
+        };
+        Self {
+            now_millis: slot.saturating_mul(sps).saturating_mul(1000),
+            genesis_time: 0,
+            seconds_per_slot: sps,
+            disparity,
+        }
+    }
+
+    /// Unix-seconds start of `slot`.
+    #[must_use]
+    pub fn slot_start_secs(&self, slot: u64) -> u64 {
+        self.genesis_time
+            .saturating_add(slot.saturating_mul(self.seconds_per_slot.max(1)))
+    }
+
+    /// Spec future-slot check: `slot_start > now + disparity`.
+    #[must_use]
+    pub fn is_future_slot(&self, slot: u64) -> bool {
+        !within_gossip_disparity(self.now_millis, self.slot_start_secs(slot), self.disparity)
+    }
+
+    /// Spec current-slot check: `now` lies in the slot's interval expanded by
+    /// `disparity` on both sides.
+    #[must_use]
+    pub fn is_current_slot(&self, slot: u64) -> bool {
+        let start_ms = self.slot_start_secs(slot).saturating_mul(1000);
+        let end_ms = self
+            .slot_start_secs(slot.saturating_add(1))
+            .saturating_mul(1000);
+        let extra = u64::try_from(self.disparity.as_millis()).unwrap_or(u64::MAX);
+        self.now_millis.saturating_add(extra) >= start_ms
+            && self.now_millis < end_ms.saturating_add(extra)
+    }
+}
+
+/// Unix time in milliseconds (disparity is a millisecond quantity).
+#[must_use]
+pub fn unix_now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+/// Whether `now + disparity` reaches `slot_start` (millisecond arithmetic).
+///
+/// Must not quantize `disparity` up to a whole slot ([PRD] P1-A/8).
+#[must_use]
+pub fn within_gossip_disparity(now_millis: u64, slot_start_secs: u64, disparity: Duration) -> bool {
+    let slot_start_ms = slot_start_secs.saturating_mul(1000);
+    let extra = u64::try_from(disparity.as_millis()).unwrap_or(u64::MAX);
+    now_millis.saturating_add(extra) >= slot_start_ms
+}
+
 /// Slot / epoch clock with optional devnet offset.
 #[derive(Debug, Clone)]
 pub struct SlotClock {
@@ -108,6 +199,12 @@ impl SlotClock {
     #[must_use]
     pub const fn maximum_gossip_clock_disparity(&self) -> Duration {
         self.maximum_gossip_clock_disparity
+    }
+
+    /// Wall-clock unix milliseconds with the devnet offset applied.
+    #[must_use]
+    pub fn now_millis(&self) -> u64 {
+        apply_offset_millis(unix_now_millis(), self.slot_clock_offset_seconds)
     }
 
     /// Devnet offset applied to wall-clock-derived slots only.
@@ -199,6 +296,15 @@ fn apply_offset(unix_secs: u64, offset: i64) -> u64 {
     }
 }
 
+fn apply_offset_millis(unix_millis: u64, offset_seconds: i64) -> u64 {
+    let offset_ms = offset_seconds.unsigned_abs().saturating_mul(1000);
+    if offset_seconds >= 0 {
+        unix_millis.saturating_add(offset_ms)
+    } else {
+        unix_millis.saturating_sub(offset_ms)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -237,5 +343,39 @@ mod tests {
         assert_eq!(clock.slot_start(0), 1_000);
         // slot_at applies offset: unix 1000 behaves as 1024 → slot 2.
         assert_eq!(clock.slot_at(1_000), 2);
+    }
+
+    #[test]
+    fn disparity_is_millisecond_not_a_whole_slot() {
+        let disparity = Duration::from_millis(5 * 100);
+        let slot = 5u64;
+        let sps = 12u64;
+        let start_ms = slot.saturating_mul(sps).saturating_mul(1000);
+        let at_start = GossipTiming::at_slot_start(slot, sps, disparity);
+        assert!(!at_start.is_future_slot(slot));
+        // 500 ms early — allowed.
+        let early_ok = GossipTiming {
+            now_millis: start_ms - 500,
+            genesis_time: 0,
+            seconds_per_slot: sps,
+            disparity,
+        };
+        assert!(!early_ok.is_future_slot(slot));
+        // 501 ms early — IGNORE. A 1-slot quantization would accept this.
+        let early_out = GossipTiming {
+            now_millis: start_ms - 501,
+            genesis_time: 0,
+            seconds_per_slot: sps,
+            disparity,
+        };
+        assert!(early_out.is_future_slot(slot));
+        // A full-slot quantization of 12 s would accept this; we must not.
+        let eleven_s = GossipTiming {
+            now_millis: start_ms - 11_000,
+            genesis_time: 0,
+            seconds_per_slot: sps,
+            disparity,
+        };
+        assert!(eleven_s.is_future_slot(slot));
     }
 }

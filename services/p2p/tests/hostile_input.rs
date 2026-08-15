@@ -28,7 +28,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use cc_p2p::clock::GossipTiming;
 
 use cc_proto::p2p::ChainView;
 use cc_types::{
@@ -360,7 +362,11 @@ impl ExerciseCtx {
                     payload,
                     current_slot: self.view.slot,
                     finalized_slot: 0,
-                    disparity_slots: 2,
+                    timing: GossipTiming::at_slot_start(
+                        self.view.slot,
+                        12,
+                        Duration::from_millis(5 * 100),
+                    ),
                     topic: "beacon_block",
                     message_id: b"hostile-mid",
                     peer_id: b"hostile-peer",
@@ -378,7 +384,11 @@ impl ExerciseCtx {
                     topic_subnet: subnet,
                     current_slot: self.view.slot,
                     finalized_slot: 0,
-                    disparity_slots: 2,
+                    timing: GossipTiming::at_slot_start(
+                        self.view.slot,
+                        12,
+                        Duration::from_millis(5 * 100),
+                    ),
                     view: &self.view,
                     config: &self.config,
                     slots_per_epoch: 32,
@@ -413,7 +423,7 @@ impl ExerciseCtx {
                 let input = cc_p2p::gossip::validate::SyncContribValidateInput {
                     payload,
                     current_slot: 1,
-                    disparity_slots: 2,
+                    timing: GossipTiming::at_slot_start(1, 12, Duration::from_millis(5 * 100)),
                     config: &self.config,
                     slots_per_epoch: 32,
                     genesis_validators_root: &[0u8; 32],
@@ -430,7 +440,7 @@ impl ExerciseCtx {
                     payload,
                     topic_subnet: 0,
                     current_slot: 1,
-                    disparity_slots: 2,
+                    timing: GossipTiming::at_slot_start(1, 12, Duration::from_millis(5 * 100)),
                     config: &self.config,
                     slots_per_epoch: 32,
                     genesis_validators_root: &[0u8; 32],

@@ -989,7 +989,11 @@ mod tests {
             topic_subnet: 0,
             current_slot: view.slot,
             finalized_slot: 0,
-            disparity_slots: 1,
+            timing: crate::clock::GossipTiming::at_slot_start(
+                view.slot,
+                12,
+                std::time::Duration::from_millis(5 * 100),
+            ),
             view: &view,
             config: &config,
             slots_per_epoch: 32,

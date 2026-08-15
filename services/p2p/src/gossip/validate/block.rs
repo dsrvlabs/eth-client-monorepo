@@ -15,6 +15,7 @@ use tree_hash::TreeHash;
 use std::sync::Arc;
 
 use super::check_payload_len;
+use crate::clock::GossipTiming;
 use crate::gossip::pending::{PendingBlock, PendingQueues};
 use crate::gossip::seen::{BlockSeenKey, SeenSets};
 use crate::gossip::topics::TopicName;
@@ -30,8 +31,8 @@ pub struct BlockValidateInput<'a> {
     pub current_slot: u64,
     /// Finalized slot lower bound.
     pub finalized_slot: u64,
-    /// Gossip clock disparity in slots.
-    pub disparity_slots: u64,
+    /// Wall-clock gossip window (`MAXIMUM_GOSSIP_CLOCK_DISPARITY` as a duration).
+    pub timing: GossipTiming,
     /// Topic string.
     pub topic: &'a str,
     /// Message id bytes (pending).
@@ -96,10 +97,9 @@ pub fn validate_beacon_block_local<P: Preset>(
     };
     let corr = block_root.to_vec();
 
-    // Timing
-    let upper = input.current_slot.saturating_add(input.disparity_slots);
-    if slot < input.finalized_slot || slot > upper {
-        let reason = if slot > upper {
+    // Timing — future bound is `now + disparity` in milliseconds, not +1 slot.
+    if slot < input.finalized_slot || input.timing.is_future_slot(slot) {
+        let reason = if input.timing.is_future_slot(slot) {
             Reason::FutureSlot
         } else {
             Reason::AlreadyKnown
@@ -161,7 +161,7 @@ pub fn note_accepted_block(seen: &mut SeenSets, slot: u64, proposer_index: u64, 
         slot,
         proposer_index,
     });
-    seen.note_block_root(root);
+    seen.note_known_block(root, Some(slot));
 }
 
 /// Re-encode helper for tests.
@@ -179,6 +179,11 @@ mod tests {
     use crate::gossip::seen::SeenSets;
     use cc_types::SignedBeaconBlock;
     use cc_types::preset::Mainnet;
+    use std::time::Duration;
+
+    fn timing_at(slot: u64) -> GossipTiming {
+        GossipTiming::at_slot_start(slot, 12, Duration::from_millis(5 * 100))
+    }
 
     #[test]
     fn oversize_rejects() {
@@ -190,7 +195,7 @@ mod tests {
             payload: &payload,
             current_slot: 10,
             finalized_slot: 0,
-            disparity_slots: 1,
+            timing: timing_at(10),
             topic: "beacon_block",
             message_id: b"m",
             peer_id: b"p",
@@ -210,7 +215,7 @@ mod tests {
             payload: &payload,
             current_slot: 10,
             finalized_slot: 0,
-            disparity_slots: 1,
+            timing: timing_at(10),
             topic: "beacon_block",
             message_id: b"m",
             peer_id: b"p",
@@ -232,7 +237,7 @@ mod tests {
             payload: &payload,
             current_slot: 10,
             finalized_slot: 0,
-            disparity_slots: 1,
+            timing: timing_at(10),
             topic: "beacon_block",
             message_id: b"m",
             peer_id: b"p",
@@ -255,7 +260,7 @@ mod tests {
             payload: &payload,
             current_slot: 10,
             finalized_slot: 0,
-            disparity_slots: 1,
+            timing: timing_at(10),
             topic: "beacon_block",
             message_id: b"m",
             peer_id: b"p",

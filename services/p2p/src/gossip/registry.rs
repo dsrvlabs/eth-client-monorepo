@@ -24,11 +24,11 @@
 //!
 //! ```text
 //! Steady   live = {current}
-//!   │  epoch == boundary − 1
+//!   │  epoch >= boundary − 1   (a missed tick still enters)
 //! Overlap  live = {current, next}   ← subscribe(next) here (params first)
-//!   │  epoch == boundary + 1
+//!   │  epoch >= boundary + 1
 //! Drain    live = {next}; unsubscribe(current)
-//!   │  next advance_to
+//!   │  next advance_to (or same call when epoch >= boundary + 2)
 //! Steady with current := next
 //! ```
 //!
@@ -544,20 +544,28 @@ impl<G: GossipsubControl> TopicRegistry<G> {
             self.complete_drain(ctx);
         }
 
-        // When Steady, refresh current + scheduled next from ForkContext.
+        // When Steady, refresh current + scheduled next from ForkContext —
+        // unless this tick has already reached a previously scheduled overlap
+        // window. `on_epoch` then reports the *next* BPO, which would clobber
+        // the transition we still owe and wedge the live set.
         if self.phase == SubscriptionPhase::Steady {
-            self.current = ctx.current_digest();
-            match ctx.next() {
-                Some((b, _, d)) => {
-                    self.boundary = Some(b);
-                    self.next_digest = Some(d);
+            let reached_scheduled = self
+                .boundary
+                .is_some_and(|b| epoch.as_u64().saturating_add(1) >= b.as_u64());
+            if !reached_scheduled {
+                self.current = ctx.current_digest();
+                match ctx.next() {
+                    Some((b, _, d)) => {
+                        self.boundary = Some(b);
+                        self.next_digest = Some(d);
+                    }
+                    None => {
+                        self.boundary = None;
+                        self.next_digest = None;
+                    }
                 }
-                None => {
-                    self.boundary = None;
-                    self.next_digest = None;
-                }
+                self.rebuild_live();
             }
-            self.rebuild_live();
         }
 
         let Some(boundary) = self.boundary else {
@@ -569,21 +577,34 @@ impl<G: GossipsubControl> TopicRegistry<G> {
 
         let e = epoch.as_u64();
         let b = boundary.as_u64();
+        // Overlap window is [b−1, b]. Drain at b+1. Catch up if a tick was missed.
+        let overlap_start = b.saturating_sub(1);
 
         match self.phase {
-            SubscriptionPhase::Steady if e + 1 == b => {
-                // epoch == boundary − 1 → Overlap
-                self.enter_overlap(next_d)?;
-            }
-            SubscriptionPhase::Overlap if e == b + 1 => {
-                // epoch == boundary + 1 → Drain
-                self.enter_drain()?;
-            }
-            SubscriptionPhase::Overlap if e + 1 >= b && e <= b => {
-                // Stay in Overlap through boundary-1 and boundary.
+            SubscriptionPhase::Steady if e < overlap_start => {
                 self.rebuild_live();
             }
-            _ => {
+            SubscriptionPhase::Steady if e <= b => {
+                self.enter_overlap(next_d)?;
+            }
+            SubscriptionPhase::Steady => {
+                // e >= b + 1: skipped the overlap window entirely.
+                self.enter_overlap(next_d)?;
+                self.enter_drain()?;
+                if e >= b.saturating_add(2) {
+                    self.complete_drain(ctx);
+                }
+            }
+            SubscriptionPhase::Overlap if e <= b => {
+                self.rebuild_live();
+            }
+            SubscriptionPhase::Overlap => {
+                self.enter_drain()?;
+                if e >= b.saturating_add(2) {
+                    self.complete_drain(ctx);
+                }
+            }
+            SubscriptionPhase::Drain => {
                 self.rebuild_live();
             }
         }
@@ -916,6 +937,50 @@ mod tests {
             sub_idx.expect("subscribe for next"),
         );
         assert!(si < su, "params must precede subscribe: {calls:?}");
+    }
+
+    #[test]
+    fn skipped_epoch_tick_still_converges() {
+        let boundary = Epoch::new(100);
+        let mut ctx = synthetic_ctx(Epoch::new(50), boundary);
+        let counts = SubnetCounts {
+            attestation: 0,
+            sync_committee: 0,
+            data_column_sidecar: 0,
+        };
+        let mut reg = TopicRegistry::new(RecordingGossipsub::default(), &ctx, counts);
+        reg.register_validator(TopicName::BeaconBlock);
+        let d_current = ctx.current_digest();
+        let d_next = ctx.next().expect("BPO scheduled").2;
+        reg.subscribe(
+            TopicKey::new(d_current, TopicName::BeaconBlock),
+            TopicParams { topic_weight: 1.0 },
+        )
+        .unwrap();
+
+        // Miss boundary − 1: jump 50 → 100. Must still enter Overlap.
+        ctx.on_epoch(boundary);
+        reg.advance_to(boundary, &ctx).unwrap();
+        assert_eq!(reg.phase(), SubscriptionPhase::Overlap);
+        assert_eq!(reg.live_digests(), HashSet::from([d_current, d_next]));
+        assert!(
+            reg.subscribed_keys()
+                .contains(&TopicKey::new(d_next, TopicName::BeaconBlock))
+        );
+
+        // Miss boundary + 1: jump 100 → 102. Subscriptions must be {next} only.
+        let skipped = Epoch::new(boundary.as_u64() + 2);
+        ctx.on_epoch(skipped);
+        reg.advance_to(skipped, &ctx).unwrap();
+        assert_eq!(reg.live_digests(), HashSet::from([d_next]));
+        assert!(
+            !reg.subscribed_keys()
+                .contains(&TopicKey::new(d_current, TopicName::BeaconBlock))
+        );
+        assert!(
+            reg.subscribed_keys()
+                .contains(&TopicKey::new(d_next, TopicName::BeaconBlock))
+        );
     }
 
     #[test]

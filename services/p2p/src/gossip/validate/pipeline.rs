@@ -52,7 +52,7 @@ use crate::channels::{
     ChainInbound, ChainOutbound, GOSSIP_BOUND, GossipWork, PeerPenaltyCmd, SwarmCommand,
     VerdictResolution,
 };
-use crate::clock::SlotClock;
+use crate::clock::{GossipTiming, SlotClock};
 use crate::gossip::topics::TopicName;
 use crate::metrics::{P2pMetrics, PeerPenaltyReason, QueueName};
 use crate::verdict::{Verdict, is_late_import_reject};
@@ -425,10 +425,7 @@ async fn validate_one(pool: &ValidationPool, work: &GossipWork) -> Verdict {
         pool.clock.current_slot()
     };
     let slots_per_epoch = pool.clock.slots_per_epoch();
-    let disparity_slots = disparity_to_slots(
-        pool.clock.maximum_gossip_clock_disparity(),
-        pool.clock.seconds_per_slot(),
-    );
+    let timing = GossipTiming::from_clock(&pool.clock);
     let finalized_slot = view.finalized_epoch.saturating_mul(slots_per_epoch);
 
     // Finalization prune (M1) — column/block slot-keyed + operation index sets.
@@ -457,7 +454,7 @@ async fn validate_one(pool: &ValidationPool, work: &GossipWork) -> Verdict {
                         payload: &work.data,
                         topic_subnet: subnet,
                         current_slot,
-                        disparity_slots,
+                        timing,
                         config: &pool.config,
                         slots_per_epoch,
                         genesis_validators_root: gvr.as_slice(),
@@ -473,7 +470,7 @@ async fn validate_one(pool: &ValidationPool, work: &GossipWork) -> Verdict {
                     let input = SyncContribValidateInput {
                         payload: &work.data,
                         current_slot,
-                        disparity_slots,
+                        timing,
                         config: &pool.config,
                         slots_per_epoch,
                         genesis_validators_root: gvr.as_slice(),
@@ -556,7 +553,7 @@ async fn validate_one(pool: &ValidationPool, work: &GossipWork) -> Verdict {
                 topic_subnet: subnet,
                 current_slot,
                 finalized_slot,
-                disparity_slots,
+                timing,
                 view: &view,
                 config: &pool.config,
                 slots_per_epoch,
@@ -587,7 +584,7 @@ async fn validate_one(pool: &ValidationPool, work: &GossipWork) -> Verdict {
                     payload: &work.data,
                     current_slot,
                     finalized_slot,
-                    disparity_slots,
+                    timing,
                     topic: &work.topic,
                     message_id: work.message_id.0.as_slice(),
                     peer_id: peer_bytes.as_slice(),
@@ -676,10 +673,7 @@ async fn redrive_for_parent(pool: &ValidationPool, parent_root: &[u8; 32]) {
         pool.clock.current_slot()
     };
     let slots_per_epoch = pool.clock.slots_per_epoch();
-    let disparity_slots = disparity_to_slots(
-        pool.clock.maximum_gossip_clock_disparity(),
-        pool.clock.seconds_per_slot(),
-    );
+    let timing = GossipTiming::from_clock(&pool.clock);
     let finalized_slot = view.finalized_epoch.saturating_mul(slots_per_epoch);
 
     for sc in sidecars {
@@ -692,7 +686,7 @@ async fn redrive_for_parent(pool: &ValidationPool, parent_root: &[u8; 32]) {
             topic_subnet: sc.topic_subnet,
             current_slot,
             finalized_slot,
-            disparity_slots,
+            timing,
             view: &view,
             config: &pool.config,
             slots_per_epoch,
@@ -736,7 +730,7 @@ async fn redrive_for_parent(pool: &ValidationPool, parent_root: &[u8; 32]) {
                 payload: blk.ssz.as_ref(),
                 current_slot,
                 finalized_slot,
-                disparity_slots,
+                timing,
                 topic: &blk.topic,
                 message_id: blk.message_id.as_slice(),
                 peer_id: peer_bytes.as_slice(),
@@ -785,10 +779,7 @@ async fn redrive_unknown_proposer(pool: &ValidationPool) {
         pool.clock.current_slot()
     };
     let slots_per_epoch = pool.clock.slots_per_epoch();
-    let disparity_slots = disparity_to_slots(
-        pool.clock.maximum_gossip_clock_disparity(),
-        pool.clock.seconds_per_slot(),
-    );
+    let timing = GossipTiming::from_clock(&pool.clock);
     let finalized_slot = view.finalized_epoch.saturating_mul(slots_per_epoch);
     for sc in ready {
         let mut g = pool
@@ -800,7 +791,7 @@ async fn redrive_unknown_proposer(pool: &ValidationPool) {
             topic_subnet: sc.topic_subnet,
             current_slot,
             finalized_slot,
-            disparity_slots,
+            timing,
             view: &view,
             config: &pool.config,
             slots_per_epoch,
@@ -884,12 +875,6 @@ pub fn apply_late_chain_verdict(
     }
 }
 
-fn disparity_to_slots(disparity: Duration, seconds_per_slot: u64) -> u64 {
-    let ms = disparity.as_millis() as u64;
-    let slot_ms = seconds_per_slot.saturating_mul(1000).max(1);
-    ms.div_ceil(slot_ms).max(1)
-}
-
 /// In-flight cap constant (equals gossip channel bound).
 pub const IN_FLIGHT_VALIDATION_CAP: usize = GOSSIP_BOUND;
 
@@ -898,11 +883,15 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use crate::gossip::pending::PendingQueues;
+    use crate::gossip::seen::SeenSets;
     use crate::gossip::topics::{
         SubnetCounts, TopicName, expand_fulu_topic_names, format_topic_string,
     };
-    use cc_types::ForkDigest;
+    use cc_types::preset::Mainnet;
+    use cc_types::{ForkDigest, SignedBeaconBlock, Slot};
     use prometheus_client::registry::Registry;
+    use ssz::Encode;
 
     #[test]
     fn every_registered_topic_has_non_default_validator() {
@@ -1076,5 +1065,47 @@ mod tests {
         let kzg = production_kzg_verify();
         // Empty inputs must fail-closed (false) for real or fail-closed backend.
         assert!(!kzg.verify_column_kzg(0, &[], &[], &[]));
+    }
+
+    #[test]
+    fn disparity_plus_one_ms_outside_window_is_ignored() {
+        let disparity = Duration::from_millis(5 * 100);
+        let sps = 12u64;
+        let slot = 4u64;
+        let start_ms = slot.saturating_mul(sps).saturating_mul(1000);
+        let timing = GossipTiming {
+            now_millis: start_ms
+                .saturating_sub(u64::try_from(disparity.as_millis()).unwrap_or(0))
+                .saturating_sub(1),
+            genesis_time: 0,
+            seconds_per_slot: sps,
+            disparity,
+        };
+        assert!(timing.is_future_slot(slot));
+
+        let mut block = SignedBeaconBlock::<Mainnet>::default();
+        block.message.slot = Slot::new(slot);
+        let payload = block.as_ssz_bytes();
+        let mut seen = SeenSets::new();
+        let mut pending = PendingQueues::new();
+        let inp = BlockValidateInput {
+            payload: &payload,
+            current_slot: slot.saturating_sub(1),
+            finalized_slot: 0,
+            timing,
+            topic: "beacon_block",
+            message_id: b"m",
+            peer_id: b"p",
+        };
+        let out = validate_beacon_block_local::<Mainnet>(&mut seen, &mut pending, &inp, None);
+        assert!(
+            matches!(
+                out,
+                BlockOutcome::Done(ref v)
+                    if v.reason == Reason::FutureSlot
+                        && matches!(v.acceptance, Acceptance::Ignore)
+            ),
+            "got {out:?}"
+        );
     }
 }

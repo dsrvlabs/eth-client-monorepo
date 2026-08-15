@@ -33,6 +33,7 @@ use cc_types::primitives::{Epoch, Root};
 use ssz::Decode;
 
 use super::check_payload_len;
+use crate::clock::GossipTiming;
 use crate::gossip::seen::BoundedSeenSet;
 use crate::gossip::topics::TopicName;
 use crate::verdict::Verdict;
@@ -257,8 +258,8 @@ pub struct SyncMessageValidateInput<'a> {
     pub topic_subnet: u64,
     /// Current slot (clock / view).
     pub current_slot: u64,
-    /// Gossip clock disparity in slots.
-    pub disparity_slots: u64,
+    /// Wall-clock gossip window (`MAXIMUM_GOSSIP_CLOCK_DISPARITY` as a duration).
+    pub timing: GossipTiming,
     /// Chain config (fork versions).
     pub config: &'a ChainConfig,
     /// Slots per epoch.
@@ -274,8 +275,8 @@ pub struct SyncContribValidateInput<'a> {
     pub payload: &'a [u8],
     /// Current slot.
     pub current_slot: u64,
-    /// Gossip clock disparity in slots.
-    pub disparity_slots: u64,
+    /// Wall-clock gossip window (`MAXIMUM_GOSSIP_CLOCK_DISPARITY` as a duration).
+    pub timing: GossipTiming,
     /// Chain config.
     pub config: &'a ChainConfig,
     /// Slots per epoch.
@@ -339,8 +340,8 @@ pub fn validate_sync_committee_message<P: Preset>(
 
     // 3. timing — current slot ± disparity (IGNORE)
     tick(SyncMessageStep::Timing);
-    if !is_current_slot(slot, input.current_slot, input.disparity_slots) {
-        let reason = if slot > input.current_slot.saturating_add(input.disparity_slots) {
+    if !input.timing.is_current_slot(slot) {
+        let reason = if input.timing.is_future_slot(slot) {
             Reason::FutureSlot
         } else {
             Reason::AlreadyKnown
@@ -441,8 +442,8 @@ pub fn validate_sync_contribution_and_proof<P: Preset>(
     let corr = correlation_from_contribution(slot, aggregator_index, subcommittee_index);
 
     // 3. timing — current slot
-    if !is_current_slot(slot, input.current_slot, input.disparity_slots) {
-        let reason = if slot > input.current_slot.saturating_add(input.disparity_slots) {
+    if !input.timing.is_current_slot(slot) {
+        let reason = if input.timing.is_future_slot(slot) {
             Reason::FutureSlot
         } else {
             Reason::AlreadyKnown
@@ -518,12 +519,6 @@ pub fn validate_sync_contribution_and_proof<P: Preset>(
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
-
-fn is_current_slot(slot: u64, current: u64, disparity: u64) -> bool {
-    let lower = current.saturating_sub(disparity);
-    let upper = current.saturating_add(disparity);
-    slot >= lower && slot <= upper
-}
 
 /// Spec `is_sync_committee_aggregator`.
 #[must_use]
@@ -687,11 +682,16 @@ mod tests {
 
     use super::*;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use cc_types::preset::Mainnet;
     use cc_types::primitives::{ForkVersion, Slot, ValidatorIndex};
     use cc_types::{BlobParameters, BlobSchedule, PresetName};
     use ssz::Encode;
+
+    fn timing_at(slot: u64) -> GossipTiming {
+        GossipTiming::at_slot_start(slot, 12, Duration::from_millis(5 * 100))
+    }
 
     fn test_config() -> ChainConfig {
         let schedule = BlobSchedule::try_from_entries(vec![BlobParameters {
@@ -752,7 +752,7 @@ mod tests {
             payload: &payload,
             topic_subnet: 0,
             current_slot: 10,
-            disparity_slots: 1,
+            timing: timing_at(10),
             config: &config,
             slots_per_epoch: 32,
             genesis_validators_root: &[0u8; 32],
@@ -783,7 +783,7 @@ mod tests {
             payload: &payload,
             topic_subnet: 0,
             current_slot: 1,
-            disparity_slots: 1,
+            timing: timing_at(1),
             config: &config,
             slots_per_epoch: 32,
             genesis_validators_root: &[0u8; 32],
