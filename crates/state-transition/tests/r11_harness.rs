@@ -1,7 +1,8 @@
 //! R-11 falsifier harness skeleton (S0a-A-01).
 //!
 //! Loads the committed Hoodi pin's SSZ pair without filling any cache.
-//! No production code. Does not run `process_block` (that is S0-A-30).
+//! No production code. Does not run `process_block` (that is S0-A-30,
+//! `r11_process_block.rs`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -11,8 +12,8 @@ mod support;
 use std::fs;
 
 use support::{
-    CACHE_ENV, FETCH_HINT, cache_env_is_set, hoodi_config_path, load_anchor, load_hoodi_config,
-    load_pin, resolve_anchor_paths, resolve_anchor_paths_in,
+    cache_env_is_set, hoodi_config_path, load_anchor, load_hoodi_config, load_pin,
+    resolve_anchor_paths, resolve_anchor_paths_in, CACHE_ENV, FETCH_HINT,
 };
 
 /// A missing cache tree must fail with the fetch hint — never invent bytes.

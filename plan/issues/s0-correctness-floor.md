@@ -695,6 +695,12 @@ confirmation. This gates the *claim*, not the work — the fix is **S** either w
    *downgrades the claim*. **Do not quote P0-19's severity outside this repo until this has run**
    (R-11, verbatim).
 
+- [x] Committed Hoodi SSZ decode + `process_block` of a successor of that state succeeds when hydrated (`r11_process_block.rs`).
+- [x] Raw decode (omit the top-up) of the same bytes ⇒ `BlockError::CachePoisoned`.
+- [x] Recorded in [`s0-exit-note.md`](s0-exit-note.md): **confirms a live ship-blocker**. The pin pair is a post-state (`BlockSlotNotNewer`); that is topology, not a downgrade.
+
+- [x] R-11 executed: raw Hoodi decode CachePoisoned; hydrated import succeeds; exit note confirms live ship-blocker.
+
 ---
 
 ### `S0-A-31` · **R-13 observation (b)** — an instrumented real restore run
