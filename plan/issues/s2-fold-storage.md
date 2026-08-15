@@ -307,12 +307,10 @@ of the same data directory fails the `I-node-id` check.
 **Stream** A (join) · **Est** 2–3 pd / **5 pts** · **Deps** `S2-J-01` ·
 **Discharges by deletion** P1-A/22, P1-A/23, and E4's unauthenticated surface
 
-**Blocked on `S0-A-31` (R-13 observation b).** This issue must not land until the S0 exit note carries
-an explicit conclusion on whether restore fails at `process_block` before reaching `end_stream`. R-13:
-if P0-19 is the common cause and that is never tested, **the deletion hides the bug rather than fixing
-it**, and it reappears in `beacon-core`, which still decodes a state on restore. If `S0-A-31`
-concluded that restore *reaches* `end_stream`, then /22 and /23 are **independent bugs** and this
-issue's precondition is their re-disposition by explicit decision — not a silent deletion.
+**Blocked on `S0-A-31` (R-13 observation b).** **Recorded 2026-08-16:** restore **reaches**
+`end_stream` (Hoodi snapshot, both hydrated and raw decode). P0-19 is real **and** /22 and /23 are
+**independent**. This issue's precondition is their re-disposition by explicit decision — not a
+silent deletion. See [`s0-exit-note.md`](s0-exit-note.md) § R-13 (b).
 
 **Deletes** — `RestoreFromStore` server and client, `services/chain/src/restore.rs` (1,227 lines ✓),
 `services/storage/src/restore_client.rs`. `ADR-P4-07`'s citations go with the code (`S1-B-17` already

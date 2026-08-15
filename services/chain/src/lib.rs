@@ -116,8 +116,12 @@ pub use residency::{
 pub use restore::{
     DEFAULT_RESTORE_GRACE_SECONDS, RestoreApplyInput, RestoreApplyResult, RestoreGate,
     RestoreGateOutcome, RestoreHandlerDeps, RestoreInstall, apply_restore_set,
-    handle_restore_from_store, reset_restore_da_gate_invocations, restore_da_gate_invocations,
-    spawn_core_from_restore,
+    handle_restore_accumulated, handle_restore_from_store, reset_restore_da_gate_invocations,
+    restore_da_gate_invocations, spawn_core_from_restore,
+};
+#[cfg(feature = "s0-a-31-observe")]
+pub use restore::{
+    RestoreTracePoint, reset_restore_trace, restore_force_raw_decode, restore_trace,
 };
 pub use service::{
     ChainServiceImpl, REASON_BELOW_FINALIZED_RETENTION, REASON_NOT_BOOTSTRAPPED,

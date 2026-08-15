@@ -23,9 +23,11 @@ use cc_proto::chain::{
     restore_chunk::Body as RestoreBody,
 };
 use cc_state_transition::BlockSignatureStrategy;
+#[cfg(not(feature = "s0-a-31-observe"))]
 use cc_types::BeaconState;
 use cc_types::config::ChainConfig;
 use cc_types::containers::Checkpoint;
+#[cfg(not(feature = "s0-a-31-observe"))]
 use cc_types::fork::ForkName;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Root, Slot};
@@ -41,6 +43,16 @@ use crate::import::{
     FORK_CHOICE_SCALARS_SSZ_LEN, ForkChoiceScalarsPayload, decode_signed_block, parse_root,
 };
 use crate::metrics::ChainMetrics;
+
+#[cfg(feature = "s0-a-31-observe")]
+#[path = "restore_observe.rs"]
+mod restore_observe;
+#[cfg(feature = "s0-a-31-observe")]
+pub use restore_observe::{
+    RestoreTracePoint, reset_restore_trace, restore_force_raw_decode, restore_trace,
+};
+#[cfg(feature = "s0-a-31-observe")]
+use restore_observe::{decode_snapshot, record_restore_trace};
 
 // ── constants ───────────────────────────────────────────────────────────────
 
@@ -185,6 +197,9 @@ impl RestoreGate {
     }
 
     fn end_stream(&self) {
+        // S0-A-31 / P1-A/22 site (`restore.rs` end_stream). Observation only.
+        #[cfg(feature = "s0-a-31-observe")]
+        record_restore_trace(RestoreTracePoint::EndStream);
         let mut g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         g.in_flight = false;
         // Cancel of the spawn_blocking join must not leave wait() parked.
@@ -434,8 +449,20 @@ pub fn apply_restore_set<P: Preset + 'static>(
     input: RestoreApplyInput<'_, P>,
 ) -> Result<RestoreApplyResult<P>, Status> {
     // Decode snapshot state through the hydrated fork chokepoint (S0-A-02).
+    // The raw (`from_ssz_bytes_with`) arm is compiled only with
+    // `s0-a-31-observe` and lives in `restore_observe.rs`.
+    #[cfg(not(feature = "s0-a-31-observe"))]
     let state = BeaconState::<P>::from_ssz_bytes_hydrated(ForkName::Fulu, input.state_ssz)
         .map_err(|e| Status::invalid_argument(format!("restore state SSZ decode failed: {e:?}")))?;
+    #[cfg(feature = "s0-a-31-observe")]
+    let state = decode_snapshot::<P>(input.state_ssz)
+        .map_err(|e| Status::invalid_argument(format!("restore state SSZ decode failed: {e:?}")))?;
+    #[cfg(feature = "s0-a-31-observe")]
+    record_restore_trace(RestoreTracePoint::Decode {
+        hydrated: !restore_observe::raw_decode_enabled(),
+        pubkey_cache_len: state.caches().pubkeys.len(),
+        validators_len: state.validators_len(),
+    });
     input.metrics.observe_import_state(&state);
 
     // Anchor block: real stored SSZ only — never invent a Default body (SEC).
@@ -534,12 +561,33 @@ pub fn apply_restore_set<P: Preset + 'static>(
             // CC-45 /5: zero BLS across restore replay — skip variant of the seam.
             BlockSignatureStrategy::NoVerification,
         ) {
-            Ok(cc_fork_choice::BlockImport::Imported(_)) => {}
+            Ok(cc_fork_choice::BlockImport::Imported(_)) => {
+                #[cfg(feature = "s0-a-31-observe")]
+                record_restore_trace(RestoreTracePoint::OnBlock {
+                    index: i,
+                    slot: signed.message.slot.as_u64(),
+                    da_status: rb.da_status,
+                    outcome: "Imported".into(),
+                });
+            }
             Ok(cc_fork_choice::BlockImport::Deferred(
                 cc_fork_choice::DeferralReason::DataUnavailable,
             )) => {
+                #[cfg(feature = "s0-a-31-observe")]
+                record_restore_trace(RestoreTracePoint::OnBlock {
+                    index: i,
+                    slot: signed.message.slot.as_u64(),
+                    da_status: rb.da_status,
+                    outcome: "Deferred(DataUnavailable)".into(),
+                });
                 if matches!(da, RestoreDaStatus::Deferred) {
+                    // S0-A-31 / P1-A/23 site: accepted Deferred, never re-driven.
                     deferred_roots.push(root);
+                    #[cfg(feature = "s0-a-31-observe")]
+                    record_restore_trace(RestoreTracePoint::DaDeferredDrop {
+                        index: i,
+                        root: root.to_string(),
+                    });
                 } else {
                     return Err(Status::internal(format!(
                         "restore block[{i}] root {root} deferred DA despite Available status"
@@ -547,11 +595,25 @@ pub fn apply_restore_set<P: Preset + 'static>(
                 }
             }
             Ok(other) => {
+                #[cfg(feature = "s0-a-31-observe")]
+                record_restore_trace(RestoreTracePoint::OnBlock {
+                    index: i,
+                    slot: signed.message.slot.as_u64(),
+                    da_status: rb.da_status,
+                    outcome: format!("unexpected {other:?}"),
+                });
                 return Err(Status::internal(format!(
                     "restore block[{i}] root {root}: unexpected import outcome {other:?}"
                 )));
             }
             Err(e) => {
+                #[cfg(feature = "s0-a-31-observe")]
+                record_restore_trace(RestoreTracePoint::OnBlock {
+                    index: i,
+                    slot: signed.message.slot.as_u64(),
+                    da_status: rb.da_status,
+                    outcome: format!("error: {e}"),
+                });
                 // Already-imported / known-parent races: treat as success if present.
                 if store.blocks().contains_key(&root) {
                     continue;
@@ -775,12 +837,35 @@ pub async fn handle_restore_from_store<P: Preset + 'static>(
     handle_restore_inner::<P>(deps.clone(), request).await
 }
 
+/// Apply an already-accumulated restore stream through the same gate + apply
+/// path as [`handle_restore_from_store`].
+///
+/// S0-A-31 uses this so the observation hits decode / `on_block` / `end_stream`
+/// / DA-deferred drop without a gRPC codec in the way. The RPC handler still
+/// accumulates then calls [`apply_accumulated_restore`].
+pub async fn handle_restore_accumulated<P: Preset + 'static>(
+    deps: RestoreHandlerDeps,
+    acc: AccumulatedRestore,
+) -> Result<Response<RestoreResponse>, Status> {
+    deps.gate.try_begin_stream()?;
+    let _guard = RestoreInFlightGuard {
+        gate: deps.gate.as_ref(),
+    };
+    apply_accumulated_restore::<P>(deps.clone(), acc).await
+}
+
 async fn handle_restore_inner<P: Preset + 'static>(
     deps: RestoreHandlerDeps,
     request: Request<Streaming<RestoreChunk>>,
 ) -> Result<Response<RestoreResponse>, Status> {
     let acc = accumulate_restore_stream(request.into_inner()).await?;
+    apply_accumulated_restore::<P>(deps, acc).await
+}
 
+async fn apply_accumulated_restore<P: Preset + 'static>(
+    deps: RestoreHandlerDeps,
+    acc: AccumulatedRestore,
+) -> Result<Response<RestoreResponse>, Status> {
     if acc.empty {
         info!("RestoreFromStore: EMPTY — collapsing AwaitingRestore grace immediately");
         deps.gate.publish_empty()?;
@@ -1342,12 +1427,61 @@ mod tests {
             !production.contains("from_ssz_bytes(input.state_ssz)"),
             "restore must not call the raw SSZ constructor"
         );
+        assert!(
+            !production.contains("from_ssz_bytes_with("),
+            "production restore.rs must not call from_ssz_bytes_with (S0-A-02); \
+             the S0-A-31 raw arm lives in restore_observe.rs behind s0-a-31-observe"
+        );
         let observe = production
             .find("observe_import_state(&state)")
             .expect("restore must emit M13 gauges on the decoded state");
         assert!(
             decode < observe && observe < on_block,
             "M13 observe must sit between hydrated decode and on_block"
+        );
+    }
+
+    #[test]
+    fn s0_a_31_probes_decode_on_block_end_stream_and_da_drop() {
+        let src = include_str!("restore.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap();
+        assert!(
+            production.contains("record_restore_trace(RestoreTracePoint::Decode"),
+            "S0-A-31 must instrument restore decode"
+        );
+        assert!(
+            production.contains("record_restore_trace(RestoreTracePoint::OnBlock"),
+            "S0-A-31 must instrument restore on_block"
+        );
+        assert!(
+            production.contains("record_restore_trace(RestoreTracePoint::EndStream)"),
+            "S0-A-31 must instrument RestoreGate::end_stream"
+        );
+        assert!(
+            production.contains("record_restore_trace(RestoreTracePoint::DaDeferredDrop"),
+            "S0-A-31 must instrument the DA-deferred drop"
+        );
+        let decode = production
+            .find("record_restore_trace(RestoreTracePoint::Decode")
+            .unwrap();
+        let on_block = production
+            .find("record_restore_trace(RestoreTracePoint::OnBlock")
+            .unwrap();
+        let end_stream_fn = production.find("fn end_stream(").unwrap();
+        let da_drop = production
+            .find("record_restore_trace(RestoreTracePoint::DaDeferredDrop")
+            .unwrap();
+        assert!(
+            decode < on_block,
+            "decode probe must precede on_block probe"
+        );
+        assert!(
+            end_stream_fn < decode,
+            "end_stream probe lives on RestoreGate, before apply"
+        );
+        assert!(
+            on_block < da_drop,
+            "DA-deferred drop is recorded after on_block Deferred"
         );
     }
 

@@ -743,6 +743,9 @@ forbidden (`[PRD]` R-8). It records *where restore fails*, 15+ weeks before S2 d
      `patch @ S0 → deleted @ S2` **by explicit decision**, per the `[PRD]` §6 sequencing rule.
 3. Neither conclusion may be inferred from `S0-A-30`'s result alone.
 
+- [x] Restore run against the committed Hoodi snapshot, instrumented at decode, `on_block`, `end_stream`, and the DA-deferred drop (`r13_restore_observation.rs`).
+- [x] Recorded in [`s0-exit-note.md`](s0-exit-note.md): restore **reaches** `end_stream`. P0-19 is real **and** P1-A/22 and /23 are independent; escalate re-disposition. Not inferred from `S0-A-30`.
+
 ---
 
 ### `S0-A-32` · **E0.5** — the P0-09 falsifier
