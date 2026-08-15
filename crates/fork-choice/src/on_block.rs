@@ -1640,3 +1640,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "e05_p009.rs"]
+mod e05_p009;

@@ -751,6 +751,12 @@ covers P0-19 only; P0-09 has the same *invisible-to-`make ci`* shape and needs i
 **grown** registry, does not hit `ValidatorIndexOutOfRange` and is not dropped. Run from the
 `S0a-A-01` harness, i.e. against a real decoded state, not a synthetic store.
 
+- [x] Hoodi-decoded store grows; post-anchor attestation does not hit `ValidatorIndexOutOfRange`.
+
+- [x] Hoodi-decoded store (S0a-A-01 harness): post-anchor index applies via `integrate_block` growth without `ValidatorIndexOutOfRange`.
+- [x] Vote is recorded (not dropped); `justified_balances_snapshot` length tracks the grown registry.
+- [x] Skips only when `HOODI_FIXTURES_CACHE` is unset (CC-10b); no synthetic store.
+
 ---
 
 ### `S0-A-33` · P1-A/18 — sync-aggregate signature verified under `NoVerification`

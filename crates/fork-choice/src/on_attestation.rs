@@ -936,7 +936,7 @@ mod tests {
         let before = store.mutation_counter();
         let att = indexed(&[0, 99, 1], 0, anchor, cp(0, anchor));
 
-        let err = on_attestation(&mut store, &att, false).unwrap_err();
+        let err = on_attestation(&mut store, &att, false, &test_config()).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -975,7 +975,7 @@ mod tests {
         let before = store.mutation_counter();
         let att = indexed(&[0, 99, 1], 0, anchor, cp(0, anchor));
 
-        let err = on_attestation(&mut store, &att, false).unwrap_err();
+        let err = on_attestation(&mut store, &att, false, &test_config()).unwrap_err();
         assert!(
             matches!(
                 err,
