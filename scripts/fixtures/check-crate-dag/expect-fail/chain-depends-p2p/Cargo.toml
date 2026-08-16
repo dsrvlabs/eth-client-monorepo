@@ -1,0 +1,7 @@
+# Deliberate cc-chain dep on cc-p2p — must fail (S1-A-13 / [ARCH] §2.5).
+[package]
+name = "fixture-chain-depends-p2p"
+version = "0.0.0"
+
+[dependencies]
+cc-p2p = { workspace = true }

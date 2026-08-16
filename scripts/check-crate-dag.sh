@@ -4,11 +4,11 @@
 # Portable: no bash-4 associative arrays (macOS /bin/bash is 3.2).
 #
 # Requires: bash, cargo, jq (and rust-toolchain.toml / Cargo.lock present).
-# `--self-test` needs only bash (JWT/HTTP fixtures under scripts/fixtures/).
+# `--self-test` needs only bash (JWT/HTTP + chain↔p2p fixtures under scripts/fixtures/).
 #
 # Usage:
-#   bash scripts/check-crate-dag.sh                # JWT/HTTP fixtures, then live DAG
-#   bash scripts/check-crate-dag.sh --self-test    # JWT/HTTP fixtures only
+#   bash scripts/check-crate-dag.sh                # JWT/HTTP + chain↔p2p fixtures, then live DAG
+#   bash scripts/check-crate-dag.sh --self-test    # JWT/HTTP + chain↔p2p fixtures only
 #   bash scripts/check-crate-dag.sh --check-unused # fixtures + metadata; fail on unused allowlist
 set -euo pipefail
 
@@ -18,8 +18,9 @@ cd "$ROOT"
 ARG="${1:-}"
 if [[ "$ARG" == "-h" || "$ARG" == "--help" ]]; then
   echo "Usage: bash scripts/check-crate-dag.sh [--self-test|--check-unused]"
-  echo "Enforce the workspace crate DAG and JWT/HTTP isolation (ADR P3-16 / [ARCH] §6.2)."
-  echo "  --self-test      JWT/HTTP fixtures only"
+  echo "Enforce the workspace crate DAG, JWT/HTTP isolation (ADR P3-16 / [ARCH] §6.2),"
+  echo "and the named cc-chain ↛ cc-p2p / cc-p2p ↛ cc-chain bans ([ARCH] §2.5)."
+  echo "  --self-test      JWT/HTTP + chain↔p2p fixtures only"
   echo "  --check-unused   fail if allowed_deps lists an edge cargo metadata does not have (Q-1)"
   exit 0
 fi
@@ -83,6 +84,34 @@ http_jwt_manifest_hits() {
     "$manifest" 2>/dev/null || true
 }
 
+# S1-A-13 / [ARCH] §2.5: cc-chain ↛ cc-p2p and cc-p2p ↛ cc-chain.
+# Calls go through cc-seam traits. Named policy (not allowed_deps): return 0
+# unless this is one of the two banned package-name pairs. cargo metadata
+# `.dependencies[].name` is the package name, so rename / workspace-dot /
+# [dev-dependencies.*] / [build-dependencies.*] / [target.*.dependencies.*]
+# all resolve here (same shape as http_or_jwt_allowed).
+chain_p2p_allowed() {
+  # $1 = depender package name, $2 = dependee package name
+  case "$1 $2" in
+    "cc-chain cc-p2p"|"cc-p2p cc-chain") return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# Filesystem backup (storage ↛ fork-choice style). $1 = Cargo.toml, $2 = logical rel.
+# Prints grep hits (line:text). Empty = no house-style key / [dependencies.*] hit.
+chain_p2p_manifest_hits() {
+  local manifest="$1" rel="$2" pat=""
+  case "$rel" in
+    services/chain/Cargo.toml) pat='cc-p2p' ;;
+    services/p2p/Cargo.toml)   pat='cc-chain' ;;
+    *) return 0 ;;
+  esac
+  grep -nE \
+    "^[[:space:]]*${pat}[[:space:]]*=|^[[:space:]]*\[dependencies\.${pat}\]" \
+    "$manifest" 2>/dev/null || true
+}
+
 # ── Fixture self-test (S1-A-01 E1.4) ────────────────────────────────────────
 # Fixtures live outside services/crates/bin so they cannot weaken the live scan.
 FIXTURE_ROOT="${ROOT}/scripts/fixtures/check-crate-dag"
@@ -96,7 +125,7 @@ fi
 
 selftest_failed=0
 
-for required in third-crate-reqwest chain-jwt; do
+for required in third-crate-reqwest chain-jwt chain-depends-p2p p2p-depends-chain; do
   if [[ ! -f "${FAIL_DIR}/${required}/Cargo.toml" || ! -f "${FAIL_DIR}/${required}/rel" ]]; then
     echo "error: self-test: missing negative fixture ${FAIL_DIR#"$ROOT"/}/${required}" >&2
     selftest_failed=1
@@ -124,6 +153,21 @@ if http_or_jwt_allowed cc-scheduler reqwest; then
   selftest_failed=1
 fi
 
+# Function-level: both directions forbidden; seam (and any other edge) is not this rule.
+if chain_p2p_allowed cc-chain cc-p2p; then
+  echo "error: self-test: cc-chain must not be allowed to depend on cc-p2p (S1-A-13)" >&2
+  selftest_failed=1
+fi
+if chain_p2p_allowed cc-p2p cc-chain; then
+  echo "error: self-test: cc-p2p must not be allowed to depend on cc-chain (S1-A-13)" >&2
+  selftest_failed=1
+fi
+if ! chain_p2p_allowed cc-chain cc-seam \
+  || ! chain_p2p_allowed cc-p2p cc-seam; then
+  echo "error: self-test: cc-seam must remain allowed on chain and p2p (S1-A-13)" >&2
+  selftest_failed=1
+fi
+
 n_fail=0
 for dir in "${FAIL_DIR}"/*/; do
   [[ -d "$dir" ]] || continue
@@ -136,7 +180,10 @@ for dir in "${FAIL_DIR}"/*/; do
   rel="$(tr -d '[:space:]' < "${dir}rel")"
   hits="$(http_jwt_manifest_hits "${dir}Cargo.toml" "$rel")"
   if [[ -z "${hits}" ]]; then
-    echo "error: self-test: expected HTTP/JWT hit in ${dir#"$ROOT"/} (rel=${rel})" >&2
+    hits="$(chain_p2p_manifest_hits "${dir}Cargo.toml" "$rel")"
+  fi
+  if [[ -z "${hits}" ]]; then
+    echo "error: self-test: expected HTTP/JWT or chain↔p2p hit in ${dir#"$ROOT"/} (rel=${rel})" >&2
     selftest_failed=1
   else
     echo "ok: self-test ${dir#"$ROOT"/} is red (${rel})"
@@ -154,8 +201,11 @@ for dir in "${PASS_DIR}"/*/; do
   fi
   rel="$(tr -d '[:space:]' < "${dir}rel")"
   hits="$(http_jwt_manifest_hits "${dir}Cargo.toml" "$rel")"
+  if [[ -z "${hits}" ]]; then
+    hits="$(chain_p2p_manifest_hits "${dir}Cargo.toml" "$rel")"
+  fi
   if [[ -n "${hits}" ]]; then
-    echo "error: self-test: unexpected HTTP/JWT hit in ${dir#"$ROOT"/} (rel=${rel}):" >&2
+    echo "error: self-test: unexpected HTTP/JWT or chain↔p2p hit in ${dir#"$ROOT"/} (rel=${rel}):" >&2
     echo "${hits}" >&2
     selftest_failed=1
   else
@@ -177,7 +227,7 @@ if [[ "${selftest_failed}" -ne 0 ]]; then
 fi
 
 if [[ "$ARG" == "--self-test" ]]; then
-  echo "ok: check-crate-dag JWT/HTTP fixtures"
+  echo "ok: check-crate-dag JWT/HTTP and chain↔p2p fixtures"
   exit 0
 fi
 
@@ -211,6 +261,29 @@ if [[ -f "$STORAGE_MANIFEST" ]]; then
     '^[[:space:]]*cc-fork-choice[[:space:]]*=|^[[:space:]]*\[dependencies\.cc-fork-choice\]' \
     "$STORAGE_MANIFEST"; then
     echo "error: services/storage may never depend on cc-fork-choice" >&2
+    EARLY_FAILED=1
+  fi
+fi
+
+# --- S1-A-13: cc-chain ↛ cc-p2p and cc-p2p ↛ cc-chain ([ARCH] §2.5) ---
+# Explicit named prohibition (not merely an unlisted allowed_deps edge). Filesystem
+# first so the negative-test shape works without a lockfile refresh.
+# Calls must go through cc-seam traits.
+CHAIN_MANIFEST="$ROOT/services/chain/Cargo.toml"
+if [[ -f "$CHAIN_MANIFEST" ]]; then
+  if grep -qE \
+    '^[[:space:]]*cc-p2p[[:space:]]*=|^[[:space:]]*\[dependencies\.cc-p2p\]' \
+    "$CHAIN_MANIFEST"; then
+    echo "error: cc-chain may never depend on cc-p2p" >&2
+    EARLY_FAILED=1
+  fi
+fi
+P2P_MANIFEST="$ROOT/services/p2p/Cargo.toml"
+if [[ -f "$P2P_MANIFEST" ]]; then
+  if grep -qE \
+    '^[[:space:]]*cc-chain[[:space:]]*=|^[[:space:]]*\[dependencies\.cc-chain\]' \
+    "$P2P_MANIFEST"; then
+    echo "error: cc-p2p may never depend on cc-chain" >&2
     EARLY_FAILED=1
   fi
 fi
@@ -477,6 +550,31 @@ for pkg in "${MEMBERS[@]}"; do
     fi
   done <<< "$deps"
 done
+
+# --- S1-A-13: named cc-chain ↛ cc-p2p / cc-p2p ↛ cc-chain (metadata) ----------
+# Independent of allowed_deps so an allowlist append cannot silence the ban.
+# Uses --no-deps metadata (package .dependencies[].name): `package = "cc-p2p"`,
+# workspace-dot, [dev-dependencies.cc-p2p], build-dep and target-specific
+# tables all resolve here (JWT walk shape). Filesystem grep above is the
+# house-style backup only. Runs before the full-graph --locked walk so a
+# lockfile refresh cannot skip the named error.
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  pkg="${line%%$'\t'*}"
+  dep="${line#*$'\t'}"
+  if chain_p2p_allowed "$pkg" "$dep"; then
+    continue
+  fi
+  echo "error: $pkg may never depend on $dep" >&2
+  FAILED=1
+done < <(echo "$METADATA" | jq -r '
+  .packages[]
+  | select(.source == null)
+  | . as $p
+  | .dependencies[]?
+  | select(.name == "cc-chain" or .name == "cc-p2p")
+  | "\($p.name)\t\(.name)"
+')
 
 # --- CC-20/1: only cc-libp2p may declare a libp2p* dependency ---
 # Workspace root may pin libp2p in [workspace.dependencies]; every path package

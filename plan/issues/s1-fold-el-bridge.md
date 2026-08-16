@@ -256,9 +256,14 @@ to `cc-p2p` or vice versa that is not routed through a `cc-seam` trait.* This is
 adding two explicit named prohibitions in the style of the existing `services/storage ↛
 cc-fork-choice` rule ✓ (`scripts/check-crate-dag.sh:48-58`).
 
-**Acceptance** — both directions named; a deliberate test edit adding either dependency fails the
-script, demonstrated in the PR; the rule is added to the `S0a-B-04` `make ci` job list so it runs
-locally too.
+**Acceptance**
+
+1. [x] Both directions named (`cc-chain` ↛ `cc-p2p` and `cc-p2p` ↛ `cc-chain`).
+2. [x] A deliberate test edit adding either dependency fails — fixture self-test
+   (`scripts/fixtures/check-crate-dag/expect-fail/chain-depends-p2p/`,
+   `expect-fail/p2p-depends-chain/`).
+3. [x] The rule runs locally via existing `make lint` / `check-crate-dag` (already in
+   the ci job list). No new CI job id.
 
 ---
 
