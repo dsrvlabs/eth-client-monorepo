@@ -64,18 +64,18 @@ deletes the citation.
 | ADR-11 | a | accepted | docs/adr/ADR-11.md |
 | ADR-12 | a | accepted | docs/adr/ADR-12.md |
 | ADR-P1-04 | b | unwritten (b) | - |
-| ADR-P1-05 | a | unwritten (a) | - |
-| ADR-P1-07 | a | unwritten (a) | - |
-| ADR-P1-08 | a | unwritten (a) | - |
-| ADR-P1-09 | a | unwritten (a) | - |
-| ADR-P1-10 | a | unwritten (a) | - |
+| ADR-P1-05 | a | accepted | docs/adr/ADR-P1-05.md |
+| ADR-P1-07 | a | accepted | docs/adr/ADR-P1-07.md |
+| ADR-P1-08 | a | accepted | docs/adr/ADR-P1-08.md |
+| ADR-P1-09 | a | accepted | docs/adr/ADR-P1-09.md |
+| ADR-P1-10 | a | accepted | docs/adr/ADR-P1-10.md |
 | ADR-P1-11 | b | unwritten (b) | - |
-| ADR-P1-12 | a | unwritten (a) | - |
+| ADR-P1-12 | a | accepted | docs/adr/ADR-P1-12.md |
 | ADR-P1-13 | c | stale (c) | - |
 | ADR-P1-14 | a | accepted | docs/adr/ADR-P1-14.md |
-| ADR-P1-15 | a | unwritten (a) | - |
+| ADR-P1-15 | a | accepted | docs/adr/ADR-P1-15.md |
 | ADR-P2-02 | a | accepted | docs/adr/ADR-P2-02.md |
-| ADR-P2-04 | a | unwritten (a) | - |
+| ADR-P2-04 | a | accepted | docs/adr/ADR-P2-04.md |
 | ADR-P2-05 | a | accepted | docs/adr/ADR-P2-05.md |
 | ADR-P2-06 | a | accepted | docs/adr/ADR-P2-06.md |
 | ADR-P2-07 | a | accepted | docs/adr/ADR-P2-07.md |
@@ -87,15 +87,15 @@ deletes the citation.
 | ADR-P2-14 | a | accepted | docs/adr/ADR-P2-14.md |
 | ADR-P3-01 | a | accepted | docs/adr/ADR-P3-01.md |
 | ADR-P3-02 | b | unwritten (b) | - |
-| ADR-P3-03 | a | unwritten (a) | - |
-| ADR-P3-04 | a | unwritten (a) | - |
-| ADR-P3-05 | a | unwritten (a) | - |
+| ADR-P3-03 | a | accepted | docs/adr/ADR-P3-03.md |
+| ADR-P3-04 | a | accepted | docs/adr/ADR-P3-04.md |
+| ADR-P3-05 | a | accepted | docs/adr/ADR-P3-05.md |
 | ADR-P3-06 | c | stale (c) | - |
 | ADR-P3-07 | a | accepted | docs/adr/ADR-P3-07.md |
 | ADR-P3-08 | a | unwritten (a) | - |
 | ADR-P3-09 | a | unwritten (a) | - |
-| ADR-P3-10 | a | unwritten (a) | - |
-| ADR-P3-11 | a | unwritten (a) | - |
+| ADR-P3-10 | a | accepted | docs/adr/ADR-P3-10.md |
+| ADR-P3-11 | a | accepted | docs/adr/ADR-P3-11.md |
 | ADR-P3-12 | a | unwritten (a) | - |
 | ADR-P3-13 | a | unwritten (a) | - |
 | ADR-P3-14 | b | unwritten (b) | - |

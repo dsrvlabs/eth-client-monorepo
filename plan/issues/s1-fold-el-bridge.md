@@ -520,6 +520,23 @@ them.
 - [x] `docs/adr/ADR-P3-07.md` house-MADR; Status: accepted; publish/inject only custody-sampled / subscribed indices.
 - [x] `docs/adr/reconciliation.md` eight S1-B-09 rows are `accepted` → matching `docs/adr/ADR-P*.md` paths.
 
+##### `S1-B-08` · Gate (a) 2/4 — chain and fork-choice ids (13)
+
+- [x] `docs/adr/ADR-P1-05.md` house MADR; Status: accepted; KZG verify is `Result<bool, _>`.
+- [x] `docs/adr/ADR-P1-07.md` house MADR; Status: accepted; exhaustive `gossip_class` map.
+- [x] `docs/adr/ADR-P1-08.md` house MADR; Status: accepted; `CheckpointContext` LRU capacity 8.
+- [x] `docs/adr/ADR-P1-09.md` house MADR; Status: accepted; **load-bearing** — `Store` owned by value on a dedicated OS thread; Loop B `max_workers = 1`.
+- [x] `docs/adr/ADR-P1-10.md` house MADR; Status: accepted; decode-free dedup probe; server recomputes on miss.
+- [x] `docs/adr/ADR-P1-12.md` house MADR; Status: accepted; four pinned roles + 64-block body ring.
+- [x] `docs/adr/ADR-P1-15.md` house MADR; Status: accepted; **load-bearing** — latency SLOs off histogram buckets, never quantile interpolation.
+- [x] `docs/adr/ADR-P2-04.md` house MADR; Status: accepted; **load-bearing** — only BLOCK is chain-authoritative; `ChainIngress` stays narrow.
+- [x] `docs/adr/ADR-P3-03.md` house MADR; Status: accepted; **load-bearing** — exactly one `verify_and_notify_new_payload` call site.
+- [x] `docs/adr/ADR-P3-04.md` house MADR; Status: accepted; five `PayloadStatus` variants.
+- [x] `docs/adr/ADR-P3-05.md` house MADR; Status: accepted; `pending_engine` separate from `pending_da`.
+- [x] `docs/adr/ADR-P3-10.md` house MADR; Status: accepted; optimistic status from proto-array only.
+- [x] `docs/adr/ADR-P3-11.md` house MADR; Status: accepted; walk reuses `remove_invalidated_subtree_weight`.
+- [x] `docs/adr/reconciliation.md` those 13 rows are `accepted` → `docs/adr/ADR-*.md`.
+
 ---
 
 ### `S1-B-11` · Gate (b) — `ADR-P3-16` → **ADR-R-03**
