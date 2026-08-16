@@ -8,7 +8,7 @@
 //! ([`admit_block_slot_if_within_disparity`]), never as an unconditional
 //! `on_tick` into the next slot.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cc_fork_choice::{Store, on_tick};
 use cc_types::preset::Preset;
@@ -26,6 +26,14 @@ pub enum TickWork {
     SlotTick,
     /// Process exit. Never-shed so SIGTERM is not stuck behind import / query / attestation.
     Shutdown { done: oneshot::Sender<()> },
+    /// Core-liveness no-op ([ARCH] §7.2 / S1-A-15). Handler replies immediately.
+    ///
+    /// Occupies this lane so a saturated import queue delays it by at most one
+    /// in-flight unit of work, never indefinitely.
+    Ping {
+        issued_at: Instant,
+        reply: oneshot::Sender<()>,
+    },
 }
 
 /// Clock inputs for the future-slot *admission* check (not a fork-choice tick).

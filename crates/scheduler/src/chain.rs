@@ -51,6 +51,8 @@ impl LaneKey for ChainLane {
 pub enum ChainWork {
     SlotTick,
     Shutdown,
+    /// Core-liveness no-op ([ARCH] §7.2). Same never-shed `tick` lane as `SlotTick`.
+    Ping,
     ImportBlock,
     ImportBlockGossip,
     DataAvailable,
@@ -64,9 +66,10 @@ pub enum ChainWork {
 }
 
 impl ChainWork {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::SlotTick,
         Self::Shutdown,
+        Self::Ping,
         Self::ImportBlock,
         Self::ImportBlockGossip,
         Self::DataAvailable,
@@ -84,6 +87,7 @@ impl ChainWork {
         match self {
             Self::SlotTick => "slot_tick",
             Self::Shutdown => "shutdown",
+            Self::Ping => "ping",
             Self::ImportBlock => "import_block",
             Self::ImportBlockGossip => "import_block_gossip",
             Self::DataAvailable => "data_available",
@@ -101,7 +105,7 @@ impl ChainWork {
     #[must_use]
     pub const fn lane(self) -> ChainLane {
         match self {
-            Self::SlotTick | Self::Shutdown => ChainLane::Tick,
+            Self::SlotTick | Self::Shutdown | Self::Ping => ChainLane::Tick,
             Self::ImportBlock | Self::ImportBlockGossip | Self::DataAvailable => ChainLane::Import,
             Self::QueryHead | Self::QueryIsOptimistic => ChainLane::QueryP0,
             Self::ApplyAttestations => ChainLane::Attestation,
@@ -199,6 +203,18 @@ mod tests {
     #[test]
     fn data_available_stays_in_import() {
         assert_eq!(ChainWork::DataAvailable.lane(), ChainLane::Import);
+    }
+
+    #[test]
+    fn ping_rides_the_never_shed_tick_lane() {
+        assert_eq!(ChainWork::Ping.lane(), ChainLane::Tick);
+        assert!(
+            LOOP_B_LANES
+                .iter()
+                .find(|s| s.id == ChainLane::Tick)
+                .unwrap()
+                .never_shed
+        );
     }
 
     #[test]

@@ -141,6 +141,7 @@ fn core_command_has_no_bootstrap_variant() {
         | CoreCommand::BlockFor { .. }
         | CoreCommand::DataAvailable { .. }
         | CoreCommand::SlotTick
+        | CoreCommand::Ping { .. }
         | CoreCommand::Shutdown { .. } => {}
     }
 }

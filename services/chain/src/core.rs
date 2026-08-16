@@ -7,7 +7,7 @@
 //! `RESOURCE_EXHAUSTED` on backpressure (policy A).
 //!
 //! Wired lanes ([ARCH] §3.2):
-//! - `tick` — never-shed `SlotTick` + `Shutdown` ([S0-A-14] / S0-A-15)
+//! - `tick` — never-shed `SlotTick` + `Shutdown` + liveness `Ping` ([S0-A-14] / S1-A-15)
 //! - `import` — `ImportBlock` / `ImportBlockGossip` / `DataAvailable` (FIFO 64)
 //! - `query_p0` — `Query{Head, IsOptimistic}` + head probes + test `BlockFor`
 //! - `attestation` — `ApplyAttestations` (LIFO, sized from active validators,
@@ -59,6 +59,7 @@ use crate::epoch_context::{EpochContext, EpochContextStore};
 use crate::fcu_driver::{FcuDriver, GrpcFcuSink};
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
 use crate::import::{ImportCounters, ImportOutcome, import_block_with_early};
+use crate::liveness::LivenessError;
 use crate::metrics::ChainMetrics;
 use crate::pending_engine::{DEFAULT_ENGINE_PENDING_TIMEOUT_SLOTS, PendingEngine};
 use crate::residency::{DEFAULT_BODY_RING_CAPACITY, DEFAULT_MAX_RESIDENT_STATES, Residency};
@@ -120,6 +121,11 @@ pub enum CoreCommand {
     DataAvailable { root: Root, slot: u64 },
     /// Per-slot fcU floor tick (CC-33 /7) — re-points a restarted EL with no block.
     SlotTick,
+    /// Core-liveness no-op ([ARCH] §7.2). Tick lane; handler replies immediately.
+    Ping {
+        issued_at: Instant,
+        reply: oneshot::Sender<()>,
+    },
     /// Graceful shutdown.
     Shutdown { done: oneshot::Sender<()> },
 }
@@ -260,6 +266,7 @@ impl From<CoreWork> for CoreCommand {
         match work {
             CoreWork::Tick(TickWork::SlotTick) => Self::SlotTick,
             CoreWork::Tick(TickWork::Shutdown { done }) => Self::Shutdown { done },
+            CoreWork::Tick(TickWork::Ping { issued_at, reply }) => Self::Ping { issued_at, reply },
             CoreWork::Import(work) => Self::from(work),
             CoreWork::QueryP0(work) => Self::from(work),
             CoreWork::Attestation(work) => Self::from(work),
@@ -632,6 +639,8 @@ fn reject_core_work(work: CoreWork, status: Status) {
             let _ = done.send(());
         }
         CoreWork::Tick(TickWork::SlotTick) => {}
+        // Drop the reply: a drained ping is unavailable, not a successful no-op.
+        CoreWork::Tick(TickWork::Ping { .. }) => {}
         CoreWork::Import(ImportWork::ImportBlock { reply, .. }) => {
             let _ = reply.send(Err(status));
         }
@@ -1072,6 +1081,31 @@ impl CoreHandle {
         }
     }
 
+    /// No-op through the never-shed tick lane ([ARCH] §7.2 / S1-A-15).
+    ///
+    /// Performs no fork-choice work. The deadline lives on
+    /// [`crate::liveness::probe_core_liveness`], not here, so a parked core
+    /// fails the probe instead of hanging the caller forever.
+    pub async fn ping(&self) -> Result<(), LivenessError> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .sched
+            .push_wait(CoreWork::Tick(TickWork::Ping {
+                issued_at: Instant::now(),
+                reply,
+            }))
+            .await
+            .is_err()
+        {
+            return Err(LivenessError::Unavailable {
+                reason: "chain core thread is shut down".into(),
+            });
+        }
+        rx.await.map_err(|_| LivenessError::Unavailable {
+            reason: "core thread dropped ping reply".into(),
+        })
+    }
+
     /// Enqueue [`TickWork::Shutdown`] on the never-shed tick lane.
     ///
     /// Does not share the import / query / attestation FIFOs, so SIGTERM
@@ -1100,6 +1134,12 @@ impl CoreHandle {
         if let Some(rx) = self.begin_shutdown().await {
             let _ = tokio::time::timeout(SHUTDOWN_JOIN_TIMEOUT, rx).await;
         }
+    }
+}
+
+impl crate::liveness::CoreLiveness for CoreHandle {
+    fn ping(&self) -> impl std::future::Future<Output = Result<(), LivenessError>> + Send {
+        CoreHandle::ping(self)
     }
 }
 
@@ -1804,6 +1844,10 @@ fn core_loop<P: Preset>(
                 // Re-import may have moved head.
                 emit_fcu_head(&store, fcu.as_ref());
             }
+            CoreCommand::Ping { issued_at, reply } => {
+                tracing::trace!(?issued_at, "core liveness ping");
+                let _ = reply.send(());
+            }
             CoreCommand::SlotTick => {
                 handle_slot_tick(
                     &mut store,
@@ -2433,6 +2477,32 @@ mod tests {
             time > 1_000_000,
             "never-shed ticks must advance store.time; got {time}"
         );
+
+        core.handle.shutdown().await;
+        core.join();
+        events.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn ping_round_trips_the_tick_lane() {
+        let (store, _anchor, config) = seeded_store();
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig::default());
+        let head = HeadSnapshotStore::new();
+        let core = spawn_core_thread(
+            store,
+            config,
+            head,
+            events.event_sender(),
+            metrics,
+            CoreConfig::default(),
+        );
+
+        let rtt = crate::liveness::probe_core_liveness(&core.handle, Duration::from_secs(1))
+            .await
+            .expect("live core must answer a tick-lane ping");
+        assert!(rtt < Duration::from_secs(1));
 
         core.handle.shutdown().await;
         core.join();

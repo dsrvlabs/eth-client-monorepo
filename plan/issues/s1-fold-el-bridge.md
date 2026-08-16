@@ -329,9 +329,18 @@ already restarts (`[ARCH]` §7.1). A parked consensus core reports healthy **tod
   deadline-bounded no-op through the consensus core*).
 - `S1-A-17` (1.5–2 pd) — the injected engine black-hole harness.
 
+**Acceptance (`S1-A-15` only)**
+
+- [x] Probe issues a no-op through the consensus core (`CoreCommand::Ping` / `TickWork::Ping` on the
+      never-shed tick lane — not `grpc-health-probe`, not `GetHead`)
+- [x] Deadline is `ATTESTATION_DUE_BPS × SLOT_DURATION_MS / 10_000` (ADR-P3-13); Hoodi = 3999.6 ms
+- [x] `probe_core_liveness` is callable from a later healthcheck (`S1-A-16`); compose / tonic
+      aggregate / `local_ready` unchanged
+- [x] Unit test: deadline miss is observable (`tokio` test-util + a fake core that never answers)
+
 **Acceptance (E1.2, falsifiable)** — **M8 demonstrated red** against an injected engine black-hole,
 with the healthcheck output pasted into the S1 exit note. A probe that has only ever been observed
-green is the same failure shape as an X1 counter that has only ever returned 0.
+green is the same failure shape as an X1 counter that has only ever returned 0. (`S1-A-17`)
 
 ---
 

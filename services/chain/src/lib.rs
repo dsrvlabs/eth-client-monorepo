@@ -37,6 +37,7 @@ pub mod fcu_driver;
 pub mod head;
 pub mod import;
 pub mod invalidation;
+pub mod liveness;
 pub mod metrics;
 pub mod p2p_stream;
 pub mod pending_engine;
@@ -97,6 +98,10 @@ pub use import::{
     on_block_error_gossip_class, parse_root, split_block_imported_payload,
 };
 pub use invalidation::{ExitFn, handle_justified_checkpoint_invalidated, process_exit};
+pub use liveness::{
+    CoreLiveness, DEFAULT_ATTESTATION_DUE_BPS, DEFAULT_SLOT_DURATION_MS, LivenessError,
+    default_liveness_deadline, liveness_deadline, probe_core_liveness, soft_deadline_ms,
+};
 pub use metrics::{
     AUX_DURATION_BUCKETS, BLOCK_BUDGET_SECS, BUFFER_RING, BUFFER_SUBSCRIBER, BootstrapResult,
     BudgetOp, CI_BLOCK_CEILING_SECS, CI_EPOCH_CEILING_SECS, ChainMetrics, EPOCH_BUDGET_SECS,
