@@ -617,6 +617,21 @@ slashing-protection record** (written at S0, `S0-B-14`). One of the two needs a 
 
 ---
 
+### `S1-B-15` · Gate (b) — `ADR-P2-13`
+
+**Stream** B · **Est** 0.75–1 pd / **2 pts** · ⌂ `[ARCH]` §10.4 / ⟡ D-11 · **Deps** `S1-B-05` ·
+**On the X1 critical path**; read by `S3a-B-19`
+
+Per-task panic policy: **catch and restart rather than abort the process**. Directly determines
+whether X1 is measurable (⟡ D-11) — the ADR must state that the catch path gains a counter before
+S3.
+
+- [x] `docs/adr/ADR-P2-13.md` house-MADR; Status: accepted; catch and restart rather than abort.
+- [x] ADR states the catch path gains a counter before S3 (X1 measurable; ⟡ D-11).
+- [x] `docs/adr/reconciliation.md` `ADR-P2-13` row is `accepted` → `docs/adr/ADR-P2-13.md`.
+
+---
+
 ### `S1-B-17` · Gate (c) — the three stale citations
 
 **Stream** B · **Est** 0.5 pd / **1 pt** · ⌂ `[ARCH]` §10.4

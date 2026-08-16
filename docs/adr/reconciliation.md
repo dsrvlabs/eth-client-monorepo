@@ -84,7 +84,7 @@ deletes the citation.
 | ADR-P2-09 | a | accepted | docs/adr/ADR-P2-09.md |
 | ADR-P2-10 | b | unwritten (b) | - |
 | ADR-P2-11 | b | unwritten (b) | - |
-| ADR-P2-13 | b | unwritten (b) | - |
+| ADR-P2-13 | b | accepted | docs/adr/ADR-P2-13.md |
 | ADR-P2-14 | a | accepted | docs/adr/ADR-P2-14.md |
 | ADR-P3-01 | a | accepted | docs/adr/ADR-P3-01.md |
 | ADR-P3-02 | b | unwritten (b) | - |
