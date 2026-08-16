@@ -220,6 +220,13 @@ never jump it.* Quote it verbatim in both places.
 empty-progress batch has no fast path; both asserted by test, with the test named identically to
 `S0-B-10`'s so the pair is greppable.
 
+- [x] Batch whose parent is neither durable nor the first row is rejected
+- [x] Empty-progress batch has no fast path
+- [x] Both asserted by test named identically to `S0-B-10`
+  (`put_backfill_batch_parent_not_durable_and_not_first_row_is_rejected`,
+  `put_backfill_batch_empty_progress_single_block_batch_is_rejected`)
+- [x] Invariant quoted verbatim in both places: *a batch may only extend the durable frontier, never jump it.*
+
 ---
 
 ### `S2-A-07` · **ADR-R-02** — the overflow-policy change

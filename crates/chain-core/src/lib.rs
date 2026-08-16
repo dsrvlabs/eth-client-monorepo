@@ -16,6 +16,8 @@
 //! S2-A-05: [`ingest.rs`](ingest.rs) decodes a sidecar into a typed
 //! `ColumnBatch` and calls `ArchiveWrite::ingest_columns`. Column bytes
 //! do not enter the ring.
+//! S2-A-06: the batch head is `(parent_root, slot)`. A batch may only
+//! extend the durable frontier, never jump it.
 //!
 //! ADR-P1-09, ADR-P1-12, and ADR-P3-05 ride the moved sources unchanged —
 //! `pending_engine` stays a separate map from `pending_da`.

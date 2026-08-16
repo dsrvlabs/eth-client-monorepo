@@ -564,6 +564,7 @@ async fn column_ingest_uses_typed_batch_index() {
         ..Default::default()
     };
     sc.signed_block_header.message.slot = Slot::new(42);
+    sc.signed_block_header.message.parent_root = Root::from_array([0xAAu8; 32]);
     let ssz = sc.as_ssz_bytes();
     let block_root = [0x77u8; 32];
     in_tx
@@ -591,6 +592,7 @@ async fn column_ingest_uses_typed_batch_index() {
             stored[0].index, 7,
             "index is a field, not a byte-offset guess"
         );
+        assert_eq!(stored[0].parent_root, [0xAAu8; 32]);
         assert_eq!(stored[0].slot, 42);
         assert_eq!(stored[0].block_root, block_root);
     }

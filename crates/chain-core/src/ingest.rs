@@ -30,6 +30,7 @@ pub fn decode_column_batch(ssz: Bytes, block_root: Root) -> Result<ColumnBatch, 
         )));
     }
     Ok(ColumnBatch {
+        parent_root: *sidecar.signed_block_header.message.parent_root.as_array(),
         slot: sidecar.signed_block_header.message.slot.as_u64(),
         block_root,
         index: sidecar.index,
@@ -60,11 +61,16 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn sidecar_ssz(index: u64, slot: u64) -> Bytes {
+        sidecar_ssz_with_parent(index, slot, [0u8; 32])
+    }
+
+    fn sidecar_ssz_with_parent(index: u64, slot: u64, parent: [u8; 32]) -> Bytes {
         let mut sc = DataColumnSidecar::<Mainnet> {
             index,
             ..Default::default()
         };
         sc.signed_block_header.message.slot = Slot::new(slot);
+        sc.signed_block_header.message.parent_root = cc_types::primitives::Root::from_array(parent);
         Bytes::from(sc.as_ssz_bytes())
     }
 
@@ -87,9 +93,11 @@ mod tests {
 
     #[test]
     fn decode_names_index_as_a_field() {
-        let ssz = sidecar_ssz(7, 42);
+        let parent = [0xAA; 32];
+        let ssz = sidecar_ssz_with_parent(7, 42, parent);
         let batch = decode_column_batch(ssz.clone(), [0x11; 32]).unwrap();
         assert_eq!(batch.index, 7);
+        assert_eq!(batch.parent_root, parent);
         assert_eq!(batch.slot, 42);
         assert_eq!(batch.block_root, [0x11; 32]);
         assert_eq!(batch.ssz, ssz);

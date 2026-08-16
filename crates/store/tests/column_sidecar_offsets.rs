@@ -13,8 +13,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use cc_store::{
-    BYTES_PER_BLOB_IN_SIDECAR, BlockRegion, COLUMN_HEADER_SLOT_SSZ_OFFSET, COLUMN_INDEX_SSZ_OFFSET,
-    DATA_COLUMN_SIDECAR_FIXED_BYTES, Durability, Engine, EngineOptions, column_index_at_offset,
+    BYTES_PER_BLOB_IN_SIDECAR, BlockRegion, COLUMN_HEADER_PARENT_ROOT_SSZ_OFFSET,
+    COLUMN_HEADER_SLOT_SSZ_OFFSET, COLUMN_INDEX_SSZ_OFFSET, DATA_COLUMN_SIDECAR_FIXED_BYTES,
+    Durability, Engine, EngineOptions, column_index_at_offset, column_parent_root_at_offset,
     column_slot_at_offset, columns_for_block, data_column_sidecar_size, get_column_by_root,
     put_column,
 };
@@ -114,10 +115,16 @@ fn index_at_0_and_header_slot_at_20_match_full_ssz_decode() {
     );
     assert_eq!(from_offset_index as u64, decoded.index);
     assert_eq!(from_offset_slot, decoded.signed_block_header.message.slot);
+    let from_offset_parent = column_parent_root_at_offset(&bytes).expect("parent peek");
+    assert_eq!(
+        from_offset_parent,
+        decoded.signed_block_header.message.parent_root
+    );
 
     // Constants as documented.
     assert_eq!(COLUMN_INDEX_SSZ_OFFSET, 0);
     assert_eq!(COLUMN_HEADER_SLOT_SSZ_OFFSET, 20);
+    assert_eq!(COLUMN_HEADER_PARENT_ROOT_SSZ_OFFSET, 36);
 
     // Raw LE reads at the same offsets.
     let raw_index = u64::from_le_bytes(bytes[0..8].try_into().unwrap());

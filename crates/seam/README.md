@@ -5,10 +5,11 @@ Typed handles and overflow contracts for internal service edges
 
 - `ChainIngress` / `P2pEgress` — p2p ↔ core (E1+E2).
 - `ArchiveWrite` — chain-core → archive typed column ingest (S2-A-04).
-  Payload is `ColumnBatch { slot, block_root, index, ssz }`; **`index` is
-  a field**. Overflow is policy **A**: the writer mailbox (ADR-P4-04)
-  surfaces `SeamError::Backpressure` to the import path. Ingest is
-  `S2-A-05` (`chain-core` → live P0 mailbox). Continuity bind is `S2-A-06`.
+  Payload is `ColumnBatch { parent_root, slot, block_root, index, ssz }`;
+  **`index` is a field**. Head is `(parent_root, slot)`: a batch may only
+  extend the durable frontier, never jump it. Overflow is policy **A**:
+  the writer mailbox (ADR-P4-04) surfaces `SeamError::Backpressure` to
+  the import path. Ingest is `S2-A-05` (`chain-core` → live P0 mailbox).
 - Event payload layouts (`BlockImportedPayload`, `HeadPayload`,
   `ChainReorgPayload`, `FinalizedCheckpointPayload`) — S2-A-08. Decode
   is fail-closed; consumers must not index event `payload` bytes.

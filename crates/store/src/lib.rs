@@ -66,13 +66,14 @@ pub use canonical::{
     put_block_and_update_head, rewrite_from_head,
 };
 pub use columns::{
-    BYTES_PER_BLOB_IN_SIDECAR, COLUMN_HEADER_SLOT_SSZ_OFFSET, COLUMN_INDEX_SSZ_OFFSET,
-    ColumnClassStats, ColumnsForBlock, DATA_COLUMN_SIDECAR_FIXED_BYTES, DaStatus,
-    MAX_BLOBS_PER_COLUMN_SIDECAR, MAX_COLUMN_SIDECAR_BYTES, MAX_COLUMNS_BY_RANGE_SIDECARS,
-    MAX_COLUMNS_BY_RANGE_SLOTS, PutColumnOutcome, RangeColumn, TABLE_COLUMN_SLOT_BY_ROOT,
-    TABLE_COLUMNS_HOT, TABLE_DA_STATUS, column_index_at_offset, column_slot_at_offset,
-    columns_by_range, columns_for_block, data_column_sidecar_size, get_column_by_root,
-    get_da_status, measure_column_class_stats, put_column, put_da_status,
+    BYTES_PER_BLOB_IN_SIDECAR, COLUMN_HEADER_PARENT_ROOT_SSZ_OFFSET, COLUMN_HEADER_SLOT_SSZ_OFFSET,
+    COLUMN_INDEX_SSZ_OFFSET, ColumnClassStats, ColumnsForBlock, DATA_COLUMN_SIDECAR_FIXED_BYTES,
+    DaStatus, MAX_BLOBS_PER_COLUMN_SIDECAR, MAX_COLUMN_SIDECAR_BYTES,
+    MAX_COLUMNS_BY_RANGE_SIDECARS, MAX_COLUMNS_BY_RANGE_SLOTS, PutColumnOutcome, RangeColumn,
+    TABLE_COLUMN_SLOT_BY_ROOT, TABLE_COLUMNS_HOT, TABLE_DA_STATUS, column_index_at_offset,
+    column_parent_root_at_offset, column_slot_at_offset, columns_by_range, columns_for_block,
+    data_column_sidecar_size, get_column_by_root, get_da_status, measure_column_class_stats,
+    put_column, put_da_status,
 };
 pub use engine::{
     Batch, Durability, Engine, EngineOptions, MAX_BATCH_OPS, MAX_INTERNED_TABLE_NAMES,

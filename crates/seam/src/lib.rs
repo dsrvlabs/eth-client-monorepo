@@ -277,8 +277,13 @@ pub trait P2pEgress: Send + Sync + 'static {
 
 /// Typed column ingest unit. **`index` is a field, not a byte-offset guess**
 /// (`[ARCH]` §4.3 / S2-A-04).
+///
+/// Head is `(parent_root, slot)` — the block the batch's columns attach to
+/// (S2-A-06). A batch may only extend the durable frontier, never jump it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnBatch {
+    /// Parent the columns attach to. Required; there is no empty-progress bypass.
+    pub parent_root: Root,
     pub slot: u64,
     pub block_root: Root,
     pub index: ColumnIndex,
@@ -308,7 +313,10 @@ pub struct ColumnBatch {
 /// MUST still surface Backpressure.
 ///
 /// S2-A-05: `chain-core` calls this with a typed [`ColumnBatch`]. The
-/// impl is the live P0 mailbox. Continuity bind is S2-A-06.
+/// impl is the live P0 mailbox. S2-A-06: the writer rejects a batch
+/// unless its head `(parent_root, slot)` is already durable or is the
+/// first row of the same batch. A batch may only extend the durable
+/// frontier, never jump it.
 #[async_trait]
 pub trait ArchiveWrite: Send + Sync + 'static {
     async fn ingest_columns(&self, batch: ColumnBatch) -> Result<(), SeamError>;
@@ -376,11 +384,13 @@ mod tests {
     #[test]
     fn column_batch_index_is_a_field() {
         let batch = ColumnBatch {
+            parent_root: [2; 32],
             slot: 7,
             block_root: [1; 32],
             index: 42,
             ssz: Bytes::from_static(b"ssz"),
         };
+        assert_eq!(batch.parent_root, [2; 32]);
         assert_eq!(batch.slot, 7);
         assert_eq!(batch.block_root, [1; 32]);
         assert_eq!(batch.index, 42);

@@ -12,7 +12,8 @@
 //!
 //! Values are **SSZ wire bytes and nothing else**. This crate never re-serializes
 //! and never fully decodes a sidecar — fixed-offset field peeks only
-//! ([`COLUMN_INDEX_SSZ_OFFSET`], [`COLUMN_HEADER_SLOT_SSZ_OFFSET`]).
+//! ([`COLUMN_INDEX_SSZ_OFFSET`], [`COLUMN_HEADER_SLOT_SSZ_OFFSET`],
+//! [`COLUMN_HEADER_PARENT_ROOT_SSZ_OFFSET`]).
 //!
 //! ## 32-epoch shards (Deviation 1 / ADR P4-10)
 //!
@@ -39,6 +40,7 @@
 //!   offset `kzg_commitments` @ 12
 //!   offset `kzg_proofs`    @ 16
 //!   `signed_block_header.message.slot` @ **20** (u64 LE)
+//!   `signed_block_header.message.parent_root` @ **36** (32 B)
 //!
 //! Asserted against a real serialized sidecar in `tests/column_sidecar_offsets.rs`.
 //!
@@ -81,6 +83,12 @@ pub const COLUMN_INDEX_SSZ_OFFSET: usize = 0;
 ///
 /// Layout: 8 B index + 3 × 4 B list offsets + start of `signed block header`.
 pub const COLUMN_HEADER_SLOT_SSZ_OFFSET: usize = 20;
+
+/// Absolute byte offset of header `parent_root` inside a serialized sidecar.
+///
+/// `signed_block_header` starts at 20; `parent_root` is 16 B into the header
+/// (`slot` 8 + `proposer_index` 8).
+pub const COLUMN_HEADER_PARENT_ROOT_SSZ_OFFSET: usize = 36;
 
 /// Fixed-part byte count of `column sidecar` (independent of blob count).
 pub const DATA_COLUMN_SIDECAR_FIXED_BYTES: usize = 356;
@@ -158,6 +166,22 @@ pub fn column_slot_at_offset(sidecar_ssz: &[u8]) -> Result<Slot, StoreError> {
         &sidecar_ssz[COLUMN_HEADER_SLOT_SSZ_OFFSET..COLUMN_HEADER_SLOT_SSZ_OFFSET + 8],
     );
     Ok(Slot::new(u64::from_le_bytes(le)))
+}
+
+/// Peek header `parent_root` at [`COLUMN_HEADER_PARENT_ROOT_SSZ_OFFSET`].
+pub fn column_parent_root_at_offset(sidecar_ssz: &[u8]) -> Result<Root, StoreError> {
+    if sidecar_ssz.len() < COLUMN_HEADER_PARENT_ROOT_SSZ_OFFSET + 32 {
+        return Err(StoreError::Codec(format!(
+            "column SSZ too short for header parent_root at {COLUMN_HEADER_PARENT_ROOT_SSZ_OFFSET}: len {}",
+            sidecar_ssz.len()
+        )));
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(
+        &sidecar_ssz
+            [COLUMN_HEADER_PARENT_ROOT_SSZ_OFFSET..COLUMN_HEADER_PARENT_ROOT_SSZ_OFFSET + 32],
+    );
+    Ok(Root::from_array(arr))
 }
 
 // ---------------------------------------------------------------------------
@@ -881,6 +905,7 @@ mod tests {
         assert_eq!(data_column_sidecar_size(21), 45_380);
         assert_eq!(COLUMN_INDEX_SSZ_OFFSET, 0);
         assert_eq!(COLUMN_HEADER_SLOT_SSZ_OFFSET, 20);
+        assert_eq!(COLUMN_HEADER_PARENT_ROOT_SSZ_OFFSET, 36);
     }
 
     #[test]
@@ -888,6 +913,10 @@ mod tests {
         let ssz = synth_sidecar(7, 99);
         assert_eq!(column_index_at_offset(&ssz).unwrap(), 7);
         assert_eq!(column_slot_at_offset(&ssz).unwrap(), Slot::new(99));
+        assert_eq!(
+            column_parent_root_at_offset(&ssz).unwrap(),
+            Root::from_array([0; 32])
+        );
     }
 
     #[test]
