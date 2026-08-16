@@ -437,6 +437,10 @@ could never trigger.
 
 **Acceptance** — the test exists, runs in CI, and fails if `pending_engine` is bypassed.
 
+- [x] `import → engine → fork-choice` in one process (`EngineApi` + wiremock `newPayload` timeout)
+- [x] Timeout produces `Deferred(ExecutionEngineUnavailable)` parked in `pending_engine`, not a core park
+- [x] Test runs under `cargo test -p cc-chain` / `make test`; occupancy assertion fails if `pending_engine` is bypassed
+
 ---
 
 ### `S1-A-19` · §9.0 A/B run + exit note

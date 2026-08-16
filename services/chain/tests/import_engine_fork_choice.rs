@@ -1,23 +1,20 @@
-//! S0-A-27 / P0-15: a timed-out engine must *defer* the block (`pending_engine`),
-//! not park the consensus core.
+//! S1-A-18 / [ARCH] §8.2: `import → engine → fork-choice` in one process.
 //!
-//! S1-A-06 deleted the gRPC `engine_client` bridge. E3 is a direct
-//! `cc-engine-api` call with an explicit `Duration`; this test keeps the
-//! seam-level deferral assertion. S1-A-18 re-runs the fuller
-//! import→engine→fork-choice case in `import_engine_fork_choice.rs`.
+//! A `newPayload` timeout must **defer** into `pending_engine` (ADR-P3-05),
+//! not park the consensus core. Re-runs S0-A-27 after S1-A-06 (direct
+//! `EngineApi`, no `engine_client`). Fails if `pending_engine` is bypassed.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use cc_chain::DirectEngine;
-use cc_chain::ImportCounters;
+use cc_chain::core::{CoreConfig, spawn_core_thread};
+use cc_chain::events::{EventsConfig, EventsHandle};
 use cc_chain::head::HeadSnapshotStore;
-use cc_chain::import::{encode_signed_block, import_block_with_early};
+use cc_chain::import::encode_signed_block;
 use cc_chain::metrics::{ChainMetrics, ImportResult};
-use cc_chain::pending_engine::PendingEngine;
-use cc_chain::residency::Residency;
+use cc_chain::{DirectEngine, QueryReply, QueryRequest};
 use cc_engine_api::EngineApi;
 use cc_engine_api::capabilities::CapabilityCache;
 use cc_engine_api::config::{TimeoutKnobs, TransportTimeouts};
@@ -39,8 +36,14 @@ use cc_types::primitives::{
 };
 use cc_types::{BeaconBlock, BeaconBlockBody, BeaconState, SignedBeaconBlock};
 use prometheus_client::registry::Registry;
+use serde_json::json;
 use tokio::runtime::Handle;
 use tree_hash::TreeHash;
+use wiremock::matchers::{body_string_contains, method as http_method};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+const NEW_PAYLOAD_TIMEOUT: Duration = Duration::from_millis(80);
+const PARK_BUDGET: Duration = Duration::from_millis(800);
 
 fn minimal_config() -> ChainConfig {
     ChainConfig {
@@ -152,39 +155,48 @@ fn seeded_store_with_engine(
 
 fn short_timeouts() -> TransportTimeouts {
     TransportTimeouts::from_knobs(&TimeoutKnobs {
-        new_payload_ms: 80,
-        forkchoice_updated_ms: 80,
-        get_blobs_ms: 80,
-        exchange_capabilities_ms: 80,
-        eth_syncing_ms: 80,
+        new_payload_ms: NEW_PAYLOAD_TIMEOUT.as_millis() as u64,
+        forkchoice_updated_ms: NEW_PAYLOAD_TIMEOUT.as_millis() as u64,
+        get_blobs_ms: NEW_PAYLOAD_TIMEOUT.as_millis() as u64,
+        exchange_capabilities_ms: NEW_PAYLOAD_TIMEOUT.as_millis() as u64,
+        eth_syncing_ms: NEW_PAYLOAD_TIMEOUT.as_millis() as u64,
         multiplier: 1.0,
     })
 }
 
-/// Injected black-holed EL: import returns Deferred, parks in `pending_engine`,
-/// does not write the block, and unparks within the explicit Duration.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn black_holed_engine_defers_block_not_park() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                break;
-            };
-            tokio::spawn(async move {
-                let _stream = stream;
-                std::future::pending::<()>().await;
-            });
-        }
-    });
+async fn mount_el_double(server: &MockServer) {
+    Mock::given(http_method("POST"))
+        .and(body_string_contains("eth_syncing"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": false
+        })))
+        .mount(server)
+        .await;
+    Mock::given(http_method("POST"))
+        .and(body_string_contains("engine_exchangeCapabilities"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": ["engine_newPayloadV4", "engine_forkchoiceUpdatedV3"]
+        })))
+        .mount(server)
+        .await;
+    // Hang past the caller Duration so the deadline, not the EL body, unparks.
+    Mock::given(http_method("POST"))
+        .and(body_string_contains("engine_newPayloadV4"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
+        .mount(server)
+        .await;
+}
 
-    let timeouts = short_timeouts();
+async fn direct_engine_on(uri: &str, timeouts: TransportTimeouts) -> Arc<DirectEngine> {
     let transport = Arc::new(EngineTransport::from_secret_bytes(
-        format!("http://{addr}"),
+        uri.to_owned(),
         [1u8; 32],
         timeouts.clone(),
-        Duration::from_millis(80),
+        NEW_PAYLOAD_TIMEOUT,
         None,
     ));
     let schedule = ElForkSchedule {
@@ -193,11 +205,7 @@ async fn black_holed_engine_defers_block_not_park() {
         bpo2_time: None,
         amsterdam_time: None,
     };
-    let state = EngineStateHandle::new(
-        Arc::new(CapabilityCache::new()),
-        None,
-        Duration::from_millis(80),
-    );
+    let state = EngineStateHandle::new(Arc::new(CapabilityCache::new()), None, NEW_PAYLOAD_TIMEOUT);
     // Admit EL calls so the Duration cap (not the Offline gate) is the unpark.
     state
         .apply(UpcheckOutcome::Ok(EthSyncingResult::NotSyncing))
@@ -216,83 +224,109 @@ async fn black_holed_engine_defers_block_not_park() {
         SubscriptionSet::empty(),
     );
     let api = EngineApi::from_parts(transport, schedule, Handle::current(), None, state, lane);
-    let engine = Arc::new(DirectEngine::new(api, timeouts));
+    Arc::new(DirectEngine::new(api, timeouts))
+}
+
+fn new_payload_hits(requests: &[wiremock::Request]) -> usize {
+    requests
+        .iter()
+        .filter(|r| {
+            std::str::from_utf8(&r.body)
+                .map(|s| s.contains("engine_newPayloadV4"))
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+/// Wiremock EL: core-thread import times out `newPayload`, parks in
+/// `pending_engine`, leaves fork-choice unmutated, and unparks inside the
+/// explicit Duration. Occupancy stays 0 if `pending_engine` is bypassed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn new_payload_timeout_defers_via_pending_engine() {
+    let server = MockServer::start().await;
+    mount_el_double(&server).await;
+
+    let timeouts = short_timeouts();
+    let engine = direct_engine_on(&server.uri(), timeouts).await;
+    let (store, _anchor, config, signed) = seeded_store_with_engine(Arc::clone(&engine));
+    let root = Root::from_hash256(TreeHash::tree_hash_root(&signed.message));
+
+    let mut registry = Registry::default();
+    let metrics = ChainMetrics::register(&mut registry);
+    let events = EventsHandle::spawn(EventsConfig {
+        ring_capacity: 64,
+        subscriber_queue_capacity: 32,
+        session_id: Some(18),
+        ring_bytes: usize::MAX,
+    });
+    let head = HeadSnapshotStore::new();
+    let core = spawn_core_thread(
+        store,
+        config,
+        head.clone(),
+        events.event_sender(),
+        metrics.clone(),
+        CoreConfig {
+            verify: BlockSignatureStrategy::NoVerification,
+            engine: Some(engine),
+            ..CoreConfig::default()
+        },
+    );
+
+    let req = ImportBlockRequest {
+        ssz: encode_signed_block(&signed),
+        fork: 0,
+        root: root.as_slice().to_vec(),
+        source: 0,
+    };
 
     let start = std::time::Instant::now();
-    let result = std::thread::Builder::new()
-        .name("chain-core".into())
-        .spawn(move || {
-            let (mut store, _anchor, config, signed) = seeded_store_with_engine(engine);
-            let root = Root::from_hash256(TreeHash::tree_hash_root(&signed.message));
-            let before: Vec<Root> = store.blocks().keys().copied().collect();
-
-            let mut registry = Registry::default();
-            let metrics = ChainMetrics::register(&mut registry);
-            let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
-            let head = HeadSnapshotStore::new();
-            let counters = ImportCounters::default();
-            let mut snapshot_sequence = 0u64;
-            let mut residency = Residency::<Minimal>::with_defaults();
-            let mut pending_engine = PendingEngine::new();
-            let ssz = encode_signed_block(&signed);
-            let req = ImportBlockRequest {
-                ssz,
-                fork: 0,
-                root: root.as_slice().to_vec(),
-                source: 0,
-            };
-            let outcome = import_block_with_early(
-                &mut store,
-                &mut residency,
-                &config,
-                &head,
-                &event_tx,
-                &metrics,
-                &counters,
-                &mut snapshot_sequence,
-                req,
-                BlockSignatureStrategy::NoVerification,
-                None,
-                None,
-                None,
-                None,
-                Some(&mut pending_engine),
-                None,
-            )
-            .expect("import path must succeed as a deferral, not Status");
-
-            let after: Vec<Root> = store.blocks().keys().copied().collect();
-            (
-                outcome.response.verdict,
-                outcome.response.reason,
-                pending_engine.contains(&root),
-                pending_engine.len(),
-                before,
-                after,
-                metrics.import_result_count(ImportResult::DeferredEngine),
-            )
-        })
-        .expect("spawn chain-core")
-        .join()
-        .expect("chain-core join");
+    let resp = tokio::time::timeout(PARK_BUDGET, core.handle.import_block(req))
+        .await
+        .expect("core parked on black-holed newPayload")
+        .expect("import path must succeed as a deferral, not Status");
     let elapsed = start.elapsed();
 
-    let (verdict, reason, parked, pending_len, before, after, deferred_metric) = result;
     assert_eq!(
-        verdict,
+        resp.verdict,
         ImportBlockVerdict::DeferredDa as i32,
-        "engine timeout must take the Ignore-class deferral verdict, reason={reason}"
+        "engine timeout must take the Ignore-class deferral verdict, reason={}",
+        resp.reason
     );
-    assert_eq!(reason, "execution_engine_unavailable");
-    assert!(parked, "block must be queued on pending_engine");
-    assert_eq!(pending_len, 1);
+    assert_eq!(resp.reason, "execution_engine_unavailable");
+    assert_eq!(metrics.import_result_count(ImportResult::DeferredEngine), 1);
     assert_eq!(
-        before, after,
-        "store.blocks must be unmutated (not imported)"
+        metrics.pending_engine_occupancy.get(),
+        1,
+        "block must be queued on pending_engine; occupancy stays 0 if the map is bypassed"
     );
-    assert_eq!(deferred_metric, 1);
+
+    let optimistic = core
+        .handle
+        .query(QueryRequest::IsOptimistic { root: Some(root) })
+        .await
+        .expect("is_optimistic query");
+    match optimistic {
+        QueryReply::IsOptimistic { known, .. } => {
+            assert!(
+                !known,
+                "fork-choice store must stay unmutated (not imported)"
+            );
+        }
+        other => panic!("expected IsOptimistic, got {other:?}"),
+    }
+
+    let received = server.received_requests().await.unwrap_or_default();
     assert!(
-        elapsed < Duration::from_millis(800),
-        "core parked on black-holed engine: {elapsed:?}"
+        new_payload_hits(&received) >= 1,
+        "newPayload must be issued so the timeout is the trigger, not an Offline gate"
     );
+    assert!(
+        elapsed < PARK_BUDGET,
+        "core parked on newPayload timeout: {elapsed:?}"
+    );
+
+    core.handle.shutdown().await;
+    core.join();
+    events.shutdown().await;
 }

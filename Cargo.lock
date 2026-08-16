@@ -1025,6 +1025,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tree_hash",
+ "wiremock",
 ]
 
 [[package]]

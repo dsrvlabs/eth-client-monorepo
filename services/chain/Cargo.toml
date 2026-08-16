@@ -73,3 +73,4 @@ tokio = { workspace = true, features = ["test-util"] }
 toml = { workspace = true }
 tonic-health = { workspace = true }
 tracing-subscriber = { workspace = true }
+wiremock = { workspace = true }
