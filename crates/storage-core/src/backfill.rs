@@ -8,7 +8,7 @@
 //!
 //! | Surface | Role |
 //! |---|---|
-//! | [`proto_progress_to_store`] | Full `per_index_oldest` mapping (128-cap) |
+//! | [`proto_progress_to_store`] | Full `per_index_oldest` mapping (128-cap; unset pad) |
 //! | [`observe_backfill_commit`] | `cc_storage_backfill_oldest_slot` + `_bytes_total` |
 //! | [`assert_monotone_oldest`] | R-7 early warning: non-increasing scrapes |
 //! | resume helpers | wrap `cc_store::backfill_progress` for service tests |
@@ -80,7 +80,12 @@ pub(crate) enum BatchAdmitError {
 // ── Proto → store ───────────────────────────────────────────────────────────
 
 /// Build a store [`BackfillProgress`] from proto fields, including a full
-/// `per_index_oldest` list (padded to 128 with `columns_oldest`).
+/// `per_index_oldest` list (padded to 128 with unset / no-progress).
+///
+/// Missing indices stay [`Slot::ZERO`]. Padding them with `columns_oldest`
+/// fabricates progress for never-custodied indices; the monotone guard then
+/// rejects an honest custody-group-count raise that seeds those indices at
+/// head (P1-A/3).
 #[must_use]
 pub(crate) fn proto_progress_to_store(
     blocks_oldest: u64,
@@ -90,18 +95,12 @@ pub(crate) fn proto_progress_to_store(
 ) -> BackfillProgress {
     let cols = Slot::new(columns_oldest);
     let slots: Vec<Slot> = per_index_oldest.iter().map(|&s| Slot::new(s)).collect();
-    // Empty list is valid SSZ; non-empty is padded to 128 for per-index C.
-    let per = if slots.is_empty() {
-        ensure_per_index_len(&[], cols)
-    } else {
-        ensure_per_index_len(&slots, cols)
-    };
-    // When the caller sent an empty list, keep the list empty (CC-4F atomicity
-    // tests only assert the meta row's presence, not the 128-wide pad).
+    // Empty list is valid SSZ (CC-4F atomicity tests only assert the meta
+    // row). Non-empty is padded to 128; unspecified indices stay unset.
     let per_index_oldest = if per_index_oldest.is_empty() {
         Default::default()
     } else {
-        per
+        ensure_per_index_len(&slots, Slot::ZERO)
     };
     BackfillProgress {
         blocks_oldest: Slot::new(blocks_oldest),
@@ -214,10 +213,12 @@ pub(crate) fn admit_progress_monotone(
         });
     }
     // Per-index: refuse any increase over a non-zero durable entry.
+    // Missing / zero is unset (never custodied) — a cgc raise may seed
+    // those indices at head. Do not treat a missing entry as columns_oldest.
     let proposed_per = proposed.per_index_oldest.as_ref();
     let stored_per = s.per_index_oldest.as_ref();
     for (i, &p_slot) in proposed_per.iter().enumerate() {
-        let cur = stored_per.get(i).copied().unwrap_or(s.columns_oldest);
+        let cur = stored_per.get(i).copied().unwrap_or(Slot::ZERO);
         if progress_slot_non_monotone(cur, p_slot) {
             return Err(BatchAdmitError::ProgressNonMonotone {
                 class: "columns",
@@ -605,12 +606,17 @@ mod tests {
     }
 
     #[test]
-    fn proto_progress_pads_per_index_to_128() {
+    fn proto_progress_never_custodied_index_reports_no_progress() {
         let p = proto_progress_to_store(10, Root::default(), 20, &[20, 20, 20, 20]);
         assert_eq!(p.per_index_oldest.len(), COLUMN_INDEX_COUNT);
         assert_eq!(p.per_index_oldest[0], Slot::new(20));
-        // Unspecified indices pad to columns_oldest.
-        assert_eq!(p.per_index_oldest[127], Slot::new(20));
+        // Never-custodied indices stay unset — not a copy of columns_oldest.
+        assert_eq!(p.per_index_oldest[4], Slot::ZERO);
+        assert_eq!(p.per_index_oldest[127], Slot::ZERO);
+        assert_ne!(
+            p.per_index_oldest[4], p.columns_oldest,
+            "padding with columns_oldest would fabricate progress"
+        );
     }
 
     #[test]
@@ -889,6 +895,50 @@ mod tests {
 
         // No stored → first seed always ok (even "high" values).
         assert!(admit_progress_monotone(&bad_blocks, None).is_ok());
+    }
+
+    #[test]
+    fn admit_progress_accepts_legitimate_cgc_raise() {
+        // Durable: four custodied indices complete at target; rest never custodied.
+        let target = 1_000u64;
+        let stored = proto_progress_to_store(
+            target,
+            Root::default(),
+            target,
+            &[target, target, target, target],
+        );
+        assert_eq!(stored.per_index_oldest[4], Slot::ZERO);
+
+        // Honest raise: new indices start at head (no history).
+        let head = 50_000u64;
+        let raised = proto_progress_to_store(
+            target,
+            Root::default(),
+            target,
+            &[target, target, target, target, head, head, head, head],
+        );
+        assert_eq!(raised.per_index_oldest[4], Slot::new(head));
+        assert_eq!(raised.per_index_oldest[127], Slot::ZERO);
+        assert!(
+            admit_progress_monotone(&raised, Some(&stored)).is_ok(),
+            "cgc raise must seed never-custodied indices at head"
+        );
+
+        // Raising an actually-custodied index is still non-monotone.
+        let bad = proto_progress_to_store(
+            target,
+            Root::default(),
+            target,
+            &[head, target, target, target, head, head, head, head],
+        );
+        assert!(matches!(
+            admit_progress_monotone(&bad, Some(&stored)),
+            Err(BatchAdmitError::ProgressNonMonotone {
+                class: "columns",
+                current: 1_000,
+                attempted: 50_000,
+            })
+        ));
     }
 
     #[test]

@@ -526,10 +526,21 @@ frontier is rejected; a test constructs the hole explicitly.
 - [x] `S2-B-08` (`per_index` padding / custody-group-count raise) not implemented
 
 ### `S2-B-08` · P1-A/3 — `per_index` padding fabricates progress · 2–2.5 pd / **5 pts** (≈)
-**Touch** `services/storage/src/backfill.rs:87`. Padding fabricates progress for never-custodied
+**Touch** `crates/storage-core/src/backfill.rs` (moved from `services/storage/src/backfill.rs:87`).
+Padding fabricates progress for never-custodied
 indices, and the monotone guard then **rejects honest cgc-raise reports**.
 **Acceptance** — a never-custodied index reports no progress rather than padded progress; a legitimate
 custody-group-count raise is accepted. Both directions asserted.
+
+**Acceptance (`S2-B-08` only)**
+- [x] A never-custodied index reports no progress rather than padded progress
+  (`proto_progress_never_custodied_index_reports_no_progress`,
+  `put_backfill_batch_cgc_raise_seeds_never_custodied_at_head`)
+- [x] A legitimate custody-group-count raise is accepted
+  (`admit_progress_accepts_legitimate_cgc_raise`,
+  `put_backfill_batch_cgc_raise_seeds_never_custodied_at_head`)
+- [x] Both directions asserted by test
+- [x] Hole-jump / sandwich reject (`S2-B-07`) not regressed; no other issue implemented
 
 ### `S2-B-09` · P1-A/6 — `drop_table` failure leaks the shard · 1.5–2 pd / **3 pts** (≈)
 **Touch** `services/storage/src/prune/mod.rs:532`. Failure **after** marks durably advanced leaks the

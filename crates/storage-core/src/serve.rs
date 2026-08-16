@@ -1406,7 +1406,7 @@ fn proto_to_backfill_progress(p: &ProtoBackfillProgress) -> Result<BackfillProgr
     } else {
         parse_root(&p.blocks_oldest_parent)?
     };
-    // CC-47a: full per_index_oldest mapping (padded to 128 when non-empty).
+    // CC-47a: full per_index_oldest mapping (padded to 128 with unset when non-empty).
     Ok(proto_progress_to_store(
         p.blocks_oldest,
         parent,
@@ -3063,6 +3063,75 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_backfill_batch_cgc_raise_seeds_never_custodied_at_head() {
+        let (dir, eng) = open_engine("bf-cgc-raise");
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+        let root = root_n(0x10);
+        seed_anchor_oldest_parent(&eng, root);
+        let ssz = synth_block(10, &Root::ZERO, &root_n(1));
+        srv.put_backfill_batch(Request::new(PutBackfillBatchRequest {
+            blocks: vec![BackfillBlock {
+                slot: 10,
+                root: root.as_slice().to_vec(),
+                ssz,
+            }],
+            columns: vec![],
+            progress: Some(ProtoBackfillProgress {
+                blocks_oldest: 10,
+                blocks_oldest_parent: Root::ZERO.as_slice().to_vec(),
+                columns_oldest: 10,
+                per_index_oldest: vec![10, 10, 10, 10],
+            }),
+        }))
+        .await
+        .unwrap();
+
+        {
+            let rt = eng.read().unwrap();
+            let bytes = rt
+                .get(TABLE_META, KEY_BACKFILL_PROG.as_bytes())
+                .unwrap()
+                .expect("progress");
+            let stored = BackfillProgress::from_ssz_bytes(&bytes).unwrap();
+            assert_eq!(stored.per_index_oldest[0], Slot::new(10));
+            assert_eq!(
+                stored.per_index_oldest[4],
+                Slot::ZERO,
+                "never-custodied must report no progress, not padded columns_oldest"
+            );
+            assert_eq!(stored.per_index_oldest[127], Slot::ZERO);
+        }
+
+        // Progress-only raise: same named block frontier, new indices at head.
+        let head = 50_000u64;
+        srv.put_backfill_batch(Request::new(PutBackfillBatchRequest {
+            blocks: vec![],
+            columns: vec![],
+            progress: Some(ProtoBackfillProgress {
+                blocks_oldest: 10,
+                blocks_oldest_parent: Root::ZERO.as_slice().to_vec(),
+                columns_oldest: 10,
+                per_index_oldest: vec![10, 10, 10, 10, head, head, head, head],
+            }),
+        }))
+        .await
+        .expect("honest cgc-raise report must be accepted");
+
+        let rt = eng.read().unwrap();
+        let bytes = rt
+            .get(TABLE_META, KEY_BACKFILL_PROG.as_bytes())
+            .unwrap()
+            .expect("progress");
+        let loaded = BackfillProgress::from_ssz_bytes(&bytes).unwrap();
+        assert_eq!(loaded.per_index_oldest[0], Slot::new(10));
+        assert_eq!(loaded.per_index_oldest[4], Slot::new(head));
+        assert_eq!(loaded.per_index_oldest[127], Slot::ZERO);
+        assert_eq!(loaded.blocks_oldest, Slot::new(10));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
