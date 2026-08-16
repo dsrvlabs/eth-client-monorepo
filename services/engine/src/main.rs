@@ -116,15 +116,11 @@ async fn main() -> anyhow::Result<()> {
         Some(engine_metrics.clone()),
         slot_duration,
     );
+    // P2-D/19: missing `[el_forks]` must not invent Osaka-at-genesis.
     let schedule = cfg
         .transport
-        .el_fork_schedule()
-        .unwrap_or(cc_engine::version::ElForkSchedule {
-            osaka_time: 0,
-            bpo1_time: None,
-            bpo2_time: None,
-            amsterdam_time: None,
-        });
+        .require_el_fork_schedule()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let _upcheck = spawn_upcheck_driver(
         state.clone(),
         Arc::clone(&transport),
@@ -172,7 +168,8 @@ async fn main() -> anyhow::Result<()> {
         Some(engine_metrics),
         Some(state),
         Some(lane),
-    );
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // gRPC decode budget: tonic's default max_decoding_message_size is **4 MiB**.
     // That is the load-bearing upper bound on inbound NewPayload SSZ until we

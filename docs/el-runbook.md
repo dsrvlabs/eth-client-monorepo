@@ -237,6 +237,21 @@ R-3 early-warning: if the first ten minutes of download project a **download
 alone** past 4 h, re-plan the milestone start rather than the milestone
 (`scripts/el-snapshot-restore.sh --probe-throughput`).
 
+## AuthFailed recovery
+
+`AuthFailed` is **terminal for automatic upcheck outcomes** (CC-36 /3): a later
+`eth_syncing == false` does **not** walk back to `Offline` or `Synced`. That is
+the fail-closed gate so a wrong JWT cannot soft-defer forever.
+
+**Operator escape (P2-D/19).** Fix the JWT/vhost (crc32 pair, `iat` window,
+`--authrpc.vhosts`) then **restart the `engine` process**. A new process starts
+the four-state machine at `Offline` and the upcheck loop probes again. There is
+no automatic backoff. In-process `operator_reset_auth_failed` is the same
+transition (`AuthFailed` → `Offline`) for tests and a later admin surface.
+
+`GetEngineState.internal_state == "auth_failed"` plus `el_offline=true` is the
+signal. Do not wait for the upcheck loop.
+
 ### A-P3-3 fallback — cold snap-sync
 
 If the snapshot service is unavailable, start geth with an empty `--datadir`

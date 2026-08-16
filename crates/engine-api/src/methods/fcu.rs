@@ -292,7 +292,8 @@ async fn call_fcu_http(
     ordered_held: bool,
 ) -> Result<DecodedPayloadStatus, EngineError> {
     // Single attempt for Fatal codes. Transient (`-32603`/`-32000`) may retry
-    // once after 250 ms — never `-38002` / `-38006` with the same args (CC-33/6,8).
+    // once after 250 ms — including the production gated path (ordered already
+    // held). Never `-38002` / `-38006` with the same args (CC-33/6,8).
     let mut attempts = 0u32;
     loop {
         attempts += 1;
@@ -328,8 +329,7 @@ async fn call_fcu_http(
                     finalized_block_hash,
                     head_slot,
                 );
-                // Retry only when we can re-acquire the lane ourselves.
-                if !ordered_held && e.retry_class() == RetryClass::Transient && attempts < 2 {
+                if e.retry_class() == RetryClass::Transient && attempts < 2 {
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                     continue;
                 }
@@ -1091,6 +1091,62 @@ mod tests {
         assert!(
             !prod.to_lowercase().contains(&needle),
             "attrs field name must be absent from fcu production code"
+        );
+    }
+
+    /// P2-B/5: documented Transient retry is reachable on the gated path.
+    #[tokio::test]
+    async fn gated_fcu_retries_transient_once() {
+        let call_count = Arc::new(AtomicU64::new(0));
+        let server = MockServer::start().await;
+        let count = Arc::clone(&call_count);
+        Mock::given(http_method("POST"))
+            .respond_with(move |_req: &wiremock::Request| {
+                let n = count.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    return ResponseTemplate::new(200).set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "error": { "code": -32603, "message": "internal" }
+                    }));
+                }
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "payloadStatus": {
+                            "status": "VALID",
+                            "latestValidHash": null,
+                            "validationError": null
+                        },
+                        "payloadId": null
+                    }
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let t = transport(&server.uri(), None);
+        let gate = FcuSequenceGate::new();
+        let status = forkchoice_updated_v3_gated(
+            &t,
+            &gate,
+            &test_schedule(),
+            None,
+            1,
+            1,
+            &[0u8; 32],
+            &[0u8; 32],
+            &[0u8; 32],
+            None,
+        )
+        .await
+        .expect("gated Transient retry must succeed on the second attempt");
+        assert_eq!(status.status_str(), "VALID");
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            2,
+            "gated fcU must retry Transient exactly once"
         );
     }
 }

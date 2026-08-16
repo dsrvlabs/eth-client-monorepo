@@ -6,10 +6,13 @@
 //! Collapse:  Synced|Syncing → Online ; Offline|AuthFailed → Offline
 //! ```
 //!
-//! - **`AuthFailed` is terminal** — no backoff into `Offline` (CC-36 /3).
+//! - **`AuthFailed` is terminal for `apply`** — no automatic backoff into
+//!   `Offline` (CC-36 /3). Operator escape is
+//!   [`EngineStateHandle::operator_reset_auth_failed`] or process restart.
 //! - Capability cache is cleared on `AuthFailed` and `Offline` edges.
 //! - On not-Synced → Synced: refresh capabilities + re-send cached
-//!   `ForkchoiceStateV1` (CC-36 /4).
+//!   `ForkchoiceStateV1` (CC-36 /4). The resend is fail-closed:
+//!   Offline/AuthFailed must not hit the EL.
 //! - Upcheck is **detached** (spawn) and **per-slot floored** (CC-36 /7).
 
 use std::sync::Arc;
@@ -260,7 +263,7 @@ impl EngineStateHandle {
     pub async fn run_upcheck(&self, transport: &EngineTransport, metrics: Option<&EngineMetrics>) {
         {
             let mut g = self.inner.lock().await;
-            // Terminal: do not probe further (AuthFailed stays until process restart).
+            // Terminal for apply: do not probe until operator reset / restart.
             if g.internal() == EngineStateInternal::AuthFailed {
                 return;
             }
@@ -275,14 +278,22 @@ impl EngineStateHandle {
 
     /// Capability refresh + cached fcU re-send after any upcheck (floor **and**
     /// 250 ms event path). Must run on the same path that notices Synced.
+    ///
+    /// Fail-closed (P2-D/19): Offline / AuthFailed must not hit the EL. Pending
+    /// work is dropped; the next not-Synced → Synced edge re-arms from cache.
     pub async fn apply_synced_edge_side_effects(
         &self,
         transport: &EngineTransport,
         metrics: Option<&EngineMetrics>,
         schedule: &ElForkSchedule,
     ) {
+        if !self.admits_el_call().await {
+            let _ = self.take_pending_capability_refresh().await;
+            let _ = self.take_pending_fcu_resend().await;
+            return;
+        }
         // Capability refresh always on not-Synced → Synced (even with empty fcU cache).
-        if self.take_pending_capability_refresh().await {
+        if self.take_pending_capability_refresh().await && self.admits_el_call().await {
             let caps = self.capabilities().await;
             let _ = crate::methods::capabilities::exchange_capabilities(
                 transport,
@@ -293,6 +304,9 @@ impl EngineStateHandle {
         }
         // Re-send cached ForkchoiceStateV1 immediately (CC-36 /4).
         if let Some(fcu) = self.take_pending_fcu_resend().await {
+            if !self.admits_el_call().await {
+                return;
+            }
             let _ = forkchoice_updated_v3(
                 transport,
                 schedule,
@@ -304,6 +318,17 @@ impl EngineStateHandle {
             )
             .await;
         }
+    }
+
+    /// Operator escape from terminal `AuthFailed` → `Offline` (P2-D/19).
+    ///
+    /// Not reachable from [`Self::apply`] (CC-36 /3). After reset the upcheck
+    /// loop may probe again. Process restart is the production trigger.
+    pub async fn operator_reset_auth_failed(&self) -> bool {
+        let mut g = self.inner.lock().await;
+        let ok = g.operator_reset_auth_failed();
+        let _ = self.external_tx.send(g.external());
+        ok
     }
 }
 
@@ -394,8 +419,9 @@ impl EngineStateMachine {
 
     /// Apply one upcheck outcome. Returns the transition when state changes.
     ///
-    /// **`AuthFailed` is terminal**: subsequent outcomes are ignored (no
-    /// transition into `Offline` or anywhere else).
+    /// **`AuthFailed` is terminal for automatic outcomes**: subsequent
+    /// `apply` results are ignored (no backoff into `Offline`). Operator
+    /// escape is [`Self::operator_reset_auth_failed`].
     pub fn apply(&mut self, outcome: UpcheckOutcome) -> Option<StateTransition> {
         if self.state == EngineStateInternal::AuthFailed {
             // Terminal: log nothing that looks like a leave; stay put.
@@ -414,7 +440,9 @@ impl EngineStateMachine {
             UpcheckOutcome::AuthRejected { body } => {
                 tracing::error!(
                     body = %body,
-                    "execution engine auth rejected — terminal AuthFailed (no backoff to offline)"
+                    "execution engine auth rejected — terminal AuthFailed \
+                     (no automatic backoff; restart engine or operator_reset_auth_failed \
+                     after fixing JWT/vhost)"
                 );
                 (
                     EngineStateInternal::AuthFailed,
@@ -464,6 +492,24 @@ impl EngineStateMachine {
         self.transitions.push(tr.clone());
         self.publish_metrics();
         Some(tr)
+    }
+
+    /// Operator escape: `AuthFailed` → `Offline` so the upcheck loop may probe.
+    ///
+    /// Returns `false` when not in `AuthFailed`. Does not invent a second
+    /// automatic retry policy — `apply` stays terminal.
+    pub fn operator_reset_auth_failed(&mut self) -> bool {
+        if self.state != EngineStateInternal::AuthFailed {
+            return false;
+        }
+        self.state = EngineStateInternal::Offline;
+        self.pending_fcu_resend = None;
+        self.pending_capability_refresh = false;
+        tracing::warn!(
+            "operator reset AuthFailed → Offline; upcheck will probe again after JWT/vhost fix"
+        );
+        self.publish_metrics();
+        true
     }
 
     /// Whether the per-slot floor should fire for `slot_index`.
@@ -944,6 +990,44 @@ mod tests {
         assert!(name.contains("spawn_upcheck_driver"));
     }
 
+    /// P2-D/19: operator escape leaves AuthFailed without automatic apply backoff.
+    #[test]
+    fn operator_reset_is_the_auth_failed_escape() {
+        let mut m = machine();
+        let _ = m.apply(UpcheckOutcome::AuthRejected {
+            body: "missing token".into(),
+        });
+        assert_eq!(m.internal(), EngineStateInternal::AuthFailed);
+        assert!(!admits_el_call(m.external()));
+
+        assert!(m.operator_reset_auth_failed());
+        assert_eq!(m.internal(), EngineStateInternal::Offline);
+        assert!(!admits_el_call(m.external()), "Offline still fail-closed");
+        assert!(
+            !m.operator_reset_auth_failed(),
+            "reset is a no-op outside AuthFailed"
+        );
+
+        // apply() must still refuse to leave AuthFailed automatically.
+        let mut stuck = machine();
+        let _ = stuck.apply(UpcheckOutcome::AuthRejected {
+            body: "stale token".into(),
+        });
+        assert!(
+            stuck
+                .apply(UpcheckOutcome::Ok(EthSyncingResult::NotSyncing))
+                .is_none()
+        );
+        assert_eq!(stuck.internal(), EngineStateInternal::AuthFailed);
+        assert!(stuck.operator_reset_auth_failed());
+        let tr = stuck
+            .apply(UpcheckOutcome::Ok(EthSyncingResult::NotSyncing))
+            .expect("after operator reset, upcheck may enter Synced");
+        assert_eq!(tr.from, EngineStateInternal::Offline);
+        assert_eq!(tr.to, EngineStateInternal::Synced);
+        assert!(admits_el_call(stuck.external()));
+    }
+
     /// Per-slot floor: exactly one floor mark per slot over 5 slots.
     #[test]
     fn upcheck_per_slot_floor() {
@@ -960,5 +1044,135 @@ mod tests {
             );
         }
         assert_eq!(floors, 5, "exactly one floor per slot over 5 slots");
+    }
+
+    fn handle() -> EngineStateHandle {
+        EngineStateHandle::new(
+            Arc::new(CapabilityCache::new()),
+            None,
+            Duration::from_secs(12),
+        )
+    }
+
+    fn test_schedule() -> ElForkSchedule {
+        ElForkSchedule {
+            osaka_time: 0,
+            bpo1_time: None,
+            bpo2_time: None,
+            amsterdam_time: None,
+        }
+    }
+
+    fn transport(url: &str) -> EngineTransport {
+        use crate::config::{TimeoutKnobs, TransportTimeouts, soft_deadline_ms};
+        use crate::jwt::JwtSecret;
+        EngineTransport::from_parts(
+            url,
+            JwtSecret::from_bytes([0x11; 32]),
+            TransportTimeouts::from_knobs(&TimeoutKnobs::default()),
+            Duration::from_secs_f64(soft_deadline_ms(3_333, 12_000) / 1_000.0),
+            None,
+        )
+    }
+
+    fn counting_el_mock(
+        hits: Arc<std::sync::atomic::AtomicU64>,
+    ) -> impl Fn(&wiremock::Request) -> wiremock::ResponseTemplate {
+        move |_req: &wiremock::Request| {
+            hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "payloadStatus": {
+                        "status": "VALID",
+                        "latestValidHash": null,
+                        "validationError": null
+                    },
+                    "payloadId": null
+                }
+            }))
+        }
+    }
+
+    /// P2-D/19: Synced-edge fcU resend must not hit the EL while AuthFailed.
+    #[tokio::test]
+    async fn synced_edge_fcu_resend_gated_when_auth_failed() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use wiremock::matchers::method as http_method;
+        use wiremock::{Mock, MockServer};
+
+        let hits = Arc::new(AtomicU64::new(0));
+        let server = MockServer::start().await;
+        Mock::given(http_method("POST"))
+            .respond_with(counting_el_mock(Arc::clone(&hits)))
+            .mount(&server)
+            .await;
+
+        let h = handle();
+        h.cache_forkchoice(CachedForkchoiceState {
+            head_block_hash: [1u8; 32],
+            safe_block_hash: [2u8; 32],
+            finalized_block_hash: [3u8; 32],
+        })
+        .await;
+        let _ = h
+            .apply(UpcheckOutcome::Ok(EthSyncingResult::NotSyncing))
+            .await;
+        let _ = h
+            .apply(UpcheckOutcome::AuthRejected {
+                body: "missing token".into(),
+            })
+            .await;
+        assert_eq!(h.internal().await, EngineStateInternal::AuthFailed);
+        assert!(!h.admits_el_call().await);
+
+        let t = transport(&server.uri());
+        h.apply_synced_edge_side_effects(&t, None, &test_schedule())
+            .await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "Offline/AuthFailed must not hit the EL on the Synced-edge resend"
+        );
+        assert!(
+            h.take_pending_fcu_resend().await.is_none(),
+            "pending resend must be dropped, not left armed"
+        );
+    }
+
+    /// Synced-edge resend still reaches the EL when admitted.
+    #[tokio::test]
+    async fn synced_edge_fcu_resend_hits_el_when_online() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use wiremock::matchers::method as http_method;
+        use wiremock::{Mock, MockServer};
+
+        let hits = Arc::new(AtomicU64::new(0));
+        let server = MockServer::start().await;
+        Mock::given(http_method("POST"))
+            .respond_with(counting_el_mock(Arc::clone(&hits)))
+            .mount(&server)
+            .await;
+
+        let h = handle();
+        h.cache_forkchoice(CachedForkchoiceState {
+            head_block_hash: [1u8; 32],
+            safe_block_hash: [2u8; 32],
+            finalized_block_hash: [3u8; 32],
+        })
+        .await;
+        let _ = h
+            .apply(UpcheckOutcome::Ok(EthSyncingResult::NotSyncing))
+            .await;
+        assert!(h.admits_el_call().await);
+
+        let t = transport(&server.uri());
+        h.apply_synced_edge_side_effects(&t, None, &test_schedule())
+            .await;
+        assert!(
+            hits.load(Ordering::SeqCst) >= 1,
+            "admitted Synced edge must contact the EL"
+        );
     }
 }

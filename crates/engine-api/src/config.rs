@@ -186,8 +186,9 @@ pub struct EngineTransportConfig {
     #[serde(default = "default_attestation_due_bps")]
     pub attestation_due_bps: u64,
     /// EL fork schedule for the version gate (CC-31). Optional only so older
-    /// partial TOML fixtures still deserialise; production `config/engine.toml`
-    /// always supplies `[el_forks]`.
+    /// partial TOML fixtures still deserialise. Production construction must
+    /// use [`Self::require_el_fork_schedule`] — a missing table must not invent
+    /// Osaka-at-genesis (`osaka_time=0`, P2-D/19).
     #[serde(default)]
     pub el_forks: Option<ElForksConfig>,
     /// gRPC URI for the ninth-contract `EngineStream` client (CC-38a).
@@ -240,6 +241,15 @@ impl EngineTransportConfig {
     #[must_use]
     pub fn el_fork_schedule(&self) -> Option<ElForkSchedule> {
         self.el_forks.as_ref().map(ElForksConfig::schedule)
+    }
+
+    /// Fail-closed schedule for production construction (P2-D/19).
+    ///
+    /// A missing `[el_forks]` must not invent `osaka_time=0` (Osaka-at-genesis).
+    /// Explicit `osaka_time = 0` in config is operator intent and is accepted.
+    pub fn require_el_fork_schedule(&self) -> Result<ElForkSchedule, &'static str> {
+        self.el_fork_schedule()
+            .ok_or("missing [el_forks]: refusing to invent Osaka-at-genesis (osaka_time=0)")
     }
 }
 
@@ -414,5 +424,37 @@ mod tests {
                 .p2p_uri
                 .starts_with("http://")
         );
+    }
+
+    /// P2-D/19: missing `[el_forks]` must not invent Osaka-at-genesis.
+    #[test]
+    fn missing_el_forks_is_fail_closed() {
+        let cfg = EngineTransportConfig::default();
+        assert!(
+            cfg.el_forks.is_none(),
+            "Default must not synthesise [el_forks]"
+        );
+        assert!(cfg.el_fork_schedule().is_none());
+        let err = cfg.require_el_fork_schedule().expect_err("missing table");
+        assert!(
+            err.contains("el_forks") && err.contains("osaka_time=0"),
+            "error must name the missing table and the refused default: {err}"
+        );
+    }
+
+    /// Explicit `osaka_time = 0` in config is operator intent, not a default.
+    #[test]
+    fn explicit_osaka_time_zero_is_accepted() {
+        let cfg = EngineTransportConfig {
+            el_forks: Some(ElForksConfig {
+                osaka_time: 0,
+                bpo1_time: None,
+                bpo2_time: None,
+                amsterdam_time: None,
+            }),
+            ..EngineTransportConfig::default()
+        };
+        let schedule = cfg.require_el_fork_schedule().expect("explicit table");
+        assert_eq!(schedule.osaka_time, 0);
     }
 }

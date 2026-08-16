@@ -408,10 +408,25 @@ verification against it passes.
 `[PRD]` P2-D/19 is **19 engine policy edges**; the three named are: the fail-open fork-schedule
 default `osaka_time=0`; the gate-bypassing Synced-edge fcU resend; terminal `AuthFailed` with no
 operator escape. P2-B/5 is the documented transient fcU retry that is unreachable on the production
-gated path (`services/engine/src/methods/fcu.rs:324`).
+gated path (`crates/engine-api/src/methods/fcu.rs`, was `services/engine/src/methods/fcu.rs:324`).
 **Under-specified:** `[PRD]` enumerates 3 of the 19 and gives no `file:line` for the other 16. Scope
 this issue to the three named plus P2-B/5, and file the remaining 16 as a triage line item if the
 count matters — do not silently claim 19.
+
+**Triage (16 of 19 unscoped).** This issue does **not** claim P2-D/19 complete. Sixteen edges
+have no `file:line` in `[PRD]` / `[AS]` §4 and stay a later triage line item. P2-E/15
+(`prepare_fcu_params` version gate) rides this id but is not patched here.
+
+**Acceptance**
+
+- [x] Missing `[el_forks]` does not invent `osaka_time=0` (`require_el_fork_schedule`; constructors
+      and `main.rs` fail closed). Explicit `osaka_time = 0` in config remains operator intent.
+- [x] Synced-edge fcU resend is gated by `admits_el_call`; Offline / AuthFailed do not hit the EL.
+- [x] `AuthFailed` stays terminal for `apply`; operator escape is process restart (runbook) or
+      `operator_reset_auth_failed` → Offline.
+- [x] Documented Transient fcU retry (`-32603`/`-32000`, once after 250 ms) is reachable on the
+      production gated path. Same policy; no second retry.
+- [x] 16 of 19 P2-D/19 edges remain unscoped (triage line item above). This issue does not claim 19.
 
 ---
 

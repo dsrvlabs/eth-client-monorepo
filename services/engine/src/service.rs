@@ -50,52 +50,43 @@ pub struct EngineServiceImpl {
 impl EngineServiceImpl {
     /// Construct from the shared transport + fork schedule.
     ///
-    /// When `[el_forks]` is absent, uses a zero Osaka time so Prague/Osaka V4
-    /// remains selected (tests / partial fixtures). Production config always
-    /// supplies the table (`config/engine.toml`).
-    #[must_use]
+    /// Fail-closed: a missing `[el_forks]` is an error. Tests / fixtures must
+    /// supply an explicit table rather than inherit Osaka-at-genesis (P2-D/19).
     pub fn new(
         transport: SharedTransport,
         cfg: &EngineTransportConfig,
         metrics: Option<EngineMetrics>,
-    ) -> Self {
+    ) -> Result<Self, &'static str> {
         Self::new_with_state(transport, cfg, metrics, None)
     }
 
     /// Construct with an optional shared engine-state handle (CC-36a).
-    #[must_use]
     pub fn new_with_state(
         transport: SharedTransport,
         cfg: &EngineTransportConfig,
         metrics: Option<EngineMetrics>,
         state: Option<EngineStateHandle>,
-    ) -> Self {
+    ) -> Result<Self, &'static str> {
         Self::new_with_fastpath(transport, cfg, metrics, state, None)
     }
 
     /// Construct with optional state + fastpath lane (CC-38a).
-    #[must_use]
     pub fn new_with_fastpath(
         transport: SharedTransport,
         cfg: &EngineTransportConfig,
         metrics: Option<EngineMetrics>,
         state: Option<EngineStateHandle>,
         fastpath: Option<FastpathLane>,
-    ) -> Self {
-        let schedule = cfg.el_fork_schedule().unwrap_or(ElForkSchedule {
-            osaka_time: 0,
-            bpo1_time: None,
-            bpo2_time: None,
-            amsterdam_time: None,
-        });
-        Self {
+    ) -> Result<Self, &'static str> {
+        let schedule = cfg.require_el_fork_schedule()?;
+        Ok(Self {
             transport,
             schedule,
             metrics,
             fcu_gate: Arc::new(FcuSequenceGate::new()),
             state,
             fastpath,
-        }
+        })
     }
 
     /// Attach / replace the fastpath lane after construction (bootstrap order).
@@ -117,6 +108,19 @@ impl EngineServiceImpl {
         Arc::clone(&self.fcu_gate)
     }
 
+    /// Operator escape from terminal `AuthFailed` (P2-D/19).
+    ///
+    /// `apply` will not leave `AuthFailed` (CC-36 /3). After the operator
+    /// fixes JWT/vhost, this returns the machine to `Offline` so the upcheck
+    /// loop may probe again. Production trigger is process restart (new
+    /// machine starts `Offline`); this is the in-process equivalent.
+    pub async fn reset_auth_failed(&self) -> bool {
+        match &self.state {
+            Some(state) => state.operator_reset_auth_failed().await,
+            None => false,
+        }
+    }
+
     /// Fail-closed gate: Offline / AuthFailed must not hit the EL (CC-36a review).
     async fn ensure_el_admitted(&self) -> Result<(), Status> {
         let Some(state) = &self.state else {
@@ -134,6 +138,8 @@ impl EngineServiceImpl {
     /// Feed ordered-lane auth errors into the state machine so a wrong JWT on
     /// `newPayload`/`fcU` becomes terminal `AuthFailed` rather than an endless
     /// soft deferral. Transient Offline is still owned by the upcheck loop.
+    /// Recovery from `AuthFailed` is operator-initiated ([`Self::reset_auth_failed`]
+    /// or process restart) — never automatic backoff.
     async fn note_ordered_lane_error(&self, err: &EngineError) {
         let Some(state) = &self.state else {
             return;
@@ -325,3 +331,44 @@ fn engine_err_to_status(err: crate::errors::EngineError) -> Status {
 
 /// Shared handle type for the service.
 pub type SharedEngineService = Arc<EngineServiceImpl>;
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use crate::config::{ElForksConfig, EngineTransportConfig};
+    use crate::transport::EngineTransport;
+
+    fn transport() -> SharedTransport {
+        let cfg = EngineTransportConfig::default();
+        Arc::new(
+            EngineTransport::from_config_secret_bytes(&cfg, [1u8; 32], None).expect("transport"),
+        )
+    }
+
+    #[test]
+    fn missing_el_forks_does_not_invent_osaka_at_genesis() {
+        let cfg = EngineTransportConfig::default();
+        assert!(cfg.el_fork_schedule().is_none());
+        let err = EngineServiceImpl::new(transport(), &cfg, None).unwrap_err();
+        assert!(
+            err.contains("el_forks") && err.contains("osaka_time=0"),
+            "constructor must refuse the fail-open default: {err}"
+        );
+    }
+
+    #[test]
+    fn explicit_el_forks_constructs() {
+        let cfg = EngineTransportConfig {
+            el_forks: Some(ElForksConfig {
+                osaka_time: 1_761_677_592,
+                bpo1_time: None,
+                bpo2_time: None,
+                amsterdam_time: None,
+            }),
+            ..EngineTransportConfig::default()
+        };
+        let _ = EngineServiceImpl::new(transport(), &cfg, None).expect("present table");
+    }
+}
