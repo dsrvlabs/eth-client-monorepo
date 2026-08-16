@@ -27,8 +27,12 @@
 
 #![allow(missing_docs)]
 
+use cc_chain_core as _;
+
+#[path = "../../../crates/chain-core/src/apply_attestations.rs"]
 pub mod apply_attestations;
 pub mod checkpoint_sync;
+#[path = "../../../crates/chain-core/src/core.rs"]
 pub mod core;
 pub mod da;
 pub mod engine;
@@ -36,6 +40,7 @@ pub mod epoch_context;
 pub mod events;
 pub mod fcu_driver;
 pub mod head;
+#[path = "../../../crates/chain-core/src/import.rs"]
 pub mod import;
 pub mod invalidation;
 pub mod liveness;

@@ -562,7 +562,7 @@ fn handlers_use_query_command() {
         src.contains("QueryRequest::ValidatorPubkeys"),
         "GetValidatorPubkeys must use CoreCommand::Query"
     );
-    let core_src = include_str!("../src/core.rs");
+    let core_src = include_str!("../../../crates/chain-core/src/core.rs");
     assert!(
         core_src.contains("CoreCommand::Query"),
         "core must handle Query for CC-1F reads"

@@ -1620,7 +1620,7 @@ mod tests {
     /// independently dual-feed the two helpers).
     #[test]
     fn finish_imported_wires_dual_observation_site() {
-        let import_src = include_str!("import.rs");
+        let import_src = include_str!("../../../crates/chain-core/src/import.rs");
         assert!(
             import_src.contains("observe_process_block_with_local"),
             "finish_imported must call observe_process_block_with_local"
@@ -1743,7 +1743,7 @@ mod tests {
 
     #[test]
     fn import_observes_parent_state_before_on_block() {
-        let import_src = include_str!("import.rs");
+        let import_src = include_str!("../../../crates/chain-core/src/import.rs");
         let production = import_src.split("#[cfg(test)]").next().unwrap();
         let observe = production
             .find("observe_import_state(")

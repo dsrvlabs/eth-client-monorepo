@@ -48,6 +48,10 @@ fn chain_src_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
 }
 
+fn chain_core_src_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/chain-core/src")
+}
+
 fn minimal_config() -> ChainConfig {
     ChainConfig {
         preset_base: PresetName::Minimal,
@@ -86,17 +90,19 @@ fn minimal_config() -> ChainConfig {
 fn reqwest_only_in_checkpoint_sync() {
     let src = chain_src_root();
     let mut offenders = Vec::new();
-    for entry in walkdir_rs(&src) {
-        let path = entry;
-        let rel = path.strip_prefix(&src).unwrap_or(&path);
-        if rel == std::path::Path::new("checkpoint_sync.rs") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!("read {}: {e}", path.display());
-        });
-        if text.contains("reqwest") {
-            offenders.push(rel.display().to_string());
+    for root in [&src, &chain_core_src_root()] {
+        for entry in walkdir_rs(root) {
+            let path = entry;
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            if rel == std::path::Path::new("checkpoint_sync.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("read {}: {e}", path.display());
+            });
+            if text.contains("reqwest") {
+                offenders.push(rel.display().to_string());
+            }
         }
     }
     assert!(

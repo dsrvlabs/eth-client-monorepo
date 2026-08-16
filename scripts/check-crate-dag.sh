@@ -59,6 +59,7 @@ http_or_jwt_allowed() {
     return 1
   fi
   # HTTP client crates: grandfather chain + bootstrap. Never JWT.
+  # S2-A-01: cc-chain-core is not on either list.
   case "$pkg" in
     cc-chain|cc-bootstrap) return 0 ;;
     *) return 1 ;;
@@ -126,7 +127,7 @@ fi
 
 selftest_failed=0
 
-for required in third-crate-reqwest chain-jwt chain-depends-p2p p2p-depends-chain; do
+for required in third-crate-reqwest chain-jwt chain-core-jwt chain-depends-p2p p2p-depends-chain; do
   if [[ ! -f "${FAIL_DIR}/${required}/Cargo.toml" || ! -f "${FAIL_DIR}/${required}/rel" ]]; then
     echo "error: self-test: missing negative fixture ${FAIL_DIR#"$ROOT"/}/${required}" >&2
     selftest_failed=1
@@ -147,6 +148,11 @@ if ! http_or_jwt_allowed cc-engine-api reqwest \
 fi
 if http_or_jwt_allowed cc-chain jsonwebtoken; then
   echo "error: self-test: cc-chain must not be on the JWT grandfather list (E1.4)" >&2
+  selftest_failed=1
+fi
+if http_or_jwt_allowed cc-chain-core jsonwebtoken \
+  || http_or_jwt_allowed cc-chain-core reqwest; then
+  echo "error: self-test: cc-chain-core must not be JWT- or HTTP-grandfathered (S2-A-01)" >&2
   selftest_failed=1
 fi
 if http_or_jwt_allowed cc-scheduler reqwest; then
@@ -352,7 +358,8 @@ allowed_deps() {
     # Self-devnet generator (CC-2K member; content is CC-2Ja).
     cc-devnet-gen)        echo "cc-types cc-crypto cc-state-transition cc-config" ;;
     # S1-A-06: append cc-engine-api (direct E3 call; never JWT).
-    cc-chain)             echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-state-transition cc-fork-choice cc-scheduler cc-seam cc-engine-api" ;;
+    # S2-A-01: append cc-chain-core (never re-sort).
+    cc-chain)             echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-state-transition cc-fork-choice cc-scheduler cc-seam cc-engine-api cc-chain-core" ;;
     # Phase 2: services/p2p may take cc-libp2p (CC-2K / Architecture §1.2).
     cc-p2p)               echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-libp2p cc-seam" ;;
     cc-attestation)       echo "cc-bootstrap cc-config cc-proto" ;;
@@ -374,6 +381,8 @@ allowed_deps() {
     cc-engine-api)        echo "cc-types cc-crypto" ;;
     # S1-A-09: Ipc wraps tonic; cc-proto is the live wire schema ([ARCH] §2.5).
     cc-seam)              echo "cc-proto" ;;
+    # S2-A-01: moved core/import/apply_attestations (test-compiled via #[path]).
+    cc-chain-core)        echo "cc-types cc-crypto cc-state-transition cc-fork-choice cc-scheduler cc-proto cc-bootstrap" ;;
     *)
       echo "error: unknown workspace member: $1" >&2
       return 1

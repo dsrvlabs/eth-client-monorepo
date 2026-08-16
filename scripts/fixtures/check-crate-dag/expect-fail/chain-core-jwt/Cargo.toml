@@ -1,0 +1,7 @@
+# cc-chain-core is not JWT-grandfathered (S2-A-01 / [ARCH] §6.2).
+[package]
+name = "fixture-chain-core-jwt"
+version = "0.0.0"
+
+[dependencies]
+jsonwebtoken = { workspace = true }

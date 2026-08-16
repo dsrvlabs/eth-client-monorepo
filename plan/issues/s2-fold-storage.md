@@ -113,6 +113,16 @@ stage, so the previous topology stays runnable for A/B (`[ARCH]` §9.1).
 dedicated OS thread, not a tokio task ✓ `core.rs:1`, `:469`), `ADR-P1-12` (state residency + the
 64-block body ring), `ADR-P3-05` (engine-unavailable requeue in a **separate** map from `pending_da`).
 
+**Acceptance (`S2-A-01` only)**
+- [x] `crates/chain-core` (`cc-chain-core`) is a workspace member
+- [x] `core.rs`, `import.rs`, `apply_attestations.rs` live in `crates/chain-core`, verbatim with tests
+- [x] Bounds / literals moved (git rename), not re-derived; no new numeric literal in a moved file
+- [x] `cargo test -p cc-chain-core` covers the moved unit tests
+- [x] `services/chain` compiles the three files via `#[path]` and stays a workspace member
+- [x] `allowed_deps` names `cc-chain-core`; `cc-chain` appends `cc-chain-core`
+- [x] `cc-chain-core` is **not** JWT-grandfathered (E1.4 shape; fixture `chain-core-jwt`)
+- [x] ADR-P1-09, ADR-P1-12, ADR-P3-05 carried intact (files moved, not rewritten)
+
 ---
 
 ### `S2-A-04` · `ArchiveWrite` on `cc-seam` + the typed `ColumnBatch`

@@ -20,12 +20,12 @@ cd "$ROOT"
 # and main.rs (orchestrates bootstrap; does not construct a client itself, but
 # may mention provider URLs — still must not construct reqwest::Client).
 IMPORT_PATH_ROOTS=(
-  services/chain/src/import.rs
-  services/chain/src/core.rs
+  crates/chain-core/src/import.rs
+  crates/chain-core/src/core.rs
   services/chain/src/service.rs
   services/chain/src/da.rs
   services/chain/src/p2p_stream.rs
-  services/chain/src/apply_attestations.rs
+  crates/chain-core/src/apply_attestations.rs
   services/chain/src/head.rs
   services/chain/src/residency.rs
   services/chain/src/epoch_context.rs

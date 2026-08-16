@@ -819,7 +819,7 @@ async fn stream_verdict_before_two_second_stall() {
 
 #[test]
 fn no_spawn_in_import_rs() {
-    let src = include_str!("../src/import.rs");
+    let src = include_str!("../../../crates/chain-core/src/import.rs");
     assert!(
         !src.contains("spawn_blocking") && !src.contains("tokio::spawn"),
         "import.rs must not move work off the core thread"
