@@ -27,25 +27,20 @@
 #![allow(missing_docs)]
 
 pub use cc_engine_api::capabilities;
+pub use cc_engine_api::config;
+pub use cc_engine_api::errors;
+pub use cc_engine_api::fastpath;
+pub use cc_engine_api::methods;
+pub use cc_engine_api::metrics;
+pub use cc_engine_api::state;
+pub use cc_engine_api::transport;
+pub use cc_engine_api::version;
 
-#[path = "../../../crates/engine-api/src/config.rs"]
-pub mod config;
-#[path = "../../../crates/engine-api/src/errors.rs"]
-pub mod errors;
-pub mod fastpath;
 pub mod inject;
 // Private on cc-engine-api (ADR-R-03); same file so the type stays one impl.
 #[path = "../../../crates/engine-api/src/jwt.rs"]
 pub mod jwt;
-pub mod methods;
-pub mod metrics;
 pub mod service;
-#[path = "../../../crates/engine-api/src/state.rs"]
-pub mod state;
-#[path = "../../../crates/engine-api/src/transport.rs"]
-pub mod transport;
-#[path = "../../../crates/engine-api/src/version.rs"]
-pub mod version;
 
 pub use cc_proto::EngineRpcReason;
 pub use fastpath::cells::{

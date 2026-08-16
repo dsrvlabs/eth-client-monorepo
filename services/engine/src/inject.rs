@@ -683,7 +683,6 @@ mod tests {
     use super::*;
     use crate::config::EngineTransportConfig;
     use crate::fastpath::{hoodi_blob_bound, template_from_commitments};
-    use crate::jwt::JwtSecret;
     use crate::metrics::EngineMetrics;
     use crate::transport::EngineTransport;
     use cc_proto::p2p::p2p_service_server::{P2pService, P2pServiceServer};
@@ -707,9 +706,10 @@ mod tests {
 
     fn transport() -> SharedForTest {
         // Unused EL — column-branch tests only enqueue.
-        let secret = JwtSecret::from_bytes([7u8; 32]);
         let cfg = EngineTransportConfig::default();
-        Arc::new(EngineTransport::new(&cfg, secret, None).expect("transport"))
+        Arc::new(
+            EngineTransport::from_config_secret_bytes(&cfg, [7u8; 32], None).expect("transport"),
+        )
     }
 
     type SharedForTest = Arc<EngineTransport>;

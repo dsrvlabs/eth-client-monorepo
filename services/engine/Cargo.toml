@@ -28,8 +28,8 @@ cc-proto = { workspace = true }
 cc-types = { workspace = true }
 # CC-37b: CellKzg::compute_cells (DAG row appends cc-crypto — never re-sort).
 cc-crypto = { workspace = true }
-# S1-A-02/A-03/A-04: transport, config, jwt, version, errors, capabilities,
-# and health machine live in cc-engine-api (append-only).
+# S1-A-02/A-03/A-04/A-05: transport, config, jwt, version, errors, capabilities,
+# health machine, methods, and fastpath live in cc-engine-api (append-only).
 cc-engine-api = { workspace = true }
 crc32fast = { workspace = true }
 ethereum_ssz = { workspace = true }

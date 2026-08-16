@@ -88,12 +88,13 @@ fn test_timeouts() -> TransportTimeouts {
     })
 }
 
-fn transport_with_metrics(jwt: JwtSecret) -> (EngineTransport, EngineMetrics) {
+fn transport_with_metrics() -> (EngineTransport, EngineMetrics) {
+    let jwt = load_jwt();
     let mut registry = Registry::default();
     let metrics = EngineMetrics::register(&mut registry);
-    let t = EngineTransport::from_parts(
+    let t = EngineTransport::from_secret_bytes(
         DEFAULT_EL_ENDPOINT,
-        jwt,
+        jwt.as_bytes(),
         test_timeouts(),
         Duration::from_secs_f64(soft_deadline_ms(3_333, 12_000) / 1_000.0),
         Some(metrics.clone()),
@@ -158,8 +159,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufferWriter {
 #[tokio::test]
 #[ignore = "requires real geth auth endpoint on 127.0.0.1:8551 (compose el)"]
 async fn jwt_iat_stale() {
-    let jwt = load_jwt();
-    let (t, metrics) = transport_with_metrics(jwt);
+    let (t, metrics) = transport_with_metrics();
     let before_401 = error_count(&metrics, ErrorCode::Http401);
     let before_403 = error_count(&metrics, ErrorCode::Http403);
 
@@ -201,8 +201,7 @@ async fn jwt_iat_stale() {
 #[tokio::test]
 #[ignore = "requires real geth auth endpoint on 127.0.0.1:8551 (compose el)"]
 async fn jwt_iat_future() {
-    let jwt = load_jwt();
-    let (t, metrics) = transport_with_metrics(jwt);
+    let (t, metrics) = transport_with_metrics();
     let before_401 = error_count(&metrics, ErrorCode::Http401);
     let before_403 = error_count(&metrics, ErrorCode::Http403);
 
@@ -247,8 +246,7 @@ async fn jwt_iat_future() {
 #[tokio::test]
 #[ignore = "requires real geth auth endpoint on 127.0.0.1:8551 (compose el)"]
 async fn vhost_rejected_is_403_not_401() {
-    let jwt = load_jwt();
-    let (t, metrics) = transport_with_metrics(jwt);
+    let (t, metrics) = transport_with_metrics();
     let before_401 = error_count(&metrics, ErrorCode::Http401);
     let before_403 = error_count(&metrics, ErrorCode::Http403);
 
@@ -339,8 +337,7 @@ fn auth_errors_are_distinct_variants() {
 #[tokio::test]
 #[ignore = "requires real geth auth endpoint on 127.0.0.1:8551 (compose el)"]
 async fn valid_token_is_not_auth_rejected() {
-    let jwt = load_jwt();
-    let (t, _metrics) = transport_with_metrics(jwt);
+    let (t, _metrics) = transport_with_metrics();
     let result = upcheck_call(&t, RequestOverrides::default()).await;
     match result {
         Ok(_) => {}

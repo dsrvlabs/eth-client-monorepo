@@ -184,7 +184,6 @@ fn encode_real_hoodi_payload() {
 #[tokio::test]
 async fn latency_spans_wiremock_new_payload() {
     use cc_engine::config::{TimeoutKnobs, TransportTimeouts, soft_deadline_ms};
-    use cc_engine::jwt::JwtSecret;
     use cc_engine::methods::new_payload::new_payload_v4;
     use cc_engine::metrics::EngineMethod;
     use cc_engine::metrics::EngineMetrics;
@@ -219,9 +218,9 @@ async fn latency_spans_wiremock_new_payload() {
 
     let mut registry = Registry::default();
     let metrics = EngineMetrics::register(&mut registry);
-    let transport = EngineTransport::from_parts(
+    let transport = EngineTransport::from_secret_bytes(
         server.uri(),
-        JwtSecret::from_bytes([0x42; 32]),
+        [0x42; 32],
         TransportTimeouts::from_knobs(&TimeoutKnobs {
             new_payload_ms: 2_000,
             forkchoice_updated_ms: 2_000,

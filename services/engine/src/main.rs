@@ -99,8 +99,14 @@ async fn main() -> anyhow::Result<()> {
     let engine_metrics = EngineMetrics::register(&mut bs.registry);
 
     // CC-30a: transport constructed before gRPC serve.
-    let transport = EngineTransport::new(&cfg.transport, jwt, Some(engine_metrics.clone()))
-        .map_err(|e| anyhow::anyhow!(e))?;
+    // JwtSecret is crate-private on cc-engine-api (ADR-R-03); pass the
+    // already-loaded bytes so the file is read and the crc32 line fires once.
+    let transport = EngineTransport::from_config_secret_bytes(
+        &cfg.transport,
+        jwt.as_bytes(),
+        Some(engine_metrics.clone()),
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
     let transport = Arc::new(transport);
 
     // CC-36a: four-state machine + detached/floored upcheck driver.

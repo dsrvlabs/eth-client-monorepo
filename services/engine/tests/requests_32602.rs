@@ -46,9 +46,9 @@ fn transport_with_metrics() -> (EngineTransport, EngineMetrics) {
     let mut registry = Registry::default();
     let metrics = EngineMetrics::register(&mut registry);
     let jwt = JwtSecret::load(&jwt_path()).expect("JWT secret");
-    let t = EngineTransport::from_parts(
+    let t = EngineTransport::from_secret_bytes(
         DEFAULT_EL_ENDPOINT,
-        jwt,
+        jwt.as_bytes(),
         TransportTimeouts::from_knobs(&TimeoutKnobs {
             new_payload_ms: 5_000,
             forkchoice_updated_ms: 5_000,

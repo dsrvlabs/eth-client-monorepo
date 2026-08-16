@@ -158,6 +158,15 @@ moving, not being re-derived. A new numeric literal in a moved file is a review-
 - [x] `cc-engine-api` declares `jsonwebtoken`; grep asserts no public `JwtSecret` / `pub mod jwt`
 - [x] A-02 test-only stubs `test_jwt.rs` / `test_errors.rs` / `test_version.rs` removed
 
+**Acceptance (`S1-A-05` only)**
+- [x] `methods/` and `fastpath/` live in `crates/engine-api`, verbatim with tests
+- [x] Bounds / literals moved (git rename), not re-derived; no new numeric literal in a moved file
+- [x] `cargo test -p cc-engine-api` covers the moved method and fastpath tests
+- [x] `cc-engine` re-exports `methods` and `fastpath` via `pub use` from `cc-engine-api`
+- [x] `cc-engine-api` exports the real modules (not test-only `#[path]` stubs)
+- [x] A-02/A-04 test-only stubs `test_methods.rs` / `test_metrics.rs` / `test_capabilities.rs` removed
+- [x] `cc-types` / `cc-crypto` appended to `cc-engine-api` `allowed_deps`
+
 **Also deleted in `S1-A-06`** — `services/chain/src/engine_client.rs` (the whole `block_on` bridge,
 E3, P0-15's and P1-B/11's surface) and the `trusted_local` bool. E3 becomes a direct
 `cc-engine-api` call from the core thread with an explicit `Duration` argument.

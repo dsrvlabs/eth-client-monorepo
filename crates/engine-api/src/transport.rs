@@ -101,7 +101,7 @@ pub struct EngineTransport {
 
 impl EngineTransport {
     /// Build a transport from config + loaded secret.
-    pub fn new(
+    pub(crate) fn new(
         cfg: &EngineTransportConfig,
         jwt: JwtSecret,
         metrics: Option<EngineMetrics>,
@@ -128,7 +128,7 @@ impl EngineTransport {
 
     /// Test/constructor helper with explicit pieces.
     #[must_use]
-    pub fn from_parts(
+    pub(crate) fn from_parts(
         endpoint: impl Into<String>,
         jwt: JwtSecret,
         timeouts: TransportTimeouts,

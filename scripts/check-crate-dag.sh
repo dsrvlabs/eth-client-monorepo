@@ -369,7 +369,8 @@ allowed_deps() {
     # S0-A-13: leaf crate, no workspace deps ([ARCH] §1.5 / §3.1).
     cc-scheduler)         echo "" ;;
     # S1-A-01: skeleton, no workspace deps. JWT/HTTP isolation re-points here.
-    cc-engine-api)        echo "" ;;
+    # S1-A-05: append cc-types cc-crypto (methods + fastpath).
+    cc-engine-api)        echo "cc-types cc-crypto" ;;
     # S1-A-07: typed handles; leaf, no workspace edges ([ARCH] §2.1).
     cc-seam)              echo "" ;;
     *)

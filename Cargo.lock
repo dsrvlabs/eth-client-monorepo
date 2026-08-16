@@ -1113,7 +1113,11 @@ dependencies = [
 name = "cc-engine-api"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "cc-crypto",
+ "cc-types",
  "crc32fast",
+ "ethereum_ssz",
  "futures",
  "hex",
  "jsonwebtoken",
@@ -1122,10 +1126,13 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "ssz_types",
  "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
+ "tree_hash",
  "wiremock",
 ]
 

@@ -158,6 +158,16 @@ impl JwtSecret {
         Self { bytes }
     }
 
+    /// Copy of the 32-byte secret. Never log this.
+    ///
+    /// Callers reconstruct the transport after the abort-before-bind load
+    /// without a second file read (`JwtSecret` stays crate-private on
+    /// `cc-engine-api`).
+    #[must_use]
+    pub fn as_bytes(&self) -> [u8; 32] {
+        self.bytes
+    }
+
     /// Load from a hex file: trim whitespace, strip optional `0x`, decode.
     ///
     /// **Must** yield exactly 32 bytes or return [`JwtError::InvalidLength`].
