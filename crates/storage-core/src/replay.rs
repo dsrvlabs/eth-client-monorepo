@@ -347,7 +347,8 @@ impl ReplayDriver {
         }
 
         // Term (c): reload from store, deserialize + tree-hash-cache rebuild.
-        let load_secs = measure_load_from_store(&self.engine, prepared.plan.slot)?;
+        // Off the runtime worker — same defect shape as S0-A-28's `block_on`.
+        let load_secs = measure_load_from_store(&self.engine, prepared.plan.slot).await?;
         observe_phase(&self.metrics, SnapshotPhase::Load, load_secs);
 
         let depth = {
@@ -637,7 +638,20 @@ fn observe_phase(metrics: &StorageMetrics, phase: SnapshotPhase, secs: f64) {
 }
 
 /// Term (c): load newest snapshot from store, deserialize, rebuild tree-hash cache.
-pub(crate) fn measure_load_from_store(engine: &Engine, slot: Slot) -> Result<f64, ReplayError> {
+///
+/// 200 MB SSZ decode + tree-hash is multi-second CPU. Same defect *shape* as
+/// S0-A-28's `block_on`: that work must not run on a runtime worker.
+pub(crate) async fn measure_load_from_store(
+    engine: &Arc<Engine>,
+    slot: Slot,
+) -> Result<f64, ReplayError> {
+    let engine = Arc::clone(engine);
+    tokio::task::spawn_blocking(move || measure_load_from_store_sync(&engine, slot))
+        .await
+        .map_err(|e| ReplayError::Join(e.to_string()))?
+}
+
+fn measure_load_from_store_sync(engine: &Engine, slot: Slot) -> Result<f64, ReplayError> {
     let rt = engine.read().map_err(ReplayError::Store)?;
     let ssz = cc_store::get_snapshot(&rt, slot)
         .map_err(ReplayError::Store)?
@@ -645,10 +659,25 @@ pub(crate) fn measure_load_from_store(engine: &Engine, slot: Slot) -> Result<f64
             slot: slot.as_u64(),
         })?;
     drop(rt);
+    #[cfg(test)]
+    apply_measure_test_stall();
     let started = Instant::now();
     let mut state = decode_mainnet_state(&ssz)?;
     let _ = measured_canonical_root(&mut state);
     Ok(started.elapsed().as_secs_f64())
+}
+
+/// Test-only stall so a current-thread timer can prove the reactor is free
+/// while term (c) occupies a blocking-pool worker (S2-B-11 / S0-A-28).
+#[cfg(test)]
+static MEASURE_STALL_MS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+fn apply_measure_test_stall() {
+    let ms = MEASURE_STALL_MS.load(Ordering::SeqCst);
+    if ms > 0 {
+        std::thread::sleep(Duration::from_millis(ms));
+    }
 }
 
 /// Measure term (c) against an in-memory SSZ blob (Hoodi fixture / soak).
@@ -1030,6 +1059,61 @@ mod tests {
         // All four phases observed (load/serialize/replay/write ≥ 0).
         assert!(t.load_secs >= 0.0);
         assert!(t.serialize_secs >= 0.0);
+    }
+
+    /// Holds [`MEASURE_STALL_MS`] for the duration of the responsiveness test.
+    struct MeasureStallGuard;
+
+    impl MeasureStallGuard {
+        fn set(ms: u64) -> Self {
+            MEASURE_STALL_MS.store(ms, Ordering::SeqCst);
+            Self
+        }
+    }
+
+    impl Drop for MeasureStallGuard {
+        fn drop(&mut self) {
+            MEASURE_STALL_MS.store(0, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn runtime_stays_responsive_during_measure_load_from_store() {
+        // S2-B-11: same defect shape as S0-A-28's `block_on`. A current-thread
+        // timer must fire while term (c) is in flight; without `spawn_blocking`
+        // the stall occupies the reactor and this sleep overruns.
+        let _stall = MeasureStallGuard::set(250);
+        let engine = open_engine("s2-b-11-resp");
+        let ssz = BeaconState::<Mainnet>::default().as_ssz_bytes();
+        let slot = Slot::new(32);
+        put_snapshot(&engine, slot, &ssz, 4).unwrap();
+
+        let load = measure_load_from_store(&engine, slot);
+        tokio::pin!(load);
+
+        let probe = tokio::time::timeout(
+            Duration::from_millis(80),
+            tokio::time::sleep(Duration::from_millis(10)),
+        );
+
+        tokio::select! {
+            r = probe => {
+                assert!(
+                    r.is_ok(),
+                    "runtime timer did not fire during measure_load_from_store \
+                     (S0-A-28 shape: CPU on a runtime worker)"
+                );
+            }
+            r = &mut load => {
+                panic!(
+                    "measure_load_from_store finished before the runtime probe \
+                     (missing spawn_blocking or stall); {r:?}"
+                );
+            }
+        }
+
+        let secs = load.await.unwrap();
+        assert!(secs >= 0.0);
     }
 
     #[test]

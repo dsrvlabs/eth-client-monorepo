@@ -462,9 +462,12 @@ recoverable record of the pending drop survives restart.
 large unary serves observes the ceiling.
 
 ### `S2-B-11` · P1-B/3 — multi-second CPU on the async runtime thread · 1.5–2 pd / **3 pts** (≈)
-**Touch** `services/storage/src/replay.rs:354`. A 200 MB SSZ decode + tree-hash on a runtime worker.
+**Touch** `crates/storage-core/src/replay.rs` (was `services/storage/src/replay.rs:354`). A 200 MB SSZ decode + tree-hash on a runtime worker.
 **Acceptance** — moved to `spawn_blocking` or the blocking pool; a test asserts the runtime stays
 responsive during a `measure_load_from_store`. Same defect *shape* as `S0-A-28`'s `block_on` — cite it.
+
+- [x] `measure_load_from_store` runs under `spawn_blocking` / the blocking pool (same defect shape as `S0-A-28`'s `block_on`).
+- [x] A test asserts the runtime stays responsive during `measure_load_from_store`.
 
 ### `S2-B-12` · P2-B/1 + P2-B/2 · 1.5–2 pd / **3 pts** (≈)
 P2-B/1: ordering-critical `hot_column_root_end` duplicated verbatim across modules
