@@ -6,14 +6,18 @@
 //! CC-44b: single writer + write-behind task spawns (append-only here).
 //! CC-4F / CC-4I: ten-RPC `StorageService` serve pool (materialise-and-drop).
 
+#[path = "../../../crates/storage-core/src/backfill.rs"]
 mod backfill;
+#[path = "../../../crates/storage-core/src/durable_set.rs"]
 mod durable_set;
 mod history;
 mod metrics;
 mod migrate;
+#[path = "../../../crates/storage-core/src/prune/mod.rs"]
 mod prune;
 mod replay;
 mod restore_client;
+#[path = "../../../crates/storage-core/src/resume.rs"]
 mod resume;
 #[path = "../../../crates/storage-core/src/serve.rs"]
 mod serve;

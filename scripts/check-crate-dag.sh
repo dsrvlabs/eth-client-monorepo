@@ -330,13 +330,16 @@ fi
 # --- Phase 4: crates/store must not name consensus containers (§1.1) ----------
 # Opaque bytes under typed keys only; cc-types is for Slot/Root/Epoch + meta SSZ.
 # S2-B-01: extend the same grep to crates/storage-core/src ([ARCH] §1.5).
+# S2-B-02: skip comment/doc lines — moved resume/prune document SSZ peeks by
+# name; the ban is on naming the consensus *types*, not on those comments.
 for STORE_SRC in "$ROOT/crates/store/src" "$ROOT/crates/storage-core/src"; do
   if [[ -d "$STORE_SRC" ]]; then
     while IFS= read -r hit; do
       [[ -z "$hit" ]] && continue
       echo "error: ${STORE_SRC#"$ROOT"/} must not reference consensus types SignedBeaconBlock|BeaconState|DataColumnSidecar ($hit)" >&2
       EARLY_FAILED=1
-    done < <(grep -rn "SignedBeaconBlock\|BeaconState\|DataColumnSidecar" "$STORE_SRC" 2>/dev/null || true)
+    done < <(grep -rn "SignedBeaconBlock\|BeaconState\|DataColumnSidecar" "$STORE_SRC" 2>/dev/null \
+      | grep -vE ':[0-9]+:[[:space:]]*//' || true)
   fi
 done
 
@@ -399,7 +402,8 @@ allowed_deps() {
     # S2-A-04: append cc-seam (`ArchiveWrite` handle; never a storage type).
     cc-chain-core)        echo "cc-types cc-crypto cc-state-transition cc-fork-choice cc-scheduler cc-proto cc-bootstrap cc-engine-api cc-seam" ;;
     # S2-B-01: writer + serve tests need store/proto/bootstrap/types.
-    # backfill.rs is not a member of this crate. Not JWT/HTTP-grandfathered.
+    # S2-B-02: backfill/prune/durable_set/resume join the same crate.
+    # Not JWT/HTTP-grandfathered.
     cc-storage-core)      echo "cc-store cc-proto cc-bootstrap cc-types" ;;
     *)
       echo "error: unknown workspace member: $1" >&2

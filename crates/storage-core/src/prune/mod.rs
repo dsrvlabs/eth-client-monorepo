@@ -1438,7 +1438,16 @@ mod tests {
     /// Directory inventory: chunk + shards present; no unfinalized.rs.
     #[test]
     fn prune_dir_has_no_unfinalized() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/prune");
+        // Dual-compile: `cargo test -p cc-storage-core` and via `#[path]` from
+        // `cc-storage` (CARGO_MANIFEST_DIR is services/storage).
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let dir = [
+            manifest.join("src/prune"),
+            manifest.join("../../crates/storage-core/src/prune"),
+        ]
+        .into_iter()
+        .find(|p| p.is_dir())
+        .expect("prune/ at this crate or in storage-core");
         let mut names: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())

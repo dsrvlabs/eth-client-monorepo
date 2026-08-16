@@ -6,5 +6,6 @@
 //! private to the binary; integration tests exercise workspace deps
 //! (`cc-store`, `cc-types`) under this package's harness.
 
-// S2-B-01: writer.rs + serve.rs live in cc-storage-core (binary compiles via #[path]).
+// S2-B-01/B-02: writer/serve/backfill/prune/durable_set/resume live in
+// cc-storage-core (binary compiles via #[path]).
 use cc_storage_core as _;

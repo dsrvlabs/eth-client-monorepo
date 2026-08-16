@@ -11,11 +11,11 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-# S2-B-01: sources live here; `cc-storage` compiles them via `#[path]`.
+# S2-B-01/B-02: sources live here; `cc-storage` compiles them via `#[path]`.
 # No JWT signer / HTTP client ([ARCH] §6.2 — not grandfathered).
 
 [dev-dependencies]
-# Moved writer.rs + serve.rs tests. backfill.rs is production-only via build.rs.
+# Moved writer/serve (B-01) + backfill/prune/durable_set/resume (B-02) tests.
 cc-bootstrap = { workspace = true }
 cc-proto = { workspace = true }
 cc-store = { workspace = true }

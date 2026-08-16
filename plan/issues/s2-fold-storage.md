@@ -362,6 +362,15 @@ is deleted at the end of the stage (`[ARCH]` §9.1).
 - [x] `cc-storage-core` appended to `cc-storage` `allowed_deps`
 - [x] **`cc-storage-core` is NOT on the JWT grandfather list** (function self-test + `expect-fail/storage-core-jwt/`)
 
+**Acceptance (`S2-B-02` only)**
+- [x] `backfill.rs` lives in `crates/storage-core`, verbatim with tests
+- [x] `prune/` lives in `crates/storage-core/src/prune/`, verbatim with tests
+- [x] `durable_set.rs` and `resume.rs` live in `crates/storage-core`, verbatim with tests
+- [x] Bounds / literals moved (git rename), not re-derived; no new numeric literal in a moved file
+- [x] `cargo test -p cc-storage-core` covers the moved backfill / prune / durable_set / resume tests
+- [x] `services/storage` compiles the four via `#[path]` from `cc-storage-core` and stays a workspace member
+- [x] `services/storage` `main.rs` is not a thin shim (`S2-B-03`)
+
 ---
 
 ### `S2-B-04` … `S2-B-06` · **P0-18** — the three storage scale time bombs
