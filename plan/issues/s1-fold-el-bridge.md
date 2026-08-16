@@ -539,6 +539,32 @@ them.
 
 ---
 
+### `S1-B-10` · Gate (a) 4/4 — engine and store ids (13)
+
+**Stream** B · **Est** 2–2.5 pd / **5 pts** · ⌂ `[ARCH]` §10.4 · **Deps** `S1-B-05`
+
+This bucket only. `S1-B-07`…`S1-B-09` stay with the combined section above.
+
+Re-derived from the live citation sites. No new decision.
+
+- [x] `docs/adr/ADR-P3-08.md` in house MADR; Status: accepted.
+- [x] `docs/adr/ADR-P3-09.md` in house MADR; Status: accepted; transport never retries `newPayload`.
+- [x] `docs/adr/ADR-P3-12.md` in house MADR; Status: accepted.
+- [x] `docs/adr/ADR-P3-13.md` in house MADR; Status: accepted.
+- [x] `docs/adr/ADR-P4-01.md` in house MADR; Status: accepted; redb behind an engine seam.
+- [x] `docs/adr/ADR-P4-04.md` in house MADR; Status: accepted; single writer + three-class mailbox.
+- [x] `docs/adr/ADR-P4-05.md` in house MADR; Status: accepted.
+- [x] `docs/adr/ADR-P4-06.md` in house MADR; Status: accepted.
+- [x] `docs/adr/ADR-P4-08.md` in house MADR; Status: accepted.
+- [x] `docs/adr/ADR-P4-09.md` in house MADR; Status: accepted.
+- [x] `docs/adr/ADR-P4-10.md` in house MADR; Status: accepted.
+- [x] `docs/adr/ADR-P4-13.md` in house MADR; Status: accepted; `I-node-id` boot policy.
+- [x] `docs/adr/ADR-P4-14.md` in house MADR; Status: accepted.
+- [x] Load-bearing bodies cannot be quietly contradicted: P3-09 (no `newPayload` retry), P4-01 (redb seam), P4-04 (writer mailbox), P4-13 (`I-node-id`).
+- [x] `docs/adr/reconciliation.md` those 13 rows are `accepted` → `docs/adr/ADR-*.md`.
+
+---
+
 ### `S1-B-11` · Gate (b) — `ADR-P3-16` → **ADR-R-03**
 
 **Stream** B · **Est** 1–1.5 pd / **3 pts** · ⌂ `[ARCH]` §6.2 / §10.4 / §10.5 · **Deps** `S1-A-01` ·

@@ -92,25 +92,25 @@ deletes the citation.
 | ADR-P3-05 | a | accepted | docs/adr/ADR-P3-05.md |
 | ADR-P3-06 | c | stale (c) | - |
 | ADR-P3-07 | a | accepted | docs/adr/ADR-P3-07.md |
-| ADR-P3-08 | a | unwritten (a) | - |
-| ADR-P3-09 | a | unwritten (a) | - |
+| ADR-P3-08 | a | accepted | docs/adr/ADR-P3-08.md |
+| ADR-P3-09 | a | accepted | docs/adr/ADR-P3-09.md |
 | ADR-P3-10 | a | accepted | docs/adr/ADR-P3-10.md |
 | ADR-P3-11 | a | accepted | docs/adr/ADR-P3-11.md |
-| ADR-P3-12 | a | unwritten (a) | - |
-| ADR-P3-13 | a | unwritten (a) | - |
+| ADR-P3-12 | a | accepted | docs/adr/ADR-P3-12.md |
+| ADR-P3-13 | a | accepted | docs/adr/ADR-P3-13.md |
 | ADR-P3-14 | b | unwritten (b) | - |
 | ADR-P3-15 | b | unwritten (b) | - |
 | ADR-P3-16 | b | superseded; superseded-by ADR-R-03 | docs/adr/ADR-R-03.md |
-| ADR-P4-01 | a | unwritten (a) | - |
+| ADR-P4-01 | a | accepted | docs/adr/ADR-P4-01.md |
 | ADR-P4-03 | b | unwritten (b) | - |
-| ADR-P4-04 | a | unwritten (a) | - |
-| ADR-P4-05 | a | unwritten (a) | - |
-| ADR-P4-06 | a | unwritten (a) | - |
+| ADR-P4-04 | a | accepted | docs/adr/ADR-P4-04.md |
+| ADR-P4-05 | a | accepted | docs/adr/ADR-P4-05.md |
+| ADR-P4-06 | a | accepted | docs/adr/ADR-P4-06.md |
 | ADR-P4-07 | c | stale (c) | - |
-| ADR-P4-08 | a | unwritten (a) | - |
-| ADR-P4-09 | a | unwritten (a) | - |
-| ADR-P4-10 | a | unwritten (a) | - |
+| ADR-P4-08 | a | accepted | docs/adr/ADR-P4-08.md |
+| ADR-P4-09 | a | accepted | docs/adr/ADR-P4-09.md |
+| ADR-P4-10 | a | accepted | docs/adr/ADR-P4-10.md |
 | ADR-P4-11 | a | accepted | docs/adr/ADR-P4-11.md |
 | ADR-P4-12 | a | accepted | docs/adr/ADR-P4-12.md |
-| ADR-P4-13 | a | unwritten (a) | - |
-| ADR-P4-14 | a | unwritten (a) | - |
+| ADR-P4-13 | a | accepted | docs/adr/ADR-P4-13.md |
+| ADR-P4-14 | a | accepted | docs/adr/ADR-P4-14.md |
