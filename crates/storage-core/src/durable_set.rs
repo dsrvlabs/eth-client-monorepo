@@ -28,7 +28,8 @@ use cc_store::blocks::{TABLE_BLOCK_SLOT_BY_ROOT, TABLE_BLOCKS_HOT, get_block_by_
 use cc_store::columns::{TABLE_DA_STATUS, get_da_status};
 use cc_store::engine::{Engine, StoreError};
 use cc_store::invariants::{
-    DEFAULT_SNAPSHOT_RING, InvariantCheckMode, InvariantContext, check_invariants,
+    DEFAULT_MAX_OPEN_SCAN_ROWS, DEFAULT_SNAPSHOT_RING, InvariantCheckMode, InvariantContext,
+    check_invariants,
 };
 use cc_store::keys::{
     BlockRegion, decode_block_slot_by_root_value, encode_hot_block_key, encode_root_key,
@@ -192,6 +193,8 @@ pub(crate) struct DurableSetContext {
     pub enr_seq_path: Option<PathBuf>,
     /// Snapshot ring depth (`storage.snapshot_ring`).
     pub snapshot_ring: u64,
+    /// Per-check row cap forwarded to [`InvariantContext`].
+    pub max_open_scan_rows: u64,
     /// Roots that **must** carry a `da_status` row (restore set). Empty → item 9
     /// only fails when the whole `da_status` table is empty while hot blocks exist.
     pub da_status_roots: Vec<Root>,
@@ -212,6 +215,7 @@ impl DurableSetContext {
             node_key_path: None,
             enr_seq_path: None,
             snapshot_ring: DEFAULT_SNAPSHOT_RING,
+            max_open_scan_rows: DEFAULT_MAX_OPEN_SCAN_ROWS,
             da_status_roots: Vec::new(),
         }
     }
@@ -222,6 +226,7 @@ impl DurableSetContext {
         InvariantContext {
             expected_node_id: self.expected_node_id,
             snapshot_ring: self.snapshot_ring,
+            max_open_scan_rows: self.max_open_scan_rows,
             invocation_counter: None,
         }
     }
@@ -1025,6 +1030,7 @@ mod tests {
             check_invariants: check,
             expected_node_id: node_id,
             snapshot_ring: DEFAULT_SNAPSHOT_RING,
+            max_open_scan_rows: DEFAULT_MAX_OPEN_SCAN_ROWS,
             invocation_counter: None,
         }
     }
@@ -1083,6 +1089,7 @@ mod tests {
                 node_key_path: Some(self.node_key_path.clone()),
                 enr_seq_path: Some(self.enr_seq_path.clone()),
                 snapshot_ring: DEFAULT_SNAPSHOT_RING,
+                max_open_scan_rows: DEFAULT_MAX_OPEN_SCAN_ROWS,
                 da_status_roots: vec![self.available_root, self.deferred_root],
             }
         }
@@ -1561,6 +1568,7 @@ mod tests {
         let inv_ctx = InvariantContext {
             expected_node_id: Some(loaded),
             snapshot_ring: DEFAULT_SNAPSHOT_RING,
+            max_open_scan_rows: DEFAULT_MAX_OPEN_SCAN_ROWS,
             invocation_counter: None,
         };
         let err = check_invariants(f.engine(), InvariantCheckMode::Open, &inv_ctx, None)

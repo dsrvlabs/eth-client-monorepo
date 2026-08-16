@@ -547,6 +547,20 @@ impl ReadTxn {
     /// Materialisation is capped at [`MAX_RANGE_ENTRIES`] / [`MAX_RANGE_BYTES`]
     /// (SEC-40b-4). Exceeding either returns [`StoreError::Limit`].
     pub fn range(&self, table: &str, lo: &[u8], hi: &[u8]) -> Result<RangeIter, StoreError> {
+        self.range_max(table, lo, hi, MAX_RANGE_ENTRIES)
+    }
+
+    /// Like [`Self::range`], but fail-closed if more than `max_rows` entries match.
+    ///
+    /// `max_rows` is clamped to [`MAX_RANGE_ENTRIES`]. Stops before copying the
+    /// rest of the table so a caller-imposed row budget can bound wall time.
+    pub fn range_max(
+        &self,
+        table: &str,
+        lo: &[u8],
+        hi: &[u8],
+        max_rows: usize,
+    ) -> Result<RangeIter, StoreError> {
         let t = match self.txn.open_table(table_def(table)?) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => {
@@ -556,14 +570,20 @@ impl ReadTxn {
             }
             Err(e) => return Err(StoreError::engine(e)),
         };
+        let row_cap = max_rows.min(MAX_RANGE_ENTRIES);
         // Materialise under the table borrow so we release page pins before return (§7.2).
         let mut out = Vec::new();
         let mut total_bytes: u64 = 0;
         let iter = t.range::<&[u8]>(lo..hi).map_err(StoreError::engine)?;
         for item in iter {
-            if out.len() >= MAX_RANGE_ENTRIES {
+            if out.len() >= row_cap {
+                if row_cap >= MAX_RANGE_ENTRIES {
+                    return Err(StoreError::limit(format!(
+                        "range materialisation exceeded MAX_RANGE_ENTRIES ({MAX_RANGE_ENTRIES})"
+                    )));
+                }
                 return Err(StoreError::limit(format!(
-                    "range materialisation exceeded MAX_RANGE_ENTRIES ({MAX_RANGE_ENTRIES})"
+                    "range materialisation exceeded max_rows ({row_cap})"
                 )));
             }
             let (k, v) = item.map_err(StoreError::engine)?;

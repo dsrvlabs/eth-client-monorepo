@@ -80,9 +80,10 @@ pub use engine::{
     MAX_RANGE_BYTES, MAX_RANGE_ENTRIES, RangeIter, ReadTxn, StoreError, db_file_path,
 };
 pub use invariants::{
-    CountingSink, DEFAULT_SNAPSHOT_RING, FanoutSink, InvariantCheckMode, InvariantContext,
-    InvariantSink, InvariantViolation, MAX_CONTIG_WALK_SLOTS, MAX_RING_SCAN_ROWS, StoreInvariant,
-    TracingSink, check_invariants, run_invariant_checks_if_enabled,
+    CountingSink, DEFAULT_MAX_OPEN_SCAN_ROWS, DEFAULT_SNAPSHOT_RING, FanoutSink,
+    InvariantCheckMode, InvariantContext, InvariantSink, InvariantViolation, MAX_CONTIG_WALK_SLOTS,
+    MAX_RING_SCAN_ROWS, StoreInvariant, TracingSink, check_invariants,
+    run_invariant_checks_if_enabled,
 };
 pub use keys::{BlockRegion, shard_of, slots_in};
 pub use schema::{

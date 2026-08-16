@@ -77,6 +77,12 @@ struct StorageConfig {
     /// set `CC_STORAGE_CHECK_INVARIANTS=false` (no multi-file profiles yet).
     #[serde(default = "default_check_invariants")]
     check_invariants: bool,
+    /// Per-check row cap for §2.7 scans at `Store::open`.
+    ///
+    /// Named default [`cc_store::DEFAULT_MAX_OPEN_SCAN_ROWS`]. Exceeding it is
+    /// `StoreError::Limit`. Override: `CC_STORAGE_MAX_OPEN_SCAN_ROWS`.
+    #[serde(default = "default_max_open_scan_rows")]
+    max_open_scan_rows: u64,
     /// On-disk store directory (CC-44b).
     #[serde(default = "default_data_dir")]
     data_dir: PathBuf,
@@ -207,6 +213,9 @@ struct StorageDebug {
 
 fn default_check_invariants() -> bool {
     true
+}
+fn default_max_open_scan_rows() -> u64 {
+    cc_store::DEFAULT_MAX_OPEN_SCAN_ROWS
 }
 fn default_data_dir() -> PathBuf {
     PathBuf::from("data/storage")
@@ -447,6 +456,7 @@ fn open_store(cfg: &StorageConfig) -> anyhow::Result<Store> {
     )?
     .with_check_invariants(cfg.check_invariants)
     .with_snapshot_ring(cfg.snapshot_ring.max(1))
+    .with_max_open_scan_rows(cfg.max_open_scan_rows)
     .with_expected_node_id(expected_node_id);
     let store = Store::open(&cfg.data_dir, opts).map_err(|e| anyhow::anyhow!("store open: {e}"))?;
     durable_set::refuse_missing_key_if_anchor_present(store.engine(), cfg.node_key_path.as_deref())
@@ -578,6 +588,7 @@ pub async fn run() -> anyhow::Result<()> {
                     node_key_path: cfg.node_key_path.clone(),
                     enr_seq_path: None,
                     snapshot_ring: cfg.snapshot_ring.max(1),
+                    max_open_scan_rows: cfg.max_open_scan_rows,
                     da_status_roots: Vec::new(),
                 };
                 match resume::run_resume_sequence(
@@ -815,6 +826,24 @@ mod config_tests {
         // cargo test CWD is the package root, not the repo root.
         cfg.network_config = Some(hoodi_network_config());
         cfg
+    }
+
+    #[test]
+    fn max_open_scan_rows_default_in_storage_toml() {
+        let _g = env_lock();
+        unsafe { std::env::remove_var("CC_STORAGE_MAX_OPEN_SCAN_ROWS") };
+        let path = storage_toml_path();
+        let cfg = cc_config::load_from::<StorageConfig>("storage", &path)
+            .unwrap_or_else(|e| panic!("load {}: {e}", path.display()));
+        assert_eq!(
+            cfg.max_open_scan_rows,
+            cc_store::DEFAULT_MAX_OPEN_SCAN_ROWS,
+            "storage.toml must carry DEFAULT_MAX_OPEN_SCAN_ROWS"
+        );
+        assert!(
+            cfg.max_open_scan_rows >= cc_store::MAX_CONTIG_WALK_SLOTS,
+            "named default must cover a full serve-window canonical walk"
+        );
     }
 
     #[test]

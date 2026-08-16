@@ -471,6 +471,14 @@ the issues are actionable; write these back into `[PRD]` §5.1.
    with a named default, and exceeding it is an error rather than an unbounded wait. **Measured on a
    store at supernode scale, not a `TempDir`** — a scan that is fast on 10 MB proves nothing.
 
+**Acceptance (`S2-B-06` only)**
+- [x] Bound is a config value (`storage.max_open_scan_rows`) with named default `DEFAULT_MAX_OPEN_SCAN_ROWS` (= `MAX_CONTIG_WALK_SLOTS`, 1_056_800)
+- [x] Each §2.7 check gets its **own** budget (I-cursor does not empty I-contig)
+- [x] Exceeding the bound is `StoreError::Limit`, not an unbounded wait
+- [x] A test injects a scan budget and asserts the Limit error
+- [x] A healthy store whose canonical span is > 1_048_576 and ≤ the named default completes `check_invariants` / `open`
+- [ ] Wall-clock measured on a store at supernode scale (see `docs/s2-b-06-open-scan.txt`; not claimed)
+
 ---
 
 ### `S2-B-07` · P1-A/2 — admission never checks the durable frontier · 2–2.5 pd / **5 pts** (≈)

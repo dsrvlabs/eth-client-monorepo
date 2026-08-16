@@ -14,7 +14,8 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use cc_store_tool::{compact, dump, verify};
+use cc_store::DEFAULT_MAX_OPEN_SCAN_ROWS;
+use cc_store_tool::{compact, dump, verify_bounded};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -41,6 +42,9 @@ enum Command {
         /// Data directory containing `store.redb`.
         #[arg(long)]
         path: PathBuf,
+        /// Per-check row cap (`storage.max_open_scan_rows`).
+        #[arg(long, default_value_t = DEFAULT_MAX_OPEN_SCAN_ROWS)]
+        max_open_scan_rows: u64,
     },
     /// Compact `store.redb` and print before/after lengths.
     Compact {
@@ -65,7 +69,10 @@ enum Command {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Verify { path } => verify(&path),
+        Command::Verify {
+            path,
+            max_open_scan_rows,
+        } => verify_bounded(&path, max_open_scan_rows),
         Command::Compact { path } => compact(&path),
         Command::Dump { path, table, key } => dump(&path, &table, &key),
     }

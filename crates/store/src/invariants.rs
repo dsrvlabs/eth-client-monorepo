@@ -17,6 +17,10 @@
 //! 2. Fails closed with [`StoreError::Limit`] if the advertised span exceeds
 //!    [`MAX_CONTIG_WALK_SLOTS`] (sized to the CC-4A block serve window),
 //! 3. Verifies holes with an O(|canonical| + |holes|) gap-coverage walk.
+//!
+//! Each row-scanning check also fails closed if it inspects more than
+//! [`InvariantContext::max_open_scan_rows`] (named default
+//! [`DEFAULT_MAX_OPEN_SCAN_ROWS`]). The budget is **per check**, not shared.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -67,6 +71,16 @@ const _: () = assert!(MAX_CONTIG_WALK_SLOTS > MAX_RANGE_ENTRIES as u64);
 /// Ring depth is config (default 4); a grossly over-full table is corruption
 /// and must not force a multi-million-row materialisation beyond the engine cap.
 pub const MAX_RING_SCAN_ROWS: usize = 256;
+
+/// Named default for `storage.max_open_scan_rows`.
+///
+/// Per-check row cap. Equal to [`MAX_CONTIG_WALK_SLOTS`] so a full
+/// serve-window canonical walk completes; a multi-GB column table still
+/// `Limit`s rather than scanning unbounded.
+pub const DEFAULT_MAX_OPEN_SCAN_ROWS: u64 = MAX_CONTIG_WALK_SLOTS;
+
+const _: () = assert!(DEFAULT_MAX_OPEN_SCAN_ROWS >= MAX_CONTIG_WALK_SLOTS);
+const _: () = assert!(DEFAULT_MAX_OPEN_SCAN_ROWS > MAX_RANGE_ENTRIES as u64);
 
 // ---------------------------------------------------------------------------
 // Enum + labels
@@ -146,6 +160,11 @@ pub struct InvariantContext {
     pub expected_node_id: Option<Root>,
     /// Max snapshot ring depth (`storage.snapshot_ring`).
     pub snapshot_ring: u64,
+    /// Per-check row cap (`storage.max_open_scan_rows`).
+    ///
+    /// Named default [`DEFAULT_MAX_OPEN_SCAN_ROWS`]. Exceeding it is
+    /// [`StoreError::Limit`].
+    pub max_open_scan_rows: u64,
     /// Optional per-open invocation counter (tests; process-global would race).
     pub invocation_counter: Option<Arc<AtomicU64>>,
 }
@@ -163,6 +182,7 @@ impl InvariantContext {
         Self {
             expected_node_id: None,
             snapshot_ring: DEFAULT_SNAPSHOT_RING,
+            max_open_scan_rows: DEFAULT_MAX_OPEN_SCAN_ROWS,
             invocation_counter: None,
         }
     }
@@ -171,6 +191,13 @@ impl InvariantContext {
     #[must_use]
     pub fn with_invocation_counter(mut self, counter: Arc<AtomicU64>) -> Self {
         self.invocation_counter = Some(counter);
+        self
+    }
+
+    /// Set the per-check open-scan row budget.
+    #[must_use]
+    pub fn with_max_open_scan_rows(mut self, max_open_scan_rows: u64) -> Self {
+        self.max_open_scan_rows = max_open_scan_rows;
         self
     }
 }
@@ -271,6 +298,68 @@ impl<A: InvariantSink + std::fmt::Debug, B: InvariantSink + std::fmt::Debug> Inv
 }
 
 // ---------------------------------------------------------------------------
+// Per-check scan budget
+// ---------------------------------------------------------------------------
+
+/// Remaining row allowance for **one** §2.7 check.
+struct ScanBudget {
+    remaining: u64,
+    limit: u64,
+}
+
+impl ScanBudget {
+    fn new(limit: u64) -> Self {
+        Self {
+            remaining: limit,
+            limit,
+        }
+    }
+
+    fn cap(&self) -> usize {
+        usize::try_from(self.remaining).unwrap_or(usize::MAX)
+    }
+
+    fn consume(&mut self, n: u64, what: &'static str) -> Result<(), StoreError> {
+        if n > self.remaining {
+            return Err(scan_budget_exceeded(self.limit, what));
+        }
+        self.remaining -= n;
+        Ok(())
+    }
+}
+
+fn scan_budget_exceeded(limit: u64, what: &str) -> StoreError {
+    StoreError::limit(format!(
+        "{what}: scanned more than storage.max_open_scan_rows ({limit}); \
+         refuse rather than unbounded wait"
+    ))
+}
+
+/// One owned key/value pair from a budgeted range.
+type BudgetedRow = (Vec<u8>, Vec<u8>);
+
+/// Materialise `[lo, hi)` charging every row against `budget`.
+///
+/// Engine [`StoreError::Limit`] (row cap, 512 MiB, or `MAX_RANGE_ENTRIES`) is
+/// propagated unchanged.
+fn range_budgeted(
+    rt: &ReadTxn,
+    table: &str,
+    lo: &[u8],
+    hi: &[u8],
+    budget: &mut ScanBudget,
+    what: &'static str,
+) -> Result<Vec<BudgetedRow>, StoreError> {
+    let iter = rt.range_max(table, lo, hi, budget.cap())?;
+    let mut rows = Vec::new();
+    for item in iter {
+        rows.push(item?);
+    }
+    budget.consume(rows.len() as u64, what)?;
+    Ok(rows)
+}
+
+// ---------------------------------------------------------------------------
 // Public entry points
 // ---------------------------------------------------------------------------
 
@@ -279,6 +368,9 @@ impl<A: InvariantSink + std::fmt::Debug, B: InvariantSink + std::fmt::Debug> Inv
 /// - [`InvariantCheckMode::Open`]: returns `Err` on the **first** violation.
 /// - [`InvariantCheckMode::PostPass`]: reports every violation to `sink` and returns
 ///   `Ok(n)` where `n` is the number of violations (never fatal).
+///
+/// Each row-scanning check gets its own [`InvariantContext::max_open_scan_rows`]
+/// budget. Exceeding that budget is [`StoreError::Limit`].
 ///
 /// Does **not** consult the `check_invariants` config flag — callers gate via
 /// [`run_invariant_checks_if_enabled`].
@@ -290,17 +382,18 @@ pub fn check_invariants(
 ) -> Result<u64, StoreError> {
     let rt = engine.read()?;
     let mut violations = Vec::new();
+    let limit = ctx.max_open_scan_rows;
 
-    if let Some(v) = check_contig(&rt)? {
+    if let Some(v) = check_contig(&rt, &mut ScanBudget::new(limit))? {
         violations.push(v);
     }
-    if let Some(v) = check_col_block(engine, &rt)? {
+    if let Some(v) = check_col_block(engine, &rt, &mut ScanBudget::new(limit))? {
         violations.push(v);
     }
-    if let Some(v) = check_split_fin(&rt)? {
+    if let Some(v) = check_split_fin(&rt, &mut ScanBudget::new(limit))? {
         violations.push(v);
     }
-    if let Some(v) = check_ring(&rt, ctx.snapshot_ring)? {
+    if let Some(v) = check_ring(&rt, ctx.snapshot_ring, &mut ScanBudget::new(limit))? {
         violations.push(v);
     }
     if let Some(v) = check_window(&rt)? {
@@ -312,7 +405,7 @@ pub fn check_invariants(
     if let Some(v) = check_shards(engine, &rt)? {
         violations.push(v);
     }
-    if let Some(v) = check_cursor(&rt)? {
+    if let Some(v) = check_cursor(&rt, &mut ScanBudget::new(limit))? {
         violations.push(v);
     }
 
@@ -380,7 +473,10 @@ fn read_meta_ssz<T: Decode>(rt: &ReadTxn, key: &str) -> Result<Option<T>, StoreE
 /// [`MAX_CONTIG_WALK_SLOTS`] → [`StoreError::Limit`] (fail closed at open).
 /// Canonical is read in [`MAX_RANGE_ENTRIES`]-slot chunks so a full serve
 /// window (wider than one range call) still completes.
-fn check_contig(rt: &ReadTxn) -> Result<Option<InvariantViolation>, StoreError> {
+fn check_contig(
+    rt: &ReadTxn,
+    budget: &mut ScanBudget,
+) -> Result<Option<InvariantViolation>, StoreError> {
     let Some(anchor) = read_meta_ssz::<AnchorInfo>(rt, KEY_ANCHOR_INFO)? else {
         return Ok(None);
     };
@@ -392,18 +488,18 @@ fn check_contig(rt: &ReadTxn) -> Result<Option<InvariantViolation>, StoreError> 
     // Exclusive end of the allowed walk. A canonical row at or beyond this
     // means span > MAX_CONTIG_WALK_SLOTS.
     let walk_hi = oldest.saturating_add(MAX_CONTIG_WALK_SLOTS);
-    let present = collect_canonical_slots_chunked(rt, oldest, walk_hi)?;
+    let present = collect_canonical_slots_chunked(rt, oldest, walk_hi, budget)?;
 
     let end = match present.last().copied() {
         Some(head) => head,
         None => {
-            if first_canonical_at_or_after(rt, walk_hi)?.is_some() {
+            if first_canonical_at_or_after(rt, walk_hi, budget)?.is_some() {
                 return Err(contig_span_limit(oldest, walk_hi));
             }
             return Ok(None);
         }
     };
-    if let Some(far) = first_canonical_at_or_after(rt, walk_hi)? {
+    if let Some(far) = first_canonical_at_or_after(rt, walk_hi, budget)? {
         return Err(contig_span_limit(oldest, far.max(end)));
     }
 
@@ -441,6 +537,7 @@ fn collect_canonical_slots_chunked(
     rt: &ReadTxn,
     oldest: u64,
     walk_hi: u64,
+    budget: &mut ScanBudget,
 ) -> Result<Vec<u64>, StoreError> {
     let mut present = Vec::new();
     let chunk = MAX_RANGE_ENTRIES as u64;
@@ -452,8 +549,7 @@ fn collect_canonical_slots_chunked(
         }
         let lo_key = encode_cold_block_key(Slot::new(lo));
         let hi_key = encode_cold_block_key(Slot::new(hi));
-        for item in rt.range("canonical", &lo_key, &hi_key)? {
-            let (k, v) = item?;
+        for (k, v) in range_budgeted(rt, "canonical", &lo_key, &hi_key, budget, "I-contig")? {
             let Some((slot, _)) = decode_canonical_entry(&k, &v) else {
                 continue;
             };
@@ -470,25 +566,34 @@ fn collect_canonical_slots_chunked(
 ///
 /// A [`StoreError::Limit`] from the tail range means the tail is dense — treat
 /// that as "something exists at or after `start`" without materialising it.
-fn first_canonical_at_or_after(rt: &ReadTxn, start: u64) -> Result<Option<u64>, StoreError> {
+fn first_canonical_at_or_after(
+    rt: &ReadTxn,
+    start: u64,
+    budget: &mut ScanBudget,
+) -> Result<Option<u64>, StoreError> {
     if start == u64::MAX {
         return Ok(None);
     }
     let lo = encode_cold_block_key(Slot::new(start));
     let hi = encode_cold_block_key(Slot::new(u64::MAX));
-    match rt.range("canonical", &lo, &hi) {
+    // Existence probe: materialise at most one row.
+    match rt.range_max("canonical", &lo, &hi, 1) {
         Ok(iter) => {
             for item in iter {
                 let (k, v) = item?;
                 if let Some((slot, _)) = decode_canonical_entry(&k, &v)
                     && slot.as_u64() >= start
                 {
+                    budget.consume(1, "I-contig")?;
                     return Ok(Some(slot.as_u64()));
                 }
             }
             Ok(None)
         }
-        Err(StoreError::Limit(_)) => Ok(Some(start)),
+        Err(StoreError::Limit(_)) => {
+            budget.consume(1, "I-contig")?;
+            Ok(Some(start))
+        }
         Err(e) => Err(e),
     }
 }
@@ -540,12 +645,12 @@ fn first_uncovered_slot(lo: u64, hi: u64, holes: &[SlotRange]) -> Option<u64> {
 fn check_col_block(
     engine: &Engine,
     rt: &ReadTxn,
+    budget: &mut ScanBudget,
 ) -> Result<Option<InvariantViolation>, StoreError> {
     // columns_hot
     let lo = [0u8; 42];
     let hi = [0xffu8; 42];
-    for item in rt.range("columns_hot", &lo, &hi)? {
-        let (k, _) = item?;
+    for (k, _) in range_budgeted(rt, "columns_hot", &lo, &hi, budget, "I-col-block")? {
         let Some((slot, root, idx)) = decode_hot_column_key(&k) else {
             continue;
         };
@@ -577,12 +682,11 @@ fn check_col_block(
         let end = column_shard_start_slot(shard_id.saturating_add(1));
         let lo = crate::keys::encode_cold_column_key(start, 0);
         let hi = crate::keys::encode_cold_column_key(end, 0);
-        for item in rt.range(name, &lo, &hi)? {
-            let (k, _) = item?;
+        for (k, _) in range_budgeted(rt, name, &lo, &hi, budget, "I-col-block")? {
             let Some((slot, idx)) = decode_cold_column_key(&k) else {
                 continue;
             };
-            if !block_exists_at_slot(rt, slot)? {
+            if !block_exists_at_slot(rt, slot, budget)? {
                 return Ok(Some(InvariantViolation {
                     invariant: StoreInvariant::ColBlock,
                     detail: format!(
@@ -596,12 +700,15 @@ fn check_col_block(
     Ok(None)
 }
 
-fn block_exists_at_slot(rt: &ReadTxn, slot: Slot) -> Result<bool, StoreError> {
+fn block_exists_at_slot(
+    rt: &ReadTxn,
+    slot: Slot,
+    budget: &mut ScanBudget,
+) -> Result<bool, StoreError> {
     // Hot: any root at this slot (probe prefix range).
     let lo = encode_hot_block_key(slot, &Root::ZERO);
     let hi = hot_block_slot_upper_bound(slot);
-    for item in rt.range("blocks_hot", &lo, &hi)? {
-        let (k, _) = item?;
+    for (k, _) in range_budgeted(rt, "blocks_hot", &lo, &hi, budget, "I-col-block")? {
         if let Some((s, _)) = decode_hot_block_key(&k)
             && s == slot
         {
@@ -614,7 +721,10 @@ fn block_exists_at_slot(rt: &ReadTxn, slot: Slot) -> Result<bool, StoreError> {
 }
 
 /// `I-split-fin`: `Split.slot ≤ finalized_slot` and no `blocks_hot` row with slot ≤ split.
-fn check_split_fin(rt: &ReadTxn) -> Result<Option<InvariantViolation>, StoreError> {
+fn check_split_fin(
+    rt: &ReadTxn,
+    budget: &mut ScanBudget,
+) -> Result<Option<InvariantViolation>, StoreError> {
     let Some(split) = read_meta_ssz::<Split>(rt, KEY_SPLIT)? else {
         return Ok(None);
     };
@@ -635,8 +745,7 @@ fn check_split_fin(rt: &ReadTxn) -> Result<Option<InvariantViolation>, StoreErro
 
     let lo = [0u8; 40];
     let hi = hot_block_slot_upper_bound(split.slot);
-    for item in rt.range("blocks_hot", &lo, &hi)? {
-        let (k, _) = item?;
+    for (k, _) in range_budgeted(rt, "blocks_hot", &lo, &hi, budget, "I-split-fin")? {
         if let Some((slot, root)) = decode_hot_block_key(&k)
             && slot.as_u64() <= split.slot.as_u64()
         {
@@ -656,18 +765,43 @@ fn check_split_fin(rt: &ReadTxn) -> Result<Option<InvariantViolation>, StoreErro
 
 /// `I-ring`: non-empty when Split exists; `|snapshots| ≤ ring`; newest ≤ Split.slot.
 ///
-/// Scans at most [`MAX_RING_SCAN_ROWS`] rows; beyond that → [`StoreError::Limit`]
-/// (a ring many× deeper than config is not a normal over-depth case).
-fn check_ring(rt: &ReadTxn, ring: u64) -> Result<Option<InvariantViolation>, StoreError> {
+/// Scans at most `min(MAX_RING_SCAN_ROWS, remaining check budget)` rows;
+/// beyond either → [`StoreError::Limit`].
+fn check_ring(
+    rt: &ReadTxn,
+    ring: u64,
+    budget: &mut ScanBudget,
+) -> Result<Option<InvariantViolation>, StoreError> {
     let Some(split) = read_meta_ssz::<Split>(rt, KEY_SPLIT)? else {
         return Ok(None);
     };
     let lo = encode_cold_block_key(Slot::ZERO);
     let hi = encode_cold_block_key(Slot::new(u64::MAX));
+    let ring_cap = (MAX_RING_SCAN_ROWS as u64).min(budget.remaining);
+    let rows = match rt.range_max("snapshots", &lo, &hi, ring_cap as usize) {
+        Ok(iter) => {
+            let mut rows = Vec::new();
+            for item in iter {
+                rows.push(item?);
+            }
+            budget.consume(rows.len() as u64, "I-ring")?;
+            rows
+        }
+        Err(StoreError::Limit(msg)) => {
+            return Err(if (MAX_RING_SCAN_ROWS as u64) < budget.remaining {
+                StoreError::limit(format!(
+                    "I-ring: scanned >{MAX_RING_SCAN_ROWS} snapshot rows (ring config {ring}); \
+                     refuse rather than unbounded scan"
+                ))
+            } else {
+                StoreError::Limit(msg)
+            });
+        }
+        Err(e) => return Err(e),
+    };
     let mut count: u64 = 0;
     let mut newest = 0u64;
-    for item in rt.range("snapshots", &lo, &hi)? {
-        let (k, _) = item?;
+    for (k, _) in rows {
         if let Some(slot) = decode_snapshot_key(&k) {
             let s = slot.as_u64();
             newest = newest.max(s);
@@ -681,13 +815,6 @@ fn check_ring(rt: &ReadTxn, ring: u64) -> Result<Option<InvariantViolation>, Sto
                         "snapshot ring depth at least {count} exceeds storage.snapshot_ring {ring}"
                     ),
                 }));
-            }
-            // Absolute safety valve if ring config itself is huge / corrupted path.
-            if count as usize > MAX_RING_SCAN_ROWS {
-                return Err(StoreError::limit(format!(
-                    "I-ring: scanned >{MAX_RING_SCAN_ROWS} snapshot rows (ring config {ring}); \
-                     refuse rather than unbounded scan"
-                )));
             }
         }
     }
@@ -817,11 +944,14 @@ fn check_shards(engine: &Engine, rt: &ReadTxn) -> Result<Option<InvariantViolati
 }
 
 /// `I-cursor`: WriteCursor.slot ≤ newest stored block slot.
-fn check_cursor(rt: &ReadTxn) -> Result<Option<InvariantViolation>, StoreError> {
+fn check_cursor(
+    rt: &ReadTxn,
+    budget: &mut ScanBudget,
+) -> Result<Option<InvariantViolation>, StoreError> {
     let Some(cursor) = read_meta_ssz::<WriteCursor>(rt, KEY_WRITE_CURSOR)? else {
         return Ok(None);
     };
-    let Some(newest) = newest_block_slot(rt)? else {
+    let Some(newest) = newest_block_slot(rt, budget)? else {
         // Cursor with no blocks is a violation if cursor.slot > 0, else vacuous.
         if cursor.slot.as_u64() > 0 {
             return Ok(Some(InvariantViolation {
@@ -847,13 +977,12 @@ fn check_cursor(rt: &ReadTxn) -> Result<Option<InvariantViolation>, StoreError> 
     Ok(None)
 }
 
-fn newest_block_slot(rt: &ReadTxn) -> Result<Option<Slot>, StoreError> {
+fn newest_block_slot(rt: &ReadTxn, budget: &mut ScanBudget) -> Result<Option<Slot>, StoreError> {
     let mut newest: Option<u64> = None;
     // Prefer canonical head.
     let lo = encode_cold_block_key(Slot::ZERO);
     let hi = encode_cold_block_key(Slot::new(u64::MAX));
-    for item in rt.range("canonical", &lo, &hi)? {
-        let (k, v) = item?;
+    for (k, v) in range_budgeted(rt, "canonical", &lo, &hi, budget, "I-cursor")? {
         if let Some((slot, _)) = decode_canonical_entry(&k, &v) {
             newest = Some(newest.map_or(slot.as_u64(), |n| n.max(slot.as_u64())));
         }
@@ -861,8 +990,7 @@ fn newest_block_slot(rt: &ReadTxn) -> Result<Option<Slot>, StoreError> {
     // Also scan blocks_hot.
     let lo = [0u8; 40];
     let hi = [0xffu8; 40];
-    for item in rt.range("blocks_hot", &lo, &hi)? {
-        let (k, _) = item?;
+    for (k, _) in range_budgeted(rt, "blocks_hot", &lo, &hi, budget, "I-cursor")? {
         if let Some((slot, _)) = decode_hot_block_key(&k) {
             newest = Some(newest.map_or(slot.as_u64(), |n| n.max(slot.as_u64())));
         }
@@ -954,6 +1082,7 @@ mod tests {
             check_invariants: check,
             expected_node_id: node_id,
             snapshot_ring: DEFAULT_SNAPSHOT_RING,
+            max_open_scan_rows: DEFAULT_MAX_OPEN_SCAN_ROWS,
             invocation_counter: None,
         }
     }
@@ -997,6 +1126,7 @@ mod tests {
             InvariantContext {
                 expected_node_id: Some(self.node_id),
                 snapshot_ring: DEFAULT_SNAPSHOT_RING,
+                max_open_scan_rows: DEFAULT_MAX_OPEN_SCAN_ROWS,
                 invocation_counter: None,
             }
         }
@@ -1312,6 +1442,7 @@ mod tests {
         let ctx = InvariantContext {
             expected_node_id: None,
             snapshot_ring: DEFAULT_SNAPSHOT_RING,
+            max_open_scan_rows: DEFAULT_MAX_OPEN_SCAN_ROWS,
             invocation_counter: None,
         };
         // Mismatched anchor would fire if expected were set; with None, healthy pass.
@@ -1395,6 +1526,7 @@ mod tests {
         let ctx = InvariantContext {
             expected_node_id: Some(from_key),
             snapshot_ring: DEFAULT_SNAPSHOT_RING,
+            max_open_scan_rows: DEFAULT_MAX_OPEN_SCAN_ROWS,
             invocation_counter: None,
         };
         let sink = CountingSink::new();
@@ -1582,6 +1714,7 @@ mod tests {
         let ctx = InvariantContext {
             expected_node_id: Some(f.node_id),
             snapshot_ring: DEFAULT_SNAPSHOT_RING,
+            max_open_scan_rows: DEFAULT_MAX_OPEN_SCAN_ROWS,
             invocation_counter: Some(Arc::clone(&counter)),
         };
 
@@ -1666,5 +1799,136 @@ mod tests {
         drop(rt);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn injected_open_scan_budget_is_limit_not_wait() {
+        let mut f = Fixture::new("scan-budget");
+        let ctx = f.ctx().with_max_open_scan_rows(1);
+        let err = check_invariants(f.engine(), InvariantCheckMode::Open, &ctx, None)
+            .expect_err("budget of 1 must fail closed on a healthy multi-row fixture");
+        assert!(
+            matches!(err, StoreError::Limit(_)),
+            "expected Limit, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("max_rows") || msg.contains("max_open_scan_rows"),
+            "{msg}"
+        );
+
+        let dir = f.dir.clone();
+        let node_id = f.node_id;
+        f.release_engine();
+        drop(f);
+
+        let err = Store::open(
+            &dir,
+            open_opts(true, Some(node_id)).with_max_open_scan_rows(1),
+        )
+        .expect_err("Store::open must honour the injected scan budget");
+        assert!(
+            matches!(err, StoreError::Limit(_)),
+            "expected Limit from open, got {err:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Canonical span > legacy 1_048_576 and ≤ the named default must complete.
+    /// Sparse: two rows + a recorded hole (not a million-row insert).
+    #[test]
+    fn per_check_budget_admits_healthy_span_above_legacy_range_cap() {
+        let mut f = Fixture::new("scan-budget-span");
+        f.delete_row("canonical", &encode_cold_block_key(Slot::new(10)));
+        f.delete_row("canonical", &encode_cold_block_key(Slot::new(11)));
+        f.delete_row("canonical", &encode_cold_block_key(Slot::new(12)));
+        let oldest = 10u64;
+        let span = (MAX_RANGE_ENTRIES as u64).saturating_add(1);
+        assert!(span <= DEFAULT_MAX_OPEN_SCAN_ROWS);
+        let head = oldest.saturating_add(span).saturating_sub(1);
+        f.put_row(
+            "canonical",
+            &encode_cold_block_key(Slot::new(oldest)),
+            root(0x10).as_slice(),
+        );
+        f.put_row(
+            "canonical",
+            &encode_cold_block_key(Slot::new(head)),
+            root(0xEE).as_slice(),
+        );
+        let hole = SlotRange {
+            start: Slot::new(oldest.saturating_add(1)),
+            end: Slot::new(head),
+        };
+        let window = ServeWindow {
+            earliest_available_slot: Slot::new(oldest),
+            cgc: 4,
+            branch: 0,
+            block_floor: Slot::new(oldest),
+            column_floor: Slot::new(oldest),
+            holes: VariableList::new(vec![hole]).expect("one hole fits"),
+        };
+        f.put_meta(KEY_SERVE_WINDOW, &window.as_ssz_bytes());
+        let cursor = WriteCursor {
+            session_id: 1,
+            seq: 1,
+            slot: Slot::new(head),
+            root: root(0xEE),
+        };
+        f.put_meta(KEY_WRITE_CURSOR, &cursor.as_ssz_bytes());
+        f.put_row(
+            "blocks_hot",
+            &encode_hot_block_key(Slot::new(head), &root(0xEE)),
+            b"far",
+        );
+
+        check_invariants(f.engine(), InvariantCheckMode::Open, &f.ctx(), None)
+            .expect("healthy span > 1_048_576 and ≤ DEFAULT_MAX_OPEN_SCAN_ROWS must complete");
+
+        let dir = f.dir.clone();
+        let node_id = f.node_id;
+        f.release_engine();
+        drop(f);
+        Store::open(&dir, open_opts(true, Some(node_id)))
+            .expect("Store::open with the named default must admit this span");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Manual wall-clock: ~540 MiB of 30 KiB column values (not a 28 GiB supernode).
+    /// Run: `cargo test -p cc-store --offline --locked --lib measure_open_scan -- --ignored --nocapture`
+    #[test]
+    #[ignore = "manual open-scan wall-clock; not CI"]
+    fn measure_open_scan_column_byte_cap() {
+        let f = Fixture::new("scan-measure");
+        let payload = vec![0xABu8; 30_000];
+        const N: u64 = 18_000;
+        let mut b = f.engine().batch();
+        let mut n = 0usize;
+        for i in 0..N {
+            let key = crate::keys::encode_hot_column_key(Slot::new(100 + i), &root(0xEE), 0);
+            b.put("columns_hot", &key, &payload);
+            n += 1;
+            if n >= 512 {
+                f.engine()
+                    .commit(std::mem::replace(&mut b, f.engine().batch()))
+                    .unwrap();
+                n = 0;
+            }
+        }
+        if n > 0 {
+            f.engine().commit(b).unwrap();
+        }
+        let t0 = std::time::Instant::now();
+        let res = check_invariants(f.engine(), InvariantCheckMode::Open, &f.ctx(), None);
+        let elapsed = t0.elapsed();
+        eprintln!(
+            "s2-b-06 measure: columns_hot={N} value_bytes=30000 elapsed_ms={} outcome={}",
+            elapsed.as_millis(),
+            match &res {
+                Ok(n) => format!("Ok({n})"),
+                Err(e) => format!("{e}"),
+            }
+        );
+        assert!(res.is_err(), "expected Limit or violation, got {res:?}");
     }
 }

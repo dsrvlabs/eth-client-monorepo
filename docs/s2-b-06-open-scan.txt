@@ -1,0 +1,40 @@
+S2-B-06 / E2-open-scan — open-scan bound measurement
+=====================================================
+
+Date: 2026-08-16
+Host: local worktree (not a supernode box)
+Command:
+  cargo test -p cc-store --offline --locked --lib measure_open_scan -- --ignored --nocapture
+
+Fixture
+-------
+Not store-bench's 28 GiB cgc=8 full-retention window, and not cgc=128 supernode.
+This run inserted 18_000 columns_hot rows × 30_000-byte values on top of the
+healthy invariant fixture (Durability::None, TempDir).
+
+  planned payload ≈ 18_000 × 30_000 = 540_000_000 bytes (~515 MiB values)
+  plus keys / baseline meta
+
+A full 28 GiB store-bench build was not finished here (disk + wall time).
+This is the largest fixture that completed in this worktree.
+
+Result
+------
+  check_invariants(Open, default max_open_scan_rows=1_056_800):
+    elapsed_ms = 113
+    outcome    = Err(StoreError::Limit)
+    detail     = range materialisation exceeded MAX_RANGE_BYTES (536870912)
+
+  Returned. Did not hang.
+  Limit is the engine 512 MiB range byte cap (original string; not rewritten
+  as a row-budget miss). I-col-block never finished a full unbounded scan.
+
+What this is not
+----------------
+Not a supernode-scale measurement. Not store-bench 28 GiB. Not a 10 MB
+10-row TempDir. Group acceptance item 3 (supernode wall-clock) stays open.
+
+Named default
+-------------
+DEFAULT_MAX_OPEN_SCAN_ROWS = MAX_CONTIG_WALK_SLOTS = 1_056_800
+(per-check; I-contig and I-cursor no longer share one 1_048_576 pot)

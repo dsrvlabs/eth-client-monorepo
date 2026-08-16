@@ -27,6 +27,13 @@ data_dir = "data/storage"
 # Override: CC_STORAGE_CHECK_INVARIANTS=false
 check_invariants = true
 
+# Per-check row cap for §2.7 scans at Store::open (named default
+# DEFAULT_MAX_OPEN_SCAN_ROWS = MAX_CONTIG_WALK_SLOTS = 1056800).
+# Exceeding it is StoreError::Limit, not an unbounded wait.
+# A 10 MB TempDir is not a supernode measurement.
+# Override: CC_STORAGE_MAX_OPEN_SCAN_ROWS=...
+max_open_scan_rows = 1056800
+
 # CC-45a / §1.7: path to the p2p node key for I-node-id at open.
 # When set and the file exists, storage refuses to start if AnchorInfo.node_id
 # does not match the key surface (never a silent re-backfill). Same file as

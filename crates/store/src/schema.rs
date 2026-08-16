@@ -303,6 +303,8 @@ pub struct StoreOpenOptions {
     pub expected_node_id: Option<Root>,
     /// Snapshot ring depth for `I-ring` (`storage.snapshot_ring`, default 4).
     pub snapshot_ring: u64,
+    /// Per-check row cap at open (`storage.max_open_scan_rows`).
+    pub max_open_scan_rows: u64,
     /// Optional invocation counter for tests (CC-4H /2). Production leaves `None`.
     pub invocation_counter: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 }
@@ -322,6 +324,7 @@ impl StoreOpenOptions {
             check_invariants: false,
             expected_node_id: None,
             snapshot_ring: crate::invariants::DEFAULT_SNAPSHOT_RING,
+            max_open_scan_rows: crate::invariants::DEFAULT_MAX_OPEN_SCAN_ROWS,
             invocation_counter: None,
         })
     }
@@ -334,6 +337,7 @@ impl StoreOpenOptions {
             check_invariants: false,
             expected_node_id: None,
             snapshot_ring: crate::invariants::DEFAULT_SNAPSHOT_RING,
+            max_open_scan_rows: crate::invariants::DEFAULT_MAX_OPEN_SCAN_ROWS,
             invocation_counter: None,
         }
     }
@@ -356,6 +360,12 @@ impl StoreOpenOptions {
         self
     }
 
+    /// Set the per-check open-scan row budget (`storage.max_open_scan_rows`).
+    pub fn with_max_open_scan_rows(mut self, max_open_scan_rows: u64) -> Self {
+        self.max_open_scan_rows = max_open_scan_rows;
+        self
+    }
+
     /// Attach a shared invocation counter for tests (CC-4H /2).
     pub fn with_invocation_counter(
         mut self,
@@ -370,6 +380,7 @@ impl StoreOpenOptions {
         crate::invariants::InvariantContext {
             expected_node_id: self.expected_node_id,
             snapshot_ring: self.snapshot_ring,
+            max_open_scan_rows: self.max_open_scan_rows,
             invocation_counter: self.invocation_counter.clone(),
         }
     }

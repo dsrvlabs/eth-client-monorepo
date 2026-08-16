@@ -13,8 +13,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use cc_store::{
-    DEFAULT_SNAPSHOT_RING, Engine, EngineOptions, InvariantCheckMode, InvariantContext, StoreError,
-    StoreInvariant, check_invariants, db_file_path,
+    DEFAULT_MAX_OPEN_SCAN_ROWS, DEFAULT_SNAPSHOT_RING, Engine, EngineOptions, InvariantCheckMode,
+    InvariantContext, StoreError, StoreInvariant, check_invariants, db_file_path,
 };
 
 /// Bytes of value payload shown as hex prefix by [`dump`].
@@ -44,10 +44,16 @@ fn map_store_err(err: StoreError) -> anyhow::Error {
 /// On success prints a one-line ok report. On the first violation returns `Err`
 /// whose display names the invariant label.
 pub fn verify(path: &Path) -> Result<()> {
+    verify_bounded(path, DEFAULT_MAX_OPEN_SCAN_ROWS)
+}
+
+/// Like [`verify`], with an explicit per-check row budget.
+pub fn verify_bounded(path: &Path, max_open_scan_rows: u64) -> Result<()> {
     let engine = open_readonly(path)?;
     let ctx = InvariantContext {
         expected_node_id: None,
         snapshot_ring: DEFAULT_SNAPSHOT_RING,
+        max_open_scan_rows,
         invocation_counter: None,
     };
     match check_invariants(&engine, InvariantCheckMode::Open, &ctx, None) {
