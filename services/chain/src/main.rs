@@ -6,8 +6,10 @@
 //! 3. Storage pushes `RestoreFromStore` (or `EMPTY`, which collapses grace
 //!    immediately). Full restore → install core. EMPTY / timeout → fall back
 //!    to checkpoint sync when `checkpoint_providers` is configured.
-//! 4. Aggregate `""` stays NOT_SERVING until the core is installed (restore or
-//!    checkpoint), then mark local ready → aggregate SERVING.
+//! 4. Aggregate `""` stays NOT_SERVING until local-ready (restore handshake
+//!    marks ready so storage can push). After a core is installed, SERVING
+//!    additionally requires a recent `probe_core_liveness` (N=3 consecutive
+//!    misses → NOT_SERVING, same N successes to restore; ADR-R-04).
 //! 5. Shutdown: aggregate NOT_SERVING → core `Shutdown` + join under a single
 //!    2 s envelope → drain (total SIGTERM budget remains 5 s with Phase 0 drain).
 //!
@@ -33,6 +35,7 @@ use cc_proto::chain::chain_service_server::ChainServiceServer;
 use cc_types::config::ChainConfig as NetworkChainConfig;
 use cc_types::preset::Mainnet;
 use serde::Deserialize;
+use tokio::sync::watch;
 use tonic::service::Routes;
 
 /// Owns the core OS join handle and coordinates bootstrap install vs pre-drain
@@ -41,6 +44,8 @@ use tonic::service::Routes;
 #[derive(Debug, Default)]
 struct CoreJoinOwner {
     thread: Option<CoreThread>,
+    /// Stops the S1-A-16 sampler before the core join.
+    liveness_cancel: Option<watch::Sender<bool>>,
     /// Set by pre-drain before `take`; bootstrap must not install without
     /// joining locally when this is true.
     shutting_down: bool,
@@ -67,8 +72,52 @@ impl CoreJoinOwner {
     /// Begin drain: seal further installs and take the join handle if present.
     fn take_for_shutdown(&mut self) -> Option<CoreThread> {
         self.shutting_down = true;
+        if let Some(tx) = self.liveness_cancel.take() {
+            let _ = tx.send(true);
+        }
         self.thread.take()
     }
+
+    /// Drive aggregate `local_ready` from [`cc_chain::probe_core_liveness`].
+    fn spawn_liveness(
+        &mut self,
+        local_ready: LocalReadyHandle,
+        metrics: cc_chain::ChainMetrics,
+        deadline: Duration,
+        interval: Duration,
+    ) {
+        let Some(core) = self.thread.as_ref() else {
+            return;
+        };
+        if self.shutting_down {
+            return;
+        }
+        let (tx, rx) = watch::channel(false);
+        if let Some(prev) = self.liveness_cancel.replace(tx) {
+            let _ = prev.send(true);
+        }
+        let handle = core.handle.clone();
+        tokio::spawn(async move {
+            cc_chain::run_core_liveness_loop(
+                handle,
+                local_ready,
+                deadline,
+                interval,
+                rx,
+                Some(metrics),
+            )
+            .await;
+        });
+    }
+}
+
+/// Per-sample deadline + 4×/slot cadence from the network slot length.
+fn liveness_timing(seconds_per_slot: u64) -> (Duration, Duration) {
+    let slot_ms = seconds_per_slot.max(1).saturating_mul(1_000);
+    (
+        cc_chain::liveness_deadline(cc_chain::DEFAULT_ATTESTATION_DUE_BPS, slot_ms),
+        cc_chain::sample_interval(slot_ms),
+    )
 }
 
 /// Process name and config slug (`config/chain.toml`, `CC_CHAIN_*`).
@@ -378,12 +427,18 @@ async fn main() -> anyhow::Result<()> {
             // **immediately at AwaitingRestore entry** so storage can start
             // and push RestoreFromStore. Self `eth.chain.v1.ChainService` is
             // already SERVING at bind. Fork-choice RPCs still return
-            // NOT_BOOTSTRAPPED until a core is installed.
+            // NOT_BOOTSTRAPPED until a core is installed. After install,
+            // the liveness sampler owns this bit (3 consecutive misses →
+            // NOT_SERVING; 3 successes to restore). Engine health is not
+            // flipped (ADR-P3-02 / S1-B-12).
             // (Alternative rejected: storage `service_started` — races bind;
             // dual health — compose only probes aggregate.)
             local_ready.mark_ready().await;
+            let (deadline, interval) = liveness_timing(network_boot.seconds_per_slot);
             tracing::info!(
                 grace_secs = gate_wait.grace().as_secs(),
+                deadline_ms = deadline.as_secs_f64() * 1_000.0,
+                interval_ms = interval.as_millis(),
                 "AwaitingRestore: aggregate healthy; waiting for storage RestoreFromStore (or EMPTY / timeout)"
             );
             let outcome = gate_wait.wait().await;
@@ -397,7 +452,16 @@ async fn main() -> anyhow::Result<()> {
                     );
                     let orphan = {
                         let mut guard = core_owner_boot.lock().unwrap_or_else(|p| p.into_inner());
-                        guard.try_install(&svc_boot, install.core)
+                        let orphan = guard.try_install(&svc_boot, install.core);
+                        if orphan.is_none() {
+                            guard.spawn_liveness(
+                                local_ready.clone(),
+                                metrics_boot.clone(),
+                                deadline,
+                                interval,
+                            );
+                        }
+                        orphan
                     };
                     if let Some(core) = orphan {
                         tracing::warn!(
@@ -406,10 +470,10 @@ async fn main() -> anyhow::Result<()> {
                         core.shutdown_and_join().await;
                         return;
                     }
-                    // Already marked ready at AwaitingRestore entry (idempotent).
-                    let _ = local_ready;
                     tracing::info!(
-                        "restore lifecycle complete (core installed; health already SERVING)"
+                        deadline_ms = deadline.as_secs_f64() * 1_000.0,
+                        interval_ms = interval.as_millis(),
+                        "restore lifecycle complete (core installed; liveness sampler started)"
                     );
                 }
                 empty_or_timeout @ (RestoreGateOutcome::Empty | RestoreGateOutcome::TimedOut) => {
@@ -451,7 +515,7 @@ async fn main() -> anyhow::Result<()> {
                         head_boot,
                         epoch_boot,
                         events_boot,
-                        metrics_boot,
+                        metrics_boot.clone(),
                         core_cfg_boot,
                     )
                     .await
@@ -466,7 +530,16 @@ async fn main() -> anyhow::Result<()> {
                             let orphan = {
                                 let mut guard =
                                     core_owner_boot.lock().unwrap_or_else(|p| p.into_inner());
-                                guard.try_install(&svc_boot, core)
+                                let orphan = guard.try_install(&svc_boot, core);
+                                if orphan.is_none() {
+                                    guard.spawn_liveness(
+                                        local_ready.clone(),
+                                        metrics_boot.clone(),
+                                        deadline,
+                                        interval,
+                                    );
+                                }
+                                orphan
                             };
                             if let Some(core) = orphan {
                                 tracing::warn!(
@@ -475,10 +548,10 @@ async fn main() -> anyhow::Result<()> {
                                 core.shutdown_and_join().await;
                                 return;
                             }
-                            // Health already SERVING since AwaitingRestore entry.
-                            let _ = local_ready;
                             tracing::info!(
-                                "checkpoint-fallback lifecycle complete (core installed)"
+                                deadline_ms = deadline.as_secs_f64() * 1_000.0,
+                                interval_ms = interval.as_millis(),
+                                "checkpoint-fallback lifecycle complete (core installed; liveness sampler started)"
                             );
                         }
                         Err(e) => {

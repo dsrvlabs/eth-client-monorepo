@@ -87,7 +87,8 @@ pub struct ServeOptions {
     /// When true, aggregate `""` stays **NOT_SERVING** until
     /// [`LocalReadyHandle::mark_ready`] even if every peer is up (and even
     /// with an empty peer set). Used by `chain` so `wait-healthy.sh` waits
-    /// for checkpoint bootstrap to finish (§7.4 / §15/5).
+    /// for checkpoint bootstrap to finish (§7.4 / §15/5). After a core is
+    /// installed, `S1-A-16` may clear the same bit on N consecutive probe misses.
     pub require_local_ready: bool,
     /// Receives the [`LocalReadyHandle`] once health is initialised (before
     /// bind). Dropped if `None`.
@@ -99,7 +100,9 @@ pub struct ServeOptions {
 
 /// Handle that flips the local-readiness bit on the aggregate health gate.
 ///
-/// Cloned freely; the first `mark_ready` wins, subsequent calls recompute.
+/// Cloned freely. After a core is installed, the S1-A-16 sampler drives this
+/// bit: N consecutive `probe_core_liveness` misses clear it (NOT_SERVING);
+/// the same N consecutive successes set it again (ADR-R-04).
 #[derive(Clone)]
 #[allow(missing_debug_implementations)] // wraps non-Debug health reporter internals
 pub struct LocalReadyHandle {
@@ -107,10 +110,21 @@ pub struct LocalReadyHandle {
 }
 
 impl LocalReadyHandle {
+    /// Set the local-ready bit and recompute aggregate health.
+    pub async fn set_ready(&self, ready: bool) {
+        self.peer_state.set_local_ready(ready).await;
+    }
+
     /// Mark local work (e.g. checkpoint bootstrap) complete and recompute
     /// aggregate health. Idempotent.
     pub async fn mark_ready(&self) {
-        self.peer_state.set_local_ready(true).await;
+        self.set_ready(true).await;
+    }
+
+    /// Clear local-ready (parked core). Aggregate becomes NOT_SERVING if this
+    /// bit is required.
+    pub async fn mark_not_ready(&self) {
+        self.set_ready(false).await;
     }
 }
 

@@ -256,6 +256,292 @@ async fn self_serving_while_aggregate_not_serving_until_bootstrap() {
     assert!(result.is_ok(), "serve: {result:?}");
 }
 
+/// Compose `grpc-health-probe` reads aggregate `""`. N consecutive
+/// `probe_core_liveness` misses must flip that bit — process-up is not enough.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn three_core_liveness_misses_flip_aggregate_not_serving() {
+    let grpc = ephemeral();
+    let metrics_addr = ephemeral();
+    let bs = bootstrap_without_tracing("chain-lifecycle-liveness");
+    let mut registry = Registry::default();
+    let chain_metrics = ChainMetrics::register(&mut registry);
+    let events = EventsHandle::spawn(EventsConfig::default());
+    let head = HeadSnapshotStore::new();
+    let svc = ChainServiceImpl::new(None, head, events, chain_metrics);
+    let routes = Routes::default().add_service(ChainServiceServer::new(svc));
+
+    let (ready_tx, ready_rx) = oneshot::channel::<LocalReadyHandle>();
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+
+    let serve = tokio::spawn(async move {
+        serve_with_shutdown_options(
+            bs,
+            chain_spec(grpc, metrics_addr),
+            routes,
+            ServeOptions {
+                require_local_ready: true,
+                local_ready_tx: Some(ready_tx),
+                on_pre_drain: None,
+            },
+            async move {
+                let _ = stop_rx.await;
+            },
+        )
+        .await
+    });
+
+    wait_health(
+        grpc,
+        HEALTH_SERVICE_NAME,
+        WireStatus::Serving,
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let gate = ready_rx.await.expect("local ready handle");
+    gate.mark_ready().await;
+    wait_health(
+        grpc,
+        AGGREGATE_HEALTH,
+        WireStatus::Serving,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    struct SilentCore;
+    impl cc_chain::CoreLiveness for SilentCore {
+        fn ping(
+            &self,
+        ) -> impl std::future::Future<Output = Result<(), cc_chain::LivenessError>> + Send {
+            std::future::pending()
+        }
+    }
+
+    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    let sampler = tokio::spawn(cc_chain::run_core_liveness_loop(
+        SilentCore,
+        gate.clone(),
+        Duration::from_millis(30),
+        Duration::from_millis(10),
+        cancel_rx,
+        None,
+    ));
+
+    wait_health(
+        grpc,
+        AGGREGATE_HEALTH,
+        WireStatus::NotServing,
+        Duration::from_secs(2),
+    )
+    .await;
+    let self_st = health_status(grpc, HEALTH_SERVICE_NAME).await.unwrap();
+    assert_eq!(
+        self_st,
+        WireStatus::Serving as i32,
+        "FQ self health stays SERVING; only aggregate reflects the parked core"
+    );
+
+    let _ = cancel_tx.send(true);
+    let _ = sampler.await;
+    let _ = stop_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), serve)
+        .await
+        .expect("serve join timeout")
+        .expect("serve task");
+    assert!(result.is_ok(), "serve: {result:?}");
+}
+
+/// One miss is not a park: compose must not restart on a single long sample.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_core_liveness_miss_keeps_aggregate_serving() {
+    let grpc = ephemeral();
+    let metrics_addr = ephemeral();
+    let bs = bootstrap_without_tracing("chain-lifecycle-liveness-one");
+    let mut registry = Registry::default();
+    let chain_metrics = ChainMetrics::register(&mut registry);
+    let events = EventsHandle::spawn(EventsConfig::default());
+    let head = HeadSnapshotStore::new();
+    let svc = ChainServiceImpl::new(None, head, events, chain_metrics);
+    let routes = Routes::default().add_service(ChainServiceServer::new(svc));
+
+    let (ready_tx, ready_rx) = oneshot::channel::<LocalReadyHandle>();
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+
+    let serve = tokio::spawn(async move {
+        serve_with_shutdown_options(
+            bs,
+            chain_spec(grpc, metrics_addr),
+            routes,
+            ServeOptions {
+                require_local_ready: true,
+                local_ready_tx: Some(ready_tx),
+                on_pre_drain: None,
+            },
+            async move {
+                let _ = stop_rx.await;
+            },
+        )
+        .await
+    });
+
+    let gate = ready_rx.await.expect("local ready handle");
+    gate.mark_ready().await;
+    wait_health(
+        grpc,
+        AGGREGATE_HEALTH,
+        WireStatus::Serving,
+        Duration::from_secs(5),
+    )
+    .await;
+
+    struct OneMissThenLive {
+        hits: std::sync::atomic::AtomicUsize,
+    }
+    impl cc_chain::CoreLiveness for OneMissThenLive {
+        fn ping(
+            &self,
+        ) -> impl std::future::Future<Output = Result<(), cc_chain::LivenessError>> + Send {
+            let n = self.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async move {
+                if n == 0 {
+                    std::future::pending::<()>().await;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    let sampler = tokio::spawn(cc_chain::run_core_liveness_loop(
+        OneMissThenLive {
+            hits: std::sync::atomic::AtomicUsize::new(0),
+        },
+        gate,
+        Duration::from_millis(30),
+        Duration::from_millis(10),
+        cancel_rx,
+        None,
+    ));
+
+    // First sample misses (~30 ms) then successes. Stay SERVING throughout
+    // (N=3; one miss cannot flip).
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let agg = health_status(grpc, AGGREGATE_HEALTH).await.unwrap();
+    assert_eq!(agg, WireStatus::Serving as i32);
+
+    let _ = cancel_tx.send(true);
+    let _ = sampler.await;
+    let _ = stop_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), serve)
+        .await
+        .expect("serve join timeout")
+        .expect("serve task");
+    assert!(result.is_ok(), "serve: {result:?}");
+}
+
+/// Recover needs the same N successes as misses (S-A16-2). One later ping
+/// must not flap aggregate `""` back to SERVING.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn three_successes_restore_aggregate_serving() {
+    let grpc = ephemeral();
+    let metrics_addr = ephemeral();
+    let bs = bootstrap_without_tracing("chain-lifecycle-liveness-restore");
+    let mut registry = Registry::default();
+    let chain_metrics = ChainMetrics::register(&mut registry);
+    let events = EventsHandle::spawn(EventsConfig::default());
+    let head = HeadSnapshotStore::new();
+    let svc = ChainServiceImpl::new(None, head, events, chain_metrics);
+    let routes = Routes::default().add_service(ChainServiceServer::new(svc));
+
+    let (ready_tx, ready_rx) = oneshot::channel::<LocalReadyHandle>();
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+
+    let serve = tokio::spawn(async move {
+        serve_with_shutdown_options(
+            bs,
+            chain_spec(grpc, metrics_addr),
+            routes,
+            ServeOptions {
+                require_local_ready: true,
+                local_ready_tx: Some(ready_tx),
+                on_pre_drain: None,
+            },
+            async move {
+                let _ = stop_rx.await;
+            },
+        )
+        .await
+    });
+
+    let gate = ready_rx.await.expect("local ready handle");
+    gate.mark_ready().await;
+    wait_health(
+        grpc,
+        AGGREGATE_HEALTH,
+        WireStatus::Serving,
+        Duration::from_secs(5),
+    )
+    .await;
+
+    struct FailThenLive {
+        remaining: std::sync::atomic::AtomicUsize,
+    }
+    impl cc_chain::CoreLiveness for FailThenLive {
+        fn ping(
+            &self,
+        ) -> impl std::future::Future<Output = Result<(), cc_chain::LivenessError>> + Send {
+            let left = self.remaining.fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |n| Some(n.saturating_sub(1)),
+            );
+            async move {
+                if left.unwrap_or(0) > 0 {
+                    std::future::pending().await
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    let sampler = tokio::spawn(cc_chain::run_core_liveness_loop(
+        FailThenLive {
+            remaining: std::sync::atomic::AtomicUsize::new(3),
+        },
+        gate,
+        Duration::from_millis(30),
+        Duration::from_millis(10),
+        cancel_rx,
+        None,
+    ));
+
+    wait_health(
+        grpc,
+        AGGREGATE_HEALTH,
+        WireStatus::NotServing,
+        Duration::from_secs(2),
+    )
+    .await;
+    wait_health(
+        grpc,
+        AGGREGATE_HEALTH,
+        WireStatus::Serving,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let _ = cancel_tx.send(true);
+    let _ = sampler.await;
+    let _ = stop_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), serve)
+        .await
+        .expect("serve join timeout")
+        .expect("serve task");
+    assert!(result.is_ok(), "serve: {result:?}");
+}
+
 // ── NOT_BOOTSTRAPPED before core install ───────────────────────────────────
 
 #[tokio::test]

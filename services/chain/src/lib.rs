@@ -99,8 +99,10 @@ pub use import::{
 };
 pub use invalidation::{ExitFn, handle_justified_checkpoint_invalidated, process_exit};
 pub use liveness::{
-    CoreLiveness, DEFAULT_ATTESTATION_DUE_BPS, DEFAULT_SLOT_DURATION_MS, LivenessError,
-    default_liveness_deadline, liveness_deadline, probe_core_liveness, soft_deadline_ms,
+    CONSECUTIVE_MISS_THRESHOLD, CONSECUTIVE_SUCCESS_THRESHOLD, ConsecutiveMissPolicy, CoreLiveness,
+    DEFAULT_ATTESTATION_DUE_BPS, DEFAULT_SLOT_DURATION_MS, LivenessError, LivenessSink,
+    SAMPLES_PER_SLOT, default_liveness_deadline, liveness_deadline, probe_core_liveness,
+    run_core_liveness_loop, sample_interval, soft_deadline_ms,
 };
 pub use metrics::{
     AUX_DURATION_BUCKETS, BLOCK_BUDGET_SECS, BUFFER_RING, BUFFER_SUBSCRIBER, BootstrapResult,

@@ -29,7 +29,8 @@ pub const FAIL_THRESHOLD: u32 = 2;
 /// Shared peer-up map; prober tasks update it and recompute aggregate `""`.
 ///
 /// Aggregate SERVING requires every peer up **and** [`Self::local_ready`]
-/// (CC-19b: chain bootstrap complete).
+/// (CC-19b: chain bootstrap complete; ADR-R-04: after a core is installed
+/// this bit is the consecutive-miss liveness verdict).
 #[derive(Debug, Clone)]
 pub(crate) struct PeerHealthState {
     inner: Arc<Mutex<HashMap<String, bool>>>,

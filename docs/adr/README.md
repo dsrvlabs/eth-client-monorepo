@@ -8,8 +8,9 @@ S2 entry (D-6 / ⟡ D-13) is: every cited id resolves to a committed document an
 the [reconciliation table](reconciliation.md) has no unclassified rows — not
 "write 58 ADRs".
 
-Landed records (`ADR-R-01.md`, `ADR-R-03.md`, `ADR-R-05.md`, `ADR-R-06.md`)
-already use this house format. Do not rewrite them. New records match them.
+Landed records (`ADR-R-01.md`, `ADR-R-03.md`, `ADR-R-04.md`, `ADR-R-05.md`,
+`ADR-R-06.md`) already use this house format. Do not rewrite them. New
+records match them.
 
 ## Never-cited ids — no ADR
 
@@ -54,9 +55,9 @@ enforce the table's bucket / status / resolving columns.
 `Architecture §<n>` is extracted for the census only — those hits do not
 resolve under `docs/adr/`. `ADR-R-*` is out of the extractor: that series
 is the refactor records; `plan/` already cites unwritten `ADR-R-02` /
-`ADR-R-04` / `ADR-R-07`, and extracting them would go red before those
-bodies exist. Landed files (`ADR-R-01.md`, `ADR-R-03.md`, `ADR-R-05.md`,
-`ADR-R-06.md`) still count as resolvable by filename.
+`ADR-R-07`, and extracting them would go red before those
+bodies exist. Landed files (`ADR-R-01.md`, `ADR-R-03.md`, `ADR-R-04.md`,
+`ADR-R-05.md`, `ADR-R-06.md`) still count as resolvable by filename.
 
 ## Filename
 

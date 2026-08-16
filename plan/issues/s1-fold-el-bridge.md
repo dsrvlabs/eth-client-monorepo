@@ -336,6 +336,15 @@ already restarts (`[ARCH]` §7.1). A parked consensus core reports healthy **tod
   deadline-bounded no-op through the consensus core*).
 - `S1-A-17` (1.5–2 pd) — the injected engine black-hole harness.
 
+**Acceptance (`S1-A-16` only)**
+
+- [x] Aggregate SERVING requires a recent successful `probe_core_liveness` (3 consecutive
+      misses → NOT_SERVING; same 3 consecutive successes restore SERVING; 1–2 misses stay SERVING)
+- [x] Compose / `grpc-health-probe` on aggregate `""` reflects core liveness, not just process up
+- [x] `docs/adr/ADR-R-04.md` house MADR; Status: accepted
+- [x] `docs/adr/reconciliation.md` refactor-records section records ADR-R-04 as accepted
+      (not a 58-row census id)
+
 **Acceptance (`S1-A-15` only)**
 
 - [x] Probe issues a no-op through the consensus core (`CoreCommand::Ping` / `TickWork::Ping` on the

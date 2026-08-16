@@ -12,7 +12,8 @@
 //! reuse [`PROCESS_BLOCK_BUCKETS`] by reference so the three histograms cannot
 //! drift apart.
 
-use std::time::Instant;
+use std::sync::atomic::AtomicU64;
+use std::time::{Duration, Instant};
 
 use cc_types::BeaconState;
 use cc_types::preset::Preset;
@@ -321,6 +322,12 @@ pub struct ChainMetrics {
     pub pubkey_cache_len: Gauge,
     /// `validators_len()` on the state the core is importing against (M13).
     pub validators_len: Gauge,
+    /// Probe RTT through the never-shed tick lane (ADR-R-04 / [ARCH] §7.2).
+    pub core_liveness_rtt: Histogram,
+    /// 1 when N consecutive probe misses have parked aggregate health.
+    pub core_liveness_parked: Gauge,
+    /// Configured per-sample deadline so alerts do not hardcode Hoodi 3999.6 ms.
+    pub core_liveness_deadline: Gauge<f64, AtomicU64>,
 }
 
 impl ChainMetrics {
@@ -375,6 +382,9 @@ impl ChainMetrics {
         let pending_engine_dropped = Counter::default();
         let pubkey_cache_len = Gauge::default();
         let validators_len = Gauge::default();
+        let core_liveness_rtt = Histogram::new(AUX_DURATION_BUCKETS);
+        let core_liveness_parked = Gauge::default();
+        let core_liveness_deadline = Gauge::<f64, AtomicU64>::default();
 
         registry.register_with_unit(
             "cc_chain_process_block",
@@ -576,6 +586,23 @@ impl ChainMetrics {
             "Validator registry length on the state the core is importing against (M13 / P0-19)",
             validators_len.clone(),
         );
+        registry.register_with_unit(
+            "cc_core_liveness_rtt",
+            "Round-trip of TickWork::Ping through the consensus core (ADR-R-04)",
+            Unit::Seconds,
+            core_liveness_rtt.clone(),
+        );
+        registry.register(
+            "cc_core_liveness_parked",
+            "1 after N consecutive core-liveness misses (aggregate NOT_SERVING; ADR-R-04)",
+            core_liveness_parked.clone(),
+        );
+        registry.register_with_unit(
+            "cc_core_liveness_deadline",
+            "Per-sample probe deadline (ATTESTATION_DUE_BPS × slot; ADR-P3-13)",
+            Unit::Seconds,
+            core_liveness_deadline.clone(),
+        );
 
         let metrics = Self {
             process_block,
@@ -616,6 +643,9 @@ impl ChainMetrics {
             pending_engine_dropped,
             pubkey_cache_len,
             validators_len,
+            core_liveness_rtt,
+            core_liveness_parked,
+            core_liveness_deadline,
         };
         metrics.seed_exposition();
         metrics
@@ -740,6 +770,8 @@ impl ChainMetrics {
         let _ = self.pending_engine_dropped.get();
         self.pubkey_cache_len.set(0);
         self.validators_len.set(0);
+        self.core_liveness_parked.set(0);
+        self.core_liveness_deadline.set(0.0);
     }
 
     /// Increment `cc_chain_da_pending_dropped_total` by `n`.
@@ -769,6 +801,21 @@ impl ChainMetrics {
     /// Set `cc_chain_pending_engine_occupancy` (CC-36a).
     pub fn set_pending_engine_occupancy(&self, n: u64) {
         self.pending_engine_occupancy.set(n as i64);
+    }
+
+    /// Observe one successful core-liveness RTT (ADR-R-04).
+    pub fn observe_core_liveness_rtt(&self, rtt: Duration) {
+        self.core_liveness_rtt.observe(rtt.as_secs_f64());
+    }
+
+    /// Set `cc_core_liveness_parked` (0/1).
+    pub fn set_core_liveness_parked(&self, parked: bool) {
+        self.core_liveness_parked.set(i64::from(parked));
+    }
+
+    /// Publish the configured per-sample deadline.
+    pub fn set_core_liveness_deadline(&self, deadline: Duration) {
+        self.core_liveness_deadline.set(deadline.as_secs_f64());
     }
 
     // ── process_block / process_epoch (budgeted) ───────────────────────────

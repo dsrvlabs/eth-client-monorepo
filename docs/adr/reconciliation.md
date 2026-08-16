@@ -131,3 +131,9 @@ S1-B-13 names **ADR-R-07** as the future successor of `ADR-P3-15` (X-6:
 `[ARCH]` §10.4's "ADR-R-05" is the slashing-protection record, `S0-B-14`).
 The file is not written — this issue keeps the live skip. Do not add
 `ADR-R-07` to the 58-row table.
+
+S1-A-16 lands [`ADR-R-04.md`](ADR-R-04.md) — Status: accepted. Records that
+liveness is proved by a deadline-bounded no-op through the consensus core
+(N=3 consecutive `probe_core_liveness` misses → aggregate NOT_SERVING; the
+same N successes restore). Does not supersede a §10.4 row (`ADR-P3-02`
+remains `S1-B-12`).

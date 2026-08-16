@@ -38,6 +38,7 @@ services:
     ports: ["127.0.0.1:9101:9101"]
     healthcheck:
       <<: *hc
+      # Aggregate "": after a core is installed this is probe_core_liveness, not process-up (ADR-R-04).
       test: ["CMD", "/usr/local/bin/grpc-health-probe", "-addr=:9001"]
 
   p2p:
