@@ -242,6 +242,13 @@ best distributed-systems code and the thing X3 asks about.
 losing one is demoted to a test fixture, because it is the only way the conformance suite stays
 honest. Write that into the crate's README now, not at S3.
 
+- [x] `impl Ipc` — wrap today's tonic-over-TCP edge (`crates/seam/src/ipc.rs`)
+- [x] Jittered reconnect loop stays inside Ipc; `client.rs` calls the same policy (`full_jitter` / `next_backoff` / `new_session_id`)
+- [x] gRPC path not deleted (`p2p_stream.rs` / `run_chain_stream_client` remain)
+- [x] No `InProcess`; no 11-test conformance suite
+- [x] Crate README: both impls stay buildable permanently (`[ARCH]` §9.2 / R-14)
+- [x] No new `SeamError` variants; provenance stamped by the impl (`Source::Gossip`)
+
 ---
 
 ### `S1-A-10` … `S1-A-12` · The conformance suite

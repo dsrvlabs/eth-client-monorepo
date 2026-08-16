@@ -219,7 +219,10 @@ async fn verdict_timeout_resolves_local_ignore() {
         .await
         .expect("timeout waiting for local resolution")
         .unwrap();
-    assert!(matches!(resolution, VerdictResolution::Timeout));
+    assert!(
+        matches!(resolution, VerdictResolution::Backpressure { .. }),
+        "enqueue-clock overflow is Policy A, not Timeout IGNORE"
+    );
     assert!(m.verdict_timeout() >= 1);
     assert_eq!(m.chain_objects_sent(), 1);
     assert_eq!(
@@ -711,7 +714,10 @@ async fn late_after_timeout_preserves_counter_equality() {
         .await
         .expect("local timeout")
         .unwrap();
-    assert!(matches!(resolution, VerdictResolution::Timeout));
+    assert!(
+        matches!(resolution, VerdictResolution::Backpressure { .. }),
+        "verdict wait past enqueue clock is Backpressure"
+    );
     assert!(m.verdict_timeout() >= 1);
 
     // Wait for the late chain answer to arrive.
@@ -846,12 +852,12 @@ async fn duplicate_root_does_not_double_count_or_orphan() {
         .unwrap();
     assert!(matches!(dup, VerdictResolution::Timeout));
 
-    // First still times out later.
+    // First still expires later (enqueue clock → Backpressure).
     let first = tokio::time::timeout(Duration::from_secs(2), rx1)
         .await
         .expect("first timeout")
         .unwrap();
-    assert!(matches!(first, VerdictResolution::Timeout));
+    assert!(matches!(first, VerdictResolution::Backpressure { .. }));
 
     // Only one send counted; one timeout for the real outstanding entry.
     assert_eq!(m.chain_objects_sent(), 1);

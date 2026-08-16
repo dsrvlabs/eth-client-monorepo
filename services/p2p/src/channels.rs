@@ -13,13 +13,16 @@ use tokio::sync::{mpsc, oneshot};
 use crate::metrics::{P2pMetrics, PeerPenaltyReason, QueueName};
 use crate::verdict::Verdict as GossipVerdict;
 
-/// Resolution of a chain-bound object (verdict or local timeout IGNORE).
+/// Resolution of a chain-bound object (verdict, overflow, or local stall).
 #[derive(Debug, Clone)]
 pub enum VerdictResolution {
     /// Chain answered with a `Verdict`.
     FromChain(Verdict),
     /// Timed out locally — resolved as IGNORE so gossipsub is released.
     Timeout,
+    /// Policy A: import/Ipc queue stayed full for the send deadline.
+    /// Not a successful IGNORE — the gossip pipeline must shed as overflow.
+    Backpressure { bound: usize, waited_ms: u64 },
 }
 
 // ── §2.2 bounds (verbatim) ──────────────────────────────────────────────────

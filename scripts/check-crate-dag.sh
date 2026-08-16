@@ -371,8 +371,8 @@ allowed_deps() {
     # S1-A-01: skeleton, no workspace deps. JWT/HTTP isolation re-points here.
     # S1-A-05: append cc-types cc-crypto (methods + fastpath).
     cc-engine-api)        echo "cc-types cc-crypto" ;;
-    # S1-A-07: typed handles; leaf, no workspace edges ([ARCH] §2.1).
-    cc-seam)              echo "" ;;
+    # S1-A-09: Ipc wraps tonic; cc-proto is the live wire schema ([ARCH] §2.5).
+    cc-seam)              echo "cc-proto" ;;
     *)
       echo "error: unknown workspace member: $1" >&2
       return 1

@@ -1231,8 +1231,14 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "cc-proto",
+ "futures",
+ "getrandom 0.3.4",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
 ]
 
 [[package]]

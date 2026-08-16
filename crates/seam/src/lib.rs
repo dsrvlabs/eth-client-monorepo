@@ -7,14 +7,21 @@
 //! [`InProcess`] is the Single Hull transport: its lanes **are** the live
 //! import / column / publish queues. Do not wrap them in front of the
 //! scheduler import lane, the event ring, or `publish_fwd` — that is a
-//! second bound (`[ARCH]` §2.1). `Ipc` is a later issue. Both stay
-//! buildable permanently (`[ARCH]` §9.2).
+//! second bound (`[ARCH]` §2.1). [`Ipc`] is the p2p-side tonic client;
+//! [`IpcEgress`] is mailbox-only. Both stay buildable permanently
+//! (`[ARCH]` §9.2).
 
 mod in_process;
+mod ipc;
 
 pub use in_process::{
     DEFAULT_RING_CAPACITY, IMPORT_LANE_DEPTH, IMPORT_SEND_TIMEOUT, ImportMsg, InProcess,
     InProcessMailbox, MAX_EVENT_PAYLOAD_BYTES, PUBLISH_BOUND,
+};
+pub use ipc::{
+    BACKOFF_CAP, BACKOFF_INITIAL, CHAIN_OUT_BOUND, DEFAULT_VERDICT_TIMEOUT, Ipc, IpcConfig,
+    IpcEgress, IpcMailbox, IpcUpward, REASON_NOT_BOOTSTRAPPED, full_jitter, map_tonic_status,
+    new_session_id, next_backoff, wait_reconnect_backoff,
 };
 
 use async_trait::async_trait;
@@ -296,6 +303,15 @@ mod tests {
     #[test]
     fn p2p_egress_is_dyn() {
         let _: Arc<dyn P2pEgress> = Arc::new(Unused);
+    }
+
+    #[test]
+    fn ipc_ingress_is_not_the_egress_write() {
+        // p2p holds ChainIngress. P2pEgress write is IpcEgress, not Ipc.
+        fn assert_ingress<T: ChainIngress>() {}
+        fn assert_egress<T: P2pEgress>() {}
+        assert_ingress::<Ipc>();
+        assert_egress::<IpcEgress>();
     }
 
     #[test]

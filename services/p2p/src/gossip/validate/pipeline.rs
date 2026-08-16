@@ -626,6 +626,16 @@ async fn validate_one(pool: &ValidationPool, work: &GossipWork) -> Verdict {
                         VerdictResolution::Timeout => {
                             Verdict::ignore(Reason::Internal, fwd.block_root.to_vec())
                         }
+                        VerdictResolution::Backpressure { bound, waited_ms } => {
+                            // Policy A: visible overflow, then shed. Not Timeout/IGNORE-as-success.
+                            warn!(
+                                bound,
+                                waited_ms,
+                                root = ?fwd.block_root,
+                                "import backpressure; shedding block"
+                            );
+                            Verdict::ignore(Reason::Internal, fwd.block_root.to_vec())
+                        }
                     };
                     if matches!(verdict.acceptance, Acceptance::Accept) {
                         {

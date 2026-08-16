@@ -1,20 +1,20 @@
-//! Chain-stream client: dial, reconnect, outstanding map, verdict timeout.
+//! Chain-stream client: thin adapter over [`cc_seam::Ipc`].
 //!
-//! Architecture §10.4–10.6. Never fatal (§2.4) — it is already a reconnect loop.
+//! The session / H1 / outstanding machine lives in `cc-seam`. This file maps
+//! proto `ChainOutbound` onto seam types and applies metrics / late REJECT /
+//! publish / view. OutstandingMap remains for unit tests of the cap.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use cc_proto::chain::chain_service_client::ChainServiceClient;
 use cc_proto::p2p::{
-    Acceptance, ChainToP2p, ChainView, GossipObject, ImportResult, P2pToChain, PublishRequest,
-    Reason, StreamHello, Verdict, chain_to_p2p, p2p_to_chain,
+    Acceptance, ChainView, GossipObject, ImportResult, ObjectKind as ProtoKind, PublishRequest,
+    Reason, Verdict,
 };
-use futures::StreamExt;
-use tokio::sync::{mpsc, oneshot, watch};
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::Endpoint;
-use tracing::{debug, info, warn};
+use cc_seam::{ChainIngress, Ipc, IpcConfig, IpcUpward, SeamError};
+use tokio::sync::{Semaphore, mpsc, oneshot, watch};
+use tracing::debug;
 
 use super::publish::PublishDropCounter;
 use super::view::ChainViewStore;
@@ -24,6 +24,9 @@ use super::{
 };
 use crate::channels::{CHAIN_OUT_BOUND, ChainInbound, ChainOutbound, VerdictResolution};
 use crate::metrics::{P2pMetrics, QueueName};
+
+/// Jittered reconnect policy — owned by [`cc_seam::Ipc`].
+pub use cc_seam::{full_jitter, new_session_id, next_backoff};
 
 /// Correlation id for outstanding entries (`GossipObject.root` / `Verdict.correlation_id`).
 pub type CorrelationId = Vec<u8>;
@@ -195,16 +198,6 @@ impl Default for ChainStreamHandle {
     }
 }
 
-/// Fresh random session id (reconnect must not reuse the previous incarnation).
-#[must_use]
-pub fn new_session_id() -> u64 {
-    getrandom::u64().unwrap_or_else(|_| {
-        // Fall back to a time-derived id if the CSPRNG is unavailable (should not
-        // happen on supported platforms).
-        Instant::now().elapsed().as_nanos() as u64 ^ std::process::id() as u64
-    })
-}
-
 /// Derive the stall bound from the configured gossipsub heartbeat (R-6).
 ///
 /// `stall_max = heartbeat_interval × STALL_HEARTBEAT_FRACTION`.
@@ -215,32 +208,7 @@ pub fn stall_max_from_heartbeat(heartbeat: Duration) -> Duration {
     Duration::from_nanos(nanos.max(1))
 }
 
-/// Full-jitter sleep duration in `[0, backoff]` (AWS full jitter).
-#[must_use]
-pub fn full_jitter(backoff: Duration) -> Duration {
-    if backoff.is_zero() {
-        return Duration::ZERO;
-    }
-    let max_ms = backoff.as_millis() as u64;
-    let r = getrandom::u64().unwrap_or(0) % max_ms.saturating_add(1);
-    Duration::from_millis(r)
-}
-
-/// Next backoff after a failed attempt: `min(prev × 2, cap)`.
-#[must_use]
-pub fn next_backoff(prev: Duration, cap: Duration) -> Duration {
-    prev.saturating_mul(2).min(cap)
-}
-
-/// Run the never-fatal reconnect loop until `shutdown` is true.
-///
-/// - On connect: `StreamHello`, re-send `outstanding`, expect full `ChainView`.
-/// - Downward: `chain_out_rx` → stream objects, track outstanding.
-/// - Upward: verdicts / publish / view.
-/// - Timeout task: entries older than `verdict_timeout` → local IGNORE.
-/// - Backoff always runs to completion; outbound traffic is drained without
-///   cancelling the timer (H1 / reconnect-storm fix).
-#[allow(clippy::too_many_arguments)]
+/// Drive [`Ipc`] until `shutdown`. Signature unchanged so `service.rs` does not churn.
 pub async fn run_chain_stream_client(
     cfg: ChainStreamConfig,
     mut chain_out_rx: mpsc::Receiver<ChainOutbound>,
@@ -248,67 +216,270 @@ pub async fn run_chain_stream_client(
     publish_fwd_tx: mpsc::Sender<PublishRequest>,
     handle: ChainStreamHandle,
     metrics: P2pMetrics,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
 ) {
-    let mut outstanding = OutstandingMap::new();
-    let mut backoff = cfg.backoff_initial;
-    // Objects accepted while disconnected sit here until a session opens; the
-    // channel bound is CHAIN_OUT_BOUND, and outstanding is also capped.
-    let mut pending_out: Vec<ChainOutbound> = Vec::new();
-
     metrics.set_queue_depth(QueueName::Outstanding, 0);
     metrics.set_saturation_ratio(0.0);
 
-    loop {
-        if *shutdown.borrow() {
-            resolve_all_timeout(&mut outstanding, &metrics);
-            return;
-        }
+    let upward = Arc::new(P2pUpward {
+        handle,
+        publish_fwd: publish_fwd_tx,
+        chain_in: chain_in_tx,
+        metrics: metrics.clone(),
+        late_after: cfg.verdict_late_after,
+    });
+    let ipc_cfg = IpcConfig {
+        chain_uri: cfg.chain_uri,
+        verdict_timeout: cfg.verdict_timeout,
+        backoff_initial: cfg.backoff_initial,
+        backoff_cap: cfg.backoff_cap,
+        connect_timeout: cfg.connect_timeout,
+    };
+    let mut shutdown_feed = shutdown.clone();
+    let (ipc, _egress, mailbox, loop_fut) = Ipc::connect_with(ipc_cfg, shutdown, upward);
+    tokio::pin!(loop_fut);
 
-        match connect_and_run_session(
-            &cfg,
-            &mut chain_out_rx,
-            &chain_in_tx,
-            &publish_fwd_tx,
-            &handle,
-            &metrics,
-            &mut outstanding,
-            &mut pending_out,
-            &mut shutdown,
-            &mut backoff,
-        )
-        .await
-        {
-            SessionEnd::Shutdown => {
-                resolve_all_timeout(&mut outstanding, &metrics);
-                return;
-            }
-            SessionEnd::Disconnected => {
-                info!(
-                    outstanding = outstanding.len(),
-                    backoff_ms = backoff.as_millis() as u64,
-                    "chain stream disconnected; reconnecting with backoff"
-                );
-                let sleep = full_jitter(backoff);
-                backoff = next_backoff(backoff, cfg.backoff_cap);
-                // H1: complete the full backoff window. Drain outbound into
-                // `pending_out` without aborting the timer.
-                if wait_reconnect_backoff(
-                    sleep,
-                    &mut chain_out_rx,
-                    &mut pending_out,
-                    &mut outstanding,
-                    &metrics,
-                    cfg.verdict_timeout,
-                    &mut shutdown,
-                )
-                .await
-                {
-                    resolve_all_timeout(&mut outstanding, &metrics);
-                    return;
+    // Cap in-flight submit_gossip so chain_out backs up and host reserve() stalls.
+    let inflight = Arc::new(Semaphore::new(CHAIN_OUT_BOUND));
+    let feed = async {
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown_feed.changed() => {
+                    if *shutdown_feed.borrow() {
+                        break;
+                    }
+                }
+                permit = inflight.clone().acquire_owned() => {
+                    let Ok(permit) = permit else {
+                        break;
+                    };
+                    tokio::select! {
+                        biased;
+                        _ = shutdown_feed.changed() => {
+                            if *shutdown_feed.borrow() {
+                                break;
+                            }
+                        }
+                        item = chain_out_rx.recv() => {
+                            match item {
+                                None => break,
+                                Some(item) => {
+                                    let ipc = ipc.clone();
+                                    tokio::spawn(async move {
+                                        let _permit = permit;
+                                        dispatch_outbound(ipc, item).await;
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
+    };
+
+    tokio::select! {
+        biased;
+        () = &mut loop_fut => {}
+        () = feed => {
+            // Producers closed; Ipc stays up for views until shutdown.
+            loop_fut.await;
+        }
+    }
+    drop(mailbox);
+}
+
+struct P2pUpward {
+    handle: ChainStreamHandle,
+    publish_fwd: mpsc::Sender<PublishRequest>,
+    chain_in: mpsc::Sender<ChainInbound>,
+    metrics: P2pMetrics,
+    late_after: Duration,
+}
+
+impl IpcUpward for P2pUpward {
+    fn on_view(&self, view: cc_seam::ChainView) {
+        debug!(
+            slot = view.slot,
+            head_slot = view.head_slot,
+            view_kind = view.view_kind,
+            "received ChainView"
+        );
+        self.handle.view.store(view_to_proto(&view));
+    }
+
+    fn on_publish(&self, req: cc_seam::PublishRequest) {
+        if self.publish_fwd.try_send(publish_to_proto(req)).is_err() {
+            debug!("publish forward channel full or closed");
+        }
+    }
+
+    fn on_verdict(&self, verdict: cc_seam::Verdict, latency: Duration) {
+        self.metrics.observe_verdict_latency(latency.as_secs_f64());
+        self.metrics.inc_chain_verdicts_received();
+        if latency > self.late_after {
+            self.metrics.inc_verdict_late();
+        }
+        let proto = verdict_to_proto(&verdict);
+        let _ = self.chain_in.try_send(ChainInbound {
+            verdict: proto,
+            latency,
+        });
+    }
+
+    fn on_stray_verdict(&self, verdict: cc_seam::Verdict) {
+        self.metrics.inc_verdict_late();
+        let _ = self.chain_in.try_send(ChainInbound {
+            verdict: verdict_to_proto(&verdict),
+            latency: Duration::ZERO,
+        });
+        debug!(
+            "verdict for unknown/expired correlation_id (late after timeout or late import reject; not an equality term)"
+        );
+    }
+
+    fn on_object_sent(&self) {
+        self.metrics.inc_chain_objects_sent();
+    }
+
+    fn on_timeout(&self) {
+        self.metrics.inc_verdict_timeout();
+    }
+
+    fn on_outstanding(&self, depth: usize) {
+        let depth = depth as i64;
+        self.metrics.set_queue_depth(QueueName::Outstanding, depth);
+        let milli = ((depth as f64 / OUTSTANDING_CAP as f64) * 1000.0).round() as i64;
+        self.metrics
+            .set_saturation_ratio_milli(milli.clamp(0, 1000));
+    }
+}
+
+async fn dispatch_outbound(ipc: Ipc, item: ChainOutbound) {
+    let Some(obj) = gossip_from_proto(item.object) else {
+        if let Some(reply) = item.reply {
+            let _ = reply.send(VerdictResolution::Timeout);
+        }
+        return;
+    };
+    match ipc.submit_gossip(obj).await {
+        Ok(res) => {
+            if let Some(reply) = item.reply {
+                let _ = reply.send(VerdictResolution::FromChain(verdict_to_proto(&res.verdict)));
+            }
+        }
+        Err(SeamError::Backpressure { bound, waited_ms }) => {
+            if let Some(reply) = item.reply {
+                let _ = reply.send(VerdictResolution::Backpressure { bound, waited_ms });
+            }
+        }
+        Err(_) => {
+            if let Some(reply) = item.reply {
+                let _ = reply.send(VerdictResolution::Timeout);
+            }
+        }
+    }
+}
+
+fn gossip_from_proto(o: GossipObject) -> Option<cc_seam::GossipObject> {
+    let root: [u8; 32] = o.root.try_into().ok()?;
+    Some(cc_seam::GossipObject {
+        ssz: o.ssz,
+        fork: o.fork,
+        root,
+        kind: kind_from_proto(o.kind),
+        subnet_id: o.subnet_id,
+    })
+}
+
+fn kind_from_proto(kind: i32) -> cc_seam::ObjectKind {
+    match ProtoKind::try_from(kind).unwrap_or(ProtoKind::Unspecified) {
+        ProtoKind::Attestation => cc_seam::ObjectKind::Attestation,
+        ProtoKind::Aggregate => cc_seam::ObjectKind::Aggregate,
+        ProtoKind::SyncCommittee => cc_seam::ObjectKind::SyncCommittee,
+        ProtoKind::SyncContribution => cc_seam::ObjectKind::SyncContribution,
+        ProtoKind::VoluntaryExit => cc_seam::ObjectKind::VoluntaryExit,
+        ProtoKind::ProposerSlashing => cc_seam::ObjectKind::ProposerSlashing,
+        ProtoKind::AttesterSlashing => cc_seam::ObjectKind::AttesterSlashing,
+        ProtoKind::BlsToExecutionChange => cc_seam::ObjectKind::BlsToExecutionChange,
+        ProtoKind::ColumnSidecar => cc_seam::ObjectKind::ColumnSidecar,
+        ProtoKind::Block | ProtoKind::Unspecified => cc_seam::ObjectKind::Block,
+    }
+}
+
+fn kind_to_proto(kind: cc_seam::ObjectKind) -> i32 {
+    let k = match kind {
+        cc_seam::ObjectKind::Block => ProtoKind::Block,
+        cc_seam::ObjectKind::Attestation => ProtoKind::Attestation,
+        cc_seam::ObjectKind::Aggregate => ProtoKind::Aggregate,
+        cc_seam::ObjectKind::SyncCommittee => ProtoKind::SyncCommittee,
+        cc_seam::ObjectKind::SyncContribution => ProtoKind::SyncContribution,
+        cc_seam::ObjectKind::VoluntaryExit => ProtoKind::VoluntaryExit,
+        cc_seam::ObjectKind::ProposerSlashing => ProtoKind::ProposerSlashing,
+        cc_seam::ObjectKind::AttesterSlashing => ProtoKind::AttesterSlashing,
+        cc_seam::ObjectKind::BlsToExecutionChange => ProtoKind::BlsToExecutionChange,
+        cc_seam::ObjectKind::ColumnSidecar => ProtoKind::ColumnSidecar,
+    };
+    k as i32
+}
+
+fn verdict_to_proto(v: &cc_seam::Verdict) -> Verdict {
+    Verdict {
+        correlation_id: v.correlation_id.to_vec(),
+        acceptance: match v.acceptance {
+            cc_seam::Acceptance::Accept => Acceptance::Accept,
+            cc_seam::Acceptance::Reject => Acceptance::Reject,
+            cc_seam::Acceptance::Ignore => Acceptance::Ignore,
+        } as i32,
+        reason: match v.reason {
+            cc_seam::Reason::Valid => Reason::Valid,
+            cc_seam::Reason::Invalid => Reason::Invalid,
+            cc_seam::Reason::InvalidSignature => Reason::InvalidSignature,
+            cc_seam::Reason::NotDescendedFromFinalized => Reason::NotDescendedFromFinalized,
+            cc_seam::Reason::Duplicate => Reason::Duplicate,
+            cc_seam::Reason::UnknownParent => Reason::UnknownParent,
+            cc_seam::Reason::FutureSlot => Reason::FutureSlot,
+            cc_seam::Reason::DeferredDa => Reason::DeferredDa,
+            cc_seam::Reason::AlreadyKnown => Reason::AlreadyKnown,
+            cc_seam::Reason::Internal => Reason::Internal,
+        } as i32,
+        import: match v.import {
+            cc_seam::ImportResult::Imported => ImportResult::Imported,
+            cc_seam::ImportResult::Duplicate => ImportResult::Duplicate,
+            cc_seam::ImportResult::DeferredDa => ImportResult::DeferredDa,
+            cc_seam::ImportResult::UnknownParent => ImportResult::UnknownParent,
+            cc_seam::ImportResult::Invalid => ImportResult::Invalid,
+            cc_seam::ImportResult::None => ImportResult::None,
+        } as i32,
+    }
+}
+
+fn publish_to_proto(r: cc_seam::PublishRequest) -> PublishRequest {
+    PublishRequest {
+        ssz: r.ssz,
+        kind: kind_to_proto(r.kind),
+        topic: r.topic,
+        subnet_id: r.subnet_id,
+    }
+}
+
+fn view_to_proto(v: &cc_seam::ChainView) -> ChainView {
+    ChainView {
+        slot: v.slot,
+        epoch: v.epoch,
+        head_root: v.head_root.to_vec(),
+        head_slot: v.head_slot,
+        finalized_root: v.finalized_root.to_vec(),
+        finalized_epoch: v.finalized_epoch,
+        justified_root: v.justified_root.to_vec(),
+        justified_epoch: v.justified_epoch,
+        genesis_time: v.genesis_time,
+        genesis_validators_root: v.genesis_validators_root.to_vec(),
+        proposer_lookahead: v.proposer_lookahead.clone(),
+        proposer_pubkeys: v.proposer_pubkeys.clone(),
+        active_validator_count: v.active_validator_count,
+        view_kind: v.view_kind,
     }
 }
 
@@ -316,6 +487,7 @@ pub async fn run_chain_stream_client(
 /// the reconnect interval. Returns `true` if shutdown was requested.
 ///
 /// Exposed for tests that assert backoff is not cancelled under outbound load.
+/// Timer/drain policy is [`cc_seam::wait_reconnect_backoff`] (H1) — not a second loop.
 pub async fn wait_reconnect_backoff(
     sleep: Duration,
     chain_out_rx: &mut mpsc::Receiver<ChainOutbound>,
@@ -325,457 +497,15 @@ pub async fn wait_reconnect_backoff(
     verdict_timeout: Duration,
     shutdown: &mut watch::Receiver<bool>,
 ) -> bool {
-    let deadline = Instant::now() + sleep;
-    let mut out_open = true;
-    loop {
-        // Timeouts keep running while disconnected (M4).
-        apply_timeouts(outstanding, verdict_timeout, metrics);
-        // Non-blocking drain of any already-queued outbound.
-        if out_open {
-            loop {
-                match chain_out_rx.try_recv() {
-                    Ok(msg) => buffer_while_disconnected(pending_out, msg),
-                    Err(mpsc::error::TryRecvError::Empty) => break,
-                    Err(mpsc::error::TryRecvError::Disconnected) => {
-                        out_open = false;
-                        break;
-                    }
-                }
-            }
-        }
-        if *shutdown.borrow() {
-            return true;
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            return false;
-        }
-        let remaining = deadline - now;
-        if out_open {
-            tokio::select! {
-                biased;
-                _ = shutdown.changed() => {
-                    if *shutdown.borrow() {
-                        return true;
-                    }
-                }
-                _ = tokio::time::sleep(remaining) => {
-                    return false;
-                }
-                msg = chain_out_rx.recv() => {
-                    // Buffer and continue — do **not** exit early (H1).
-                    match msg {
-                        Some(m) => buffer_while_disconnected(pending_out, m),
-                        None => {
-                            // Channel closed: stop selecting recv (would spin).
-                            out_open = false;
-                        }
-                    }
-                }
-            }
-        } else {
-            // No more outbound producers — pure sleep until deadline.
-            tokio::select! {
-                biased;
-                _ = shutdown.changed() => {
-                    if *shutdown.borrow() {
-                        return true;
-                    }
-                }
-                _ = tokio::time::sleep(remaining) => {
-                    return false;
-                }
-            }
-        }
-    }
-}
-
-enum SessionEnd {
-    Shutdown,
-    Disconnected,
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn connect_and_run_session(
-    cfg: &ChainStreamConfig,
-    chain_out_rx: &mut mpsc::Receiver<ChainOutbound>,
-    chain_in_tx: &mpsc::Sender<ChainInbound>,
-    publish_fwd_tx: &mpsc::Sender<PublishRequest>,
-    handle: &ChainStreamHandle,
-    metrics: &P2pMetrics,
-    outstanding: &mut OutstandingMap,
-    pending_out: &mut Vec<ChainOutbound>,
-    shutdown: &mut watch::Receiver<bool>,
-    backoff: &mut Duration,
-) -> SessionEnd {
-    let endpoint = match Endpoint::from_shared(cfg.chain_uri.clone()) {
-        Ok(e) => e
-            .connect_timeout(cfg.connect_timeout)
-            .timeout(Duration::from_secs(30)),
-        Err(e) => {
-            warn!(error = %e, uri = %cfg.chain_uri, "invalid chain URI");
-            return SessionEnd::Disconnected;
-        }
-    };
-
-    let channel = match endpoint.connect().await {
-        Ok(c) => c,
-        Err(e) => {
-            debug!(error = %e, "chain stream dial failed");
-            return SessionEnd::Disconnected;
-        }
-    };
-
-    let mut client = ChainServiceClient::new(channel);
-    // Bound matches STREAM_OUTBOUND / CHAIN_OUT so we never buffer unbounded.
-    let (out_tx, out_rx) = mpsc::channel::<P2pToChain>(CHAIN_OUT_BOUND);
-    let outbound = ReceiverStream::new(out_rx);
-
-    let response = match client.p2p_stream(outbound).await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(error = %e, "P2pStream open failed");
-            return SessionEnd::Disconnected;
-        }
-    };
-    let mut inbound = response.into_inner();
-
-    let session_id = new_session_id();
-    let mut out_seq: u64 = 0;
-    let mut last_chain_seq: u64 = 0;
-
-    // StreamHello — resume_seq is last processed chain seq (0 on fresh).
-    out_seq = out_seq.saturating_add(1);
-    if out_tx
-        .send(P2pToChain {
-            seq: out_seq,
-            msg: Some(p2p_to_chain::Msg::Hello(StreamHello {
-                session_id,
-                resume_seq: last_chain_seq,
-            })),
-        })
-        .await
-        .is_err()
-    {
-        return SessionEnd::Disconnected;
-    }
-    // Healthy open: reset backoff so a later blip does not stay at the cap (L5).
-    *backoff = cfg.backoff_initial;
-    info!(session_id, "chain stream session opened (StreamHello sent)");
-
-    // Re-send everything still outstanding after the new hello (CC-27/4).
-    // Drain, re-assign seq, re-insert. Do **not** re-increment
-    // `chain_objects_sent` — the original send already counted; equality is
-    // `sent == verdicts + timeouts` over the object's lifetime, not per wire frame.
-    // Do **not** reset `first_sent_at` — timeout clock keeps ticking across reconnect.
-    let to_resend = outstanding.take_all_for_resend();
-    for mut entry in to_resend {
-        out_seq = out_seq.saturating_add(1);
-        entry.seq = out_seq;
-        entry.sent_at = Instant::now();
-        let id = entry.object.root.clone();
-        let wire = P2pToChain {
-            seq: out_seq,
-            msg: Some(p2p_to_chain::Msg::Object(entry.object.clone())),
-        };
-        if out_tx.send(wire).await.is_err() {
-            // Put back so the next session can re-send.
-            let _ = outstanding.reinsert(id, entry);
-            return SessionEnd::Disconnected;
-        }
-        let _ = outstanding.reinsert(id, entry);
-    }
-    sync_outstanding_metrics(outstanding, metrics);
-
-    // Flush objects buffered while disconnected.
-    let buffered = std::mem::take(pending_out);
-    for item in buffered {
-        if send_object(item, &mut out_seq, &out_tx, outstanding, metrics)
-            .await
-            .is_err()
-        {
-            return SessionEnd::Disconnected;
-        }
-    }
-
-    let mut timeout_tick = tokio::time::interval(Duration::from_millis(100));
-    timeout_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    loop {
-        tokio::select! {
-            biased;
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() {
-                    return SessionEnd::Shutdown;
-                }
-            }
-            _ = timeout_tick.tick() => {
-                apply_timeouts(outstanding, cfg.verdict_timeout, metrics);
-            }
-            msg = inbound.next() => {
-                match msg {
-                    None => return SessionEnd::Disconnected,
-                    Some(Err(status)) => {
-                        warn!(error = %status, "chain stream inbound error");
-                        return SessionEnd::Disconnected;
-                    }
-                    Some(Ok(msg)) => {
-                        last_chain_seq = msg.seq;
-                        if handle_upward(
-                            msg,
-                            outstanding,
-                            handle,
-                            publish_fwd_tx,
-                            chain_in_tx,
-                            metrics,
-                            cfg.verdict_late_after,
-                        ).await
-                            .is_err()
-                        {
-                            return SessionEnd::Disconnected;
-                        }
-                    }
-                }
-            }
-            item = chain_out_rx.recv() => {
-                match item {
-                    None => {
-                        // Outbound producers closed; keep the session until
-                        // shutdown so views/publishes still flow.
-                        // Park by waiting only on inbound/timeout/shutdown.
-                        // Fall through: treat as disconnect of producers but
-                        // stay connected until chain closes or shutdown.
-                        debug!("chain_out channel closed; session stays up for views");
-                        // Replace further recv with pending forever via a branch
-                        // that never fires — simplest: spin on the other arms by
-                        // not selecting this again. We break to a receive-only loop.
-                        return receive_only_loop(
-                            cfg,
-                            &mut inbound,
-                            outstanding,
-                            handle,
-                            publish_fwd_tx,
-                            chain_in_tx,
-                            metrics,
-                            shutdown,
-                            &mut last_chain_seq,
-                        ).await;
-                    }
-                    Some(item) => {
-                        if send_object(
-                            item,
-                            &mut out_seq,
-                            &out_tx,
-                            outstanding,
-                            metrics,
-                        )
-                        .await
-                        .is_err()
-                        {
-                            return SessionEnd::Disconnected;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn receive_only_loop(
-    cfg: &ChainStreamConfig,
-    inbound: &mut (impl StreamExt<Item = Result<ChainToP2p, tonic::Status>> + Unpin),
-    outstanding: &mut OutstandingMap,
-    handle: &ChainStreamHandle,
-    publish_fwd_tx: &mpsc::Sender<PublishRequest>,
-    chain_in_tx: &mpsc::Sender<ChainInbound>,
-    metrics: &P2pMetrics,
-    shutdown: &mut watch::Receiver<bool>,
-    last_chain_seq: &mut u64,
-) -> SessionEnd {
-    let mut timeout_tick = tokio::time::interval(Duration::from_millis(100));
-    timeout_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        tokio::select! {
-            biased;
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() {
-                    return SessionEnd::Shutdown;
-                }
-            }
-            _ = timeout_tick.tick() => {
-                apply_timeouts(outstanding, cfg.verdict_timeout, metrics);
-            }
-            msg = inbound.next() => {
-                match msg {
-                    None => return SessionEnd::Disconnected,
-                    Some(Err(_)) => return SessionEnd::Disconnected,
-                    Some(Ok(msg)) => {
-                        *last_chain_seq = msg.seq;
-                        if handle_upward(
-                            msg,
-                            outstanding,
-                            handle,
-                            publish_fwd_tx,
-                            chain_in_tx,
-                            metrics,
-                            cfg.verdict_late_after,
-                        ).await
-                            .is_err()
-                        {
-                            return SessionEnd::Disconnected;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-async fn send_object(
-    item: ChainOutbound,
-    out_seq: &mut u64,
-    out_tx: &mpsc::Sender<P2pToChain>,
-    outstanding: &mut OutstandingMap,
-    metrics: &P2pMetrics,
-) -> Result<(), ()> {
-    let id = item.object.root.clone();
-
-    // Duplicate root already outstanding: do not double-count `sent`, do not
-    // overwrite the existing entry (orphans the first reply). Resolve the *new*
-    // producer with local IGNORE and leave equality untouched (M2).
-    if outstanding.contains(&id) {
-        warn!("duplicate root already outstanding; dropping new send without equality term");
-        if let Some(reply) = item.reply {
-            let _ = reply.send(VerdictResolution::Timeout);
-        }
-        return Ok(());
-    }
-
-    if outstanding.is_full() {
-        // Cap refusal is not a verdict timeout — do not charge the equality
-        // triple (F2). Producer still gets a release on its reply channel.
-        warn!("outstanding at cap; dropping outbound object (should be rare under §2.3)");
-        if let Some(reply) = item.reply {
-            let _ = reply.send(VerdictResolution::Timeout);
-        }
-        return Ok(());
-    }
-
-    *out_seq = out_seq.saturating_add(1);
-    let seq = *out_seq;
-    let wire = P2pToChain {
-        seq,
-        msg: Some(p2p_to_chain::Msg::Object(item.object.clone())),
-    };
-    out_tx.send(wire).await.map_err(|_| ())?;
-    metrics.inc_chain_objects_sent();
-
-    let now = Instant::now();
-    let entry = OutstandingEntry {
-        seq,
-        first_sent_at: now,
-        sent_at: now,
-        object: item.object,
-        reply: item.reply,
-    };
-    if !outstanding.try_insert(id, entry) {
-        // Race should be impossible after contains/is_full checks; if it
-        // happens, do not leave `sent` without a resolution term — count as
-        // timeout so equality stays exact.
-        metrics.inc_verdict_timeout();
-    }
-    sync_outstanding_metrics(outstanding, metrics);
-    Ok(())
-}
-
-async fn handle_upward(
-    msg: ChainToP2p,
-    outstanding: &mut OutstandingMap,
-    handle: &ChainStreamHandle,
-    publish_fwd_tx: &mpsc::Sender<PublishRequest>,
-    chain_in_tx: &mpsc::Sender<ChainInbound>,
-    metrics: &P2pMetrics,
-    late_after: Duration,
-) -> Result<(), ()> {
-    let Some(inner) = msg.msg else {
-        return Ok(());
-    };
-    match inner {
-        chain_to_p2p::Msg::Verdict(verdict) => {
-            apply_verdict(verdict, outstanding, chain_in_tx, metrics, late_after).await;
-            Ok(())
-        }
-        chain_to_p2p::Msg::Publish(req) => {
-            // Outward path — do not block the stream on a full publish queue;
-            // the publish dispatcher applies oldest-drop.
-            if publish_fwd_tx.try_send(req).is_err() {
-                // Dispatcher may be slow; try once with await under a short budget.
-                // If still full, the dispatcher is responsible for drop accounting
-                // when it eventually accepts — count a drop here if channel closed.
-                warn!("publish forward channel full or closed");
-            }
-            Ok(())
-        }
-        chain_to_p2p::Msg::View(view) => {
-            apply_view(view, handle, metrics);
-            Ok(())
-        }
-    }
-}
-
-fn apply_view(view: ChainView, handle: &ChainStreamHandle, metrics: &P2pMetrics) {
-    // Head-lag: if we know genesis/slot from the view, optional observe later.
-    let _ = metrics;
-    debug!(
-        slot = view.slot,
-        head_slot = view.head_slot,
-        view_kind = view.view_kind,
-        "received ChainView"
-    );
-    handle.view.store(view);
-}
-
-async fn apply_verdict(
-    verdict: Verdict,
-    outstanding: &mut OutstandingMap,
-    chain_in_tx: &mpsc::Sender<ChainInbound>,
-    metrics: &P2pMetrics,
-    late_after: Duration,
-) {
-    let id = verdict.correlation_id.clone();
-    if let Some(entry) = outstanding.remove(&id) {
-        // Latency from last wire send; late budget is the validation window.
-        let latency = entry.sent_at.elapsed();
-        metrics.observe_verdict_latency(latency.as_secs_f64());
-        metrics.inc_chain_verdicts_received();
-        if latency > late_after {
-            // Late but still the resolution term (CC-27/5 metric half).
-            metrics.inc_verdict_late();
-        }
-        if let Some(reply) = entry.reply {
-            let _ = reply.send(VerdictResolution::FromChain(verdict.clone()));
-        }
-        // Dispatch to consumers (gossip validation hold release).
-        let _ = chain_in_tx.try_send(ChainInbound {
-            verdict: verdict.clone(),
-            latency,
-        });
-        sync_outstanding_metrics(outstanding, metrics);
-    } else {
-        // Already timed out, or a **late import correction** after early ACCEPT
-        // (CC-27c): count late only — do **not** re-enter
-        // `chain_verdicts_received` (CC-27/4 equality). Still forward to
-        // `chain_in` so `import_invalid` app-score can fire without re-report.
-        metrics.inc_verdict_late();
-        let _ = chain_in_tx.try_send(ChainInbound {
-            verdict,
-            latency: std::time::Duration::ZERO,
-        });
-        debug!(
-            "verdict for unknown/expired correlation_id (late after timeout or late import reject; not an equality term)"
-        );
-    }
+    cc_seam::wait_reconnect_backoff(
+        sleep,
+        chain_out_rx,
+        pending_out,
+        shutdown,
+        |_pending| apply_timeouts(outstanding, verdict_timeout, metrics),
+        buffer_while_disconnected,
+    )
+    .await
 }
 
 fn apply_timeouts(outstanding: &mut OutstandingMap, timeout: Duration, metrics: &P2pMetrics) {
@@ -792,19 +522,6 @@ fn apply_timeouts(outstanding: &mut OutstandingMap, timeout: Duration, metrics: 
     if !outstanding.is_empty() || metrics.queue_depth(QueueName::Outstanding) != 0 {
         sync_outstanding_metrics(outstanding, metrics);
     }
-}
-
-fn resolve_all_timeout(outstanding: &mut OutstandingMap, metrics: &P2pMetrics) {
-    let keys = outstanding.keys();
-    for k in keys {
-        if let Some(entry) = outstanding.remove(&k) {
-            metrics.inc_verdict_timeout();
-            if let Some(reply) = entry.reply {
-                let _ = reply.send(VerdictResolution::Timeout);
-            }
-        }
-    }
-    sync_outstanding_metrics(outstanding, metrics);
 }
 
 fn sync_outstanding_metrics(outstanding: &OutstandingMap, metrics: &P2pMetrics) {

@@ -187,7 +187,7 @@ cc-scheduler = { path = "crates/scheduler" }
 
 # S1-A-01 Engine API crate ([ARCH] §6.2). Skeleton: no workspace edges.
 cc-engine-api = { path = "crates/engine-api" }
-# S1-A-07 typed handles ([ARCH] §2.1). Leaf: no workspace edges.
+# S1-A-07 typed handles ([ARCH] §2.1). S1-A-09 Ipc adds the cc-proto edge.
 cc-seam = { path = "crates/seam" }
 # Object-safe async traits for `Arc<dyn ChainIngress>` / `Arc<dyn P2pEgress>`.
 async-trait = "0.1.91"

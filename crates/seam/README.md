@@ -8,9 +8,12 @@ Transport impls:
 - `InProcess` — bounded tokio mpsc + oneshot replies (S1-A-08). Single Hull.
   These channels **are** the live queues; do not wrap them in front of the
   scheduler import lane, the event ring, or `publish_fwd`.
-- `Ipc` — wraps today's tonic-over-TCP edge; S3 option is a unix socket +
-  `SO_PEERCRED` (S1-A-09). The jittered reconnect loop stays inside this impl.
+- `Ipc` — p2p-side tonic-over-TCP client (`ChainIngress`). `IpcEgress` is a
+  local mailbox, not a chain→p2p wire write — do not give p2p the
+  `P2pEgress` path. S3 option is a unix socket + `SO_PEERCRED`. The
+  jittered reconnect loop lives in `Ipc`; `run_chain_stream_client` is a
+  thin proto adapter over it.
 
-**Both impls stay buildable permanently** (`[ARCH]` §9.2). The losing
-impl is never deleted at S3; it is demoted to a test fixture so the
-conformance suite stays honest.
+**Both impls stay buildable permanently** (`[ARCH]` §9.2 / `[PLAN]` R-14).
+The losing impl is never deleted at S3; it is demoted to a test fixture
+so the conformance suite stays honest.
