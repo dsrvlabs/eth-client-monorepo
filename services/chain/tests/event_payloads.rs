@@ -22,7 +22,7 @@ use cc_chain::{
     ForkChoiceScalarsPayload, block_imported_payload,
 };
 use cc_proto::chain::EventKind;
-use cc_proto::p2p::{ColumnSidecar, P2pToChain, p2p_to_chain};
+use cc_proto::p2p::{ColumnSidecar, P2pToChain, Reason, chain_to_p2p, p2p_to_chain};
 use cc_types::containers::Checkpoint;
 use cc_types::primitives::{Epoch, Root, Slot};
 use serde::Deserialize;
@@ -330,10 +330,10 @@ fn chain_toml_event_ring_keys_load() {
     assert_eq!(cfg.event_ring_bytes, 67_108_864);
 }
 
-// ── DATA_COLUMN producer (p2p stream relay, no decode) ──────────────────────
+// ── Column ingest (p2p stream → ArchiveWrite; no ring) ──────────────────────
 
 #[tokio::test]
-async fn column_relay_publishes_data_column_without_decode() {
+async fn column_ingest_decodes_and_skips_the_ring() {
     use cc_chain::epoch_context::EpochContextStore;
     use cc_chain::head::HeadSnapshotStore;
     use cc_chain::p2p_stream::{P2pStreamDeps, serve_p2p_stream};
@@ -375,7 +375,7 @@ async fn column_relay_publishes_data_column_without_decode() {
         .expect("view timeout")
         .expect("view end");
 
-    let sidecar = b"opaque-sidecar-ssz-not-decoded";
+    let sidecar = b"opaque-sidecar-ssz-not-a-container";
     let block_root = vec![0x77u8; 32];
     in_tx
         .send(P2pToChain {
@@ -391,25 +391,215 @@ async fn column_relay_publishes_data_column_without_decode() {
         .await
         .unwrap();
 
-    // Verdict ACK.
+    // Verdict ACK (malformed sidecar is rejected).
     let _ = tokio::time::timeout(Duration::from_millis(200), outbound.next())
         .await
         .expect("verdict timeout");
 
-    // DATA_COLUMN appears on the bus with verbatim payload and block root.
-    let ev = tokio::time::timeout(Duration::from_millis(500), sub.recv())
-        .await
-        .expect("event timeout")
-        .unwrap()
-        .expect("event");
-    assert_eq!(ev.kind, EventKind::DataColumn as i32);
-    assert_eq!(ev.payload.as_slice(), sidecar.as_slice());
-    assert_eq!(ev.root, block_root);
-    assert_eq!(
-        deps.column_decode_attempts(),
-        0,
-        "chain must not decode the sidecar"
+    // Column bytes must not appear on the ring.
+    let ev = tokio::time::timeout(Duration::from_millis(150), sub.recv()).await;
+    assert!(ev.is_err(), "column SSZ must not enter the event ring");
+    assert!(
+        deps.column_decode_attempts() > 0,
+        "column_decode_attempts is no longer 0-by-construction"
     );
+
+    events.shutdown().await;
+}
+
+#[tokio::test]
+async fn column_ingest_without_archive_is_unavailable() {
+    use cc_chain::epoch_context::EpochContextStore;
+    use cc_chain::head::HeadSnapshotStore;
+    use cc_chain::p2p_stream::{P2pStreamDeps, serve_p2p_stream};
+    use cc_types::preset::Mainnet;
+    use cc_types::sidecar::DataColumnSidecar;
+    use futures::StreamExt;
+    use std::sync::{Arc, RwLock};
+    use tokio_stream::wrappers::ReceiverStream;
+
+    let events = EventsHandle::spawn(EventsConfig {
+        ring_capacity: 16,
+        ring_bytes: usize::MAX,
+        subscriber_queue_capacity: 8,
+        session_id: Some(0x46),
+    });
+    let mut sub = events.subscribe(None).await.unwrap();
+    let deps = P2pStreamDeps::with_events(
+        HeadSnapshotStore::new(),
+        EpochContextStore::new(),
+        Arc::new(RwLock::new(None)),
+        Some(events.event_sender()),
+    );
+
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(4);
+    let inbound = ReceiverStream::new(in_rx).map(Ok);
+    let mut outbound = serve_p2p_stream(deps.clone(), inbound).await.unwrap();
+
+    in_tx
+        .send(P2pToChain {
+            seq: 1,
+            msg: Some(p2p_to_chain::Msg::Hello(cc_proto::p2p::StreamHello {
+                session_id: 1,
+                resume_seq: 0,
+            })),
+        })
+        .await
+        .unwrap();
+    let _ = tokio::time::timeout(Duration::from_millis(200), outbound.next())
+        .await
+        .expect("view timeout")
+        .expect("view end");
+
+    let mut sc = DataColumnSidecar::<Mainnet> {
+        index: 4,
+        ..Default::default()
+    };
+    sc.signed_block_header.message.slot = Slot::new(8);
+    in_tx
+        .send(P2pToChain {
+            seq: 2,
+            msg: Some(p2p_to_chain::Msg::Column(ColumnSidecar {
+                ssz: sc.as_ssz_bytes(),
+                fork: 0,
+                root: vec![0x66u8; 32],
+                column_index: 4,
+                subnet_id: 4,
+            })),
+        })
+        .await
+        .unwrap();
+
+    let msg = tokio::time::timeout(Duration::from_millis(200), outbound.next())
+        .await
+        .expect("verdict timeout")
+        .expect("verdict end")
+        .expect("verdict");
+    match msg.msg {
+        Some(chain_to_p2p::Msg::Verdict(v)) => {
+            assert_eq!(
+                v.reason,
+                Reason::Internal as i32,
+                "missing archive must not ACK AlreadyKnown after a drop"
+            );
+        }
+        other => panic!("expected verdict, got {other:?}"),
+    }
+    assert!(
+        deps.column_decode_attempts() > 0,
+        "column_decode_attempts is no longer 0-by-construction"
+    );
+    let ev = tokio::time::timeout(Duration::from_millis(150), sub.recv()).await;
+    assert!(ev.is_err(), "column SSZ must not enter the event ring");
+
+    events.shutdown().await;
+}
+
+#[tokio::test]
+async fn column_ingest_uses_typed_batch_index() {
+    use async_trait::async_trait;
+    use cc_chain::epoch_context::EpochContextStore;
+    use cc_chain::head::HeadSnapshotStore;
+    use cc_chain::p2p_stream::{P2pStreamDeps, serve_p2p_stream};
+    use cc_seam::{ArchiveWrite, ColumnBatch, SeamError};
+    use cc_types::preset::Mainnet;
+    use cc_types::sidecar::DataColumnSidecar;
+    use futures::StreamExt;
+    use std::sync::{Arc, Mutex, RwLock};
+    use tokio_stream::wrappers::ReceiverStream;
+
+    #[derive(Default)]
+    struct RecordingArchive {
+        batches: Mutex<Vec<ColumnBatch>>,
+    }
+
+    #[async_trait]
+    impl ArchiveWrite for RecordingArchive {
+        async fn ingest_columns(&self, batch: ColumnBatch) -> Result<(), SeamError> {
+            self.batches.lock().unwrap().push(batch);
+            Ok(())
+        }
+    }
+
+    let archive = Arc::new(RecordingArchive::default());
+    let handle: cc_chain::ArchiveWriteHandle = archive.clone();
+
+    let events = EventsHandle::spawn(EventsConfig {
+        ring_capacity: 16,
+        ring_bytes: usize::MAX,
+        subscriber_queue_capacity: 8,
+        session_id: Some(0x45),
+    });
+    let mut sub = events.subscribe(None).await.unwrap();
+
+    let deps = P2pStreamDeps::with_archive(
+        HeadSnapshotStore::new(),
+        EpochContextStore::new(),
+        Arc::new(RwLock::new(None)),
+        Some(events.event_sender()),
+        Some(handle),
+    );
+
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(4);
+    let inbound = ReceiverStream::new(in_rx).map(Ok);
+    let mut outbound = serve_p2p_stream(deps.clone(), inbound).await.unwrap();
+
+    in_tx
+        .send(P2pToChain {
+            seq: 1,
+            msg: Some(p2p_to_chain::Msg::Hello(cc_proto::p2p::StreamHello {
+                session_id: 1,
+                resume_seq: 0,
+            })),
+        })
+        .await
+        .unwrap();
+    let _ = tokio::time::timeout(Duration::from_millis(200), outbound.next())
+        .await
+        .expect("view timeout")
+        .expect("view end");
+
+    let mut sc = DataColumnSidecar::<Mainnet> {
+        index: 7,
+        ..Default::default()
+    };
+    sc.signed_block_header.message.slot = Slot::new(42);
+    let ssz = sc.as_ssz_bytes();
+    let block_root = [0x77u8; 32];
+    in_tx
+        .send(P2pToChain {
+            seq: 2,
+            msg: Some(p2p_to_chain::Msg::Column(ColumnSidecar {
+                ssz,
+                fork: 0,
+                root: block_root.to_vec(),
+                column_index: 7,
+                subnet_id: 7,
+            })),
+        })
+        .await
+        .unwrap();
+
+    let _ = tokio::time::timeout(Duration::from_millis(200), outbound.next())
+        .await
+        .expect("verdict timeout");
+
+    {
+        let stored = archive.batches.lock().unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(
+            stored[0].index, 7,
+            "index is a field, not a byte-offset guess"
+        );
+        assert_eq!(stored[0].slot, 42);
+        assert_eq!(stored[0].block_root, block_root);
+    }
+    assert!(
+        deps.column_decode_attempts() > 0,
+        "column_decode_attempts is no longer 0-by-construction"
+    );
+    let ev = tokio::time::timeout(Duration::from_millis(150), sub.recv()).await;
+    assert!(ev.is_err(), "column SSZ must not enter the event ring");
 
     events.shutdown().await;
 }

@@ -7,8 +7,8 @@ Typed handles and overflow contracts for internal service edges
 - `ArchiveWrite` — chain-core → archive typed column ingest (S2-A-04).
   Payload is `ColumnBatch { slot, block_root, index, ssz }`; **`index` is
   a field**. Overflow is policy **A**: the writer mailbox (ADR-P4-04)
-  surfaces `SeamError::Backpressure` to the import path. Ingest lands at
-  `S2-A-05`; this crate names the contract only.
+  surfaces `SeamError::Backpressure` to the import path. Ingest is
+  `S2-A-05` (`chain-core` → live P0 mailbox). Continuity bind is `S2-A-06`.
 
 Transport impls:
 

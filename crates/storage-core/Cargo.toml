@@ -12,8 +12,11 @@ workspace = true
 
 [dependencies]
 # S2-B-03: production host. No JWT signer / HTTP client ([ARCH] §6.2 — not grandfathered).
+# S2-A-05: ArchiveWrite impl over the live P0 mailbox.
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 cc-bootstrap = { workspace = true }
+cc-seam = { workspace = true }
 cc-config = { workspace = true }
 cc-proto = { workspace = true }
 cc-state-transition = { workspace = true }

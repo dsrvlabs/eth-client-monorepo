@@ -14,8 +14,8 @@
 //!   counter (CC-2C/2D/2B Phase-5 seam — no pool in Phase 2).
 //! - `PublishRequest` outward path: topic validation + enqueue onto live sessions
 //!   (§10.5). Unknown topic → structured `INVALID_ARGUMENT` / `UNKNOWN_TOPIC`.
-//! - `ColumnSidecar` is relayed into the event bus as `DATA_COLUMN` without
-//!   decoding (CC-44a / Architecture §4.2 rule 1; ADR P4-03).
+//! - `ColumnSidecar` is decoded into a typed `ColumnBatch` and ingested
+//!   via `ArchiveWrite` (S2-A-05). Column bytes do not enter the ring.
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,6 +38,7 @@ use crate::epoch_context::EpochContextStore;
 use crate::events::EventInput;
 use crate::head::HeadSnapshotStore;
 use crate::service::ERROR_DOMAIN;
+use crate::{ArchiveWriteHandle, decode_column_batch};
 
 // ── view_kind constants (Architecture §10.2) ────────────────────────────────
 
@@ -94,7 +95,7 @@ pub enum ViewTick {
 /// - `head` / `epoch` are `ArcSwap` stores (clone shares identity).
 /// - `core` is behind a shared lock so bootstrap install is visible to sessions
 ///   opened before the core was ready (F2).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct P2pStreamDeps {
     pub head: HeadSnapshotStore,
     pub epoch: EpochContextStore,
@@ -113,12 +114,21 @@ pub struct P2pStreamDeps {
     pub gossip_discarded: Arc<AtomicU64>,
     /// Sync-committee family discards specifically (CC-2D counter).
     pub sync_discarded: Arc<AtomicU64>,
-    /// Producer for `DATA_COLUMN` events (CC-44a). `None` in tests that do not
-    /// care about the bus; production always wires the events task sender.
+    /// Producer for observer events. Columns do not ride this lane (S2-A-05).
     pub event_tx: Option<mpsc::Sender<EventInput>>,
-    /// Test counter: incremented only if chain attempted an SSZ decode of a
-    /// column (must stay zero — Architecture §4.2 rule 1).
+    /// Incremented on every column SSZ decode attempt (S2-A-05).
     pub column_decode_attempts: Arc<AtomicU64>,
+    /// Typed archive ingest. `None` fail-closes the column path (J-01 injects).
+    pub archive: Option<ArchiveWriteHandle>,
+}
+
+impl std::fmt::Debug for P2pStreamDeps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("P2pStreamDeps")
+            .field("archive", &self.archive.as_ref().map(|_| "Some"))
+            .field("column_decode_attempts", &self.column_decode_attempts())
+            .finish_non_exhaustive()
+    }
 }
 
 impl P2pStreamDeps {
@@ -131,12 +141,23 @@ impl P2pStreamDeps {
         Self::with_events(head, epoch, core, None)
     }
 
-    /// Like [`Self::new`], with an optional event-bus producer for `DATA_COLUMN`.
+    /// Like [`Self::new`], with an optional event-bus producer.
     pub fn with_events(
         head: HeadSnapshotStore,
         epoch: EpochContextStore,
         core: Arc<RwLock<Option<CoreHandle>>>,
         event_tx: Option<mpsc::Sender<EventInput>>,
+    ) -> Self {
+        Self::with_archive(head, epoch, core, event_tx, None)
+    }
+
+    /// Like [`Self::with_events`], with a typed archive ingest handle.
+    pub fn with_archive(
+        head: HeadSnapshotStore,
+        epoch: EpochContextStore,
+        core: Arc<RwLock<Option<CoreHandle>>>,
+        event_tx: Option<mpsc::Sender<EventInput>>,
+        archive: Option<ArchiveWriteHandle>,
     ) -> Self {
         let (ticks, _) = broadcast::channel(64);
         let (publish_tx, _) = broadcast::channel(64);
@@ -154,10 +175,11 @@ impl P2pStreamDeps {
             sync_discarded: Arc::new(AtomicU64::new(0)),
             event_tx,
             column_decode_attempts: Arc::new(AtomicU64::new(0)),
+            archive,
         }
     }
 
-    /// Column SSZ-decode attempts (must remain 0; CC-44a acceptance).
+    /// Column SSZ-decode attempts (S2-A-05: no longer 0-by-construction).
     #[must_use]
     pub fn column_decode_attempts(&self) -> u64 {
         self.column_decode_attempts.load(Ordering::Relaxed)
@@ -613,65 +635,103 @@ where
             Ok(())
         }
         p2p_to_chain::Msg::Column(col) => {
-            // CC-44a / §4.2 rule 1: relay SSZ bytes into the event bus **without
-            // decoding**. chain forgets the bytes; storage is the consumer.
-            // `column_decode_attempts` stays at zero by construction — we never
-            // call into a sidecar SSZ decoder here.
-            //
-            // F1: async `send().await` applies backpressure; never silent try_send
-            // drop of DATA_COLUMN payload. SEC-44a-2: reject oversize before send.
-            if let Some(tx) = deps.event_tx.as_ref() {
-                // Root is a typed 32-byte identity — do not pad a short vector.
-                let Some(block_root) = EventInput::fixed_root(&col.root) else {
-                    tracing::error!(
-                        root_len = col.root.len(),
-                        "rejected DATA_COLUMN with non-32-byte root"
-                    );
+            // S2-A-05: decode into a typed ColumnBatch and ingest. Column
+            // bytes never enter the ring. Malformed SSZ is rejected.
+            deps.column_decode_attempts.fetch_add(1, Ordering::Relaxed);
+            let correlation_id = col.root.clone();
+            let Ok(block_root) = <[u8; 32]>::try_from(col.root.as_slice()) else {
+                tracing::error!(
+                    root_len = col.root.len(),
+                    "rejected column ingest with non-32-byte root"
+                );
+                return send_verdict(
+                    out_tx,
+                    next_seq,
+                    Verdict {
+                        correlation_id,
+                        acceptance: Acceptance::Ignore as i32,
+                        reason: Reason::Internal as i32,
+                        import: ImportResult::None as i32,
+                    },
+                )
+                .await;
+            };
+            if col.ssz.len() > crate::events::MAX_EVENT_PAYLOAD_BYTES {
+                tracing::error!(
+                    payload_len = col.ssz.len(),
+                    cap = crate::events::MAX_EVENT_PAYLOAD_BYTES,
+                    "rejected oversize column sidecar (SEC-44a-2)"
+                );
+                return send_verdict(
+                    out_tx,
+                    next_seq,
+                    Verdict {
+                        correlation_id,
+                        acceptance: Acceptance::Ignore as i32,
+                        reason: Reason::Internal as i32,
+                        import: ImportResult::None as i32,
+                    },
+                )
+                .await;
+            }
+            let batch = match decode_column_batch(bytes::Bytes::from(col.ssz), block_root) {
+                Ok(batch) => batch,
+                Err(e) => {
+                    tracing::error!(error = %e, "rejected malformed column sidecar");
                     return send_verdict(
                         out_tx,
                         next_seq,
                         Verdict {
-                            correlation_id: col.root,
+                            correlation_id,
                             acceptance: Acceptance::Ignore as i32,
-                            reason: Reason::Internal as i32,
+                            reason: Reason::Invalid as i32,
                             import: ImportResult::None as i32,
                         },
                     )
                     .await;
-                };
-                // Slot is not on the proto message (ADR-P4-03: no SSZ decode here).
-                // S2 typed ingest carries slot as a field. Do not peek a sidecar
-                // byte offset or invent a slot; `0` means unknown, not column 0.
-                let input = EventInput::data_column(0, block_root, bytes::Bytes::from(col.ssz));
-                if !input.payload_within_cap() {
-                    tracing::error!(
-                        payload_len = input.payload.len(),
-                        cap = crate::events::MAX_EVENT_PAYLOAD_BYTES,
-                        "rejected oversize DATA_COLUMN payload (SEC-44a-2)"
-                    );
-                } else if let Err(tokio::sync::mpsc::error::SendError(lost)) = tx.send(input).await
-                {
-                    tracing::error!(
-                        kind = ?lost.kind,
-                        payload_len = lost.payload.len(),
-                        "events channel closed; lost DATA_COLUMN (F1 loud path)"
-                    );
                 }
+            };
+            let Some(archive) = deps.archive.as_ref() else {
+                // J-01 wires the handle. Until then do not ACK AlreadyKnown
+                // after a drop — the column was not stored.
+                tracing::error!("column ingest unavailable: archive handle not injected");
+                return send_verdict(
+                    out_tx,
+                    next_seq,
+                    Verdict {
+                        correlation_id,
+                        acceptance: Acceptance::Ignore as i32,
+                        reason: Reason::Internal as i32,
+                        import: ImportResult::None as i32,
+                    },
+                )
+                .await;
+            };
+            if let Err(e) = archive.ingest_columns(batch).await {
+                tracing::error!(error = %e, "column ingest failed");
+                return send_verdict(
+                    out_tx,
+                    next_seq,
+                    Verdict {
+                        correlation_id,
+                        acceptance: Acceptance::Ignore as i32,
+                        reason: Reason::Internal as i32,
+                        import: ImportResult::None as i32,
+                    },
+                )
+                .await;
             }
-            // Still ACK with IGNORE-class verdict so a miswired client does not
-            // stall (stream backpressure contract unchanged).
-            let verdict = Verdict {
-                correlation_id: col.root,
-                acceptance: Acceptance::Ignore as i32,
-                reason: Reason::AlreadyKnown as i32,
-                import: ImportResult::None as i32,
-            };
-            let seq = next_seq();
-            let out = ChainToP2p {
-                seq,
-                msg: Some(chain_to_p2p::Msg::Verdict(verdict)),
-            };
-            out_tx.send(Ok(out)).await.map_err(|_| ())
+            send_verdict(
+                out_tx,
+                next_seq,
+                Verdict {
+                    correlation_id,
+                    acceptance: Acceptance::Ignore as i32,
+                    reason: Reason::AlreadyKnown as i32,
+                    import: ImportResult::None as i32,
+                },
+            )
+            .await
         }
     }
 }
@@ -976,6 +1036,7 @@ mod tests {
             sync_discarded: Arc::new(AtomicU64::new(0)),
             event_tx: None,
             column_decode_attempts: Arc::new(AtomicU64::new(0)),
+            archive: None,
         };
         assert_eq!(deps.sync_discarded_count(), 0);
         assert_eq!(deps.gossip_discarded_count(), 0);

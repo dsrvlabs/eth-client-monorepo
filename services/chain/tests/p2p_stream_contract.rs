@@ -818,23 +818,38 @@ async fn publish_unknown_topic_is_structured_error() {
     shutdown(core, events).await;
 }
 
-// ── ColumnSidecar: relay without decode (CC-44a) ────────────────────────────
+// ── ColumnSidecar: typed ingest (S2-A-05) ───────────────────────────────────
 
 #[test]
-fn column_sidecar_has_no_ssz_decode_construction() {
-    // CC-44a: chain relays P2pToChain.column into DATA_COLUMN without decoding
-    // the consensus `DataColumnSidecar` container. Proto field access is fine;
-    // SSZ type construction / decode helpers are not.
-    let chain_src = include_str!(concat!(
+fn column_sidecar_decode_lives_in_chain_core() {
+    // S2-A-05: p2p_stream calls `decode_column_batch` / `ingest_columns`.
+    // The consensus type is named in chain-core ingest, not on the stream.
+    let stream_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../crates/chain-core/src/p2p_stream.rs"
     ));
     assert!(
-        !chain_src.contains("DataColumnSidecar"),
+        !stream_src.contains("DataColumnSidecar"),
         "p2p_stream must not name the consensus DataColumnSidecar type"
     );
     assert!(
-        !chain_src.contains("from_ssz_bytes") || !chain_src.contains("Column"),
-        "no SSZ decode of column bytes on the relay path"
+        stream_src.contains("decode_column_batch"),
+        "p2p_stream must decode via chain-core ingest"
+    );
+    assert!(
+        stream_src.contains("ingest_columns"),
+        "p2p_stream must call ArchiveWrite::ingest_columns"
+    );
+    assert!(
+        !stream_src.contains("EventInput::data_column"),
+        "column bytes must not enter the ring"
+    );
+    let ingest_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/chain-core/src/ingest.rs"
+    ));
+    assert!(
+        ingest_src.contains("DataColumnSidecar"),
+        "chain-core ingest names the sidecar to populate ColumnBatch"
     );
 }

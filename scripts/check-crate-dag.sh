@@ -409,8 +409,9 @@ allowed_deps() {
     # S2-B-01: writer + serve tests need store/proto/bootstrap/types.
     # S2-B-02: backfill/prune/durable_set/resume join the same crate.
     # S2-B-03: append cc-config (boot) + cc-state-transition (replay); never re-sort.
+    # S2-A-05: append cc-seam (ArchiveWrite ingest; never re-sort).
     # Not JWT/HTTP-grandfathered.
-    cc-storage-core)      echo "cc-store cc-proto cc-bootstrap cc-types cc-config cc-state-transition" ;;
+    cc-storage-core)      echo "cc-store cc-proto cc-bootstrap cc-types cc-config cc-state-transition cc-seam" ;;
     *)
       echo "error: unknown workspace member: $1" >&2
       return 1

@@ -114,8 +114,9 @@ impl ChainServiceImpl {
             .map(|c| c.epoch_context().clone())
             .unwrap_or(epoch);
         let core_slot = Arc::new(RwLock::new(core));
-        // CC-44a: wire the events producer so P2pToChain.column can relay
-        // DATA_COLUMN without decoding.
+        // S2-A-05: events producer stays for observers. Columns ingest
+        // via ArchiveWrite and do not enter the ring. Missing handle
+        // fail-closes (Internal), never ACK AlreadyKnown after a drop.
         let stream_deps = P2pStreamDeps::with_events(
             head.clone(),
             epoch,

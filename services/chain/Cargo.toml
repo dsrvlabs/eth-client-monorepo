@@ -62,6 +62,7 @@ tracing = { workspace = true }
 tree_hash = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 cc-crypto = { workspace = true, features = ["signing"] }
 http = { workspace = true }
 http-body-util = { workspace = true }

@@ -30,7 +30,6 @@ use cc_proto::chain::{
     Cursor, Event, EventKind, GetCanonicalRootsRequest, GetHeadRequest, SubscribeEventsRequest,
 };
 use cc_proto::error_info_from_status;
-use cc_store::columns::{COLUMN_INDEX_SSZ_OFFSET, column_index_at_offset};
 use cc_store::engine::Engine;
 use cc_store::meta::WriteCursor;
 use cc_store::{DaStatus, Root, Slot};
@@ -1079,22 +1078,9 @@ fn apply_event(
             Ok(ApplyAction::Continue)
         }
         EventKind::DataColumn => {
-            let ssz = ev.payload.clone();
-            let index = if ssz.len() > COLUMN_INDEX_SSZ_OFFSET {
-                column_index_at_offset(&ssz).unwrap_or(0)
-            } else if ssz.len() >= 2 {
-                u16::from_le_bytes([ssz[0], ssz[1]])
-            } else {
-                0
-            };
-            acc.columns.push(StagedColumn {
-                slot: Slot::new(ev.slot),
-                root,
-                index,
-                ssz,
-            });
-            acc.note_event(ev.seq, ev.slot, root);
-            Ok(ApplyAction::Continue)
+            // S2-A-05: column bytes never enter the ring. Do not guess
+            // `index` from an SSZ offset or fall back to 0.
+            Err("DATA_COLUMN on the ring is not a durable path; use ingest_columns".into())
         }
         EventKind::Head => {
             // Flush policy: HEAD for slot S+1 with commit_slots=1 (default), or
@@ -1479,6 +1465,26 @@ mod tests {
             kind: EventKind::Head as i32,
             payload: slot.to_le_bytes().to_vec(),
         }
+    }
+
+    fn column_event(seq: u64, slot: u64, root: Root, ssz: Vec<u8>) -> Event {
+        Event {
+            seq,
+            slot,
+            root: root.as_slice().to_vec(),
+            kind: EventKind::DataColumn as i32,
+            payload: ssz,
+        }
+    }
+
+    #[test]
+    fn data_column_on_ring_is_rejected_not_stored_as_index_zero() {
+        let mut acc = Accumulator::default();
+        let ev = column_event(0, 3, root_n(1), vec![0u8; 1]);
+        let err = apply_event(&mut acc, &ev, false).unwrap_err();
+        assert!(err.contains("ingest_columns"));
+        assert!(acc.columns.is_empty());
+        assert!(acc.is_empty());
     }
 
     #[test]

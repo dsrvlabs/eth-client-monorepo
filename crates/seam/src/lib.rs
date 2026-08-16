@@ -302,7 +302,8 @@ pub struct ColumnBatch {
 /// return `Ok` after a shed (policy C). Implementations that cannot block
 /// MUST still surface Backpressure.
 ///
-/// Ingest itself is S2-A-05. This issue names the trait and the batch.
+/// S2-A-05: `chain-core` calls this with a typed [`ColumnBatch`]. The
+/// impl is the live P0 mailbox. Continuity bind is S2-A-06.
 #[async_trait]
 pub trait ArchiveWrite: Send + Sync + 'static {
     async fn ingest_columns(&self, batch: ColumnBatch) -> Result<(), SeamError>;

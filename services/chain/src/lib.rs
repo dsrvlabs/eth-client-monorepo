@@ -151,3 +151,4 @@ pub type ChainIngressHandle = std::sync::Arc<dyn cc_seam::ChainIngress>;
 pub type P2pEgressHandle = std::sync::Arc<dyn cc_seam::P2pEgress>;
 /// Archive ingest handle. Named in `cc-chain-core`; never a storage type.
 pub use cc_chain_core::ArchiveWriteHandle;
+pub use cc_chain_core::{decode_column_batch, ingest_column_ssz};

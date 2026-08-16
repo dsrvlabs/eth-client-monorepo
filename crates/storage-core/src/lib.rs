@@ -12,6 +12,7 @@
 
 #![cfg_attr(test, allow(dead_code, unreachable_pub))]
 
+mod archive_write;
 mod backfill;
 mod boot;
 mod durable_set;

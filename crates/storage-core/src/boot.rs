@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::archive_write::ArchiveWriter;
 use crate::durable_set;
 use crate::metrics::{self, StorageMetrics};
 use crate::migrate::{self, MigrationConfig, Migrator};
@@ -620,6 +621,10 @@ pub async fn run() -> anyhow::Result<()> {
                     shutdown_rx.clone(),
                     true, // process-fatal on panic (§1.5); write-behind is not
                 );
+                // S2-A-05: typed ingest over the live P0 mailbox. J-01 injects
+                // this handle into chain-core. Until then the chain path
+                // fail-closes (no AlreadyKnown after a drop).
+                let _archive = ArchiveWriter::new(writer.clone(), Arc::clone(&engine));
                 // CC-41: split lock + migrator (FINALIZED_CHECKPOINT cadence).
                 let split = Arc::new(SplitLock::load(&engine).unwrap_or_else(|e| {
                     tracing::warn!(error = %e, "split load failed; defaulting to zero");

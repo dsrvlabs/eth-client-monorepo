@@ -989,6 +989,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arc-swap",
+ "async-trait",
  "bytes",
  "cc-bootstrap",
  "cc-chain-core",
@@ -1033,6 +1034,7 @@ name = "cc-chain-core"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "async-trait",
  "bytes",
  "cc-bootstrap",
  "cc-crypto",
@@ -1345,9 +1347,11 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "anyhow",
+ "async-trait",
  "cc-bootstrap",
  "cc-config",
  "cc-proto",
+ "cc-seam",
  "cc-state-transition",
  "cc-store",
  "cc-types",

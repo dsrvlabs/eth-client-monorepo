@@ -190,6 +190,13 @@ LINK 3  recovery from eviction can INVENT canonical history
 **Acceptance** — `column_decode_attempts` is no longer 0-by-construction; a malformed sidecar is
 **rejected**, not stored as index 0; a grep for `column_index_at_offset` returns 0.
 
+- [x] `chain-core` calls `ArchiveWrite::ingest_columns` with typed `ColumnBatch.index`
+- [x] Column bytes never enter the ring on the p2p column path
+- [x] `column_decode_attempts` is no longer 0-by-construction
+- [x] Malformed sidecar is rejected, not stored as index 0
+- [x] `column_index_at_offset` / `unwrap_or(0)` deleted from write-behind
+- [x] No continuity bind (`S2-A-06`); no `ADR-R-02`
+
 ---
 
 ### `S2-A-06` · The top-of-batch continuity bind

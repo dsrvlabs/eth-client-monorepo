@@ -12,7 +12,10 @@
 //! not HTTP- or JWT-grandfathered).
 //!
 //! S2-A-04: this crate names [`ArchiveWriteHandle`] (`Arc<dyn ArchiveWrite>`).
-//! It never names a storage type. Ingest is S2-A-05.
+//! It never names a storage type.
+//! S2-A-05: [`ingest.rs`](ingest.rs) decodes a sidecar into a typed
+//! `ColumnBatch` and calls `ArchiveWrite::ingest_columns`. Column bytes
+//! do not enter the ring.
 //!
 //! ADR-P1-09, ADR-P1-12, and ADR-P3-05 ride the moved sources unchanged —
 //! `pending_engine` stays a separate map from `pending_da`.
@@ -21,6 +24,9 @@
 
 /// Archive ingest handle. Named here so chain-core never holds a storage type.
 pub type ArchiveWriteHandle = std::sync::Arc<dyn cc_seam::ArchiveWrite>;
+
+mod ingest;
+pub use ingest::{decode_column_batch, ingest_column_ssz};
 
 pub mod apply_attestations;
 pub mod core;
