@@ -332,6 +332,8 @@ fi
 # S2-B-01: extend the same grep to crates/storage-core/src ([ARCH] §1.5).
 # S2-B-02: skip comment/doc lines — moved resume/prune document SSZ peeks by
 # name; the ban is on naming the consensus *types*, not on those comments.
+# S2-B-03: replay.rs is the one decoder (CC-42 / D-P4-4); it names BeaconState
+# and SignedBeaconBlock. Writer/serve/backfill/prune stay opaque-bytes.
 for STORE_SRC in "$ROOT/crates/store/src" "$ROOT/crates/storage-core/src"; do
   if [[ -d "$STORE_SRC" ]]; then
     while IFS= read -r hit; do
@@ -339,7 +341,8 @@ for STORE_SRC in "$ROOT/crates/store/src" "$ROOT/crates/storage-core/src"; do
       echo "error: ${STORE_SRC#"$ROOT"/} must not reference consensus types SignedBeaconBlock|BeaconState|DataColumnSidecar ($hit)" >&2
       EARLY_FAILED=1
     done < <(grep -rn "SignedBeaconBlock\|BeaconState\|DataColumnSidecar" "$STORE_SRC" 2>/dev/null \
-      | grep -vE ':[0-9]+:[[:space:]]*//' || true)
+      | grep -vE ':[0-9]+:[[:space:]]*//' \
+      | grep -v 'storage-core/src/replay.rs:' || true)
   fi
 done
 
@@ -387,7 +390,8 @@ allowed_deps() {
     cc-store-bench)       echo "cc-store" ;;
     cc-serve-probe)       echo "cc-libp2p cc-types cc-config" ;;
     # S2-B-01: append cc-storage-core (writer + serve read paths).
-    cc-storage)           echo "cc-bootstrap cc-config cc-proto cc-types cc-state-transition cc-store cc-storage-core" ;;
+    # S2-B-03: thin shim — remaining workspace edges moved onto cc-storage-core.
+    cc-storage)           echo "cc-types cc-store cc-storage-core" ;;
     # CC-4J: offline tool; append-only (Amendment 8) — edge set is cc-store only.
     cc-store-tool)        echo "cc-store" ;;
     # S0-A-13: leaf crate, no workspace deps ([ARCH] §1.5 / §3.1).
@@ -403,8 +407,9 @@ allowed_deps() {
     cc-chain-core)        echo "cc-types cc-crypto cc-state-transition cc-fork-choice cc-scheduler cc-proto cc-bootstrap cc-engine-api cc-seam" ;;
     # S2-B-01: writer + serve tests need store/proto/bootstrap/types.
     # S2-B-02: backfill/prune/durable_set/resume join the same crate.
+    # S2-B-03: append cc-config (boot) + cc-state-transition (replay); never re-sort.
     # Not JWT/HTTP-grandfathered.
-    cc-storage-core)      echo "cc-store cc-proto cc-bootstrap cc-types" ;;
+    cc-storage-core)      echo "cc-store cc-proto cc-bootstrap cc-types cc-config cc-state-transition" ;;
     *)
       echo "error: unknown workspace member: $1" >&2
       return 1

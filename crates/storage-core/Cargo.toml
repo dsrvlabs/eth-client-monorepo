@@ -11,20 +11,25 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-# S2-B-01/B-02: sources live here; `cc-storage` compiles them via `#[path]`.
-# No JWT signer / HTTP client ([ARCH] §6.2 — not grandfathered).
-
-[dev-dependencies]
-# Moved writer/serve (B-01) + backfill/prune/durable_set/resume (B-02) tests.
+# S2-B-03: production host. No JWT signer / HTTP client ([ARCH] §6.2 — not grandfathered).
+anyhow = { workspace = true }
 cc-bootstrap = { workspace = true }
+cc-config = { workspace = true }
 cc-proto = { workspace = true }
+cc-state-transition = { workspace = true }
 cc-store = { workspace = true }
 cc-types = { workspace = true }
+ethereum_ssz = { workspace = true }
 futures = { workspace = true }
 prometheus-client = { workspace = true }
-sha2 = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+tokio = { workspace = true }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tonic = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+alloy-primitives = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

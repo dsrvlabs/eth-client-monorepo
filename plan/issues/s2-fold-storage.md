@@ -371,6 +371,16 @@ is deleted at the end of the stage (`[ARCH]` §9.1).
 - [x] `services/storage` compiles the four via `#[path]` from `cc-storage-core` and stays a workspace member
 - [x] `services/storage` `main.rs` is not a thin shim (`S2-B-03`)
 
+**Acceptance (`S2-B-03` only)**
+- [x] `services/storage` `main.rs` is a thin shim over `cc-storage-core`
+- [x] `services/storage` stays a workspace member (`[ARCH]` §9.1)
+- [x] writer / serve / backfill / prune / durable_set / resume are production items of `cc-storage-core` (not `#[cfg(test)]` / `#[path]`)
+- [x] Remaining companions (`history`, `metrics`, `migrate`, `replay`, `restore_client`, `write_behind`, `test_tmpdir`) live in `crates/storage-core` (git rename)
+- [x] Bounds / literals moved (git rename), not re-derived; no new numeric literal in a moved companion
+- [x] `cargo test -p cc-storage-core` covers the moved unit tests
+- [x] `cc-storage-core` is still **not** JWT/HTTP-grandfathered
+- [x] P0-18 (`S2-B-04`…`06`) not implemented
+
 ---
 
 ### `S2-B-04` … `S2-B-06` · **P0-18** — the three storage scale time bombs

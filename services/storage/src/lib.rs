@@ -1,11 +1,7 @@
 //! Library surface for the `cc-storage` package.
 //!
-//! Production entry remains the `cc-storage` binary (`src/main.rs`). This crate
-//! root exists so integration tests under `tests/` can link the package (Cargo
-//! requires a lib target for `[[test]]` harnesses). Service modules stay
-//! private to the binary; integration tests exercise workspace deps
-//! (`cc-store`, `cc-types`) under this package's harness.
+//! S2-B-03: production boot lives in `cc-storage-core`. This crate stays a
+//! workspace member so the previous topology remains runnable (`[ARCH]` §9.1).
+//! Integration tests under `tests/` link this package.
 
-// S2-B-01/B-02: writer/serve/backfill/prune/durable_set/resume live in
-// cc-storage-core (binary compiles via #[path]).
 use cc_storage_core as _;

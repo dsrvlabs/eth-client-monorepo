@@ -1332,35 +1332,29 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "anyhow",
- "cc-bootstrap",
- "cc-config",
- "cc-proto",
- "cc-state-transition",
  "cc-storage-core",
  "cc-store",
  "cc-types",
- "ethereum_ssz",
- "futures",
- "prometheus-client",
- "serde",
  "sha2 0.10.9",
- "thiserror 2.0.19",
  "tokio",
- "tokio-stream",
- "tonic",
- "tracing",
 ]
 
 [[package]]
 name = "cc-storage-core"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "anyhow",
  "cc-bootstrap",
+ "cc-config",
  "cc-proto",
+ "cc-state-transition",
  "cc-store",
  "cc-types",
+ "ethereum_ssz",
  "futures",
  "prometheus-client",
+ "serde",
  "sha2 0.10.9",
  "thiserror 2.0.19",
  "tokio",

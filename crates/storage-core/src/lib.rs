@@ -1,42 +1,31 @@
-//! Storage core: single-writer mailbox, serve, backfill, prune, and resume.
+//! Storage core: single-writer mailbox, serve, backfill, prune, resume, and boot.
 //!
 //! S2-B-01: [`writer.rs`](writer.rs) and [`serve.rs`](serve.rs).
 //! S2-B-02: [`backfill.rs`](backfill.rs), [`prune/`](prune/mod.rs),
-//! [`durable_set.rs`](durable_set.rs), and [`resume.rs`](resume.rs) live here
-//! (verbatim). `cc-storage` compiles them via `#[path]` so metrics / history /
-//! restore stay owned by `cc-storage` until S2-B-03.
+//! [`durable_set.rs`](durable_set.rs), and [`resume.rs`](resume.rs).
+//! S2-B-03: remaining companions and the process host ([`boot.rs`](boot.rs))
+//! are production items here. `services/storage` is a thin shim
+//! (`[ARCH]` §9.1).
 //!
-//! Unit tests compile the moved files against the still-in-place companions.
+//! Replay is the one decoder (CC-42); writer/serve/backfill/prune stay
+//! opaque-bytes (`[ARCH]` §1.5). Not JWT/HTTP-grandfathered.
 
 #![cfg_attr(test, allow(dead_code, unreachable_pub))]
 
-#[cfg(test)]
-#[path = "backfill.rs"]
 mod backfill;
-#[cfg(test)]
-#[path = "durable_set.rs"]
+mod boot;
 mod durable_set;
-#[cfg(test)]
-#[path = "../../../services/storage/src/history.rs"]
 mod history;
-#[cfg(test)]
-#[path = "../../../services/storage/src/metrics.rs"]
 mod metrics;
-#[cfg(test)]
-#[path = "prune/mod.rs"]
+mod migrate;
 mod prune;
-#[cfg(test)]
-#[path = "../../../services/storage/src/restore_client.rs"]
+mod replay;
 mod restore_client;
-#[cfg(test)]
-#[path = "resume.rs"]
 mod resume;
-#[cfg(test)]
-#[path = "serve.rs"]
 mod serve;
 #[cfg(test)]
-#[path = "../../../services/storage/src/test_tmpdir.rs"]
 mod test_tmpdir;
-#[cfg(test)]
-#[path = "writer.rs"]
+mod write_behind;
 mod writer;
+
+pub use boot::run;

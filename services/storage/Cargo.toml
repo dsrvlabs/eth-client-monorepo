@@ -20,28 +20,14 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-cc-bootstrap = { workspace = true }
-cc-config = { workspace = true }
-cc-proto = { workspace = true }
-cc-state-transition = { workspace = true }
-cc-store = { workspace = true }
-# S2-B-01/B-02: writer/serve/backfill/prune/durable_set/resume live in
-# cc-storage-core (compiled via #[path]).
+# S2-B-03: thin shim over storage-core ([ARCH] §9.1).
 cc-storage-core = { workspace = true }
-cc-types = { workspace = true }
-ethereum_ssz = { workspace = true }
-futures = { workspace = true }
-prometheus-client = { workspace = true }
-serde = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-stream = { version = "0.1", features = ["sync"] }
-tonic = { workspace = true }
-# CC-4H post-pass invariant logging via MetricsInvariantSink.
-tracing = { workspace = true }
 
 [dev-dependencies]
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 # CC-4G four-effects model: node_id → get_custody_groups.
 alloy-primitives = { workspace = true }
+cc-store = { workspace = true }
+cc-types = { workspace = true }
