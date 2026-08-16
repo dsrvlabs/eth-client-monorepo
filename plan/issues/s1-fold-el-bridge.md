@@ -478,6 +478,32 @@ exists to prevent.
 **Also in the exit note** — E1.5: 3 containers run; engine-fastpath DA works end to end on
 self-devnet.
 
+Record: [`s1-exit-note.md`](s1-exit-note.md). Loaded A/B was **not** run in this
+worktree. S0 Family 1 imported 0 because the stacks were not meshed — matching
+those zeros is not E1.1.
+
+**Acceptance**
+
+- [x] Procedure + E1.1 blocker rule (`[ARCH]` §9.0/4: non-zero overflow-family
+      diff with zero diff in families 1–2 is a stage blocker) recorded in
+      [`s1-exit-note.md`](s1-exit-note.md)
+- [x] Helper `scripts/s0-ab-baseline.sh` still the scrape/record tool;
+      `--self-test` green this worktree
+- [x] 3-container self-devnet compose exists (`devnet/compose.yml`: publisher,
+      node-a, node-b + anchor); `docker compose -f devnet/compose.yml config
+      --services` lists them
+- [x] Exit note cites landed E1.2 (`S1-A-17`), E1.3 (`S1-A-12`), E1.4
+      (`S1-A-01`), E1.6 (`S1-B-05`…`S1-B-20`) evidence
+- [ ] Loaded §9.0 A/B (≥1 h, six-service + 3-container self-devnet, same
+      fixtures, same EL snapshot) — not executed
+- [ ] Family 1 `cc_chain_import_total{result=*}` (no `cc_chain_import_result`
+      series) matches S0 T≥1h **under load**
+- [ ] Family 2 head-lag buckets match S0 T≥1h **under load**
+- [ ] Family 3 overflow-family blocker applied to a loaded pair
+- [ ] 3 containers ran on this commit
+- [ ] Engine-fastpath DA e2e on self-devnet (non-zero
+      `cc_engine_getblobs_total{result="complete"}`)
+
 ---
 
 ## Stream B — engine rows
