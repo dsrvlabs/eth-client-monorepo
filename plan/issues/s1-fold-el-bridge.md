@@ -401,8 +401,10 @@ fixture**, for the blob-count gate. Links P1-D/18 (test-harness state in product
 ### `S1-B-03` · P1-A/24 — zeroed KZG inclusion proof · 1.5–2 pd / **3 pts** (≈)
 **Touch** `services/chain/src/da.rs:395` — the block-branch `FetchBlobs` template always carries a
 zeroed KZG inclusion proof in production.
-**Acceptance** — the proof is computed; a test asserts a non-zero proof on the block branch and that
-verification against it passes.
+
+**Acceptance**
+1. [x] The proof is computed on the production block-branch `FetchBlobs` template (`block_branch_trigger_from_signed`)
+2. [x] A test asserts a non-zero proof on the block branch and that verification against it passes
 
 ### `S1-B-04` · P2-D/19 + P2-B/5 — the engine policy edges · 2–3 pd / **5 pts** (≈)
 `[PRD]` P2-D/19 is **19 engine policy edges**; the three named are: the fail-open fork-schedule

@@ -29,10 +29,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
+use cc_crypto::hash32_concat;
 use cc_types::containers::{BeaconBlockHeader, SignedBeaconBlockHeader};
 use cc_types::preset::Preset;
 use cc_types::primitives::Root;
-use cc_types::{KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, SignedBeaconBlock};
+use cc_types::{BeaconBlockBody, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, SignedBeaconBlock};
 use ssz::Encode;
 use tree_hash::TreeHash;
 
@@ -314,9 +315,7 @@ pub struct BlockBranchTrigger {
     pub signed_block_header_ssz: Vec<u8>,
     /// 48 B each.
     pub kzg_commitments: Vec<[u8; 48]>,
-    /// Exactly 4 × 32 B inclusion proof (depth 4). Zeroed until the import path
-    /// supplies a real multiproof; structure is fixed so the wire size class
-    /// is correct either way.
+    /// Depth-4 Merkle branch of `blob_kzg_commitments` in the block body.
     pub kzg_commitments_inclusion_proof: [[u8; 32]; KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH as usize],
 }
 
@@ -389,12 +388,91 @@ pub fn block_branch_trigger_from_signed<P: Preset>(
         versioned_hashes,
         signed_block_header_ssz: header.as_ssz_bytes(),
         kzg_commitments,
-        // Real multiproof is assembled on the production import path when the
-        // body Merkle tree is available; zeros keep the wire size class fixed
-        // and never invent cells.
-        kzg_commitments_inclusion_proof: [[0u8; 32];
-            KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH as usize],
+        kzg_commitments_inclusion_proof: kzg_commitments_inclusion_proof(&signed.message.body),
     })
+}
+
+/// Field index of `blob_kzg_commitments` in Electra/Fulu `BeaconBlockBody`
+/// (0-based, SSZ container order).
+const BLOB_KZG_COMMITMENTS_FIELD_INDEX: usize = 11;
+
+/// Electra/Fulu body field count (padded to 16 leaves for depth 4).
+const BODY_FIELD_COUNT: usize = 13;
+
+const INCLUSION_PROOF_DEPTH: usize = KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH as usize;
+
+/// Depth-4 Merkle inclusion proof of `body.blob_kzg_commitments`.
+#[must_use]
+fn kzg_commitments_inclusion_proof<P: Preset>(
+    body: &BeaconBlockBody<P>,
+) -> [[u8; 32]; INCLUSION_PROOF_DEPTH] {
+    let leaves = body_field_roots(body);
+    merkle_branch(&leaves, BLOB_KZG_COMMITMENTS_FIELD_INDEX)
+}
+
+/// Verify a depth-4 inclusion proof of `blob_kzg_commitments` against `body`.
+#[cfg(test)]
+#[must_use]
+fn verify_kzg_commitments_inclusion_proof<P: Preset>(
+    body: &BeaconBlockBody<P>,
+    proof: &[[u8; 32]; INCLUSION_PROOF_DEPTH],
+) -> bool {
+    let leaf = Root::from_hash256(body.blob_kzg_commitments.tree_hash_root());
+    let body_root = Root::from_hash256(body.tree_hash_root());
+    let branch: Vec<Root> = proof.iter().copied().map(Root::from_array).collect();
+    cc_state_transition::helpers::misc::is_valid_merkle_branch(
+        leaf,
+        &branch,
+        INCLUSION_PROOF_DEPTH,
+        BLOB_KZG_COMMITMENTS_FIELD_INDEX as u64,
+        body_root,
+    )
+}
+
+fn hash256_bytes(h: tree_hash::Hash256) -> [u8; 32] {
+    *Root::from_hash256(h).as_array()
+}
+
+fn body_field_roots<P: Preset>(body: &BeaconBlockBody<P>) -> [[u8; 32]; BODY_FIELD_COUNT] {
+    // Order must match BeaconBlockBody field declaration / tree_hash_derive.
+    [
+        hash256_bytes(body.randao_reveal.tree_hash_root()),
+        hash256_bytes(body.eth1_data.tree_hash_root()),
+        hash256_bytes(body.graffiti.tree_hash_root()),
+        hash256_bytes(body.proposer_slashings.tree_hash_root()),
+        hash256_bytes(body.attester_slashings.tree_hash_root()),
+        hash256_bytes(body.attestations.tree_hash_root()),
+        hash256_bytes(body.deposits.tree_hash_root()),
+        hash256_bytes(body.voluntary_exits.tree_hash_root()),
+        hash256_bytes(body.sync_aggregate.tree_hash_root()),
+        hash256_bytes(body.execution_payload.tree_hash_root()),
+        hash256_bytes(body.bls_to_execution_changes.tree_hash_root()),
+        hash256_bytes(body.blob_kzg_commitments.tree_hash_root()),
+        hash256_bytes(body.execution_requests.tree_hash_root()),
+    ]
+}
+
+/// Sibling path for leaf `index` in the depth-4 padded body tree.
+fn merkle_branch(leaves: &[[u8; 32]], index: usize) -> [[u8; 32]; INCLUSION_PROOF_DEPTH] {
+    let width = 1usize << INCLUSION_PROOF_DEPTH;
+    let mut layer = vec![[0u8; 32]; width];
+    for (i, leaf) in leaves.iter().enumerate().take(width) {
+        layer[i] = *leaf;
+    }
+
+    let mut branch = [[0u8; 32]; INCLUSION_PROOF_DEPTH];
+    let mut idx = index;
+    for node in &mut branch {
+        let sibling = idx ^ 1;
+        *node = layer[sibling];
+        let mut next = vec![[0u8; 32]; layer.len() / 2];
+        for (i, parent) in next.iter_mut().enumerate() {
+            *parent = hash32_concat(&layer[2 * i], &layer[2 * i + 1]);
+        }
+        layer = next;
+        idx /= 2;
+    }
+    branch
 }
 
 /// KZG versioned-hash version byte (`VERSIONED_HASH_VERSION_KZG = 0x01`).
@@ -895,6 +973,44 @@ mod tests {
         assert!(proto.template.is_some());
         // No cell / sidecar fields on the chain→engine shape.
         assert!(proto.template.as_ref().unwrap().kzg_commitments.len() == 2);
+    }
+
+    /// S1-B-03 / P1-A/24: block-branch FetchBlobs carries a computed (non-zero)
+    /// inclusion proof that verifies against the body root.
+    #[test]
+    fn block_branch_inclusion_proof_is_nonzero_and_verifies() {
+        use cc_types::primitives::KzgCommitment;
+        use ssz_types::VariableList;
+
+        let da = Arc::new(PeerDasAvailability::new());
+        let (mut store, anchor, config) = seeded_peer_das_store(da);
+        let mut block = signed_block(1, anchor, 0);
+        let commits = vec![
+            KzgCommitment::from_array([0xaa; 48]),
+            KzgCommitment::from_array([0xbb; 48]),
+        ];
+        block.message.body.blob_kzg_commitments = VariableList::new(commits).expect("commit list");
+        let block_root = Root::from_hash256(TreeHash::tree_hash_root(&block.message));
+        let _ = on_block(
+            &mut store,
+            &block,
+            &config,
+            BlockSignatureStrategy::NoVerification,
+        );
+
+        let trigger = block_branch_trigger_from_signed(&block, block_root).expect("trigger");
+        assert_ne!(
+            trigger.kzg_commitments_inclusion_proof,
+            [[0u8; 32]; KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH as usize],
+            "block-branch inclusion proof must not be the zeroed placeholder"
+        );
+        assert!(
+            verify_kzg_commitments_inclusion_proof(
+                &block.message.body,
+                &trigger.kzg_commitments_inclusion_proof,
+            ),
+            "block-branch inclusion proof must verify against the body"
+        );
     }
 
     /// CC-38 /6: both triggers produce only template-class outbound on chain.
