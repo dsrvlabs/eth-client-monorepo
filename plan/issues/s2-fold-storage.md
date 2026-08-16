@@ -315,6 +315,12 @@ Grandine makes `pubkey_cache` its own crate (`[Q3]` §3, research README cross-c
 - [x] M13 observe sites report `ctx.pubkeys().len()` (import, restore, checkpoint spawn)
 - [x] No clone-cost measurement (`S2-A-12`)
 
+**Acceptance (`S2-A-12` only)**
+- [x] Type-level: `StateCaches` field inventory excludes `PubkeyIndexMap`
+- [x] Runtime measurement: `BeaconState` clone time does not scale with a sidecar `PubkeyIndexMap` (N=2k vs N=50k)
+- [x] Before (map clone) and after (state clone) absolute ns / estimated table bytes recorded in [`s2-exit-note.md`](s2-exit-note.md) E2.5 from a test run in this worktree
+- [x] Does not claim milhouse landed; does not persist the cache (P0-19/4)
+
 **P0-19/4 (persist the cache in `cc-store`, `[Q3]` **S–M**) is `patch @ S2`, optional.** Not scheduled
 here. If it is picked up, note the distinction `S0-B-14` wrote into the module docs: the pubkey cache
 **is** reconstructible from the state, so losing it is a slow boot, and it **is** safe on the

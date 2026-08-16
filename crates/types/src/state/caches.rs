@@ -1032,4 +1032,141 @@ mod tests {
         let got = cache.recompute_with(0, |_| Hash256::ZERO);
         assert_eq!(got, list.tree_hash_root());
     }
+
+    /// Compile-time inventory: re-adding `PubkeyIndexMap` here fails this match.
+    #[test]
+    fn state_caches_field_inventory_excludes_pubkey_index_map() {
+        let StateCaches {
+            list_hashes: _,
+            field_roots: _,
+            committees: _,
+            epoch: _,
+            tag: _,
+            _marker: _,
+        } = StateCaches::<crate::preset::Minimal>::default();
+    }
+
+    fn filled_pubkey_map(n: usize) -> PubkeyIndexMap {
+        let mut map = PubkeyIndexMap::default();
+        for i in 0..n {
+            let mut raw = [0u8; 48];
+            raw[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            map.insert(BlsPublicKey::from_array(raw), ValidatorIndex::new(i as u64));
+        }
+        map
+    }
+
+    /// hashbrown: one control byte + (K, V) per bucket. Not an allocator sample.
+    fn map_table_bytes(map: &PubkeyIndexMap) -> usize {
+        map.map.capacity().saturating_mul(
+            1 + std::mem::size_of::<BlsPublicKey>() + std::mem::size_of::<ValidatorIndex>(),
+        )
+    }
+
+    fn median_clone_ns<T>(iters: usize, mut f: impl FnMut() -> T) -> u128 {
+        let mut samples = Vec::with_capacity(iters);
+        for _ in 0..iters {
+            let t0 = std::time::Instant::now();
+            std::hint::black_box(f());
+            samples.push(t0.elapsed().as_nanos());
+        }
+        samples.sort_unstable();
+        samples[iters / 2]
+    }
+
+    /// S2-A-12 / E2.5: BeaconState clone must not pay the pubkey-map table copy.
+    #[test]
+    fn beacon_state_clone_does_not_scale_with_pubkey_map() {
+        use crate::preset::Minimal;
+        use crate::state::BeaconState;
+
+        const SMALL: usize = 2_000;
+        const LARGE: usize = 50_000;
+        const ITERS: usize = 31;
+        const WARMUP: usize = 3;
+
+        let state = BeaconState::<Minimal>::default();
+        let empty = PubkeyIndexMap::default();
+        let small = filled_pubkey_map(SMALL);
+        let large = filled_pubkey_map(LARGE);
+        assert_eq!(empty.len(), 0);
+        assert_eq!(small.len(), SMALL);
+        assert_eq!(large.len(), LARGE);
+
+        for _ in 0..WARMUP {
+            std::hint::black_box(state.clone());
+            std::hint::black_box(empty.clone());
+            std::hint::black_box(small.clone());
+            std::hint::black_box(large.clone());
+        }
+
+        let state_empty_ns = median_clone_ns(ITERS, || {
+            let _held = &empty;
+            state.clone()
+        });
+        let state_small_ns = median_clone_ns(ITERS, || {
+            let _held = &small;
+            state.clone()
+        });
+        let state_large_ns = median_clone_ns(ITERS, || {
+            let _held = &large;
+            state.clone()
+        });
+        let map_empty_ns = median_clone_ns(ITERS, || empty.clone());
+        let map_small_ns = median_clone_ns(ITERS, || small.clone());
+        let map_large_ns = median_clone_ns(ITERS, || large.clone());
+
+        let empty_bytes = map_table_bytes(&empty);
+        let small_bytes = map_table_bytes(&small);
+        let large_bytes = map_table_bytes(&large);
+
+        let profile = if cfg!(debug_assertions) {
+            "test/dev (debug_assertions, workspace opt-level=1)"
+        } else {
+            "release"
+        };
+        eprintln!(
+            "S2-A-12 clone cost (cc-types lib test, {profile})\n\
+             N_small={SMALL} N_large={LARGE} iters={ITERS} median\n\
+             map clone empty: {map_empty_ns} ns  ~{empty_bytes} B (cap={})\n\
+             map clone small: {map_small_ns} ns  ~{small_bytes} B (cap={})\n\
+             map clone large: {map_large_ns} ns  ~{large_bytes} B (cap={})\n\
+             state clone + empty map: {state_empty_ns} ns\n\
+             state clone + small map: {state_small_ns} ns\n\
+             state clone + large map: {state_large_ns} ns\n\
+             sizeof BeaconState<Minimal>={}  StateCaches={}  PubkeyIndexMap={}",
+            empty.map.capacity(),
+            small.map.capacity(),
+            large.map.capacity(),
+            std::mem::size_of::<BeaconState<Minimal>>(),
+            std::mem::size_of::<StateCaches<Minimal>>(),
+            std::mem::size_of::<PubkeyIndexMap>(),
+        );
+
+        assert!(
+            large_bytes >= SMALL * std::mem::size_of::<BlsPublicKey>(),
+            "large map table must be at least the raw key payload: {large_bytes}"
+        );
+        assert!(
+            large_bytes > small_bytes.saturating_mul(10),
+            "map table bytes must scale with N: small={small_bytes} large={large_bytes}"
+        );
+        // Map clone is the legacy cost that used to ride on StateCaches::clone.
+        assert!(
+            map_large_ns >= map_small_ns.saturating_mul(4),
+            "map clone must scale with N: small={map_small_ns} ns large={map_large_ns} ns"
+        );
+        // Sidecar map size must not move BeaconState clone off its floor (8× + 5 ms slack).
+        let state_floor = state_empty_ns.max(state_small_ns);
+        assert!(
+            state_large_ns <= state_floor.saturating_mul(8).saturating_add(5_000_000),
+            "state clone must not scale with sidecar map: empty={state_empty_ns} \
+             small={state_small_ns} large={state_large_ns} ns"
+        );
+        assert!(
+            map_large_ns > state_large_ns,
+            "legacy map clone must exceed state clone at N={LARGE}: \
+             map={map_large_ns} ns state={state_large_ns} ns"
+        );
+    }
 }

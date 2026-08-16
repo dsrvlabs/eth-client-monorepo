@@ -103,7 +103,6 @@ append here. Do not silently edit the dates above.
 ### What this worktree did and did not do
 
 | Check | Result |
-|---|---|
 | Five production CLs named | **yes** — Lighthouse, Prysm, Teku, Nimbus, Lodestar |
 | Public contact + URL per client | **yes** — table above |
 | Tentative Hoodi date per client | **yes** — 2027-06-14 … 2027-06-23, close 2027-07-04, labelled TENTATIVE |
@@ -124,3 +123,61 @@ books.
 That is **not** *contacted* and **not** *foreign-confirmed*. E3a.5 does not
 require a reply. If S3a wants confirmation before W0, that is new work and
 must be appended, not back-dated into this section.
+
+## E2.5 — P0-19/3 clone-cost measurement (`S2-A-12`)
+
+**Conclusion: `BeaconState` clone no longer deep-copies the pubkey map.**
+
+Type-level: `StateCaches` has no `PubkeyIndexMap` field (exhaustive match in
+`state_caches_field_inventory_excludes_pubkey_index_map`). The map is a
+sidecar (`PubkeyIndexMap` on `TransitionContext` after `S2-A-10`); the
+measurement holds it next to the state and clones each separately.
+
+This is a **scaled fixture** (N=2_000 and N=50_000), not an 80–100 MB / 1 M
+validator scrape. Table bytes are `capacity × (key + value + 1 control byte)`,
+not an allocator sample. Do **not** treat these numbers as a milhouse result.
+**milhouse has not landed.** P0-19/4 (persist the cache) was not implemented.
+
+Recorded 2026-08-16 on `feature/s2-a-12-clone-cost-measurement` (uncommitted)
+branched from `develop` `31ffa9a`. Worktree
+`/Users/nil/.grok/worktrees/dsrv-eth-client-monorepo/subagent-01a009c3-91a5-74a0-908b-c14c0b4252ff`.
+Host Darwin 25.6.0 arm64. `rustc 1.97.1 (8bab26f4f 2026-07-14)`.
+
+Command (same filter, two profiles):
+
+```text
+cargo test -p cc-types --lib -- beacon_state_clone_does_not_scale_with_pubkey_map --nocapture
+cargo test -p cc-types --release --lib -- beacon_state_clone_does_not_scale_with_pubkey_map --nocapture
+```
+
+Test: `crates/types/src/state/caches.rs`
+`beacon_state_clone_does_not_scale_with_pubkey_map`. Median of 31 clones after
+3 warm-up clones.
+
+### test/dev profile (`debug_assertions`, workspace `opt-level=1`)
+
+| Arm | N | median clone | estimated table bytes |
+|---|---:|---:|---:|
+| `PubkeyIndexMap` clone (legacy cost, **before**) | 0 | **42 ns** | **0 B** (cap=0) |
+| `PubkeyIndexMap` clone (legacy cost, **before**) | 2_000 | **10_083 ns** | **204_288 B** (cap=3584) |
+| `PubkeyIndexMap` clone (legacy cost, **before**) | 50_000 | **156_459 ns** | **3_268_608 B** (cap=57344) |
+| `BeaconState<Minimal>` clone + empty sidecar (**after**) | 0 | **2_209 ns** | map not on state |
+| `BeaconState<Minimal>` clone + 2k sidecar (**after**) | 2_000 | **2_041 ns** | map not on state |
+| `BeaconState<Minimal>` clone + 50k sidecar (**after**) | 50_000 | **2_042 ns** | map not on state |
+
+`sizeof BeaconState<Minimal> = 3608`, `StateCaches = 2112`, `PubkeyIndexMap = 56`.
+
+### release profile
+
+| `PubkeyIndexMap` clone (legacy cost, **before**) | 0 | **0 ns** (timer floor) | **0 B** (cap=0) |
+| `PubkeyIndexMap` clone (legacy cost, **before**) | 2_000 | **3_083 ns** | **204_288 B** (cap=3584) |
+| `PubkeyIndexMap` clone (legacy cost, **before**) | 50_000 | **46_042 ns** | **3_268_608 B** (cap=57344) |
+| `BeaconState<Minimal>` clone + empty sidecar (**after**) | 0 | **625 ns** | map not on state |
+| `BeaconState<Minimal>` clone + 2k sidecar (**after**) | 2_000 | **542 ns** | map not on state |
+| `BeaconState<Minimal>` clone + 50k sidecar (**after**) | 50_000 | **542 ns** | map not on state |
+
+### What the numbers say
+
+- Map clone **scales with N** (test/dev 10_083 ns → 156_459 ns; release 3_083 ns → 46_042 ns). That is the cost that used to ride on `StateCaches::clone`.
+- State clone **does not** (test/dev 2_209 / 2_041 / 2_042 ns; release 625 / 542 / 542 ns) while a 0 / 2k / 50k map is held beside it.
+- At N=50_000 the leftover map-clone tax is **156_459 ns vs 2_042 ns** (test/dev) and **46_042 ns vs 542 ns** (release) — the state clone is not paying the table copy.
