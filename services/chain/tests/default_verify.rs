@@ -1,6 +1,6 @@
 //! S0-A-25 / P0-03 — `CoreConfig::default()` ships `VerifyIndividual`.
 //!
-//! `NoVerification` is reserved for restore-replay (`apply_restore_set` →
+//! `NoVerification` is reserved for durable-seed replay (`seed_from_durable` →
 //! `on_block`). No other production construction site assigns it to
 //! `CoreConfig.verify`.
 
@@ -217,12 +217,12 @@ fn no_verification_only_raised_on_restore_replay() {
                 assignments.push(rel.clone());
             }
 
-            if rel == "restore.rs" {
-                restore_on_block_override = call_arg_lists(&compacted, "on_block")
+            if rel == "seed.rs" {
+                restore_on_block_override = call_arg_lists(&compacted, "on_block_with_context")
                     .iter()
                     .any(|args| args.contains("BlockSignatureStrategy::NoVerification"));
                 // Live core after replay must keep the caller's strategy.
-                if let Some(idx) = compacted.find("fnspawn_core_from_restore") {
+                if let Some(idx) = compacted.find("fnspawn_core_from_seed") {
                     let fn_src = &compacted[idx..];
                     spawn_assigns_no_verification = fn_src
                         .contains("verify=BlockSignatureStrategy::NoVerification")
@@ -245,12 +245,12 @@ fn no_verification_only_raised_on_restore_replay() {
     );
     assert!(
         restore_on_block_override,
-        "restore.rs apply_restore_set must pass BlockSignatureStrategy::NoVerification \
+        "seed.rs must pass BlockSignatureStrategy::NoVerification \
          as an on_block argument (comments/docs do not count)"
     );
     assert!(
         !spawn_assigns_no_verification,
-        "spawn_core_from_restore must not assign CoreConfig.verify = NoVerification"
+        "spawn_core_from_seed must not assign CoreConfig.verify = NoVerification"
     );
     assert!(
         !import_on_block_no_verification,
@@ -263,7 +263,7 @@ fn comment_strip_does_not_treat_docs_as_on_block_args() {
     let docs_only = r#"
         //! Uses [`BlockSignatureStrategy::NoVerification`] exclusively
         /// on_block replay is privileged
-        fn apply_restore_set() {
+        fn seed_from_durable_docs() {
             // on_block(..., BlockSignatureStrategy::NoVerification)
             let _ = 1;
         }

@@ -3,13 +3,12 @@
 - **Status:** superseded-by ADR-R-02 · **Date:** 2026-08-16 (reconstructed)
 - **Phase:** 4
 - **Issues:** S1-B-17, CC-45b
-- **Citations:** 3 sites — `services/chain/src/restore.rs:5`; `services/storage/src/restore_client.rs:4`; `proto/eth/chain/v1/chain.proto:51`
+- **Citations:** deleted at S2-J-02 — `restore.rs`, `restore_client.rs`, and `RestoreFromStore` on `chain.proto` are gone. History record only.
 - **Provenance:** re-derived from code (2026-08-16)
 
 This is a **history record**. The decision bound the two-process boot. It
 does not bind after S2. ADR-R-02 (written at S2) deletes
-`RestoreFromStore`; the three code citations stay until `S2-J-02`
-deletes the files.
+`RestoreFromStore`. `S2-J-02` deleted the files; this record stays for history.
 
 ## Context
 

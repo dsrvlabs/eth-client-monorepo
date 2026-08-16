@@ -1,10 +1,10 @@
 //! Checkpoint fetch, provider fallback, and verification (CC-19a / Architecture §8).
 //!
-//! **Demoted to fallback (CC-45b).** Local store restore via `RestoreFromStore`
-//! is the primary load strategy; this module runs only when storage sends
-//! `EMPTY` or the `AwaitingRestore` grace elapses (Grandine
-//! `StateLoadStrategy::Auto` pattern). CC-45c enforces that the fallback is
-//! *unreachable* during the 20-restart proof run.
+//! **Demoted to fallback (CC-45b / S2-J-02).** In-process durable seed
+//! (`seed_from_durable` on `bin/beacon-core`) is the primary load strategy;
+//! this module runs on empty store or on 4-container `cc-chain`. CC-45c
+//! enforces that the fallback is *unreachable* during the 20-restart proof
+//! run.
 //!
 //! Fetch order is **block-first** (genesis → config/spec → finalized block →
 //! state by `state_root`, with `finalized` alias fallback). Verification uses

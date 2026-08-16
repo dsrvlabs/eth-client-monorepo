@@ -2,23 +2,22 @@
 //!
 //! S2-A-03: called from the thin `main.rs` shim. JWT abort-before-bind
 //! (S1-A-06), in-process [`crate::DirectEngine`], and the S1-A-16 liveness
-//! sampler stay here. Restore is not deleted (S2-J-02).
+//! sampler stay here. E4 restore is deleted (S2-J-02); 4-container chain
+//! seeds via checkpoint fallback only.
 //!
-//! Lifecycle (CC-45b primary restore, CC-19 demoted to fallback):
+//! Lifecycle (CC-19 checkpoint fallback; in-process seed is `bin/beacon-core`):
 //! 1. Bind gRPC (`eth.chain.v1.ChainService` → SERVING immediately).
-//! 2. Enter `AwaitingRestore` for `restore_grace_seconds` (default 30 s).
-//! 3. Storage pushes `RestoreFromStore` (or `EMPTY`, which collapses grace
-//!    immediately). Full restore → install core. EMPTY / timeout → fall back
-//!    to checkpoint sync when `checkpoint_providers` is configured.
-//! 4. Aggregate `""` stays NOT_SERVING until local-ready (restore handshake
-//!    marks ready so storage can push). After a core is installed, SERVING
-//!    additionally requires a recent `probe_core_liveness` (N=3 consecutive
-//!    misses → NOT_SERVING, same N successes to restore; ADR-R-04).
-//! 5. Shutdown: aggregate NOT_SERVING → core `Shutdown` + join under a single
+//! 2. If `checkpoint_providers` is configured, run checkpoint sync and
+//!    install the core. Otherwise the core stays absent.
+//! 3. Aggregate `""` stays NOT_SERVING until local-ready. After a core is
+//!    installed, SERVING additionally requires a recent `probe_core_liveness`
+//!    (N=3 consecutive misses → NOT_SERVING, same N successes to restore;
+//!    ADR-R-04).
+//! 4. Shutdown: aggregate NOT_SERVING → core `Shutdown` + join under a single
 //!    2 s envelope → drain (total SIGTERM budget remains 5 s with Phase 0 drain).
 //!
-//! Empty `checkpoint_providers` and no restore keeps Phase 0 compose healthy:
-//! no local-ready gate, core absent, RPCs return `NOT_BOOTSTRAPPED`.
+//! Empty `checkpoint_providers` keeps Phase 0 compose healthy: core absent,
+//! RPCs return `NOT_BOOTSTRAPPED`.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -27,7 +26,6 @@ use crate::checkpoint_sync::{
     CheckpointBootstrapConfig, bootstrap_core_from_providers_with_epoch, parse_optional_root,
 };
 use crate::core::{CoreConfig, CoreThread};
-use crate::restore::{DEFAULT_RESTORE_GRACE_SECONDS, RestoreGate, RestoreGateOutcome};
 use crate::service::ChainServiceImpl;
 use crate::{ChainMetrics, EpochContextStore, EventsConfig, EventsHandle, HeadSnapshotStore};
 use cc_bootstrap::{
@@ -140,8 +138,6 @@ const APPLY_ATTESTATIONS_METHOD: &str = "/eth.chain.v1.ChainService/ApplyAttesta
 const IS_OPTIMISTIC_METHOD: &str = "/eth.chain.v1.ChainService/IsOptimistic";
 /// CC-44a additive unary for storage gap fill.
 const GET_CANONICAL_ROOTS_METHOD: &str = "/eth.chain.v1.ChainService/GetCanonicalRoots";
-/// CC-45b client-streaming restore push from storage.
-const RESTORE_FROM_STORE_METHOD: &str = "/eth.chain.v1.ChainService/RestoreFromStore";
 
 /// Per-service config: shared [`ServiceConfig`] plus chain-only fields.
 #[derive(Debug, Deserialize)]
@@ -163,11 +159,10 @@ struct ChainConfig {
     /// Per-subscriber queue capacity (CC-18c). Default 256.
     #[serde(default = "default_subscriber_queue_capacity")]
     subscriber_queue_capacity: usize,
-    /// Ordered checkpoint provider base URLs (CC-19 demoted to **fallback**).
+    /// Ordered checkpoint provider base URLs (CC-19; 4-container fallback).
     ///
-    /// Local store restore (CC-45b) is the primary load strategy. Checkpoint
-    /// sync runs only when restore sends EMPTY or the grace timer elapses
-    /// (Grandine `StateLoadStrategy::Auto` pattern). Empty → no fallback either.
+    /// In-process durable seed is `bin/beacon-core`. Empty → core stays
+    /// absent (`NOT_BOOTSTRAPPED`).
     #[serde(default)]
     checkpoint_providers: Vec<String>,
     /// Optional operator-supplied finalized checkpoint root (`0x…`).
@@ -203,11 +198,6 @@ struct ChainConfig {
     /// (64 MiB); must be neither Hoodi's nor mainnet's.
     #[serde(default)]
     genesis_validators_root: Option<String>,
-    /// Seconds to wait in `AwaitingRestore` before falling back to checkpoint
-    /// sync (CC-45b / §3.5). Default **30**. Collapsed immediately by
-    /// `RestoreFromStore{ kind: EMPTY }`.
-    #[serde(default = "default_restore_grace_seconds")]
-    restore_grace_seconds: u64,
     /// `MAXIMUM_GOSSIP_CLOCK_DISPARITY` in milliseconds (P0-12). Config is the
     /// sole source; never inlined at the future-slot check.
     #[serde(default = "default_maximum_gossip_clock_disparity_ms")]
@@ -236,15 +226,12 @@ fn default_subscriber_queue_capacity() -> usize {
 fn default_safe_slots_to_import_optimistically() -> u64 {
     cc_fork_choice::SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY
 }
-fn default_restore_grace_seconds() -> u64 {
-    DEFAULT_RESTORE_GRACE_SECONDS
-}
 fn default_maximum_gossip_clock_disparity_ms() -> u64 {
     u64::try_from(crate::tick::DEFAULT_MAXIMUM_GOSSIP_CLOCK_DISPARITY.as_millis())
         .unwrap_or(5 * 100)
 }
 
-fn load_network_for_restore(
+fn load_network(
     cfg: &ChainConfig,
     has_checkpoint_fallback: bool,
 ) -> anyhow::Result<NetworkChainConfig> {
@@ -311,13 +298,12 @@ impl ChainConfig {
                 APPLY_ATTESTATIONS_METHOD.to_owned(),
                 IS_OPTIMISTIC_METHOD.to_owned(),
                 GET_CANONICAL_ROOTS_METHOD.to_owned(),
-                RESTORE_FROM_STORE_METHOD.to_owned(),
             ],
         }
     }
 }
 
-/// Production host: JWT abort-before-bind, restore / checkpoint, liveness, serve.
+/// Production host: JWT abort-before-bind, checkpoint fallback, liveness, serve.
 pub async fn run() -> anyhow::Result<()> {
     // Fail before any bind (CC-09/2): load config, JWT, then telemetry, then serve.
     let cfg = cc_config::load::<ChainConfig>(SERVICE)?;
@@ -325,13 +311,11 @@ pub async fn run() -> anyhow::Result<()> {
     cfg.check_dangerous_knobs()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let has_checkpoint_fallback = !cfg.checkpoint_providers.is_empty();
-    let network_for_restore = load_network_for_restore(&cfg, has_checkpoint_fallback)?;
+    let network = load_network(&cfg, has_checkpoint_fallback)?;
     // JWT + `[el_forks]` + KZG abort before any port bind (S1-A-06).
-    let prepared = cc_engine_api::EngineApi::prepare_with_chain_config(
-        &cfg.engine,
-        network_for_restore.clone(),
-    )
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let prepared =
+        cc_engine_api::EngineApi::prepare_with_chain_config(&cfg.engine, network.clone())
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut bs = cc_bootstrap::init(SERVICE, TelemetrySettings::from(&cfg.service))?;
     if cc_config::is_event_ring_bytes_shrink(cfg.event_ring_bytes) {
         tracing::warn!(
@@ -356,22 +340,15 @@ pub async fn run() -> anyhow::Result<()> {
     // Shared with core at spawn so pre-bootstrap P2pStream sessions keep the
     // same EpochContext ArcSwap after install_core (CC-27a F2).
     let epoch = EpochContextStore::new();
-    let restore_grace = Duration::from_secs(cfg.restore_grace_seconds);
-    // Always enter AwaitingRestore so storage can push EMPTY / snapshot; when
-    // grace is 0 the gate times out immediately (tests / no-restore profiles).
-    let restore_gate = RestoreGate::new(restore_grace);
-    // Local-ready is required when we expect a core (restore or checkpoint).
-    // Phase 0 compose (no providers, no restore push expected soon) still
-    // enters AwaitingRestore briefly so EMPTY collapses it.
+    // Local-ready is required so compose health flips after bind, not before.
     let needs_core = true;
     tracing::debug!(
         max_resident_states = cfg.max_resident_states,
         body_ring_capacity = cfg.body_ring_capacity,
         checkpoint_providers = cfg.checkpoint_providers.len(),
-        restore_grace_seconds = cfg.restore_grace_seconds,
         safe_slots_to_import_optimistically = cfg.safe_slots_to_import_optimistically,
         has_checkpoint_fallback,
-        "residency + restore + checkpoint-fallback config loaded"
+        "residency + checkpoint-fallback config loaded"
     );
 
     // Optional: select KZG backend from CC-11d's default when crypto is linked.
@@ -400,18 +377,13 @@ pub async fn run() -> anyhow::Result<()> {
         ..CoreConfig::default()
     };
 
-    // Core starts absent; restore (primary) or checkpoint (fallback) installs it.
+    // Core starts absent; checkpoint fallback (if configured) installs it.
     let svc = ChainServiceImpl::with_epoch(
         None,
         head.clone(),
         epoch.clone(),
         events.clone(),
         chain_metrics.clone(),
-    )
-    .with_restore(
-        Arc::clone(&restore_gate),
-        network_for_restore.clone(),
-        core_cfg.clone(),
     );
     let core_owner: Arc<Mutex<CoreJoinOwner>> = Arc::new(Mutex::new(CoreJoinOwner::default()));
 
@@ -425,56 +397,75 @@ pub async fn run() -> anyhow::Result<()> {
         let events_boot = events.event_sender();
         let metrics_boot = chain_metrics;
         let core_owner_boot = Arc::clone(&core_owner);
-        let gate_wait = Arc::clone(&restore_gate);
         let providers = cfg.checkpoint_providers.clone();
         let checkpoint_root = cfg.checkpoint_root.clone();
-        let network_boot = network_for_restore;
+        let network_boot = network;
         let core_cfg_boot = core_cfg;
         let has_fallback = has_checkpoint_fallback;
 
-        // Concurrent with serve: wait for LocalReadyHandle, then AwaitingRestore
-        // outcome, then install core (restore) or fall back to checkpoint.
+        // Concurrent with serve: mark aggregate healthy, then checkpoint if
+        // providers are configured. E4 RestoreFromStore is gone (S2-J-02).
         tokio::spawn(async move {
             let local_ready: LocalReadyHandle = match ready_rx.await {
                 Ok(g) => g,
                 Err(_) => {
-                    tracing::error!("local-ready handle dropped before restore wait; aborting");
+                    tracing::error!("local-ready handle dropped before boot wait; aborting");
                     std::process::exit(1);
                 }
             };
-            // ── Health DAG choice (CC-45b) ──────────────────────────────────
             // Aggregate `""` is what `grpc-health-probe -addr=:9001` (compose)
             // and storage's `depends_on: chain: service_healthy` observe.
-            // Require local-ready so we control the flip, then mark ready
-            // **immediately at AwaitingRestore entry** so storage can start
-            // and push RestoreFromStore. Self `eth.chain.v1.ChainService` is
-            // already SERVING at bind. Fork-choice RPCs still return
-            // NOT_BOOTSTRAPPED until a core is installed. After install,
-            // the liveness sampler owns this bit (3 consecutive misses →
-            // NOT_SERVING; 3 successes to restore). Engine health is not
-            // flipped (ADR-P3-02 / S1-B-12).
-            // (Alternative rejected: storage `service_started` — races bind;
-            // dual health — compose only probes aggregate.)
+            // Mark ready immediately so the 4-container DAG can start.
+            // Fork-choice RPCs still return NOT_BOOTSTRAPPED until a core is
+            // installed. After install, the liveness sampler owns this bit.
             local_ready.mark_ready().await;
             let (deadline, interval) = liveness_timing(network_boot.seconds_per_slot);
+            if !has_fallback {
+                tracing::info!(
+                    "no checkpoint_providers; core remains absent (NOT_BOOTSTRAPPED); health already SERVING"
+                );
+                return;
+            }
             tracing::info!(
-                grace_secs = gate_wait.grace().as_secs(),
-                deadline_ms = deadline.as_secs_f64() * 1_000.0,
-                interval_ms = interval.as_millis(),
-                "AwaitingRestore: aggregate healthy; waiting for storage RestoreFromStore (or EMPTY / timeout)"
+                providers = providers.len(),
+                "checkpoint sync (CC-19; 4-container fallback after E4 deletion)"
             );
-            let outcome = gate_wait.wait().await;
-            match outcome {
-                RestoreGateOutcome::Restored(install) => {
+            let expected = match parse_optional_root(checkpoint_root.as_deref()) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(error = %e, "checkpoint_root");
+                    std::process::exit(1);
+                }
+            };
+            let boot_cfg = CheckpointBootstrapConfig {
+                providers,
+                expected_checkpoint_root: expected,
+                chain_config: network_boot,
+                connect_timeout: crate::PROVIDER_CONNECT_TIMEOUT,
+                total_timeout: crate::PROVIDER_TOTAL_TIMEOUT,
+                network_retries: crate::NETWORK_RETRIES,
+                triple_attempts: crate::TRIPLE_ATTEMPTS,
+            };
+            match bootstrap_core_from_providers_with_epoch::<Mainnet>(
+                &boot_cfg,
+                head_boot,
+                epoch_boot,
+                events_boot,
+                metrics_boot.clone(),
+                core_cfg_boot,
+            )
+            .await
+            {
+                Ok((core, summary)) => {
                     tracing::info!(
-                        head_root = %install.head_root,
-                        head_slot = install.head_slot,
-                        matched_expected = install.matched_expected,
-                        "restore complete; installing core (primary path, CC-45b)"
+                        provider = %summary.provider,
+                        block_root = %summary.block_root,
+                        slot = summary.slot,
+                        "checkpoint fallback complete; installing core"
                     );
                     let orphan = {
                         let mut guard = core_owner_boot.lock().unwrap_or_else(|p| p.into_inner());
-                        let orphan = guard.try_install(&svc_boot, install.core);
+                        let orphan = guard.try_install(&svc_boot, core);
                         if orphan.is_none() {
                             guard.spawn_liveness(
                                 local_ready.clone(),
@@ -486,101 +477,19 @@ pub async fn run() -> anyhow::Result<()> {
                         orphan
                     };
                     if let Some(core) = orphan {
-                        tracing::warn!(
-                            "pre-drain already active; shutting down late-restored core"
-                        );
+                        tracing::warn!("pre-drain already active; shutting down late-spawned core");
                         core.shutdown_and_join().await;
                         return;
                     }
                     tracing::info!(
                         deadline_ms = deadline.as_secs_f64() * 1_000.0,
                         interval_ms = interval.as_millis(),
-                        "restore lifecycle complete (core installed; liveness sampler started)"
+                        "checkpoint-fallback lifecycle complete (core installed; liveness sampler started)"
                     );
                 }
-                empty_or_timeout @ (RestoreGateOutcome::Empty | RestoreGateOutcome::TimedOut) => {
-                    let reason = match empty_or_timeout {
-                        RestoreGateOutcome::Empty => "EMPTY",
-                        RestoreGateOutcome::TimedOut => "grace timeout",
-                        RestoreGateOutcome::Restored(_) => unreachable!(),
-                    };
-                    if !has_fallback {
-                        tracing::info!(
-                            reason,
-                            "no checkpoint_providers; core remains absent (NOT_BOOTSTRAPPED); health already SERVING"
-                        );
-                        return;
-                    }
-                    tracing::info!(
-                        reason,
-                        providers = providers.len(),
-                        "falling back to checkpoint sync (CC-19 demoted; primary was restore)"
-                    );
-                    let expected = match parse_optional_root(checkpoint_root.as_deref()) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            tracing::error!(error = %e, "checkpoint_root");
-                            std::process::exit(1);
-                        }
-                    };
-                    let boot_cfg = CheckpointBootstrapConfig {
-                        providers,
-                        expected_checkpoint_root: expected,
-                        chain_config: network_boot,
-                        connect_timeout: crate::PROVIDER_CONNECT_TIMEOUT,
-                        total_timeout: crate::PROVIDER_TOTAL_TIMEOUT,
-                        network_retries: crate::NETWORK_RETRIES,
-                        triple_attempts: crate::TRIPLE_ATTEMPTS,
-                    };
-                    match bootstrap_core_from_providers_with_epoch::<Mainnet>(
-                        &boot_cfg,
-                        head_boot,
-                        epoch_boot,
-                        events_boot,
-                        metrics_boot.clone(),
-                        core_cfg_boot,
-                    )
-                    .await
-                    {
-                        Ok((core, summary)) => {
-                            tracing::info!(
-                                provider = %summary.provider,
-                                block_root = %summary.block_root,
-                                slot = summary.slot,
-                                "checkpoint fallback complete; installing core"
-                            );
-                            let orphan = {
-                                let mut guard =
-                                    core_owner_boot.lock().unwrap_or_else(|p| p.into_inner());
-                                let orphan = guard.try_install(&svc_boot, core);
-                                if orphan.is_none() {
-                                    guard.spawn_liveness(
-                                        local_ready.clone(),
-                                        metrics_boot.clone(),
-                                        deadline,
-                                        interval,
-                                    );
-                                }
-                                orphan
-                            };
-                            if let Some(core) = orphan {
-                                tracing::warn!(
-                                    "pre-drain already active; shutting down late-spawned core"
-                                );
-                                core.shutdown_and_join().await;
-                                return;
-                            }
-                            tracing::info!(
-                                deadline_ms = deadline.as_secs_f64() * 1_000.0,
-                                interval_ms = interval.as_millis(),
-                                "checkpoint-fallback lifecycle complete (core installed; liveness sampler started)"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "checkpoint fallback failed");
-                            std::process::exit(1);
-                        }
-                    }
+                Err(e) => {
+                    tracing::error!(error = %e, "checkpoint fallback failed");
+                    std::process::exit(1);
                 }
             }
         });
@@ -588,7 +497,6 @@ pub async fn run() -> anyhow::Result<()> {
 
     let core_owner_shutdown = Arc::clone(&core_owner);
     let options = ServeOptions {
-        // Always wait for restore outcome (or EMPTY→no-core mark_ready).
         require_local_ready: needs_core,
         local_ready_tx: Some(ready_tx),
         on_pre_drain: Some(Box::new(move || {

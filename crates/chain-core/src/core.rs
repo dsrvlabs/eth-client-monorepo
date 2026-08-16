@@ -794,9 +794,9 @@ pub struct CoreConfig {
     pub body_ring_capacity: usize,
     /// Unary `ImportBlock` / `on_block` signature strategy.
     ///
-    /// Default [`BlockSignatureStrategy::VerifyIndividual`]. Restore replay
-    /// overrides to [`BlockSignatureStrategy::NoVerification`] in
-    /// [`crate::restore::apply_restore_set`] (already-verified stored blocks).
+    /// Default [`BlockSignatureStrategy::VerifyIndividual`]. Durable seed
+    /// replay overrides to [`BlockSignatureStrategy::NoVerification`] in
+    /// [`crate::seed::seed_from_durable`] (already-verified stored blocks).
     pub verify: BlockSignatureStrategy,
     /// Shared PeerDAS available-root set (same `Arc` as the store's DA).
     ///

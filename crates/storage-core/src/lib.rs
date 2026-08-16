@@ -14,6 +14,7 @@
 //!
 //! S2-J-01: [`open`] / [`durable_set`] / [`start_writer`] are the in-process
 //! boot surface for `bin/beacon-core`. The 4-container host remains [`run`].
+//! S2-J-02: E4 RestoreFromStore client is gone.
 
 #![cfg_attr(test, allow(dead_code, unreachable_pub))]
 
@@ -27,7 +28,6 @@ mod migrate;
 mod open;
 mod prune;
 mod replay;
-mod restore_client;
 mod resume;
 mod serve;
 #[cfg(test)]
@@ -35,6 +35,7 @@ mod test_tmpdir;
 mod writer;
 
 pub use boot::run;
+pub use durable_set::{DurableBlock, DurableDaStatus};
 pub use metrics::StorageMetrics;
 pub use open::{
     DurableSet, OpenOpts, OpenedStore, StorageRuntime, durable_set, open, start_writer,

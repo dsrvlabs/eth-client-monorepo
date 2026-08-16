@@ -7,9 +7,9 @@
 //! [`residency.rs`](residency.rs), and [`events/`](events/mod.rs).
 //! S2-A-03: remaining crate siblings live here. `services/chain` is a thin
 //! shim over this crate so the previous topology stays runnable for A/B
-//! (`[ARCH]` §9.1). Restore stays (S2-J-02 deletes it).
-//! `checkpoint_sync` stays in `cc-chain` (HTTP grandfather; this crate is
-//! not HTTP- or JWT-grandfathered).
+//! (`[ARCH]` §9.1). E4 RestoreFromStore is deleted (S2-J-02); in-process
+//! seed lives in [`seed`]. `checkpoint_sync` stays in `cc-chain` (HTTP
+//! grandfather; this crate is not HTTP- or JWT-grandfathered).
 //!
 //! S2-A-04: this crate names [`ArchiveWriteHandle`] (`Arc<dyn ArchiveWrite>`).
 //! It never names a storage type.
@@ -49,7 +49,7 @@ pub mod metrics;
 pub mod p2p_stream;
 pub mod pending_engine;
 pub mod residency;
-pub mod restore;
+pub mod seed;
 pub mod service;
 pub mod tick;
 

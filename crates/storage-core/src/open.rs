@@ -148,10 +148,10 @@ impl OpenedStore {
     }
 }
 
-/// Restore payload extracted from an opened store.
+/// Durable seed payload extracted from an opened store.
 ///
-/// Proto-shaped so `chain-core` never names a storage type. Empty store → [`None`]
-/// from [`durable_set`] (checkpoint-sync fallback).
+/// Composer-shaped so `chain-core` never names a storage type. Empty store →
+/// [`None`] from [`durable_set`] (checkpoint-sync fallback).
 #[derive(Debug, Clone)]
 pub struct DurableSet {
     /// Snapshot BeaconState SSZ.
@@ -161,7 +161,7 @@ pub struct DurableSet {
     /// Fork tag for the anchor block decode.
     pub anchor_block_fork: u32,
     /// Replay set (ascending), including non-canonical siblings.
-    pub blocks: Vec<cc_proto::chain::RestoreBlock>,
+    pub blocks: Vec<crate::durable_set::DurableBlock>,
     /// Fork-choice scalars SSZ (ADR-P4-06; ~300 B).
     pub fork_choice_scalars_ssz: Vec<u8>,
     /// Expected head root from persisted scalars.
@@ -242,32 +242,18 @@ pub fn durable_set(db: &OpenedStore) -> anyhow::Result<Option<DurableSet>> {
         max_open_scan_rows: db.max_open_scan_rows,
         da_status_roots: Vec::new(),
     };
-    let plan = resume::build_restore_plan(engine, &ctx).map_err(map_resume)?;
+    let plan = resume::build_durable_plan(engine, &ctx).map_err(map_resume)?;
     if plan.empty {
         return Ok(None);
     }
-    let header = plan
-        .header
-        .ok_or_else(|| anyhow::anyhow!("durable set missing header"))?;
-    let footer = plan
-        .footer
-        .ok_or_else(|| anyhow::anyhow!("durable set missing footer"))?;
-    if footer.expected_head_root.len() != 32 {
-        anyhow::bail!(
-            "durable set expected_head_root must be 32 bytes, got {}",
-            footer.expected_head_root.len()
-        );
-    }
-    let mut expected_head_root = [0u8; 32];
-    expected_head_root.copy_from_slice(&footer.expected_head_root);
     Ok(Some(DurableSet {
         state_ssz: plan.state_ssz,
-        anchor_block_ssz: header.anchor_block_ssz,
-        anchor_block_fork: header.anchor_block_fork,
+        anchor_block_ssz: plan.anchor_block_ssz,
+        anchor_block_fork: plan.anchor_block_fork,
         blocks: plan.blocks,
-        fork_choice_scalars_ssz: header.fork_choice_scalars_ssz,
-        expected_head_root,
-        expected_head_slot: footer.expected_head_slot,
+        fork_choice_scalars_ssz: plan.fork_choice_scalars_ssz,
+        expected_head_root: plan.expected_head_root,
+        expected_head_slot: plan.expected_head_slot,
     }))
 }
 

@@ -18,16 +18,6 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
-[features]
-# S0-A-31 / R-13(b) only. Never default; never on the production binary.
-# Enables the raw restore decode arm and the in-process trace recorder.
-s0-a-31-observe = ["cc-chain-core/s0-a-31-observe"]
-
-[[test]]
-name = "r13_restore_observation"
-path = "tests/r13_restore_observation.rs"
-required-features = ["s0-a-31-observe"]
-
 [dependencies]
 anyhow = { workspace = true }
 arc-swap = { workspace = true }

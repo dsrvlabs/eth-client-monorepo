@@ -27,8 +27,8 @@ use cc_chain_core::liveness::{
     DEFAULT_ATTESTATION_DUE_BPS, liveness_deadline, run_core_liveness_loop, sample_interval,
 };
 use cc_chain_core::metrics::ChainMetrics;
-use cc_chain_core::restore::{
-    DurableSeed, RestoreInstall, seed_from_durable, spawn_core_from_restore,
+use cc_chain_core::seed::{
+    DurableSeed, SeedBlock, SeedDaStatus, SeedInstall, seed_from_durable, spawn_core_from_seed,
 };
 use cc_chain_core::service::ChainServiceImpl;
 use cc_config::ServiceConfig;
@@ -54,7 +54,6 @@ const KNOWN_METHODS: &[&str] = &[
     "/eth.chain.v1.ChainService/ApplyAttestations",
     "/eth.chain.v1.ChainService/IsOptimistic",
     "/eth.chain.v1.ChainService/GetCanonicalRoots",
-    "/eth.chain.v1.ChainService/RestoreFromStore",
 ];
 
 /// Ordered boot phases. [`BootPhase::Open`] is always first.
@@ -316,12 +315,28 @@ fn ensure_node_key(path: &std::path::Path) -> anyhow::Result<[u8; 32]> {
     Ok(bytes)
 }
 
+fn map_da(status: cc_storage_core::DurableDaStatus) -> SeedDaStatus {
+    match status {
+        cc_storage_core::DurableDaStatus::Available => SeedDaStatus::Available,
+        cc_storage_core::DurableDaStatus::Deferred => SeedDaStatus::Deferred,
+    }
+}
+
 fn map_durable(d: cc_storage_core::DurableSet) -> DurableSeed {
     DurableSeed {
         state_ssz: d.state_ssz,
         anchor_block_ssz: d.anchor_block_ssz,
         anchor_block_fork: d.anchor_block_fork,
-        blocks: d.blocks,
+        blocks: d
+            .blocks
+            .into_iter()
+            .map(|b| SeedBlock {
+                ssz: b.ssz,
+                fork: b.fork,
+                root: b.root,
+                da_status: map_da(b.da_status),
+            })
+            .collect(),
         fork_choice_scalars_ssz: d.fork_choice_scalars_ssz,
         expected_head_root: Root::from_array(d.expected_head_root),
         expected_head_slot: d.expected_head_slot,
@@ -454,7 +469,7 @@ pub async fn run() -> anyhow::Result<()> {
             )
             .await
             .map_err(|e| anyhow::anyhow!("seed_from_durable: {e}"))?;
-            let install = spawn_core_from_restore(
+            let install = spawn_core_from_seed(
                 applied,
                 network.clone(),
                 head.clone(),
@@ -495,7 +510,7 @@ pub async fn run() -> anyhow::Result<()> {
             install_core(
                 &svc,
                 &core_owner,
-                RestoreInstall {
+                SeedInstall {
                     core,
                     head_root: summary.block_root,
                     head_slot: summary.slot,
@@ -562,7 +577,7 @@ pub async fn run() -> anyhow::Result<()> {
 fn install_core(
     svc: &ChainServiceImpl,
     owner: &Arc<Mutex<CoreJoinOwner>>,
-    install: RestoreInstall,
+    install: SeedInstall,
 ) -> anyhow::Result<()> {
     let orphan = {
         let mut guard = owner.lock().unwrap_or_else(|p| p.into_inner());

@@ -65,12 +65,6 @@ jwt_secret_path = "secrets/jwt.hex"
 slot_duration_ms = 12000
 attestation_due_bps = 3333
 
-# CC-45b / §3.5: seconds to wait in AwaitingRestore before falling back to
-# checkpoint sync (CC-19 demoted). Default 30. Collapsed immediately by
-# RestoreFromStore{ kind: EMPTY } so a first-ever start does not wait 30 s.
-# Override: CC_CHAIN_RESTORE_GRACE_SECONDS=5
-restore_grace_seconds = 30
-
 # MAXIMUM_GOSSIP_CLOCK_DISPARITY (ms). Applied at import so a block this far
 # before its slot start is not IGNOREd as future_slot. Not quantized to a slot.
 maximum_gossip_clock_disparity_ms = 500

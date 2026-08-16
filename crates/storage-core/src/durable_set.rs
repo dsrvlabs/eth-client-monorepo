@@ -17,7 +17,8 @@
 //!
 //! Grep: `I-contig|I-window|I-split-fin|I-node-id` in this file → four citations.
 //!
-//! Resume *sequence* (RestoreFromStore push, AwaitingRestore, …) is **CC-45b**.
+//! Resume *sequence* (schema check + durable-set load) is **CC-45b**.
+//! E4 RestoreFromStore is deleted (S2-J-02).
 
 #![allow(dead_code)] // production resume (CC-45b) calls these; tests exercise them now.
 
@@ -129,6 +130,38 @@ impl DurableItem {
             | Self::WriteCursor
             | Self::EnrSequence
             | Self::BackfillProgress => MissingBehaviour::Degradation,
+        }
+    }
+}
+
+/// Stored DA verdict on a durable replay block (not a proto).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableDaStatus {
+    /// Block stored Available — seed marks available, does not re-gate.
+    Available,
+    /// Block stored Deferred — seed leaves unmarked.
+    Deferred,
+}
+
+/// One replay-set block extracted from the store.
+#[derive(Debug, Clone)]
+pub struct DurableBlock {
+    /// SignedBeaconBlock SSZ.
+    pub ssz: Vec<u8>,
+    /// Fork version tag.
+    pub fork: u32,
+    /// Pre-computed hash_tree_root (32 B).
+    pub root: Vec<u8>,
+    /// Stored DA verdict.
+    pub da_status: DurableDaStatus,
+}
+
+impl DurableDaStatus {
+    #[must_use]
+    pub(crate) fn from_store(status: DaStatus) -> Self {
+        match status {
+            DaStatus::Available => Self::Available,
+            DaStatus::Deferred => Self::Deferred,
         }
     }
 }

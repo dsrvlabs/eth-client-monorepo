@@ -8,12 +8,10 @@
 //! - `P2pStream` / `GetValidatorRecords` → CC-27a chain-side stream contract
 //! - `IsOptimistic` → core [`Query`] over fork-choice only (CC-3B; no Phase 3 caller)
 //! - `GetCanonicalRoots` → core [`Query`] for API consumers (CC-44a /3)
-//! - `RestoreFromStore` → [`crate::restore`] (CC-45b / §3.5); available during
-//!   `AwaitingRestore` before the core is installed
 //!
-//! Before restore or checkpoint bootstrap completes the core slot is empty and
-//! RPCs return `FAILED_PRECONDITION` / `NOT_BOOTSTRAPPED` (§7.4).
-//! [`Self::install_core`] is called after restore or checkpoint bootstrap once
+//! Before durable seed or checkpoint bootstrap completes the core slot is
+//! empty and RPCs return `FAILED_PRECONDITION` / `NOT_BOOTSTRAPPED` (§7.4).
+//! [`Self::install_core`] is called after seed or checkpoint bootstrap once
 //! the gRPC server has already bound (bind-before-bootstrap; CC-19b). All
 //! `ErrorInfo` construction goes through the shared helper below so call sites
 //! never hand-assemble trailers (§7.6).
@@ -29,14 +27,11 @@ use cc_proto::chain::{
     GetCommitteeShufflingResponse, GetHeadRequest, GetHeadResponse, GetInfoRequest,
     GetInfoResponse, GetValidatorPubkeysRequest, GetValidatorPubkeysResponse,
     GetValidatorRecordsRequest, GetValidatorRecordsResponse, ImportBlockRequest,
-    ImportBlockResponse, IsOptimisticRequest, IsOptimisticResponse, RestoreChunk, RestoreResponse,
-    SubscribeEventsRequest,
+    ImportBlockResponse, IsOptimisticRequest, IsOptimisticResponse, SubscribeEventsRequest,
 };
 use cc_proto::common::BuildInfo;
 use cc_proto::p2p::{ChainToP2p, P2pToChain, PublishRequest};
 use cc_proto::status_with_error_info;
-use cc_types::config::ChainConfig;
-use cc_types::preset::Mainnet;
 use cc_types::primitives::Root;
 use futures::Stream;
 use tokio_stream::wrappers::ReceiverStream;
@@ -44,15 +39,14 @@ use tonic::{Code, Request, Response, Status, Streaming};
 
 use crate::apply_attestations::MAX_APPLY_ATTESTATIONS;
 use crate::core::{
-    CoreConfig, CoreHandle, MAX_VALIDATOR_PUBKEYS_PER_REQUEST, MAX_VALIDATOR_RECORDS_PER_REQUEST,
-    QueryReply, QueryRequest,
+    CoreHandle, MAX_VALIDATOR_PUBKEYS_PER_REQUEST, MAX_VALIDATOR_RECORDS_PER_REQUEST, QueryReply,
+    QueryRequest,
 };
 use crate::epoch_context::EpochContextStore;
 use crate::events::EventsHandle;
 use crate::head::HeadSnapshotStore;
 use crate::metrics::ChainMetrics;
 use crate::p2p_stream::{P2pStreamDeps, serve_p2p_stream};
-use crate::restore::{RestoreGate, RestoreHandlerDeps, handle_restore_from_store};
 
 /// gRPC `ErrorInfo.reason` before checkpoint bootstrap (CC-19; Architecture §7.4).
 pub const REASON_NOT_BOOTSTRAPPED: &str = "NOT_BOOTSTRAPPED";
@@ -79,12 +73,10 @@ pub struct ChainServiceImpl {
     /// Immutable identity after construction (clone shares ArcSwap + tick bus).
     stream_deps: P2pStreamDeps,
     events: EventsHandle,
+    /// Registered at construction (M13 / import gauges). Unused after E4
+    /// deletion; kept so callers still inject one `ChainMetrics`.
+    #[allow(dead_code)]
     metrics: ChainMetrics,
-    /// CC-45b: restore gate (None when restore is disabled / tests without it).
-    restore_gate: Option<Arc<RestoreGate>>,
-    /// Network config + core knobs for the restore spawn path.
-    restore_chain_config: Option<ChainConfig>,
-    restore_core_cfg: Option<CoreConfig>,
 }
 
 impl ChainServiceImpl {
@@ -129,29 +121,7 @@ impl ChainServiceImpl {
             stream_deps,
             events,
             metrics,
-            restore_gate: None,
-            restore_chain_config: None,
-            restore_core_cfg: None,
         }
-    }
-
-    /// Attach the restore gate and network config (CC-45b production wiring).
-    #[must_use]
-    pub fn with_restore(
-        mut self,
-        gate: Arc<RestoreGate>,
-        chain_config: ChainConfig,
-        core_cfg: CoreConfig,
-    ) -> Self {
-        self.restore_gate = Some(gate);
-        self.restore_chain_config = Some(chain_config);
-        self.restore_core_cfg = Some(core_cfg);
-        self
-    }
-
-    /// Restore gate, if attached.
-    pub fn restore_gate(&self) -> Option<Arc<RestoreGate>> {
-        self.restore_gate.clone()
     }
 
     /// Install the core handle after checkpoint bootstrap (CC-19b).
@@ -556,37 +526,6 @@ impl ChainService for ChainServiceImpl {
                 "unexpected query reply for GetCanonicalRoots: {other:?}"
             ))),
         }
-    }
-
-    /// CC-45b / §3.5: storage-pushed restore stream.
-    ///
-    /// Available during `AwaitingRestore` (core may still be absent). After the
-    /// gate is sealed, further calls return `FAILED_PRECONDITION`.
-    async fn restore_from_store(
-        &self,
-        request: Request<Streaming<RestoreChunk>>,
-    ) -> Result<Response<RestoreResponse>, Status> {
-        let Some(gate) = self.restore_gate.clone() else {
-            return Err(Status::failed_precondition(
-                "RestoreFromStore: restore gate not configured on this chain process",
-            ));
-        };
-        let chain_config = self.restore_chain_config.clone().ok_or_else(|| {
-            Status::failed_precondition("RestoreFromStore: chain_config not configured")
-        })?;
-        let core_cfg = self.restore_core_cfg.clone().unwrap_or_default();
-        let deps = RestoreHandlerDeps {
-            gate,
-            head: self.head.clone(),
-            epoch: self.epoch_context(),
-            events: self.events.event_sender(),
-            metrics: self.metrics.clone(),
-            chain_config,
-            core_cfg,
-            _marker: (),
-        };
-        // Production is Mainnet/Hoodi-shaped (same as checkpoint bootstrap).
-        handle_restore_from_store::<Mainnet>(deps, request).await
     }
 }
 

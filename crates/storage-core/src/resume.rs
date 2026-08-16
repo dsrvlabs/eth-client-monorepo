@@ -1,25 +1,21 @@
-//! Open → restore sequence (CC-45b / Architecture §3.5).
+//! Open → durable-set sequence (CC-45b / Architecture §3.5 / S2-J-02).
 //!
 //! ```text
 //! storage: open store
 //!   → schema version / config digest / node id refusals (at open)
 //!   → invariants (CC-4H)
-//!   → store empty?  yes → RestoreFromStore{ EMPTY }; chain checkpoint-syncs
-//!   → load newest snapshot
-//!   → RestoreFromStore(stream): header / state chunks / blocks / footer
-//!   ← chain replies { head_root, head_slot, matched_expected }
-//!   → matched_expected == false  →  FATAL, both roots logged, divergence++
+//!   → store empty?  yes → no seed payload (4-container chain checkpoint-syncs)
+//!   → load newest snapshot + replay set (in-process seed on beacon-core)
 //!   → load write cursor (ArchiveWrite restamps; no SubscribeEvents hand-off)
 //!   → enqueue own replay + backfill resume at P2
 //! ```
 //!
-//! Populates `cc_storage_restart_seconds{phase}` for every term including
-//! `restore_send`, `schema_check`, and `chain_replay` (*Deviations* 7).
+//! E4 RestoreFromStore is deleted. Populates `cc_storage_restart_seconds{phase}`
+//! for every term including `schema_check` (*Deviations* 7).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use cc_proto::chain::{RestoreBlock, RestoreFooter, RestoreHeader};
 use cc_store::blocks::{TABLE_BLOCKS_HOT, get_block_by_root};
 use cc_store::canonical::get_canonical;
 use cc_store::engine::Engine;
@@ -33,14 +29,10 @@ use cc_store::{Root, Slot, SszDecode, TABLE_BLOCK_SLOT_BY_ROOT};
 use tracing::{error, info};
 
 use crate::durable_set::{
-    DurableItem, DurableSetContext, ItemAssessment, assess_item, load_da_status_for_restore,
+    DurableBlock, DurableDaStatus, DurableItem, DurableSetContext, ItemAssessment, assess_item,
+    load_da_status_for_restore,
 };
 use crate::metrics::{RestartPhase, RestartPhaseLabels, StorageMetrics};
-use crate::restore_client::{
-    DEFAULT_CONNECT_TIMEOUT, DEFAULT_PUSH_BACKOFF_CAP, DEFAULT_PUSH_BACKOFF_INITIAL,
-    DEFAULT_PUSH_RETRY_BUDGET, RestoreClientError, RestoreStreamPlan, push_restore_with_retry,
-    wire_da_status,
-};
 use crate::writer::WriterHandle;
 
 /// How a fatal resume divergence terminates the process.
@@ -55,6 +47,7 @@ pub(crate) enum ResumeExit {
 }
 
 impl ResumeExit {
+    #[allow(dead_code)]
     fn fire(&self) {
         match self {
             Self::Os => {
@@ -68,32 +61,42 @@ impl ResumeExit {
     }
 }
 
-/// Result of a successful (or EMPTY) resume sequence.
+/// Result of a successful (or empty) resume sequence.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // fields read by main logging / future write-behind hand-off
 pub(crate) struct ResumeOutcome {
-    /// True when we sent EMPTY (chain will checkpoint-sync).
+    /// True when the store had no snapshot / fork-choice scalars.
     pub empty: bool,
-    /// Chain's reported head root after restore (ZERO on EMPTY).
+    /// Expected head root from persisted scalars (ZERO on empty).
     pub head_root: Root,
-    /// Chain's reported head slot after restore.
+    /// Expected head slot from persisted scalars.
     pub head_slot: u64,
-    /// Whether chain matched our expected head (true on EMPTY).
-    pub matched_expected: bool,
     /// Durable write cursor loaded at resume (ArchiveWrite restamps it).
     pub write_cursor: Option<WriteCursor>,
 }
 
-/// Drive §3.5's full sequence against an already-opened engine.
+/// In-process durable payload (was the RestoreFromStore stream plan).
+#[derive(Debug, Clone)]
+pub(crate) struct DurablePlan {
+    pub empty: bool,
+    pub state_ssz: Vec<u8>,
+    pub anchor_block_ssz: Vec<u8>,
+    pub anchor_block_fork: u32,
+    pub fork_choice_scalars_ssz: Vec<u8>,
+    pub blocks: Vec<DurableBlock>,
+    pub expected_head_root: [u8; 32],
+    pub expected_head_slot: u64,
+}
+
+/// Drive the post-open resume sequence against an already-opened engine.
 ///
 /// `open` phase is observed by the caller (around `Store::open`); this function
-/// populates the remaining six phases.
-pub(crate) async fn run_resume_sequence(
+/// populates the remaining phases. E4 push is gone (S2-J-02).
+pub(crate) fn run_resume_sequence(
     engine: &Engine,
     metrics: &StorageMetrics,
-    chain_uri: &str,
     durable_ctx: &DurableSetContext,
-    exit: ResumeExit,
+    _exit: ResumeExit,
 ) -> Result<ResumeOutcome, ResumeError> {
     // ── schema_check ────────────────────────────────────────────────────────
     let t0 = Instant::now();
@@ -102,93 +105,30 @@ pub(crate) async fn run_resume_sequence(
 
     // ── empty-store branch ──────────────────────────────────────────────────
     if is_store_empty(engine)? {
-        info!("resume: store empty — sending RestoreFromStore EMPTY (with dial retry)");
-        let t_send = Instant::now();
-        let resp = push_restore_with_retry(
-            chain_uri,
-            RestoreStreamPlan::empty(),
-            DEFAULT_CONNECT_TIMEOUT,
-            DEFAULT_PUSH_RETRY_BUDGET,
-            DEFAULT_PUSH_BACKOFF_INITIAL,
-            DEFAULT_PUSH_BACKOFF_CAP,
-        )
-        .await
-        .map_err(ResumeError::Client)?;
-        observe_phase(metrics, RestartPhase::RestoreSend, t_send.elapsed());
-        // No snapshot / chain replay / fc rebuild on EMPTY.
+        info!("resume: store empty — no durable seed (4-container chain checkpoint-syncs)");
+        observe_phase(metrics, RestartPhase::RestoreSend, Duration::ZERO);
         observe_phase(metrics, RestartPhase::SnapshotLoad, Duration::ZERO);
         observe_phase(metrics, RestartPhase::ChainReplay, Duration::ZERO);
         observe_phase(metrics, RestartPhase::ForkchoiceRebuild, Duration::ZERO);
         observe_phase(metrics, RestartPhase::Resubscribe, Duration::ZERO);
-        let _ = resp;
         return Ok(ResumeOutcome {
             empty: true,
             head_root: Root::ZERO,
             head_slot: 0,
-            matched_expected: true,
             write_cursor: None,
         });
     }
 
     // ── snapshot_load ───────────────────────────────────────────────────────
     let t_snap = Instant::now();
-    let plan = build_restore_plan(engine, durable_ctx)?;
+    let plan = build_durable_plan(engine, durable_ctx)?;
     observe_phase(metrics, RestartPhase::SnapshotLoad, t_snap.elapsed());
-
-    let expected_root = plan
-        .footer
-        .as_ref()
-        .map(|f| root_from_bytes(&f.expected_head_root))
-        .unwrap_or(Root::ZERO);
-    let expected_slot = plan
-        .footer
-        .as_ref()
-        .map(|f| f.expected_head_slot)
-        .unwrap_or(0);
-
-    // ── restore_send + chain_replay (stream then await response) ────────────
-    let t_send = Instant::now();
-    let resp = push_restore_with_retry(
-        chain_uri,
-        plan,
-        DEFAULT_CONNECT_TIMEOUT,
-        DEFAULT_PUSH_RETRY_BUDGET,
-        DEFAULT_PUSH_BACKOFF_INITIAL,
-        DEFAULT_PUSH_BACKOFF_CAP,
-    )
-    .await
-    .map_err(ResumeError::Client)?;
-    let send_and_wait = t_send.elapsed();
-    // Attribute wall time: send dominates; chain_replay is the wait after the
-    // stream is fully enqueued. We cannot split precisely without hooks, so
-    // observe restore_send as the full RTT and chain_replay as a share —
-    // both series are populated (CC-45 /8).
-    observe_phase(metrics, RestartPhase::RestoreSend, send_and_wait);
-    observe_phase(metrics, RestartPhase::ChainReplay, send_and_wait);
-
-    // ── forkchoice_rebuild (chain did it inside the RTT; record residual) ───
+    observe_phase(metrics, RestartPhase::RestoreSend, Duration::ZERO);
+    observe_phase(metrics, RestartPhase::ChainReplay, Duration::ZERO);
     observe_phase(metrics, RestartPhase::ForkchoiceRebuild, Duration::ZERO);
 
-    let head_root = root_from_bytes(&resp.head_root);
-    let head_slot = resp.head_slot;
-    let matched = resp.matched_expected;
-
-    if !matched {
-        // Fatal: both roots logged, divergence counter, abort.
-        error!(
-            expected_root = %expected_root,
-            expected_slot,
-            actual_root = %head_root,
-            actual_slot = head_slot,
-            "resume matched_expected == false — FATAL (CC-45 /3 divergence)"
-        );
-        metrics.replay_divergence.inc();
-        exit.fire();
-        return Err(ResumeError::Divergence {
-            expected: expected_root,
-            actual: head_root,
-        });
-    }
+    let head_root = Root::from_array(plan.expected_head_root);
+    let head_slot = plan.expected_head_slot;
 
     // ── cursor load (no SubscribeEvents resubscribe; S2-A-09) ──────────────
     let t_re = Instant::now();
@@ -198,15 +138,13 @@ pub(crate) async fn run_resume_sequence(
     info!(
         %head_root,
         head_slot,
-        matched_expected = matched,
-        "resume: RestoreFromStore matched; write-behind SubscribeEvents is gone"
+        "resume: durable set loaded; write-behind SubscribeEvents is gone"
     );
 
     Ok(ResumeOutcome {
         empty: false,
         head_root,
         head_slot,
-        matched_expected: matched,
         write_cursor,
     })
 }
@@ -249,10 +187,10 @@ pub(crate) fn is_store_empty(engine: &Engine) -> Result<bool, ResumeError> {
     Ok(!has_fc && !has_snap)
 }
 
-pub(crate) fn build_restore_plan(
+pub(crate) fn build_durable_plan(
     engine: &Engine,
     ctx: &DurableSetContext,
-) -> Result<RestoreStreamPlan, ResumeError> {
+) -> Result<DurablePlan, ResumeError> {
     // Prefer newest snapshot; degrade to next-older is handled by durable_set
     // assess — here we just load what is present.
     let rt = engine
@@ -290,31 +228,17 @@ pub(crate) fn build_restore_plan(
     let end = expected_head_slot.max(start);
     let blocks = collect_restore_blocks(engine, Slot::new(start), Slot::new(end), ctx)?;
 
-    let header = RestoreHeader {
-        schema_version,
-        config_digest: config_digest.as_slice().to_vec(),
-        anchor_ssz,
-        split_ssz,
-        fork_choice_scalars_ssz: fc_ssz,
-        snapshot_slot: snap_slot.as_u64(),
-        state_ssz_total_bytes: state_ssz.len() as u64,
+    let _ = (schema_version, config_digest, anchor_ssz, split_ssz, split);
+    Ok(DurablePlan {
+        empty: false,
+        state_ssz,
         anchor_block_ssz,
         // Fulu-only production path (fork tag for decode; 0 = Fulu in chain decoder).
         anchor_block_fork: 0,
-    };
-    let footer = RestoreFooter {
-        expected_head_root: expected_head_root.as_slice().to_vec(),
-        expected_head_slot,
-    };
-
-    let _ = split; // available for diagnostics
-    Ok(RestoreStreamPlan {
-        empty: false,
-        header: Some(header),
-        state_ssz,
+        fork_choice_scalars_ssz: fc_ssz,
         blocks,
-        footer: Some(footer),
-        state_chunk_bytes: 1024 * 1024,
+        expected_head_root: *expected_head_root.as_array(),
+        expected_head_slot,
     })
 }
 
@@ -397,7 +321,7 @@ fn collect_restore_blocks(
     start: Slot,
     end: Slot,
     _ctx: &DurableSetContext,
-) -> Result<Vec<RestoreBlock>, ResumeError> {
+) -> Result<Vec<DurableBlock>, ResumeError> {
     let rt = engine
         .read()
         .map_err(|e| ResumeError::Store(e.to_string()))?;
@@ -453,11 +377,11 @@ fn collect_restore_blocks(
                 return Err(ResumeError::DaStatus(format!("{other:?}")));
             }
         };
-        out.push(RestoreBlock {
+        out.push(DurableBlock {
             ssz,
             fork: 0, // Fulu-only production; fork tag unused under current decoder defaults
             root: root.as_slice().to_vec(),
-            da_status: wire_da_status(da),
+            da_status: DurableDaStatus::from_store(da),
         });
         let _ = slot;
     }
@@ -517,15 +441,6 @@ fn read_meta_ssz_rt<T: SszDecode>(
         .map_err(|e| ResumeError::Store(format!("{key}: {e:?}")))
 }
 
-fn root_from_bytes(b: &[u8]) -> Root {
-    if b.len() != 32 {
-        return Root::ZERO;
-    }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(b);
-    Root::from_array(arr)
-}
-
 /// Enqueue storage's own P2 replay + backfill resume after the critical path.
 #[allow(dead_code)] // called when write-behind hand-off is fully wired
 pub(crate) fn enqueue_p2_own_replay(writer: &WriterHandle, _engine: &Arc<Engine>) {
@@ -546,10 +461,6 @@ pub(crate) enum ResumeError {
     Store(String),
     #[error("da_status: {0}")]
     DaStatus(String),
-    #[error("client: {0}")]
-    Client(#[from] RestoreClientError),
-    #[error("divergence: expected {expected} actual {actual}")]
-    Divergence { expected: Root, actual: Root },
 }
 
 // ── tests ───────────────────────────────────────────────────────────────────
@@ -568,6 +479,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tracing::error;
 
     fn tmp_dir(label: &str) -> PathBuf {
         let nanos = SystemTime::now()

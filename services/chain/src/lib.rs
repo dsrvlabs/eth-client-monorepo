@@ -18,16 +18,15 @@
 //! - **S1-A-06**: E3 is a direct [`engine::DirectEngine`] call (no gRPC bridge)
 //!
 //! The binary (`main.rs`) is a thin shim that calls [`run`]. Bind first, then
-//! await local restore ([`restore`] / CC-45b) for `restore_grace_seconds`
-//! before falling back to checkpoint bootstrap when `checkpoint_providers` is
-//! configured (CC-19 demoted to fallback): self health SERVING while aggregate
-//! `""` stays NOT_SERVING until the core is installed. Without providers and
-//! without a restore the core is absent and fork-choice RPCs return
+//! fall back to checkpoint bootstrap when `checkpoint_providers` is configured
+//! (CC-19 demoted; in-process seed lives on `bin/beacon-core`). Self health
+//! SERVING while aggregate `""` stays NOT_SERVING until the core is installed.
+//! Without providers the core is absent and fork-choice RPCs return
 //! `NOT_BOOTSTRAPPED`. Tests construct a store and spawn the core via
 //! [`core::spawn_core_thread`].
 //!
-//! `checkpoint_sync` stays in this crate (HTTP grandfather). Restore is not
-//! deleted here (S2-J-02).
+//! `checkpoint_sync` stays in this crate (HTTP grandfather). E4 restore is
+//! deleted (S2-J-02).
 
 #![allow(missing_docs)]
 
@@ -46,7 +45,7 @@ pub use cc_chain_core::metrics;
 pub use cc_chain_core::p2p_stream;
 pub use cc_chain_core::pending_engine;
 pub use cc_chain_core::residency;
-pub use cc_chain_core::restore;
+pub use cc_chain_core::seed;
 pub use cc_chain_core::service;
 pub use cc_chain_core::tick;
 
@@ -128,17 +127,12 @@ pub use residency::{
     BodyRingEntry, DEFAULT_BODY_RING_CAPACITY, DEFAULT_MAX_RESIDENT_STATES, Residency,
     ResidencyError, ResidentRole, StateProvider,
 };
-pub use restore::{
-    DEFAULT_RESTORE_GRACE_SECONDS, DurableSeed, RestoreApplyInput, RestoreApplyResult, RestoreGate,
-    RestoreGateOutcome, RestoreHandlerDeps, RestoreInstall, apply_restore_set,
-    handle_restore_accumulated, handle_restore_from_store, reset_restore_da_gate_invocations,
-    restore_da_gate_invocations, seed_from_durable, spawn_core_from_restore,
-};
-#[cfg(feature = "s0-a-31-observe")]
-pub use restore::{
-    RestoreTracePoint, reset_restore_trace, restore_force_raw_decode, restore_trace,
-};
 pub use run::run;
+pub use seed::{
+    DurableSeed, SeedApplyInput, SeedApplyResult, SeedBlock, SeedDaStatus, SeedInstall,
+    reset_seed_da_gate_invocations, seed_da_gate_invocations, seed_from_durable,
+    spawn_core_from_seed,
+};
 pub use service::{
     ChainServiceImpl, REASON_BELOW_FINALIZED_RETENTION, REASON_NOT_BOOTSTRAPPED,
     status_below_finalized,

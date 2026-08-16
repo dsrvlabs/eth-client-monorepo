@@ -417,12 +417,23 @@ of the same data directory fails the `I-node-id` check.
 **independent**. This issue's precondition is their re-disposition by explicit decision — not a
 silent deletion. See [`s0-exit-note.md`](s0-exit-note.md) § R-13 (b).
 
-**Deletes** — `RestoreFromStore` server and client, `services/chain/src/restore.rs` (1,227 lines ✓),
-`services/storage/src/restore_client.rs`. `ADR-P4-07`'s citations go with the code (`S1-B-17` already
-wrote it `Status: superseded-by ADR-R-02` so the history stays legible).
+**Deletes** — `RestoreFromStore` server and client, `crates/chain-core/src/restore.rs` (moved from
+`services/chain`), `crates/storage-core/src/restore_client.rs`. `ADR-P4-07`'s citations go with
+the code (`S1-B-17` already wrote it `Status: superseded-by ADR-R-02` so the history stays
+legible).
 
 **Acceptance** — `restore.rs` no longer exists; `RestoreFromStore` is absent from
 `proto/eth/chain/v1/chain.proto`; a grep for `apply_restore_set` returns 0.
+
+- [x] `crates/chain-core/src/restore.rs` (and `restore_observe.rs`) deleted
+- [x] `RestoreFromStore` absent from `proto/eth/chain/v1/chain.proto` (RPC + messages)
+- [x] `crates/storage-core/src/restore_client.rs` deleted; 4-container resume does not push
+- [x] `ChainService` has no `RestoreFromStore` impl; `cc-chain` does not wait AwaitingRestore
+- [x] grep `apply_restore_set` on `*.rs` / `*.proto` / `*.toml` returns 0
+- [x] in-process seed kept as `seed_from_durable` / `apply_durable_seed` (`crates/chain-core/src/seed.rs`)
+- [x] `bin/beacon-core` boot still `open → durable_set → seed_from_durable | checkpoint_sync`
+- [x] `cc-chain` + `cc-storage` binaries remain (4-container A/B)
+- [x] JWT isolation unchanged (`cc-chain-core` / `cc-beacon-core` / `cc-storage-core` not grandfathered)
 
 ---
 

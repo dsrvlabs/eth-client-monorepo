@@ -10,10 +10,6 @@ publish.workspace = true
 [lints]
 workspace = true
 
-[features]
-# S0-A-31 / R-13(b) only. Never default; never on the production binary.
-s0-a-31-observe = []
-
 [dependencies]
 # S2-A-03: production compile of the moved siblings. No HTTP client. No JWT
 # signer ([ARCH] §6.2 / S2-A-01). S2-A-04: `Arc<dyn ArchiveWrite>` via

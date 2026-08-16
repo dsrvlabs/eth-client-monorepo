@@ -28,7 +28,6 @@ use crate::prune::{
     genesis_time_from_fixture, spawn_prune_task,
 };
 use crate::replay::{self, ReplayConfig, ReplayDriver, spawn_replay_task};
-use crate::restore_client;
 use crate::resume;
 use crate::serve::{self, ServeConfig, StorageServer, UnaryPermitService};
 use crate::writer::{self, WriterBounds, WriterFaults, WriterHandle, spawn_writer};
@@ -513,14 +512,7 @@ pub async fn run() -> anyhow::Result<()> {
                     metrics::RestartPhase::Open,
                     open_t0.elapsed(),
                 );
-                // CC-45b: drive §3.5 restore sequence (push to chain).
-                // EMPTY collapses chain's grace; matched_expected false is fatal.
-                let chain_uri = cfg
-                    .service
-                    .peers
-                    .get("chain")
-                    .map(|u| u.to_string())
-                    .unwrap_or_else(|| "http://127.0.0.1:9001".to_owned());
+                // CC-45b: schema check + durable-set load. E4 push is gone.
                 let durable_ctx = durable_set::DurableSetContext {
                     expected_node_id: durable_set::load_expected_node_id_from_key_path(
                         cfg.node_key_path.as_deref(),
@@ -536,27 +528,23 @@ pub async fn run() -> anyhow::Result<()> {
                 match resume::run_resume_sequence(
                     &engine,
                     &storage_metrics,
-                    &chain_uri,
                     &durable_ctx,
                     resume::ResumeExit::Os,
-                )
-                .await
-                {
+                ) {
                     Ok(outcome) => {
                         if outcome.empty {
                             tracing::info!(
-                                "resume EMPTY sent; chain will checkpoint-sync (CC-19 fallback)"
+                                "resume: empty store; 4-container chain checkpoint-syncs (CC-19)"
                             );
                         } else {
                             tracing::info!(
                                 head_root = %outcome.head_root,
                                 head_slot = outcome.head_slot,
-                                "resume RestoreFromStore matched; continuing write path"
+                                "resume: durable set loaded; continuing write path"
                             );
                         }
                     }
                     Err(e) => {
-                        // Divergence already process-exits; other errors fail closed.
                         return Err(anyhow::anyhow!("resume sequence failed: {e}"));
                     }
                 }
@@ -644,30 +632,6 @@ pub async fn run() -> anyhow::Result<()> {
         }
     } else {
         tracing::warn!("enable_write_path=false — writer not started; serve stub only");
-        // Still collapse chain's AwaitingRestore so compose first-boot does not
-        // wait restore_grace_seconds (CC-45b EMPTY path without a store).
-        let chain_uri = cfg
-            .service
-            .peers
-            .get("chain")
-            .map(|u| u.to_string())
-            .unwrap_or_else(|| "http://127.0.0.1:9001".to_owned());
-        match restore_client::push_restore_with_retry(
-            &chain_uri,
-            restore_client::RestoreStreamPlan::empty(),
-            restore_client::DEFAULT_CONNECT_TIMEOUT,
-            restore_client::DEFAULT_PUSH_RETRY_BUDGET,
-            restore_client::DEFAULT_PUSH_BACKOFF_INITIAL,
-            restore_client::DEFAULT_PUSH_BACKOFF_CAP,
-        )
-        .await
-        {
-            Ok(_) => tracing::info!("resume EMPTY sent (no write path); chain grace collapsed"),
-            Err(e) => tracing::warn!(
-                error = %e,
-                "resume EMPTY push failed after retries; continuing stub serve"
-            ),
-        }
     }
 
     let storage_svc = match serve_engine {
