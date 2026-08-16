@@ -539,10 +539,14 @@ is exactly why `S3b-W-05` (20/20 restart trials) is scheduled **after** S2 (D11)
 opens, OQ-1 slips to the end of S3b and blocks M2d.
 
 **Acceptance**
-1. All five implementations named, with a contact and a tentative window date each.
-2. A named owner on our side.
-3. Recorded in the S2 exit note so `S3a-B-26` (E3a.5) can assert *sourced and scheduled*, not
-   *contacted*.
+- [x] All five implementations named, with a contact and a tentative window date each
+      (Lighthouse, Prysm, Teku, Nimbus, Lodestar — not Grandine, not an EL). Record:
+      [`s2-exit-note.md`](s2-exit-note.md) § W10. Dates are **TENTATIVE** / not confirmed by the
+      foreign party. No outreach was sent from this worktree.
+- [x] A named owner on our side — **DSRV Stream B (edge & platform)** (`[PLAN]` §9; org
+      `dsrvlabs` / DSRV). No individual is named in CODEOWNERS / README / plan docs.
+- [x] Recorded in the S2 exit note so `S3a-B-26` (E3a.5) can assert *sourced and scheduled*, not
+      *contacted*.
 
 `[PLAN]` §12 notes that starting outreach at **S1** instead removes W10 from the critical path — but
 buys nothing toward the interop **fixes** that 0/5 → 5/5 may require. If the schedule is tight, pull
