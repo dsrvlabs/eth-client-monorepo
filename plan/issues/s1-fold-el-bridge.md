@@ -470,6 +470,18 @@ fix the count in `docs/phase-3-acceptance.md:607`.
 **Acceptance** — every id in the bucket resolves under `docs/adr/`; `S1-B-06`'s gate is green for
 them.
 
+##### `S1-B-09` · Gate (a) 3/4 — p2p ids
+
+- [x] `docs/adr/ADR-P2-02.md` house-MADR; Status: accepted; swarm sole owner + dedicated OS-thread KZG pool.
+- [x] `docs/adr/ADR-P2-05.md` house-MADR; Status: accepted; `ChainView` is chain-owned and pushed.
+- [x] `docs/adr/ADR-P2-06.md` house-MADR; Status: accepted; snappy framing as gossipsub `DataTransform`.
+- [x] `docs/adr/ADR-P2-07.md` house-MADR; Status: accepted; column-family weight 0.5 regardless of `cgc`.
+- [x] `docs/adr/ADR-P2-08.md` house-MADR; Status: accepted; **load-bearing** KZG cross-sidecar batching + per-sidecar re-verify before penalise.
+- [x] `docs/adr/ADR-P2-09.md` house-MADR; Status: accepted; score decay ticks; gossip score does not disconnect.
+- [x] `docs/adr/ADR-P2-14.md` house-MADR; Status: accepted; **load-bearing** `earliest_available_slot` as one `AtomicU64` (replaces E6).
+- [x] `docs/adr/ADR-P3-07.md` house-MADR; Status: accepted; publish/inject only custody-sampled / subscribed indices.
+- [x] `docs/adr/reconciliation.md` eight S1-B-09 rows are `accepted` → matching `docs/adr/ADR-P*.md` paths.
+
 ---
 
 ### `S1-B-11` · Gate (b) — `ADR-P3-16` → **ADR-R-03**
