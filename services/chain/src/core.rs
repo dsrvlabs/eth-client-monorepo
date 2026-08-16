@@ -2423,8 +2423,8 @@ mod tests {
         }
     }
 
-    /// [ARCH] §2.2 policy-D conformance: ticks are not silently dropped when
-    /// every other lane is saturated.
+    /// [ARCH] §2.2 policy-D conformance (`S1-A-11`): ticks are not silently
+    /// dropped when every other lane is saturated. Landed `S0-A-14`.
     #[tokio::test]
     async fn slot_tick_is_never_shed() {
         let (store, _anchor, config) = seeded_store();

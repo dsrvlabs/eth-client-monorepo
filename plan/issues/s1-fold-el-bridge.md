@@ -273,6 +273,13 @@ would be exactly the silent change R-1 predicts.
 - [x] Runs against both `InProcess` and `Ipc` (`start_paused`; no wall-clock 2 s)
 - [x] No new `SeamError` variants; Ipc's bound is existing `CHAIN_OUT_BOUND` (not a second 64-deep queue); no production transport selected
 
+**Acceptance (`S1-A-11` only)**
+
+- [x] `events::slow_subscriber_is_terminated_not_stalled` kept (policy B); Full `try_send` terminates the slow stream with `RESOURCE_EXHAUSTED`; occupancy stays bounded
+- [x] `crates/seam/src/conformance.rs` — `publish_drop_is_observable` (policy C); fill `PUBLISH_BOUND`, assert occupancy; `Ok(Published::Dropped)` on both `P2pEgress` impls (`InProcess`, `IpcEgress`)
+- [x] `core::slot_tick_is_never_shed` asserted (policy D; landed `S0-A-14`)
+- [x] A–D remain separate; no new `SeamError` variants; no A-12 remaining tests
+
 **Under-specified — flag in `S1-A-12`.** `[PLAN]` and `[ARCH]` both say **11 tests**. `[ARCH]` §2.2
 names **four**. The remaining **seven are unnamed in either source.** Do not invent them silently:
 `S1-A-12`'s first deliverable is the enumerated list of 11, reviewed before any is written, with each

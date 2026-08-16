@@ -33,6 +33,8 @@
 //!
 //! Per-subscriber `mpsc` (default 256), **`try_send` only**. On `Full` the
 //! subscriber is dropped and its stream terminated with `RESOURCE_EXHAUSTED`.
+//! Conformance (`S1-A-11` / `[ARCH]` §2.2 policy B):
+//! `events::slow_subscriber_is_terminated_not_stalled`.
 //!
 //! # Ring bounds (CC-44a / §4.3 — closes `OQ-P1-2`)
 //!

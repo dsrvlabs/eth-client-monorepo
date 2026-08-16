@@ -1,6 +1,7 @@
 //! CC-18c integration tests over synthetic events (no fork-choice).
 //!
-//! Covers CC-18/1 reconnect, CC-18/2 cursor eviction, CC-18/3 slow consumer,
+//! Covers CC-18/1 reconnect, CC-18/2 cursor eviction, CC-18/3 / policy B
+//! (`slow_subscriber_is_terminated_not_stalled`) slow consumer,
 //! session mismatch, monotonic ordering across reconnect, subscribe/publish
 //! race, and config overrides for both bounds.
 
@@ -233,11 +234,13 @@ async fn cursor_unknown_session_not_too_old() {
 }
 
 // ---------------------------------------------------------------------------
-// CC-18/3 slow consumer → RESOURCE_EXHAUSTED; occupancy stays bounded
+// [ARCH] §2.2 policy B / CC-18/3: try_send Full drops the *subscriber*.
+// The slow stream is terminated RESOURCE_EXHAUSTED; occupancy stays bounded
+// (the bus is not stalled). Consumer reconnects with cursor.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn cc18_3_slow_consumer_resource_exhausted_bounded_occupancy() {
+async fn slow_subscriber_is_terminated_not_stalled() {
     let ring = 16;
     let sub_q = 4;
     let h = EventsHandle::spawn(EventsConfig {
