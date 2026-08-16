@@ -32,6 +32,8 @@ members = [
   "crates/seam",
   # S2-A-01 chain-core extraction ([ARCH] §1.4): 23 → 24.
   "crates/chain-core",
+  # S2-B-01 storage-core extraction ([ARCH] §1.4): 24 → 25.
+  "crates/storage-core",
 ]
 
 [workspace.package]
@@ -195,6 +197,8 @@ cc-seam = { path = "crates/seam" }
 async-trait = "0.1.91"
 # S2-A-01 consensus core ([ARCH] §1.4). Sources compiled by cc-chain via #[path].
 cc-chain-core = { path = "crates/chain-core" }
+# S2-B-01: storage-core extraction ([ARCH] §1.4). Writer + serve read paths.
+cc-storage-core = { path = "crates/storage-core" }
 
 [profile.release]
 opt-level = 3

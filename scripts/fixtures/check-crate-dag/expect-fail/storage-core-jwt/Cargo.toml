@@ -1,0 +1,7 @@
+# cc-storage-core is not JWT/HTTP-grandfathered (S2-B-01 / [ARCH] §6.2).
+[package]
+name = "fixture-storage-core-jwt"
+version = "0.0.0"
+
+[dependencies]
+jsonwebtoken = { workspace = true }

@@ -25,6 +25,8 @@ cc-config = { workspace = true }
 cc-proto = { workspace = true }
 cc-state-transition = { workspace = true }
 cc-store = { workspace = true }
+# S2-B-01: writer.rs + serve.rs live in cc-storage-core (compiled via #[path]).
+cc-storage-core = { workspace = true }
 cc-types = { workspace = true }
 ethereum_ssz = { workspace = true }
 futures = { workspace = true }

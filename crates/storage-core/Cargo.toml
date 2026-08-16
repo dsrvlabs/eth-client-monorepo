@@ -1,0 +1,30 @@
+[package]
+name = "cc-storage-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# S2-B-01: sources live here; `cc-storage` compiles them via `#[path]`.
+# No JWT signer / HTTP client ([ARCH] §6.2 — not grandfathered).
+
+[dev-dependencies]
+# Moved writer.rs + serve.rs tests. backfill.rs is production-only via build.rs.
+cc-bootstrap = { workspace = true }
+cc-proto = { workspace = true }
+cc-store = { workspace = true }
+cc-types = { workspace = true }
+futures = { workspace = true }
+prometheus-client = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tonic = { workspace = true }
+tracing = { workspace = true }

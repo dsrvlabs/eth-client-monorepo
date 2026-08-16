@@ -337,6 +337,17 @@ wrote it `Status: superseded-by ADR-R-02` so the history stays legible).
 Same verbatim-move contract. `services/storage`'s `main.rs` becomes a thin shim for the duration and
 is deleted at the end of the stage (`[ARCH]` §9.1).
 
+**Acceptance (`S2-B-01` only)**
+- [x] `crates/storage-core` exists as a workspace member (`cc-storage-core`)
+- [x] `writer.rs` lives in `crates/storage-core`, verbatim with tests
+- [x] Serve read paths live in `crates/storage-core/src/serve.rs` (git rename; `PutBackfillBatch` stays in the moved file until later deletion)
+- [x] `backfill.rs` / `prune/` stay in `services/storage` (`S2-B-02`)
+- [x] Bounds / literals moved (git rename), not re-derived; no new numeric literal in a moved file
+- [x] `cargo test -p cc-storage-core` covers the moved writer + serve tests
+- [x] `services/storage` compiles via `#[path]` from `cc-storage-core` and stays a workspace member
+- [x] `cc-storage-core` appended to `cc-storage` `allowed_deps`
+- [x] **`cc-storage-core` is NOT on the JWT grandfather list** (function self-test + `expect-fail/storage-core-jwt/`)
+
 ---
 
 ### `S2-B-04` … `S2-B-06` · **P0-18** — the three storage scale time bombs

@@ -127,7 +127,7 @@ fi
 
 selftest_failed=0
 
-for required in third-crate-reqwest chain-jwt chain-core-jwt chain-depends-p2p p2p-depends-chain; do
+for required in third-crate-reqwest chain-jwt chain-core-jwt chain-depends-p2p p2p-depends-chain storage-core-jwt; do
   if [[ ! -f "${FAIL_DIR}/${required}/Cargo.toml" || ! -f "${FAIL_DIR}/${required}/rel" ]]; then
     echo "error: self-test: missing negative fixture ${FAIL_DIR#"$ROOT"/}/${required}" >&2
     selftest_failed=1
@@ -157,6 +157,11 @@ if http_or_jwt_allowed cc-chain-core jsonwebtoken \
 fi
 if http_or_jwt_allowed cc-scheduler reqwest; then
   echo "error: self-test: a third crate must not be allowed an HTTP client" >&2
+  selftest_failed=1
+fi
+if http_or_jwt_allowed cc-storage-core jsonwebtoken \
+  || http_or_jwt_allowed cc-storage-core reqwest; then
+  echo "error: self-test: cc-storage-core must not be on the JWT/HTTP grandfather list (S2-B-01)" >&2
   selftest_failed=1
 fi
 
@@ -259,18 +264,23 @@ while IFS= read -r manifest; do
   done < <(http_jwt_manifest_hits "$manifest" "$rel")
 done < <(find "$ROOT/services" "$ROOT/crates" "$ROOT/bin" -name Cargo.toml 2>/dev/null | sort)
 
-# --- Phase 4: services/storage may never depend on cc-fork-choice (D-P4-3) ---
+# --- Phase 4: storage may never depend on cc-fork-choice (D-P4-3) ---
 # Explicit named prohibition (not merely an unlisted allowed_deps edge). Filesystem
 # first so the negative-test shape works without a lockfile refresh.
-STORAGE_MANIFEST="$ROOT/services/storage/Cargo.toml"
-if [[ -f "$STORAGE_MANIFEST" ]]; then
-  if grep -qE \
-    '^[[:space:]]*cc-fork-choice[[:space:]]*=|^[[:space:]]*\[dependencies\.cc-fork-choice\]' \
-    "$STORAGE_MANIFEST"; then
-    echo "error: services/storage may never depend on cc-fork-choice" >&2
-    EARLY_FAILED=1
+# S2-B-01: the same ban applies to crates/storage-core (the extraction target).
+for STORAGE_MANIFEST in \
+  "$ROOT/services/storage/Cargo.toml" \
+  "$ROOT/crates/storage-core/Cargo.toml"
+do
+  if [[ -f "$STORAGE_MANIFEST" ]]; then
+    if grep -qE \
+      '^[[:space:]]*cc-fork-choice[[:space:]]*=|^[[:space:]]*\[dependencies\.cc-fork-choice\]' \
+      "$STORAGE_MANIFEST"; then
+      echo "error: ${STORAGE_MANIFEST#"$ROOT"/} may never depend on cc-fork-choice" >&2
+      EARLY_FAILED=1
+    fi
   fi
-fi
+done
 
 # --- S1-A-13: cc-chain ↛ cc-p2p and cc-p2p ↛ cc-chain ([ARCH] §2.5) ---
 # Explicit named prohibition (not merely an unlisted allowed_deps edge). Filesystem
@@ -319,14 +329,16 @@ fi
 
 # --- Phase 4: crates/store must not name consensus containers (§1.1) ----------
 # Opaque bytes under typed keys only; cc-types is for Slot/Root/Epoch + meta SSZ.
-STORE_SRC="$ROOT/crates/store/src"
-if [[ -d "$STORE_SRC" ]]; then
-  while IFS= read -r hit; do
-    [[ -z "$hit" ]] && continue
-    echo "error: crates/store must not reference consensus types SignedBeaconBlock|BeaconState|DataColumnSidecar ($hit)" >&2
-    EARLY_FAILED=1
-  done < <(grep -rn "SignedBeaconBlock\|BeaconState\|DataColumnSidecar" "$STORE_SRC" 2>/dev/null || true)
-fi
+# S2-B-01: extend the same grep to crates/storage-core/src ([ARCH] §1.5).
+for STORE_SRC in "$ROOT/crates/store/src" "$ROOT/crates/storage-core/src"; do
+  if [[ -d "$STORE_SRC" ]]; then
+    while IFS= read -r hit; do
+      [[ -z "$hit" ]] && continue
+      echo "error: ${STORE_SRC#"$ROOT"/} must not reference consensus types SignedBeaconBlock|BeaconState|DataColumnSidecar ($hit)" >&2
+      EARLY_FAILED=1
+    done < <(grep -rn "SignedBeaconBlock\|BeaconState\|DataColumnSidecar" "$STORE_SRC" 2>/dev/null || true)
+  fi
+done
 
 if [[ "$EARLY_FAILED" -ne 0 ]]; then
   exit 1
@@ -371,7 +383,8 @@ allowed_deps() {
     cc-store)             echo "cc-types" ;;
     cc-store-bench)       echo "cc-store" ;;
     cc-serve-probe)       echo "cc-libp2p cc-types cc-config" ;;
-    cc-storage)           echo "cc-bootstrap cc-config cc-proto cc-types cc-state-transition cc-store" ;;
+    # S2-B-01: append cc-storage-core (writer + serve read paths).
+    cc-storage)           echo "cc-bootstrap cc-config cc-proto cc-types cc-state-transition cc-store cc-storage-core" ;;
     # CC-4J: offline tool; append-only (Amendment 8) — edge set is cc-store only.
     cc-store-tool)        echo "cc-store" ;;
     # S0-A-13: leaf crate, no workspace deps ([ARCH] §1.5 / §3.1).
@@ -383,6 +396,9 @@ allowed_deps() {
     cc-seam)              echo "cc-proto" ;;
     # S2-A-01: moved core/import/apply_attestations (test-compiled via #[path]).
     cc-chain-core)        echo "cc-types cc-crypto cc-state-transition cc-fork-choice cc-scheduler cc-proto cc-bootstrap" ;;
+    # S2-B-01: writer + serve tests need store/proto/bootstrap/types.
+    # backfill.rs is not a member of this crate. Not JWT/HTTP-grandfathered.
+    cc-storage-core)      echo "cc-store cc-proto cc-bootstrap cc-types" ;;
     *)
       echo "error: unknown workspace member: $1" >&2
       return 1

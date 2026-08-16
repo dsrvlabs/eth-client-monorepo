@@ -15,10 +15,12 @@ mod prune;
 mod replay;
 mod restore_client;
 mod resume;
+#[path = "../../../crates/storage-core/src/serve.rs"]
 mod serve;
 #[cfg(test)]
 mod test_tmpdir;
 mod write_behind;
+#[path = "../../../crates/storage-core/src/writer.rs"]
 mod writer;
 
 use std::path::PathBuf;
