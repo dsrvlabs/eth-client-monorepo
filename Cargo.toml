@@ -195,7 +195,7 @@ cc-engine-api = { path = "crates/engine-api" }
 cc-seam = { path = "crates/seam" }
 # Object-safe async traits for `Arc<dyn ChainIngress>` / `Arc<dyn P2pEgress>`.
 async-trait = "0.1.91"
-# S2-A-01 consensus core ([ARCH] §1.4). Sources compiled by cc-chain via #[path].
+# S2-A-01 / S2-A-03 consensus core ([ARCH] §1.4). Library; cc-chain is the thin host.
 cc-chain-core = { path = "crates/chain-core" }
 # S2-B-01: storage-core extraction ([ARCH] §1.4). Writer + serve read paths.
 cc-storage-core = { path = "crates/storage-core" }

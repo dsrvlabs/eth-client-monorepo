@@ -191,9 +191,9 @@ fn build_reads_three_payload_hashes() {
 
 #[test]
 fn fcu_driver_source_has_exactly_three_payload_hash_reads() {
-    // AC: grep -n 'execution_block_hash' services/chain/src/fcu_driver.rs
+    // AC: grep -n 'execution_block_hash' crates/chain-core/src/fcu_driver.rs
     // returns three uses — head, safe, finalized.
-    let src = include_str!("../src/fcu_driver.rs");
+    let src = include_str!("../../../crates/chain-core/src/fcu_driver.rs");
     let count = src.matches("execution_block_hash").count();
     assert_eq!(
         count, 3,

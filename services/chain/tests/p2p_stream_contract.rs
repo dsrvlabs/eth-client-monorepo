@@ -825,7 +825,10 @@ fn column_sidecar_has_no_ssz_decode_construction() {
     // CC-44a: chain relays P2pToChain.column into DATA_COLUMN without decoding
     // the consensus `DataColumnSidecar` container. Proto field access is fine;
     // SSZ type construction / decode helpers are not.
-    let chain_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/p2p_stream.rs"));
+    let chain_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/chain-core/src/p2p_stream.rs"
+    ));
     assert!(
         !chain_src.contains("DataColumnSidecar"),
         "p2p_stream must not name the consensus DataColumnSidecar type"

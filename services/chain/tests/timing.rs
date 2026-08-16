@@ -497,9 +497,18 @@ fn chain_service_does_not_reinvent_phase0_telemetry() {
     // in production sources (not tests) returns nothing that re-invents Phase 0.
     // This test locks the production sources we own.
     let main = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
-    let metrics = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/metrics.rs"));
+    let run = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/run.rs"));
+    let metrics = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/chain-core/src/metrics.rs"
+    ));
     let lib = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
-    for (name, src) in [("main.rs", main), ("metrics.rs", metrics), ("lib.rs", lib)] {
+    for (name, src) in [
+        ("main.rs", main),
+        ("run.rs", run),
+        ("metrics.rs", metrics),
+        ("lib.rs", lib),
+    ] {
         assert!(
             !src.contains("tracing_subscriber::fmt().init")
                 && !src.contains("tracing_subscriber::registry()")
@@ -511,7 +520,7 @@ fn chain_service_does_not_reinvent_phase0_telemetry() {
     }
     // Production registration goes through bootstrap's registry.
     assert!(
-        main.contains("ChainMetrics::register") && main.contains("bs.registry"),
-        "main must register chain metrics into bs.registry between init and serve"
+        run.contains("ChainMetrics::register") && run.contains("bs.registry"),
+        "run must register chain metrics into bs.registry between init and serve"
     );
 }

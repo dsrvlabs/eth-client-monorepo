@@ -1,4 +1,4 @@
-//! `cc-chain` library surface.
+//! `cc-chain` library surface — thin host over [`cc_chain_core`] (S2-A-03).
 //!
 //! - **CC-18c**: resumable event bus (ring, cursor, fan-out)
 //! - **CC-1C**: timing metrics (budgeted histograms, gauges, counters)
@@ -17,42 +17,41 @@
 //!   only; no cell payload through chain)
 //! - **S1-A-06**: E3 is a direct [`engine::DirectEngine`] call (no gRPC bridge)
 //!
-//! The binary (`main.rs`) binds first, then awaits local restore
-//! ([`restore`] / CC-45b) for `restore_grace_seconds` before falling back to
-//! checkpoint bootstrap when `checkpoint_providers` is configured (CC-19
-//! demoted to fallback): self health SERVING while aggregate `""` stays
-//! NOT_SERVING until the core is installed. Without providers and without a
-//! restore the core is absent and fork-choice RPCs return `NOT_BOOTSTRAPPED`.
-//! Tests construct a store and spawn the core via [`core::spawn_core_thread`].
+//! The binary (`main.rs`) is a thin shim that calls [`run`]. Bind first, then
+//! await local restore ([`restore`] / CC-45b) for `restore_grace_seconds`
+//! before falling back to checkpoint bootstrap when `checkpoint_providers` is
+//! configured (CC-19 demoted to fallback): self health SERVING while aggregate
+//! `""` stays NOT_SERVING until the core is installed. Without providers and
+//! without a restore the core is absent and fork-choice RPCs return
+//! `NOT_BOOTSTRAPPED`. Tests construct a store and spawn the core via
+//! [`core::spawn_core_thread`].
+//!
+//! `checkpoint_sync` stays in this crate (HTTP grandfather). Restore is not
+//! deleted here (S2-J-02).
 
 #![allow(missing_docs)]
 
-#[path = "../../../crates/chain-core/src/apply_attestations.rs"]
-pub mod apply_attestations;
+pub use cc_chain_core::apply_attestations;
+pub use cc_chain_core::core;
+pub use cc_chain_core::da;
+pub use cc_chain_core::engine;
+pub use cc_chain_core::epoch_context;
+pub use cc_chain_core::events;
+pub use cc_chain_core::fcu_driver;
+pub use cc_chain_core::head;
+pub use cc_chain_core::import;
+pub use cc_chain_core::invalidation;
+pub use cc_chain_core::liveness;
+pub use cc_chain_core::metrics;
+pub use cc_chain_core::p2p_stream;
+pub use cc_chain_core::pending_engine;
+pub use cc_chain_core::residency;
+pub use cc_chain_core::restore;
+pub use cc_chain_core::service;
+pub use cc_chain_core::tick;
+
 pub mod checkpoint_sync;
-#[path = "../../../crates/chain-core/src/core.rs"]
-pub mod core;
-#[path = "../../../crates/chain-core/src/da.rs"]
-pub mod da;
-pub mod engine;
-pub mod epoch_context;
-#[path = "../../../crates/chain-core/src/events/mod.rs"]
-pub mod events;
-pub mod fcu_driver;
-pub mod head;
-#[path = "../../../crates/chain-core/src/import.rs"]
-pub mod import;
-pub mod invalidation;
-pub mod liveness;
-pub mod metrics;
-pub mod p2p_stream;
-#[path = "../../../crates/chain-core/src/pending_engine.rs"]
-pub mod pending_engine;
-#[path = "../../../crates/chain-core/src/residency.rs"]
-pub mod residency;
-pub mod restore;
-pub mod service;
-pub mod tick;
+pub mod run;
 
 pub use apply_attestations::MAX_APPLY_ATTESTATIONS;
 pub use checkpoint_sync::{
@@ -139,6 +138,7 @@ pub use restore::{
 pub use restore::{
     RestoreTracePoint, reset_restore_trace, restore_force_raw_decode, restore_trace,
 };
+pub use run::run;
 pub use service::{
     ChainServiceImpl, REASON_BELOW_FINALIZED_RETENTION, REASON_NOT_BOOTSTRAPPED,
     status_below_finalized,

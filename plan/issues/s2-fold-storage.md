@@ -131,6 +131,17 @@ dedicated OS thread, not a tokio task ✓ `core.rs:1`, `:469`), `ADR-P1-12` (sta
 - [x] ADR-P3-05 `pending_engine` stays a separate map from `pending_da` (files moved, not rewritten)
 - [x] ADR-P1-12 residency + 64-block body ring carried intact
 
+**Acceptance (`S2-A-03` only)**
+- [x] Remaining crate siblings (`engine`, `epoch_context`, `fcu_driver`, `head`, `invalidation`, `liveness`, `metrics`, `p2p_stream`, `restore`, `service`, `tick`) live in `crates/chain-core`, verbatim
+- [x] Bounds / literals moved (git rename), not re-derived; no new numeric literal in a moved file
+- [x] `services/chain` compiles via `pub use` from `cc-chain-core` and stays a workspace member
+- [x] `services/chain/main.rs` is a thin shim over `chain-core` (host in `run()`)
+- [x] S1-A-06 engine wiring preserved (`DirectEngine`, JWT abort-before-bind)
+- [x] S1-A-16 liveness sampler preserved
+- [x] `restore.rs` still exists (not S2-J-02)
+- [x] `checkpoint_sync.rs` stays in `cc-chain` (HTTP grandfather; `cc-chain-core` is not HTTP-grandfathered)
+- [x] `cargo test -p cc-chain-core` covers the moved unit tests
+
 ---
 
 ### `S2-A-04` · `ArchiveWrite` on `cc-seam` + the typed `ColumnBatch`

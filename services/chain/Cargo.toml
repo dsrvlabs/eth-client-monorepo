@@ -21,7 +21,7 @@ workspace = true
 [features]
 # S0-A-31 / R-13(b) only. Never default; never on the production binary.
 # Enables the raw restore decode arm and the in-process trace recorder.
-s0-a-31-observe = []
+s0-a-31-observe = ["cc-chain-core/s0-a-31-observe"]
 
 [[test]]
 name = "r13_restore_observation"
@@ -33,7 +33,7 @@ anyhow = { workspace = true }
 arc-swap = { workspace = true }
 bytes = { workspace = true }
 cc-bootstrap = { workspace = true }
-# S2-A-01 / S2-A-02: core/import/DA/events/residency live in cc-chain-core (append-only).
+# S2-A-01 / S2-A-02 / S2-A-03: library lives in cc-chain-core (append-only).
 cc-chain-core = { workspace = true }
 cc-config = { workspace = true }
 cc-crypto = { workspace = true }

@@ -22,15 +22,15 @@ cd "$ROOT"
 IMPORT_PATH_ROOTS=(
   crates/chain-core/src/import.rs
   crates/chain-core/src/core.rs
-  services/chain/src/service.rs
+  crates/chain-core/src/service.rs
   crates/chain-core/src/da.rs
-  services/chain/src/p2p_stream.rs
+  crates/chain-core/src/p2p_stream.rs
   crates/chain-core/src/apply_attestations.rs
-  services/chain/src/head.rs
+  crates/chain-core/src/head.rs
   crates/chain-core/src/residency.rs
-  services/chain/src/epoch_context.rs
+  crates/chain-core/src/epoch_context.rs
   crates/chain-core/src/events
-  services/chain/src/metrics.rs
+  crates/chain-core/src/metrics.rs
   services/chain/src/lib.rs
 )
 

@@ -553,7 +553,7 @@ async fn not_bootstrapped_without_core() {
 /// Grep-level invariant: both handlers route through `Query` (no second state copy).
 #[test]
 fn handlers_use_query_command() {
-    let src = include_str!("../src/service.rs");
+    let src = include_str!("../../../crates/chain-core/src/service.rs");
     assert!(
         src.contains("QueryRequest::CommitteeShuffling"),
         "GetCommitteeShuffling must use CoreCommand::Query"

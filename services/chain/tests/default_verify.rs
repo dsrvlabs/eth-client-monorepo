@@ -188,48 +188,53 @@ fn core_config_default_is_verify_individual() {
 /// (module docs / comments do not count).
 #[test]
 fn no_verification_only_raised_on_restore_replay() {
-    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let src_roots = [
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/chain-core/src"),
+    ];
     let mut assignments = Vec::new();
     let mut restore_on_block_override = false;
     let mut spawn_assigns_no_verification = false;
     let mut import_on_block_no_verification = false;
 
-    for path in walkdir_rs(&src) {
-        let rel = path
-            .strip_prefix(&src)
-            .unwrap_or(&path)
-            .display()
-            .to_string();
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!("read {}: {e}", path.display());
-        });
-        let production = production_src(&text);
-        let compacted = compact(&production);
+    for src in &src_roots {
+        for path in walkdir_rs(src) {
+            let rel = path
+                .strip_prefix(src)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("read {}: {e}", path.display());
+            });
+            let production = production_src(&text);
+            let compacted = compact(&production);
 
-        if compacted.contains("verify:BlockSignatureStrategy::NoVerification")
-            || compacted.contains(".verify=BlockSignatureStrategy::NoVerification")
-            || compacted.contains("verify=BlockSignatureStrategy::NoVerification")
-        {
-            assignments.push(rel.clone());
-        }
-
-        if rel == "restore.rs" {
-            restore_on_block_override = call_arg_lists(&compacted, "on_block")
-                .iter()
-                .any(|args| args.contains("BlockSignatureStrategy::NoVerification"));
-            // Live core after replay must keep the caller's strategy.
-            if let Some(idx) = compacted.find("fnspawn_core_from_restore") {
-                let fn_src = &compacted[idx..];
-                spawn_assigns_no_verification = fn_src
-                    .contains("verify=BlockSignatureStrategy::NoVerification")
-                    || fn_src.contains("verify:BlockSignatureStrategy::NoVerification");
+            if compacted.contains("verify:BlockSignatureStrategy::NoVerification")
+                || compacted.contains(".verify=BlockSignatureStrategy::NoVerification")
+                || compacted.contains("verify=BlockSignatureStrategy::NoVerification")
+            {
+                assignments.push(rel.clone());
             }
-        }
 
-        if rel == "import.rs" {
-            import_on_block_no_verification = call_arg_lists(&compacted, "on_block")
-                .iter()
-                .any(|args| args.contains("BlockSignatureStrategy::NoVerification"));
+            if rel == "restore.rs" {
+                restore_on_block_override = call_arg_lists(&compacted, "on_block")
+                    .iter()
+                    .any(|args| args.contains("BlockSignatureStrategy::NoVerification"));
+                // Live core after replay must keep the caller's strategy.
+                if let Some(idx) = compacted.find("fnspawn_core_from_restore") {
+                    let fn_src = &compacted[idx..];
+                    spawn_assigns_no_verification = fn_src
+                        .contains("verify=BlockSignatureStrategy::NoVerification")
+                        || fn_src.contains("verify:BlockSignatureStrategy::NoVerification");
+                }
+            }
+
+            if rel == "import.rs" {
+                import_on_block_no_verification = call_arg_lists(&compacted, "on_block")
+                    .iter()
+                    .any(|args| args.contains("BlockSignatureStrategy::NoVerification"));
+            }
         }
     }
 
