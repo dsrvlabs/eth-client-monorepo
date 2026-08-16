@@ -127,7 +127,7 @@ fi
 
 selftest_failed=0
 
-for required in third-crate-reqwest chain-jwt chain-core-jwt chain-depends-p2p p2p-depends-chain storage-core-jwt; do
+for required in third-crate-reqwest chain-jwt chain-core-jwt chain-depends-p2p p2p-depends-chain storage-core-jwt beacon-core-jwt; do
   if [[ ! -f "${FAIL_DIR}/${required}/Cargo.toml" || ! -f "${FAIL_DIR}/${required}/rel" ]]; then
     echo "error: self-test: missing negative fixture ${FAIL_DIR#"$ROOT"/}/${required}" >&2
     selftest_failed=1
@@ -162,6 +162,11 @@ fi
 if http_or_jwt_allowed cc-storage-core jsonwebtoken \
   || http_or_jwt_allowed cc-storage-core reqwest; then
   echo "error: self-test: cc-storage-core must not be on the JWT/HTTP grandfather list (S2-B-01)" >&2
+  selftest_failed=1
+fi
+if http_or_jwt_allowed cc-beacon-core jsonwebtoken \
+  || http_or_jwt_allowed cc-beacon-core reqwest; then
+  echo "error: self-test: cc-beacon-core must not be JWT- or HTTP-grandfathered (S2-J-01)" >&2
   selftest_failed=1
 fi
 
@@ -412,6 +417,9 @@ allowed_deps() {
     # S2-A-05: append cc-seam (ArchiveWrite ingest; never re-sort).
     # Not JWT/HTTP-grandfathered.
     cc-storage-core)      echo "cc-store cc-proto cc-bootstrap cc-types cc-config cc-state-transition cc-seam" ;;
+    # S2-J-01: thin composer. Not JWT/HTTP-grandfathered. cc-chain is checkpoint
+    # sync only (HTTP stays in that crate).
+    cc-beacon-core)       echo "cc-bootstrap cc-config cc-proto cc-types cc-chain-core cc-storage-core cc-engine-api cc-chain" ;;
     *)
       echo "error: unknown workspace member: $1" >&2
       return 1

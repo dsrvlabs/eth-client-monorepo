@@ -410,7 +410,7 @@ impl Invariant {
 /// issue only declares and seeds.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // fields held for registration handles; producers land later
-pub(crate) struct StorageMetrics {
+pub struct StorageMetrics {
     // Size and growth
     pub(crate) bytes_total: Family<ClassLabels, Gauge>,
     pub(crate) rows_total: Family<ClassLabels, Gauge>,
@@ -466,7 +466,7 @@ impl StorageMetrics {
     ///
     /// Histogram buckets are taken from [`cc_store::buckets`] by name — no
     /// literal boundary arrays live in this module.
-    pub(crate) fn register(registry: &mut Registry) -> Self {
+    pub fn register(registry: &mut Registry) -> Self {
         // ── construct ───────────────────────────────────────────────────────
         let bytes_total = Family::<ClassLabels, Gauge>::default();
         let rows_total = Family::<ClassLabels, Gauge>::default();

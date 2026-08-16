@@ -1,6 +1,7 @@
 //! Singleton SSZ meta records (Architecture §2.5).
 //!
-//! Ten containers live in the `meta` table under short ASCII keys (≤ 16 B).
+//! Ten containers live in the `meta` table under short ASCII keys (≤ 16 B),
+//! plus `node_id` for I-node-id identity (S2-J-01; not an origin floor).
 //! Each is **defined** here and **populated** by its owning issue:
 //! `Split` / CC-41, `ServeWindow` / CC-48, `WriteCursor` / CC-44b,
 //! `ForkChoiceScalars` / CC-45b, `PruneMarks` / CC-46a, `BackfillProgress` / CC-47a.
@@ -39,6 +40,8 @@ pub const KEY_FC_SCALARS: &str = "fc_scalars";
 pub const KEY_PRUNE_MARKS: &str = "prune_marks";
 /// Key for [`BackfillProgress`].
 pub const KEY_BACKFILL_PROG: &str = "backfill_prog";
+/// Key for the I-node-id identity `Root` (S2-J-01). Not an `AnchorInfo` origin.
+pub const KEY_NODE_ID: &str = "node_id";
 
 /// All meta singleton keys (for inventory / docs).
 pub const META_KEYS: &[&str] = &[
@@ -52,6 +55,7 @@ pub const META_KEYS: &[&str] = &[
     KEY_FC_SCALARS,
     KEY_PRUNE_MARKS,
     KEY_BACKFILL_PROG,
+    KEY_NODE_ID,
 ];
 
 // ---------------------------------------------------------------------------

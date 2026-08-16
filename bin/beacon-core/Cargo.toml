@@ -1,0 +1,41 @@
+[package]
+name = "cc-beacon-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cc-beacon-core"
+path = "src/main.rs"
+
+[lib]
+name = "cc_beacon_core"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+# S2-J-01: thin composer ([ARCH] §4.2). Not JWT/HTTP-grandfathered.
+# checkpoint_sync stays on cc-chain (HTTP grandfather). Never jsonwebtoken.
+anyhow = { workspace = true }
+cc-bootstrap = { workspace = true }
+cc-chain = { workspace = true }
+cc-chain-core = { workspace = true }
+cc-config = { workspace = true }
+cc-engine-api = { workspace = true }
+cc-proto = { workspace = true }
+cc-storage-core = { workspace = true }
+cc-types = { workspace = true }
+getrandom = { workspace = true }
+prometheus-client = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

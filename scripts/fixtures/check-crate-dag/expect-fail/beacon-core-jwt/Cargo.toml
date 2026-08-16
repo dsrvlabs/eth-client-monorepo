@@ -1,0 +1,7 @@
+# cc-beacon-core is not JWT-grandfathered (S2-J-01 / [ARCH] §6.2).
+[package]
+name = "fixture-beacon-core-jwt"
+version = "0.0.0"
+
+[dependencies]
+jsonwebtoken = { workspace = true }

@@ -1,0 +1,528 @@
+//! Public store open + durable-set load ([ARCH] §4.2 / S2-J-01).
+//!
+//! `bin/beacon-core` calls [`open`] **before** any subsystem starts. Fail-closed
+//! gates (schema / digest / `I-node-id`) are unchanged from the storage host.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use cc_store::engine::{Durability, Engine, EngineOptions};
+use cc_store::{ConfigDigestInput, Store, StoreOpenOptions};
+use cc_types::{ChainConfig, Root};
+use tokio::sync::watch;
+
+use crate::durable_set::{
+    DurableSetContext, load_expected_node_id_from_key_path, refuse_missing_key_if_anchor_present,
+};
+use crate::metrics::StorageMetrics;
+use crate::resume::{self, ResumeError};
+use crate::writer::{WriterBounds, WriterFaults, WriterHandle, spawn_writer};
+
+/// Options for [`open`]. Fail-closed gates match the storage host.
+#[derive(Debug, Clone)]
+pub struct OpenOpts {
+    /// Engine durability token (`immediate` | `paranoid`).
+    pub durability: String,
+    /// Run §2.7 invariants at open (includes `I-node-id` when a node key is set).
+    pub check_invariants: bool,
+    /// Snapshot ring depth for `I-ring`.
+    pub snapshot_ring: u64,
+    /// Per-check row cap at open (`storage.max_open_scan_rows`).
+    pub max_open_scan_rows: u64,
+    /// Network identity for the config digest (`0x` + 64 hex).
+    pub genesis_validators_root: Option<String>,
+    /// Path to the 32-byte p2p node key (`I-node-id`).
+    pub node_key_path: Option<PathBuf>,
+}
+
+impl Default for OpenOpts {
+    fn default() -> Self {
+        Self {
+            durability: "immediate".to_owned(),
+            check_invariants: true,
+            snapshot_ring: 4,
+            max_open_scan_rows: cc_store::DEFAULT_MAX_OPEN_SCAN_ROWS,
+            genesis_validators_root: None,
+            node_key_path: None,
+        }
+    }
+}
+
+/// One opened redb handle. The composer starts subsystems only after this exists.
+#[derive(Debug)]
+pub struct OpenedStore {
+    store: Store,
+    node_key_path: Option<PathBuf>,
+    snapshot_ring: u64,
+    max_open_scan_rows: u64,
+    expected_node_id: Option<Root>,
+}
+
+impl OpenedStore {
+    /// Borrow the engine (storage-core only; chain-core never names this type).
+    #[must_use]
+    pub fn engine(&self) -> &Engine {
+        self.store.engine()
+    }
+
+    /// Consume into the [`Store`] (storage host).
+    #[must_use]
+    pub fn into_store(self) -> Store {
+        self.store
+    }
+
+    /// Consume into the engine for the single writer.
+    #[must_use]
+    pub fn into_engine(self) -> Engine {
+        self.store.into_engine()
+    }
+
+    /// Node id loaded from `node_key_path` at [`open`], if any.
+    #[must_use]
+    pub fn configured_node_id(&self) -> Option<Root> {
+        self.expected_node_id
+    }
+
+    /// Persist identity so a later [`open`] can run `I-node-id`.
+    ///
+    /// Writes dedicated `meta.node_id`. If `AnchorInfo` already exists, only
+    /// its `node_id` field is updated (refuse overwrite of a different id).
+    /// A missing `AnchorInfo` is **not** created — `I-contig` stays vacuous.
+    pub fn persist_anchor_node_id(&self, node_id: Root) -> anyhow::Result<()> {
+        use cc_store::meta::{AnchorInfo, KEY_ANCHOR_INFO, KEY_NODE_ID, TABLE_META};
+        use cc_store::{SszDecode, SszEncode};
+        let engine = self.store.engine();
+        let (existing_anchor, existing_id) = {
+            let rt = engine
+                .read()
+                .map_err(|e| anyhow::anyhow!("read identity: {e}"))?;
+            let id = rt
+                .get(TABLE_META, KEY_NODE_ID.as_bytes())
+                .map_err(|e| anyhow::anyhow!("read node_id: {e}"))?
+                .map(|b| {
+                    Root::from_ssz_bytes(&b).map_err(|e| anyhow::anyhow!("node_id decode: {e:?}"))
+                })
+                .transpose()?;
+            let anchor = rt
+                .get(TABLE_META, KEY_ANCHOR_INFO.as_bytes())
+                .map_err(|e| anyhow::anyhow!("read AnchorInfo: {e}"))?
+                .map(|b| {
+                    AnchorInfo::from_ssz_bytes(&b)
+                        .map_err(|e| anyhow::anyhow!("AnchorInfo decode: {e:?}"))
+                })
+                .transpose()?;
+            (anchor, id)
+        };
+        if let Some(stored) = existing_id
+            && stored != Root::ZERO
+            && stored != node_id
+        {
+            anyhow::bail!(
+                "I-node-id (crates/store/src/invariants.rs): refuse persist overwrite \
+                 of stored node_id {stored}"
+            );
+        }
+        if let Some(anchor) = &existing_anchor
+            && anchor.node_id != Root::ZERO
+            && anchor.node_id != node_id
+        {
+            anyhow::bail!(
+                "I-node-id (crates/store/src/invariants.rs): refuse persist overwrite \
+                 of stored AnchorInfo.node_id {}",
+                anchor.node_id
+            );
+        }
+        let mut batch = engine.batch();
+        batch.put(TABLE_META, KEY_NODE_ID.as_bytes(), &node_id.as_ssz_bytes());
+        if let Some(mut anchor) = existing_anchor {
+            anchor.node_id = node_id;
+            batch.put(
+                TABLE_META,
+                KEY_ANCHOR_INFO.as_bytes(),
+                &anchor.as_ssz_bytes(),
+            );
+        }
+        engine
+            .commit(batch)
+            .map_err(|e| anyhow::anyhow!("persist node_id: {e}"))
+    }
+}
+
+/// Restore payload extracted from an opened store.
+///
+/// Proto-shaped so `chain-core` never names a storage type. Empty store → [`None`]
+/// from [`durable_set`] (checkpoint-sync fallback).
+#[derive(Debug, Clone)]
+pub struct DurableSet {
+    /// Snapshot BeaconState SSZ.
+    pub state_ssz: Vec<u8>,
+    /// Real stored anchor-block SSZ (never a Default body).
+    pub anchor_block_ssz: Vec<u8>,
+    /// Fork tag for the anchor block decode.
+    pub anchor_block_fork: u32,
+    /// Replay set (ascending), including non-canonical siblings.
+    pub blocks: Vec<cc_proto::chain::RestoreBlock>,
+    /// Fork-choice scalars SSZ (ADR-P4-06; ~300 B).
+    pub fork_choice_scalars_ssz: Vec<u8>,
+    /// Expected head root from persisted scalars.
+    pub expected_head_root: [u8; 32],
+    /// Expected head slot from persisted scalars.
+    pub expected_head_slot: u64,
+}
+
+/// One writer started from an [`OpenedStore`]. Exactly one per process.
+#[derive(Debug)]
+pub struct StorageRuntime {
+    _engine: Arc<Engine>,
+    _writer: WriterHandle,
+    shutdown_tx: watch::Sender<bool>,
+}
+
+impl StorageRuntime {
+    /// Always 1 — the composer must not spawn a second writer.
+    #[must_use]
+    pub fn writer_count(&self) -> usize {
+        1
+    }
+
+    /// Signal writer shutdown (tests / pre-drain).
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
+    }
+}
+
+/// Open (or create) the store. Fail-closed gates run here, before any subsystem.
+pub fn open(data_dir: impl AsRef<Path>, opts: OpenOpts) -> anyhow::Result<OpenedStore> {
+    let data_dir = data_dir.as_ref();
+    let durability =
+        Durability::parse(&opts.durability).map_err(|e| anyhow::anyhow!("durability: {e}"))?;
+    let gvr = parse_gvr(opts.genesis_validators_root.as_deref())?;
+    let chain = digest_chain_config();
+    let digest_input = ConfigDigestInput::with_mainnet_scalars(chain, gvr);
+    let expected_node_id = load_expected_node_id_from_key_path(opts.node_key_path.as_deref())
+        .map_err(|e| anyhow::anyhow!("node_key_path: {e}"))?;
+    if expected_node_id.is_some() {
+        tracing::info!(
+            path = ?opts.node_key_path,
+            "I-node-id node key loaded from node_key_path"
+        );
+    }
+    let store_opts = StoreOpenOptions::from_config(
+        EngineOptions::default().with_durability(durability),
+        &digest_input,
+    )?
+    .with_check_invariants(opts.check_invariants)
+    .with_snapshot_ring(opts.snapshot_ring.max(1))
+    .with_max_open_scan_rows(opts.max_open_scan_rows.max(1))
+    .with_expected_node_id(expected_node_id);
+    let store =
+        Store::open(data_dir, store_opts).map_err(|e| anyhow::anyhow!("store open: {e}"))?;
+    refuse_missing_key_if_anchor_present(store.engine(), opts.node_key_path.as_deref())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(OpenedStore {
+        store,
+        node_key_path: opts.node_key_path,
+        snapshot_ring: opts.snapshot_ring.max(1),
+        max_open_scan_rows: opts.max_open_scan_rows.max(1),
+        expected_node_id,
+    })
+}
+
+/// Load the durable set from an already-opened store. `None` = empty (checkpoint).
+pub fn durable_set(db: &OpenedStore) -> anyhow::Result<Option<DurableSet>> {
+    let engine = db.store.engine();
+    if resume::is_store_empty(engine).map_err(|e| anyhow::anyhow!("{e}"))? {
+        return Ok(None);
+    }
+    let ctx = DurableSetContext {
+        expected_node_id: db.expected_node_id,
+        node_key_path: db.node_key_path.clone(),
+        enr_seq_path: None,
+        snapshot_ring: db.snapshot_ring,
+        max_open_scan_rows: db.max_open_scan_rows,
+        da_status_roots: Vec::new(),
+    };
+    let plan = resume::build_restore_plan(engine, &ctx).map_err(map_resume)?;
+    if plan.empty {
+        return Ok(None);
+    }
+    let header = plan
+        .header
+        .ok_or_else(|| anyhow::anyhow!("durable set missing header"))?;
+    let footer = plan
+        .footer
+        .ok_or_else(|| anyhow::anyhow!("durable set missing footer"))?;
+    if footer.expected_head_root.len() != 32 {
+        anyhow::bail!(
+            "durable set expected_head_root must be 32 bytes, got {}",
+            footer.expected_head_root.len()
+        );
+    }
+    let mut expected_head_root = [0u8; 32];
+    expected_head_root.copy_from_slice(&footer.expected_head_root);
+    Ok(Some(DurableSet {
+        state_ssz: plan.state_ssz,
+        anchor_block_ssz: header.anchor_block_ssz,
+        anchor_block_fork: header.anchor_block_fork,
+        blocks: plan.blocks,
+        fork_choice_scalars_ssz: header.fork_choice_scalars_ssz,
+        expected_head_root,
+        expected_head_slot: footer.expected_head_slot,
+    }))
+}
+
+/// Start the **one** writer against the opened handle. Call only after [`open`].
+pub fn start_writer(
+    db: OpenedStore,
+    metrics: StorageMetrics,
+    process_fatal: bool,
+) -> StorageRuntime {
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let engine = Arc::new(db.into_engine());
+    let writer = spawn_writer(
+        Arc::clone(&engine),
+        metrics,
+        WriterBounds::default(),
+        WriterFaults::default(),
+        shutdown_rx,
+        process_fatal,
+    );
+    StorageRuntime {
+        _engine: engine,
+        _writer: writer,
+        shutdown_tx,
+    }
+}
+
+fn map_resume(e: ResumeError) -> anyhow::Error {
+    anyhow::anyhow!("{e}")
+}
+
+fn parse_gvr(s: Option<&str>) -> anyhow::Result<Root> {
+    let Some(raw) = s.filter(|s| !s.is_empty()) else {
+        return Ok(Root::ZERO);
+    };
+    let hex = raw.strip_prefix("0x").unwrap_or(raw);
+    if hex.len() != 64 {
+        anyhow::bail!(
+            "genesis_validators_root must be 32-byte hex, got len {}",
+            hex.len()
+        );
+    }
+    let mut arr = [0u8; 32];
+    for i in 0..32 {
+        arr[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|e| anyhow::anyhow!("genesis_validators_root hex: {e}"))?;
+    }
+    Ok(Root::from_array(arr))
+}
+
+fn digest_chain_config() -> ChainConfig {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/types/tests/fixtures/hoodi-config.yaml");
+    if fixture.is_file()
+        && let Ok(cfg) = ChainConfig::from_yaml_file(&fixture)
+    {
+        return cfg;
+    }
+    match ChainConfig::from_yaml_str(include_str!(
+        "../../../crates/types/tests/fixtures/hoodi-config.yaml"
+    )) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::error!(error = %e, "bundled hoodi-config.yaml failed to parse");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::test_tmpdir::unique_temp_dir;
+    use prometheus_client::registry::Registry;
+
+    fn test_opts(node_key: Option<PathBuf>) -> OpenOpts {
+        OpenOpts {
+            durability: "immediate".to_owned(),
+            check_invariants: true,
+            snapshot_ring: 4,
+            max_open_scan_rows: cc_store::DEFAULT_MAX_OPEN_SCAN_ROWS,
+            genesis_validators_root: None,
+            node_key_path: node_key,
+        }
+    }
+
+    #[test]
+    fn open_then_second_opener_mismatched_node_id_fails_inode_id() {
+        let dir = unique_temp_dir("s2-j-01-inode");
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_a = dir.join("node_key");
+        let id_a = Root::from_array([0xAAu8; 32]);
+        std::fs::write(&key_a, id_a.as_slice()).unwrap();
+
+        let opened = open(&dir, test_opts(Some(key_a.clone()))).expect("first open");
+        opened.persist_anchor_node_id(id_a).unwrap();
+        drop(opened);
+
+        let key_b = dir.join("node_key_b");
+        std::fs::write(&key_b, [0xBBu8; 32]).unwrap();
+        let err = open(&dir, test_opts(Some(key_b))).expect_err("I-node-id must refuse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("node_id") || msg.contains("I-node-id"),
+            "second opener must fail I-node-id, got: {msg}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_holds_exclusive_handle() {
+        let dir = unique_temp_dir("s2-j-01-excl");
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = open(&dir, test_opts(None)).expect("first open");
+        let err = open(&dir, test_opts(None)).expect_err("second live open must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("locked") || msg.contains("Database"),
+            "exclusive redb handle: {msg}"
+        );
+        drop(first);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn start_writer_is_one_handle() {
+        let dir = unique_temp_dir("s2-j-01-writer");
+        std::fs::create_dir_all(&dir).unwrap();
+        let opened = open(&dir, test_opts(None)).unwrap();
+        let mut registry = Registry::default();
+        let metrics = StorageMetrics::register(&mut registry);
+        let rt = start_writer(opened, metrics, false);
+        assert_eq!(rt.writer_count(), 1);
+        rt.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn put_canonical_slot(opened: &OpenedStore, slot: u64, tag: u8) {
+        use cc_store::blocks::{MIN_BLOCK_SSZ_LEN, SLOT_SSZ_OFFSET};
+        use cc_store::canonical::put_canonical;
+        use cc_store::keys::BlockRegion;
+        use cc_store::{Slot, put_block};
+
+        let slot = Slot::new(slot);
+        let root = Root::from_array([tag; 32]);
+        let mut ssz = vec![0u8; MIN_BLOCK_SSZ_LEN];
+        ssz[SLOT_SSZ_OFFSET..SLOT_SSZ_OFFSET + 8].copy_from_slice(&slot.as_u64().to_le_bytes());
+        let engine = opened.engine();
+        let mut batch = engine.batch();
+        {
+            let rt = engine.read().unwrap();
+            put_block(&rt, &mut batch, slot, &root, &ssz, BlockRegion::Hot, false).unwrap();
+            put_canonical(&rt, &mut batch, slot, &root).unwrap();
+        }
+        engine.commit(batch).unwrap();
+    }
+
+    /// Gappy parent-walk canonical (slots 100 and 110) must survive same-key
+    /// reopen after identity stamp — I-contig must stay vacuous.
+    #[test]
+    fn persist_node_id_gappy_canonical_same_key_reopen_succeeds() {
+        use cc_store::SszDecode;
+        use cc_store::meta::{KEY_ANCHOR_INFO, KEY_NODE_ID, TABLE_META};
+
+        let dir = unique_temp_dir("s2-j-01-gappy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_a = dir.join("node_key");
+        let id_a = Root::from_array([0xAAu8; 32]);
+        std::fs::write(&key_a, id_a.as_slice()).unwrap();
+
+        let opened = open(&dir, test_opts(Some(key_a.clone()))).expect("first open");
+        put_canonical_slot(&opened, 100, 0x10);
+        put_canonical_slot(&opened, 110, 0x11);
+        {
+            let rt = opened.engine().read().unwrap();
+            assert!(
+                rt.get(TABLE_META, KEY_ANCHOR_INFO.as_bytes())
+                    .unwrap()
+                    .is_none(),
+                "fixture must start without AnchorInfo"
+            );
+        }
+
+        opened.persist_anchor_node_id(id_a).unwrap();
+        {
+            let rt = opened.engine().read().unwrap();
+            assert!(
+                rt.get(TABLE_META, KEY_ANCHOR_INFO.as_bytes())
+                    .unwrap()
+                    .is_none(),
+                "identity stamp must not create AnchorInfo"
+            );
+            let stored = Root::from_ssz_bytes(
+                &rt.get(TABLE_META, KEY_NODE_ID.as_bytes())
+                    .unwrap()
+                    .expect("stamp wrote node_id"),
+            )
+            .unwrap();
+            assert_eq!(stored, id_a);
+        }
+        drop(opened);
+
+        let _reopen = open(&dir, test_opts(Some(key_a)))
+            .expect("same-key reopen of gappy canonical must succeed");
+        drop(_reopen);
+
+        let key_b = dir.join("node_key_b");
+        std::fs::write(&key_b, [0xBBu8; 32]).unwrap();
+        let err = open(&dir, test_opts(Some(key_b))).expect_err("I-node-id must refuse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("node_id") || msg.contains("I-node-id"),
+            "second identity must fail I-node-id, got: {msg}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Populated canonical, no AnchorInfo: stamp must not plant oldest=0.
+    #[test]
+    fn persist_node_id_on_populated_canonical_does_not_plant_slot_zero() {
+        use cc_store::meta::{KEY_ANCHOR_INFO, TABLE_META};
+
+        let dir = unique_temp_dir("s2-j-01-contig");
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_a = dir.join("node_key");
+        let id_a = Root::from_array([0xAAu8; 32]);
+        std::fs::write(&key_a, id_a.as_slice()).unwrap();
+
+        let opened = open(&dir, test_opts(Some(key_a.clone()))).expect("first open");
+        put_canonical_slot(&opened, 1_000_000, 0xCC);
+        opened.persist_anchor_node_id(id_a).unwrap();
+        {
+            let rt = opened.engine().read().unwrap();
+            assert!(
+                rt.get(TABLE_META, KEY_ANCHOR_INFO.as_bytes())
+                    .unwrap()
+                    .is_none(),
+                "must not invent AnchorInfo / oldest_block_slot over populated canonical"
+            );
+        }
+        drop(opened);
+
+        let _reopen = open(&dir, test_opts(Some(key_a)))
+            .expect("same-key restart must succeed without planted slot 0");
+        drop(_reopen);
+
+        let key_b = dir.join("node_key_b");
+        std::fs::write(&key_b, [0xBBu8; 32]).unwrap();
+        let err = open(&dir, test_opts(Some(key_b))).expect_err("I-node-id must refuse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("node_id") || msg.contains("I-node-id"),
+            "second identity must fail I-node-id, got: {msg}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

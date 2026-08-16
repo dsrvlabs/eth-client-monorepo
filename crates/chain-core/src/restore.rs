@@ -722,6 +722,67 @@ fn apply_fc_scalars<P: Preset>(store: &mut Store<P>, s: &ForkChoiceScalarsPayloa
     }
 }
 
+/// Owned durable payload for in-process boot ([ARCH] §4.2 / S2-J-01).
+///
+/// Proto-shaped so this crate never names a storage type. The composer maps
+/// `storage_core::DurableSet` into this seed.
+#[derive(Clone)]
+#[allow(missing_debug_implementations)]
+pub struct DurableSeed {
+    /// Snapshot BeaconState SSZ.
+    pub state_ssz: Vec<u8>,
+    /// Real stored anchor-block SSZ (never a Default body).
+    pub anchor_block_ssz: Vec<u8>,
+    /// Fork tag for the anchor block decode.
+    pub anchor_block_fork: u32,
+    /// Replay set (ascending).
+    pub blocks: Vec<RestoreBlock>,
+    /// Fork-choice scalars SSZ (ADR-P4-06). Empty skips install.
+    pub fork_choice_scalars_ssz: Vec<u8>,
+    /// Expected head from persisted scalars.
+    pub expected_head_root: Root,
+    /// Expected head slot from persisted scalars.
+    pub expected_head_slot: u64,
+}
+
+/// Seed a fork-choice store from the durable set.
+///
+/// Runs [`apply_restore_set`] on the blocking pool (same wrap as the restore
+/// handler) so `DirectEngine` `block_on` does not panic on a runtime worker.
+/// `matched_expected == false` is **FATAL** (CC-45 /3) — the core must not
+/// be installed.
+pub async fn seed_from_durable<P: Preset + 'static>(
+    seed: DurableSeed,
+    chain_config: ChainConfig,
+    engine: Arc<dyn ExecutionEngine<P>>,
+    metrics: ChainMetrics,
+) -> Result<RestoreApplyResult<P>, Status> {
+    let expected_head_root = seed.expected_head_root;
+    let expected_head_slot = seed.expected_head_slot;
+    let applied = apply_restore_set_blocking(RestoreApplyOwned {
+        state_ssz: seed.state_ssz,
+        anchor_block_ssz: seed.anchor_block_ssz,
+        anchor_block_fork: seed.anchor_block_fork,
+        blocks: seed.blocks,
+        fork_choice_scalars_ssz: seed.fork_choice_scalars_ssz,
+        chain_config,
+        engine,
+        expected_head_root,
+        expected_head_slot,
+        metrics,
+    })
+    .await?;
+    if !applied.matched_expected {
+        return Err(Status::failed_precondition(format!(
+            "seed_from_durable matched_expected == false — FATAL (CC-45 /3 divergence): \
+             expected {expected_head_root} slot {expected_head_slot} \
+             actual {} slot {}",
+            applied.head_root, applied.head_slot
+        )));
+    }
+    Ok(applied)
+}
+
 /// Spawn a core from a completed restore apply (installs peer_das into config).
 pub fn spawn_core_from_restore<P: Preset + 'static>(
     applied: RestoreApplyResult<P>,
@@ -1526,6 +1587,15 @@ mod tests {
         assert!(
             spawn < apply,
             "apply_restore_set must run inside spawn_blocking"
+        );
+        assert!(
+            production.contains("seed_from_durable")
+                && production.contains("apply_restore_set_blocking"),
+            "in-process seed must share the handler spawn_blocking wrap"
+        );
+        assert!(
+            production.contains("matched_expected == false — FATAL (CC-45 /3 divergence)"),
+            "seed_from_durable must fail-closed on CC-45/3 mismatch"
         );
     }
 

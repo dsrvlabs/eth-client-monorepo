@@ -37,7 +37,7 @@ use crate::keys::{
     decode_snapshot_key, encode_cold_block_key, encode_hot_block_key, hot_block_slot_upper_bound,
 };
 use crate::meta::{
-    AnchorInfo, ForkChoiceScalars, KEY_ANCHOR_INFO, KEY_FC_SCALARS, KEY_PRUNE_MARKS,
+    AnchorInfo, ForkChoiceScalars, KEY_ANCHOR_INFO, KEY_FC_SCALARS, KEY_NODE_ID, KEY_PRUNE_MARKS,
     KEY_SERVE_WINDOW, KEY_SPLIT, KEY_WRITE_CURSOR, PruneMarks, ServeWindow, SlotRange, Split,
     TABLE_META, WriteCursor,
 };
@@ -871,9 +871,11 @@ fn check_window(rt: &ReadTxn) -> Result<Option<InvariantViolation>, StoreError> 
     Ok(None)
 }
 
-/// `I-node-id`: AnchorInfo.node_id equals the expected id from the node key.
+/// `I-node-id`: stored identity equals the expected id from the node key.
 ///
-/// Skipped entirely when `expected` is `None` (see [`InvariantContext::expected_node_id`]).
+/// Prefers `meta.node_id` (identity-only stamp). Falls back to
+/// `AnchorInfo.node_id` so existing origin rows still pair. Skipped when
+/// `expected` is `None` or no identity row exists.
 fn check_node_id(
     rt: &ReadTxn,
     expected: Option<&Root>,
@@ -882,19 +884,24 @@ fn check_node_id(
         // Optional by design: no expected id supplied → do not fail I-node-id.
         return Ok(None);
     };
-    let Some(anchor) = read_meta_ssz::<AnchorInfo>(rt, KEY_ANCHOR_INFO)? else {
+    let Some(found) = stored_node_id(rt)? else {
         return Ok(None);
     };
-    if &anchor.node_id != expected {
+    if &found != expected {
         return Ok(Some(InvariantViolation {
             invariant: StoreInvariant::NodeId,
-            detail: format!(
-                "AnchorInfo.node_id {found} does not match the configured node key",
-                found = anchor.node_id
-            ),
+            detail: format!("stored node_id {found} does not match the configured node key"),
         }));
     }
     Ok(None)
+}
+
+/// Identity for I-node-id: dedicated `node_id` key, else `AnchorInfo.node_id`.
+fn stored_node_id(rt: &ReadTxn) -> Result<Option<Root>, StoreError> {
+    if let Some(id) = read_meta_ssz::<Root>(rt, KEY_NODE_ID)? {
+        return Ok(Some(id));
+    }
+    Ok(read_meta_ssz::<AnchorInfo>(rt, KEY_ANCHOR_INFO)?.map(|a| a.node_id))
 }
 
 /// `I-shards`: all names registered; no shard table fully below prune marks.

@@ -37,10 +37,8 @@ use cc_bootstrap::{
 };
 use cc_config::ServiceConfig;
 use cc_proto::storage::storage_service_server::StorageServiceServer;
-use cc_store::engine::{Durability, EngineOptions};
-use cc_store::{BlockServeWindowCfg, SplitLock, check_min_epochs_for_block_requests};
-use cc_store::{ConfigDigestInput, Store, StoreOpenOptions};
-use cc_types::{ChainConfig, Root};
+use cc_store::{BlockServeWindowCfg, SplitLock, Store, check_min_epochs_for_block_requests};
+use cc_types::ChainConfig;
 use serde::Deserialize;
 use tokio::sync::watch;
 use tonic::service::Routes;
@@ -414,56 +412,18 @@ impl StorageConfig {
 /// When [`StorageConfig::node_key_path`] is set and present, loads the expected
 /// NodeId surface for **I-node-id** (§1.7) so a mismatched key refuses open.
 fn open_store(cfg: &StorageConfig) -> anyhow::Result<Store> {
-    let durability =
-        Durability::parse(&cfg.durability).map_err(|e| anyhow::anyhow!("durability: {e}"))?;
-    let gvr = parse_gvr(cfg.genesis_validators_root.as_deref())?;
-    // Digest inputs: use mainnet-scalar defaults until a network_config path lands.
-    // Fork epochs / BLOB_SCHEDULE come from a minimal mainnet-shaped ChainConfig
-    // so a fresh store opens without a YAML fixture dependency.
-    let chain = ChainConfig::mainnet_like_for_digest();
-    let digest_input = ConfigDigestInput::with_mainnet_scalars(chain, gvr);
-    let expected_node_id =
-        durable_set::load_expected_node_id_from_key_path(cfg.node_key_path.as_deref())
-            .map_err(|e| anyhow::anyhow!("node_key_path: {e}"))?;
-    if expected_node_id.is_some() {
-        // Path only — the 32-byte file is the secp256k1 secret, not a derived id.
-        tracing::info!(
-            path = ?cfg.node_key_path,
-            "I-node-id node key loaded from node_key_path"
-        );
-    }
-    let opts = StoreOpenOptions::from_config(
-        EngineOptions::default().with_durability(durability),
-        &digest_input,
+    Ok(crate::open(
+        &cfg.data_dir,
+        crate::OpenOpts {
+            durability: cfg.durability.clone(),
+            check_invariants: cfg.check_invariants,
+            snapshot_ring: cfg.snapshot_ring.max(1),
+            max_open_scan_rows: cfg.max_open_scan_rows,
+            genesis_validators_root: cfg.genesis_validators_root.clone(),
+            node_key_path: cfg.node_key_path.clone(),
+        },
     )?
-    .with_check_invariants(cfg.check_invariants)
-    .with_snapshot_ring(cfg.snapshot_ring.max(1))
-    .with_max_open_scan_rows(cfg.max_open_scan_rows)
-    .with_expected_node_id(expected_node_id);
-    let store = Store::open(&cfg.data_dir, opts).map_err(|e| anyhow::anyhow!("store open: {e}"))?;
-    durable_set::refuse_missing_key_if_anchor_present(store.engine(), cfg.node_key_path.as_deref())
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(store)
-}
-
-fn parse_gvr(s: Option<&str>) -> anyhow::Result<Root> {
-    let Some(raw) = s.filter(|s| !s.is_empty()) else {
-        // Devnet default: zero root when unset (local write-path bring-up).
-        return Ok(Root::ZERO);
-    };
-    let hex = raw.strip_prefix("0x").unwrap_or(raw);
-    if hex.len() != 64 {
-        anyhow::bail!(
-            "genesis_validators_root must be 32-byte hex, got len {}",
-            hex.len()
-        );
-    }
-    let mut arr = [0u8; 32];
-    for i in 0..32 {
-        arr[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
-            .map_err(|e| anyhow::anyhow!("genesis_validators_root hex: {e}"))?;
-    }
-    Ok(Root::from_array(arr))
+    .into_store())
 }
 
 /// Fire the process shutdown watch from bootstrap's SIGTERM/SIGINT pre-drain hook.
@@ -1205,6 +1165,7 @@ mod config_tests {
         use cc_store::{
             ConfigDigestInput, SszEncode, Store, StoreOpenOptions, compute_config_digest,
         };
+        use cc_types::Root;
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let nanos = SystemTime::now()
@@ -1301,6 +1262,7 @@ mod config_tests {
         use cc_store::{
             ConfigDigestInput, SszEncode, Store, StoreOpenOptions, compute_config_digest,
         };
+        use cc_types::Root;
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let nanos = SystemTime::now()
@@ -1364,15 +1326,15 @@ mod config_tests {
         cfg.node_key_path = Some(key_path);
         cfg.check_invariants = false;
         cfg.durability = "immediate".into();
-        let err = open_store(&cfg).expect_err("missing key with AnchorInfo must refuse");
+        let err = open_store(&cfg).expect_err("missing key with identity must refuse");
         let msg = err.to_string();
         assert!(
-            msg.contains("I-node-id") && msg.contains("AnchorInfo"),
-            "error must cite I-node-id and AnchorInfo: {msg}"
+            msg.contains("I-node-id") && msg.contains("identity"),
+            "error must cite I-node-id and identity: {msg}"
         );
         assert!(
-            !msg.contains(&anchor_id.to_string()) || msg.contains("AnchorInfo"),
-            "error must not be a silent skip: {msg}"
+            !msg.contains(&anchor_id.to_string()),
+            "error must not print stored node id bytes: {msg}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

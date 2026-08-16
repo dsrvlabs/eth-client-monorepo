@@ -235,7 +235,7 @@ fn schema_check(engine: &Engine, ctx: &DurableSetContext) -> Result<(), ResumeEr
 }
 
 /// Empty when no fork-choice scalars and no snapshot (fresh store after open).
-fn is_store_empty(engine: &Engine) -> Result<bool, ResumeError> {
+pub(crate) fn is_store_empty(engine: &Engine) -> Result<bool, ResumeError> {
     let rt = engine
         .read()
         .map_err(|e| ResumeError::Store(e.to_string()))?;
@@ -249,7 +249,7 @@ fn is_store_empty(engine: &Engine) -> Result<bool, ResumeError> {
     Ok(!has_fc && !has_snap)
 }
 
-fn build_restore_plan(
+pub(crate) fn build_restore_plan(
     engine: &Engine,
     ctx: &DurableSetContext,
 ) -> Result<RestoreStreamPlan, ResumeError> {

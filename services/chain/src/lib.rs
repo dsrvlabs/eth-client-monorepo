@@ -129,10 +129,10 @@ pub use residency::{
     ResidencyError, ResidentRole, StateProvider,
 };
 pub use restore::{
-    DEFAULT_RESTORE_GRACE_SECONDS, RestoreApplyInput, RestoreApplyResult, RestoreGate,
+    DEFAULT_RESTORE_GRACE_SECONDS, DurableSeed, RestoreApplyInput, RestoreApplyResult, RestoreGate,
     RestoreGateOutcome, RestoreHandlerDeps, RestoreInstall, apply_restore_set,
     handle_restore_accumulated, handle_restore_from_store, reset_restore_da_gate_invocations,
-    restore_da_gate_invocations, spawn_core_from_restore,
+    restore_da_gate_invocations, seed_from_durable, spawn_core_from_restore,
 };
 #[cfg(feature = "s0-a-31-observe")]
 pub use restore::{

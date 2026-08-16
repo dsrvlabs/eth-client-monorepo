@@ -391,6 +391,16 @@ before or with it, because a multi-GB invariant scan now blocks the *node's* boo
 **Acceptance** — one process opens redb; no subsystem starts before `open()` returns; a second opener
 of the same data directory fails the `I-node-id` check.
 
+- [x] `bin/beacon-core` (`cc-beacon-core`) is a workspace member
+- [x] One process opens redb before any subsystem starts (`boot_in_process` / `run`)
+- [x] chain-core + storage-core start in-process after `open()` (one writer)
+- [x] `services/chain` + `services/storage` stay workspace members (4-container A/B)
+- [x] JWT: `cc-beacon-core` / `cc-chain-core` not grandfathered (fixture `beacon-core-jwt`)
+- [x] Second opener of the same data directory fails the `I-node-id` check
+- [x] Production `run()` stamps `AnchorInfo.node_id` from `node_key_path` (default `./data/node_key`)
+- [x] `seed_from_durable` offloads `apply_restore_set` via `spawn_blocking`; `matched_expected == false` is fatal
+- [x] `restore.rs` / `RestoreFromStore` left in place (not S2-J-02)
+
 ---
 
 ### `S2-J-02` · Delete E4, `restore.rs`, and the restore client

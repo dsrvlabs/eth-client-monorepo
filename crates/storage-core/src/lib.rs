@@ -11,6 +11,9 @@
 //!
 //! Replay is the one decoder (CC-42); writer/serve/backfill/prune stay
 //! opaque-bytes (`[ARCH]` §1.5). Not JWT/HTTP-grandfathered.
+//!
+//! S2-J-01: [`open`] / [`durable_set`] / [`start_writer`] are the in-process
+//! boot surface for `bin/beacon-core`. The 4-container host remains [`run`].
 
 #![cfg_attr(test, allow(dead_code, unreachable_pub))]
 
@@ -21,6 +24,7 @@ mod durable_set;
 mod history;
 mod metrics;
 mod migrate;
+mod open;
 mod prune;
 mod replay;
 mod restore_client;
@@ -31,6 +35,10 @@ mod test_tmpdir;
 mod writer;
 
 pub use boot::run;
+pub use metrics::StorageMetrics;
+pub use open::{
+    DurableSet, OpenOpts, OpenedStore, StorageRuntime, durable_set, open, start_writer,
+};
 
 #[cfg(test)]
 mod s2_a_09_tests {

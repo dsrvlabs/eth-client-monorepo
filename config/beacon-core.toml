@@ -1,0 +1,45 @@
+# Local-dev defaults for `beacon-core` (S2-J-01 / [ARCH] §4.2).
+# Compose still runs the 4-container topology for A/B; this file is the
+# single-process host. Overrides: CC_BEACON_CORE_*.
+
+grpc_addr = "127.0.0.1:9001"
+metrics_addr = "127.0.0.1:9101"
+log_format = "json"
+log_filter = "info"
+
+data_dir = "data/storage"
+durability = "immediate"
+check_invariants = true
+snapshot_ring = 4
+# Same 32-byte surface as p2p.node_key_path / storage.node_key_path (ADR-P4-13).
+node_key_path = "./data/node_key"
+
+max_resident_states = 4
+body_ring_capacity = 64
+event_ring_events = 4096
+event_ring_bytes = 67108864
+subscriber_queue_capacity = 256
+
+checkpoint_providers = []
+# network_config = "crates/types/tests/fixtures/hoodi-config.yaml"
+
+el_endpoint = "http://127.0.0.1:8551"
+jwt_secret_path = "secrets/jwt.hex"
+slot_duration_ms = 12000
+attestation_due_bps = 3333
+maximum_gossip_clock_disparity_ms = 500
+
+[peers]
+
+[timeouts]
+new_payload_ms = 8000
+forkchoice_updated_ms = 8000
+get_blobs_ms = 1000
+exchange_capabilities_ms = 1000
+eth_syncing_ms = 1000
+multiplier = 1.0
+
+[el_forks]
+osaka_time = 1761677592
+bpo1_time = 1762365720
+bpo2_time = 1762955544

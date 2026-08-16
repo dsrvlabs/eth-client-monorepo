@@ -36,8 +36,8 @@ use cc_store::keys::{
 };
 use cc_store::meta::{
     AnchorInfo, BackfillProgress, ForkChoiceScalars, KEY_ANCHOR_INFO, KEY_BACKFILL_PROG,
-    KEY_CONFIG_DIGEST, KEY_FC_SCALARS, KEY_SCHEMA_VERSION, KEY_SERVE_WINDOW, KEY_SPLIT,
-    KEY_WRITE_CURSOR, ServeWindow, Split, TABLE_META, WriteCursor,
+    KEY_CONFIG_DIGEST, KEY_FC_SCALARS, KEY_NODE_ID, KEY_SCHEMA_VERSION, KEY_SERVE_WINDOW,
+    KEY_SPLIT, KEY_WRITE_CURSOR, ServeWindow, Split, TABLE_META, WriteCursor,
 };
 use cc_store::snapshots::{list_snapshot_slots, newest_snapshot};
 use cc_store::{DaStatus, Root, Slot, SszDecode};
@@ -825,6 +825,18 @@ fn assess_node_id_pairing(
     // Prefer a direct read so the stored id is named even when another
     // invariant would fire first under Open mode. Do not print `expected`
     // (raw key-file bytes).
+    if let Some(stored) = read_meta_ssz::<Root>(engine, KEY_NODE_ID)?
+        && stored != expected
+    {
+        return Ok(named_fail(
+            item,
+            format!(
+                "durable item `{}`: I-node-id (crates/store/src/invariants.rs): \
+                 stored node_id {stored} does not match the configured node key",
+                item.as_str(),
+            ),
+        ));
+    }
     if let Some(anchor) = read_meta_ssz::<AnchorInfo>(engine, KEY_ANCHOR_INFO)?
         && anchor.node_id != expected
     {
@@ -915,12 +927,14 @@ fn missing_key_with_anchor_detail(
     if path.as_os_str().is_empty() || path.exists() {
         return Ok(None);
     }
-    if read_meta_ssz::<AnchorInfo>(engine, KEY_ANCHOR_INFO)?.is_none() {
+    let has_anchor = read_meta_ssz::<AnchorInfo>(engine, KEY_ANCHOR_INFO)?.is_some();
+    let has_node_id = read_meta_ssz::<Root>(engine, KEY_NODE_ID)?.is_some();
+    if !has_anchor && !has_node_id {
         return Ok(None);
     }
     Ok(Some(format!(
         "I-node-id (crates/store/src/invariants.rs): node key missing at {} \
-         but store has AnchorInfo",
+         but store has identity",
         path.display()
     )))
 }
@@ -1638,8 +1652,8 @@ mod tests {
         );
         if let ItemAssessment::NamedFailure { detail, .. } = &a {
             assert!(
-                detail.contains("I-node-id") && detail.contains("AnchorInfo"),
-                "must cite I-node-id and AnchorInfo: {detail}"
+                detail.contains("I-node-id") && detail.contains("identity"),
+                "must cite I-node-id and identity: {detail}"
             );
         }
         refuse_missing_key_if_anchor_present(f.engine(), Some(&f.node_key_path))

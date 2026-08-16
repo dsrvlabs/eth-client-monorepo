@@ -958,6 +958,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "cc-beacon-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cc-bootstrap",
+ "cc-chain",
+ "cc-chain-core",
+ "cc-config",
+ "cc-engine-api",
+ "cc-proto",
+ "cc-storage-core",
+ "cc-types",
+ "getrandom 0.3.4",
+ "prometheus-client",
+ "serde",
+ "tokio",
+ "tonic",
+ "tracing",
+]
+
+[[package]]
 name = "cc-bootstrap"
 version = "0.1.0"
 dependencies = [

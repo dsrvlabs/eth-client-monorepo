@@ -34,6 +34,8 @@ members = [
   "crates/chain-core",
   # S2-B-01 storage-core extraction ([ARCH] §1.4): 24 → 25.
   "crates/storage-core",
+  # S2-J-01 bin/beacon-core composer ([ARCH] §4.2): 25 → 26.
+  "bin/beacon-core",
 ]
 
 [workspace.package]
@@ -199,6 +201,10 @@ async-trait = "0.1.91"
 cc-chain-core = { path = "crates/chain-core" }
 # S2-B-01: storage-core extraction ([ARCH] §1.4). Writer + serve read paths.
 cc-storage-core = { path = "crates/storage-core" }
+# S2-J-01: thin composer ([ARCH] §4.2). Opens redb before any subsystem.
+cc-beacon-core = { path = "bin/beacon-core" }
+# S2-J-01: checkpoint_sync stays on cc-chain (HTTP grandfather).
+cc-chain = { path = "services/chain" }
 
 [profile.release]
 opt-level = 3
