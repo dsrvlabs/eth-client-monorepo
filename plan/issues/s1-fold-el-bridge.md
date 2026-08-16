@@ -203,6 +203,13 @@ transport type**; `cc-p2p` has zero dependency on `cc-proto` for this edge.
 ### `S1-A-08` · `impl InProcess` · 2–3 pd / **5 pts** (≈)
 Bounded tokio mpsc + oneshot replies. The Single Hull candidate.
 
+- [x] `impl InProcess` — bounded tokio mpsc + oneshot replies
+- [x] Overflow: `submit_gossip` / `notify_data_available` → `Backpressure` after `IMPORT_SEND_TIMEOUT`; `publish` is lossy `Published::Dropped`; `update_view` never fails
+- [x] No new `SeamError` variants; no `Ipc`
+- [x] Crate README: both impls stay buildable permanently (`[ARCH]` §9.2)
+- [x] Unit tests: Backpressure / Dropped
+- [x] Docs: InProcess lanes **are** the live Single Hull queues; do not wrap in front of Loop B / event ring / `publish_fwd`
+
 ### `S1-A-09` · `impl Ipc` · 2–3 pd / **5 pts** (≈)
 Wraps today's tonic-over-TCP edge; the S3 option is a unix socket + `SO_PEERCRED`. **The jittered
 reconnect loop stays inside this impl** (`services/p2p/src/chain_stream/client.rs`) — it is the repo's

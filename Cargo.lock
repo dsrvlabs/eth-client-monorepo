@@ -1219,8 +1219,10 @@ version = "0.1.0"
 name = "cc-seam"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]

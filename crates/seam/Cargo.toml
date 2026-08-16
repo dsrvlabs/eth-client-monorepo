@@ -14,5 +14,11 @@ workspace = true
 # Leaf crate: no workspace edges ([ARCH] §2.1 / S1-A-07).
 # `thiserror` is the shared error derive in the §2.1 sketch; `async-trait`
 # keeps the handle traits object-safe so callers can name `Arc<dyn …>`.
+# tokio: bounded mpsc + oneshot + send_timeout. arc-swap: never-fail view.
 async-trait = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+arc-swap = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
