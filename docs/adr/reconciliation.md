@@ -115,3 +115,14 @@ deletes the citation.
 | ADR-P4-12 | a | accepted | docs/adr/ADR-P4-12.md |
 | ADR-P4-13 | a | accepted | docs/adr/ADR-P4-13.md |
 | ADR-P4-14 | a | accepted | docs/adr/ADR-P4-14.md |
+
+## Refactor records (not in the 58)
+
+`ADR-R-*` is out of the S1-B-06 extractor (`[ARCH]` §10.3). These files
+resolve by filename. They are not census rows: do not add them to the table
+above (that table is the 58 cited ids). This section is not a second
+`| id | bucket | status | resolving |` table.
+
+S1-B-18 lands [`ADR-R-01.md`](ADR-R-01.md) — Status: accepted. Records the
+R-1 discharge order (types land, transport later). Does not supersede a
+§10.4 row.

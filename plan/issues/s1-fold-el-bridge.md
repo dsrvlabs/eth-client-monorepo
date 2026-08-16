@@ -666,6 +666,13 @@ are not (c) rows. No fourth (c) **id** surfaced — X-1's 3-vs-4 is unadjudicate
 Records the R-1 discharge order — types land, transport later — and names the rejected alternative
 (*wait for a report of changed backpressure semantics*), whose failure mode is silent.
 
+- [x] `docs/adr/ADR-R-01.md` in house MADR; Status: accepted; records R-1 discharge
+      order (types land, transport later).
+- [x] Rejected alternative named: wait for a report of changed backpressure
+      semantics; failure mode is silent.
+- [x] `docs/adr/reconciliation.md` records ADR-R-01 as accepted →
+      `docs/adr/ADR-R-01.md` (not a 58-row census id; no supersession).
+
 ---
 
 ### `S1-B-19` · `S1-B-20` · **R-P2-triage** — M12 → 0
