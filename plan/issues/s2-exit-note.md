@@ -234,3 +234,110 @@ storage, `/app/data` on p2p). They are not host `data/storage` or
 `S2-B-14` is the drill. R-10 here is RestoreFromStore still on the
 4-container host (`S2-J-02` not done), not write-behind coming back.
 No duration is invented.
+
+## S2-B-14 — rollback rehearsal (E2.4)
+
+**Conclusion: same-file `Store::open` after a clean shutdown was observed.
+Compose on a live Hoodi volume was not.**
+
+Recorded 2026-08-16 on `feature/s2-b-14-rollback-rehearsal` (uncommitted)
+branched from `develop` `60c6200`. Worktree
+`/Users/nil/.grok/worktrees/dsrv-eth-client-monorepo/subagent-01a00a16-b76c-7aa3-b671-e742b90d4d63`.
+Host Darwin 25.6.0 arm64. `rustc 1.97.1 (8bab26f4f 2026-07-14)`.
+Procedure: [`docs/s2-rollback.md`](../../docs/s2-rollback.md). Last SHA
+that still has `write_behind.rs` is `e854b1d`. This HEAD's compose is
+**not** that writer.
+
+No soak numbers. No restart-trial table. No re-sync duration.
+
+### What was rehearsed
+
+**1. CI test — current P0 writer, then the `e854b1d` `open_store` gates
+on the same inode.**
+
+```text
+cargo test -p cc-storage-core --lib -- \
+  s2_b_14_current_writer_files_open_via_previous_topology_gates --nocapture
+```
+
+Test: `crates/storage-core/src/rollback_rehearsal.rs`
+`s2_b_14_current_writer_files_open_via_previous_topology_gates`.
+
+- Writes schema 1 + Hoodi config digest + `meta.node_id` via
+  `storage-core::open` / `persist_anchor_node_id`.
+- Commits one hot block and a `WriteCursor` (`session_id=7`, `seq=11`,
+  `slot=19`) through the live P0 mailbox (`submit_p0_committed`).
+- Idle (commit returned) then fires the writer shutdown watch — the
+  compose `stop` path; mailbox is not drained.
+- Reopens **the same** `<data_dir>/store.redb` (Unix inode asserted)
+  with the `e854b1d` `open_store` gates: `Store::open` (schema / digest /
+  `I-node-id` / `I-cursor` / scan budget) +
+  `refuse_missing_key_if_anchor_present`.
+- Then reopens again via `storage-core::open` (what this HEAD's
+  4-container `boot.rs` wraps).
+- Observed: schema version **1**, cursor unchanged, block present, no
+  refuse `Display` from the procedure's success table.
+
+Second passing run (this worktree):
+
+```text
+S2-B-14 observed: current P0 writer → clean shutdown →
+e854b1d Store::open + storage-core::open on
+/var/folders/k3/wt33h85x4pzb20y23mm0byjc0000gn/T/s2-b-14-rollback-82693-0-1786876457278491000/store.redb
+inode=209860605 bytes=552960
+```
+
+**2. Host `cc-storage` (this HEAD, 4-container process) on the first
+fixture inode.**
+
+Fixture left by the first test run:
+`/var/folders/k3/wt33h85x4pzb20y23mm0byjc0000gn/T/s2-b-14-rollback-75188-0-1786876209713303000/store.redb`
+inode **209840289**. Binary:
+`target/debug/cc-storage` at `60c6200`.
+
+- `Store::open` completed: `I-node-id node key loaded`, then
+  `writer + migrator + replay + prune + serve pool ready` with
+  `data_dir` equal to that directory. No schema / digest / lock /
+  invariant refuse string.
+- Resume then logged `store empty` — `is_store_empty` is “no
+  `fc_scalars` and no snapshot”, not “`Store::open` failed”. The
+  fixture is a hot block + cursor, not a durable seed.
+- `kill -TERM`: `pre-drain: firing storage shutdown watch`, writer
+  stopped, serve shutdown complete. Same inode after exit.
+
+**3. Host `cc-storage` built at `e854b1d` (still contains
+`write_behind.rs`) on that same inode.**
+
+Binary: `/tmp/s2-b-14-e854b1d/target/debug/cc-storage` (`e854b1d`).
+Same `data_dir` / `node_key` / inode **209840289**.
+
+- `Store::open` completed: `I-node-id node key loaded from node_key_path`
+  then `resume:` ran (that function is post-open).
+- Resume again classified the fixture empty and retried
+  `RestoreFromStore` dial to `http://127.0.0.1:9001/` (no chain
+  process). That is not an open failure. E2.4 is `Store::open`.
+- `kill -TERM` exited. Same inode.
+
+### What was not rehearsed
+
+| Item | Result |
+|---|---|
+| `docker compose up` of this HEAD | **not run** |
+| TempDir-backed compose project | **not run** — see blockers |
+| Live Hoodi / named volume `cc-store-data` | **not present** in this worktree (no `./data/storage`) |
+| `wait-healthy.sh` | **not run** |
+| Soak / restart-trial / re-sync wall-clock | **none** — not invented |
+| Published image for `e854b1d` | **none** — this repo does not pin one |
+| Treating this HEAD's compose as the pre-S2 writer | **no** |
+
+Compose blockers actually hit: Docker 29.7.2 / Compose v5.3.1 / daemon
+up. Host binaries are Mach-O arm64 and cannot run in a Linux container.
+Existing local `*-storage` images are 8 days / 17 hours old and are not
+`e854b1d` or this HEAD. A full `Dockerfile` workspace `--release` build
+was not started.
+
+### E2.4
+
+Same-file open after clean shutdown **was observed** (CI test + this
+HEAD's `cc-storage` + the `e854b1d` storage binary). That is the
+criterion. Compose on a live Hoodi volume remains **not done**.

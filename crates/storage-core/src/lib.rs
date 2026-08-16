@@ -29,6 +29,8 @@ mod open;
 mod prune;
 mod replay;
 mod resume;
+#[cfg(test)]
+mod rollback_rehearsal;
 mod serve;
 #[cfg(test)]
 mod test_tmpdir;

@@ -631,6 +631,21 @@ is exactly why `S3b-W-05` (20/20 restart trials) is scheduled **after** S2 (D11)
 - [x] Does not claim `S2-B-14` rehearsal; does not invent soak / re-sync numbers
 - [ ] `S2-B-14` / E2.4 rehearsal (not this issue)
 
+**Acceptance (`S2-B-14` only)**
+- [x] Clean shutdown, then a successful `Store::open` of the **same**
+      `<data_dir>/store.redb` (inode asserted)
+- [x] CI test writes the fixture with the current P0 writer and opens it
+      with the `e854b1d` `open_store` gates (`Store::open` + missing-key
+      refuse) and with `storage-core::open`
+      (`s2_b_14_current_writer_files_open_via_previous_topology_gates`)
+- [x] Host `cc-storage` at this HEAD opened that inode; `SIGTERM` fired
+      the shutdown watch
+- [x] Host `cc-storage` built at `e854b1d` (`write_behind.rs` present)
+      opened that same inode
+- [x] Recorded in [`s2-exit-note.md`](s2-exit-note.md): rehearsed vs not
+- [x] No soak / restart-trial / re-sync numbers invented
+- [ ] compose on a live Hoodi named volume (not this worktree)
+
 ---
 
 ### `S2-B-15` · **W10 prerequisite** — begin sourcing the five foreign clients
