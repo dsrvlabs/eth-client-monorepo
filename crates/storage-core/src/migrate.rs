@@ -22,6 +22,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use cc_seam::FinalizedCheckpointPayload;
 use cc_store::engine::Engine;
 use cc_store::meta::Split;
 use cc_store::{
@@ -248,18 +249,11 @@ pub(crate) enum MigrateError {
     Writer(WriterError),
 }
 
-/// Parse FINALIZED_CHECKPOINT payload head: epoch LE u64 + state root 32 B.
+/// Parse FINALIZED_CHECKPOINT payload head via the typed layout (S2-A-08).
 #[must_use]
 pub(crate) fn parse_finalized_payload(payload: &[u8]) -> Option<(u64, Root)> {
-    if payload.len() < 40 {
-        return None;
-    }
-    let mut epoch_le = [0u8; 8];
-    epoch_le.copy_from_slice(&payload[..8]);
-    let epoch = u64::from_le_bytes(epoch_le);
-    let mut root = [0u8; 32];
-    root.copy_from_slice(&payload[8..40]);
-    Some((epoch, Root::from_array(root)))
+    let parsed = FinalizedCheckpointPayload::decode_prefix(payload)?;
+    Some((parsed.epoch, Root::from_array(parsed.state_root)))
 }
 
 /// Decode finalized root from event root bytes.
@@ -545,13 +539,11 @@ mod tests {
 
     #[test]
     fn parse_finalized_payload_roundtrip() {
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&7u64.to_le_bytes());
-        payload.extend_from_slice(&[0xAB; 32]);
-        payload.extend_from_slice(&[0; 8]);
+        let payload = FinalizedCheckpointPayload::encode(7, &[0xAB; 32], &[0; 8]);
         let (e, sr) = parse_finalized_payload(&payload).unwrap();
         assert_eq!(e, 7);
         assert_eq!(sr, Root::from_array([0xAB; 32]));
+        assert!(parse_finalized_payload(&[0u8; 8]).is_none());
     }
 
     #[test]

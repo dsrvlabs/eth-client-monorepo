@@ -67,6 +67,11 @@ pub use cursor::{REASON_CURSOR_TOO_OLD, REASON_CURSOR_UNKNOWN_SESSION, validate_
 pub use fanout::FanOut;
 pub use ring::{EventRing, StoredEvent};
 
+pub use cc_seam::{
+    BlockImportedPayload, BlockImportedVerdict, ChainReorgPayload, FinalizedCheckpointPayload,
+    HeadPayload,
+};
+
 /// gRPC `ErrorInfo.domain` for chain cursor errors.
 pub const ERROR_DOMAIN: &str = "eth.chain.v1";
 
@@ -155,13 +160,13 @@ impl EventInput {
             .map(|r| Bytes::copy_from_slice(&r))
     }
 
-    /// `HEAD` with payload = head slot as 8-byte little-endian.
+    /// `HEAD` with payload = [`HeadPayload`] (8-byte little-endian slot).
     pub fn head(slot: u64, root: impl Into<Bytes>) -> Self {
         Self {
             slot,
             root: root.into(),
             kind: EventKind::Head,
-            payload: Bytes::copy_from_slice(&slot.to_le_bytes()),
+            payload: HeadPayload::encode(slot),
         }
     }
 
@@ -218,71 +223,6 @@ impl EventInput {
             kind: EventKind::DataColumn,
             payload: sidecar_ssz.into(),
         }
-    }
-}
-
-/// Typed `CHAIN_REORG` payload. Decode is fail-closed (no silent zero root).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChainReorgPayload {
-    pub old_head_root: [u8; 32],
-    pub common_ancestor_slot: u64,
-}
-
-impl ChainReorgPayload {
-    /// Encode. Non-32-byte roots are written as-is (never padded to `0`).
-    #[must_use]
-    pub fn encode(old_head_root: &[u8], common_ancestor_slot: u64) -> Bytes {
-        let mut payload = Vec::with_capacity(old_head_root.len().saturating_add(8));
-        payload.extend_from_slice(old_head_root);
-        payload.extend_from_slice(&common_ancestor_slot.to_le_bytes());
-        Bytes::from(payload)
-    }
-
-    /// Fail-closed: requires exactly 40 bytes.
-    #[must_use]
-    pub fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != 40 {
-            return None;
-        }
-        let old_head_root = bytes.get(..32)?.try_into().ok()?;
-        let slot: [u8; 8] = bytes.get(32..40)?.try_into().ok()?;
-        Some(Self {
-            old_head_root,
-            common_ancestor_slot: u64::from_le_bytes(slot),
-        })
-    }
-}
-
-/// Typed `FINALIZED_CHECKPOINT` prefix: 8 B epoch ‖ 32 B state root ‖ scalars.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FinalizedCheckpointPayload {
-    pub epoch: u64,
-    pub state_root: [u8; 32],
-}
-
-impl FinalizedCheckpointPayload {
-    /// Encode. Non-32-byte state roots are written as-is (never padded to `0`).
-    #[must_use]
-    pub fn encode(epoch: u64, state_root: &[u8], scalars_ssz: &[u8]) -> Bytes {
-        let mut payload = Vec::with_capacity(8 + state_root.len() + scalars_ssz.len());
-        payload.extend_from_slice(&epoch.to_le_bytes());
-        payload.extend_from_slice(state_root);
-        payload.extend_from_slice(scalars_ssz);
-        Bytes::from(payload)
-    }
-
-    /// Fail-closed prefix decode. Requires at least 40 bytes; scalars follow.
-    #[must_use]
-    pub fn decode_prefix(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 40 {
-            return None;
-        }
-        let epoch: [u8; 8] = bytes.get(..8)?.try_into().ok()?;
-        let state_root = bytes.get(8..40)?.try_into().ok()?;
-        Some(Self {
-            epoch: u64::from_le_bytes(epoch),
-            state_root,
-        })
     }
 }
 

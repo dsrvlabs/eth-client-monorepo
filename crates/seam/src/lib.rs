@@ -14,9 +14,14 @@
 
 #[cfg(test)]
 mod conformance;
+mod event_payloads;
 mod in_process;
 mod ipc;
 
+pub use event_payloads::{
+    BlockImportedPayload, BlockImportedVerdict, ChainReorgPayload, FinalizedCheckpointPayload,
+    HeadPayload,
+};
 pub use in_process::{
     DEFAULT_RING_CAPACITY, IMPORT_LANE_DEPTH, IMPORT_SEND_TIMEOUT, ImportMsg, InProcess,
     InProcessMailbox, MAX_EVENT_PAYLOAD_BYTES, PUBLISH_BOUND,

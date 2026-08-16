@@ -247,6 +247,12 @@ Hand-rolled event byte-offsets with silent-default fallbacks become typed struct
 is silent; this is the last of the untyped cross-service surfaces.
 **Acceptance** — no production decode of an event payload reads a fixed byte offset; a grep confirms.
 
+- [x] Typed event payload structs live on `cc-seam` (`BlockImportedPayload`, `HeadPayload`, `ChainReorgPayload`, `FinalizedCheckpointPayload`)
+- [x] Production write-behind / migrate decode via those structs; unknown / short payloads fail closed (no silent default)
+- [x] No production `ev.payload[` / `payload[..N]` event-payload index (grep / test)
+- [x] `write_behind.rs` still exists (not `S2-A-09`)
+- [x] Overflow policy unchanged (not `S2-A-07` / `ADR-R-02`)
+
 ### `S2-A-09` · Demote the ring; delete `write_behind.rs` and gap-fill · 2–3 pd / **5 pts** (≈)
 **Discharges by deletion** P1-D/13, P1-A/4 (`write_behind.rs:214`, panic respawn resubscribes with the
 boot-time cursor), P1-B/9 (`storage_client.rs:240`, `invalidate()` with no data-plane restore path),

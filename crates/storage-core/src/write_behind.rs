@@ -30,6 +30,7 @@ use cc_proto::chain::{
     Cursor, Event, EventKind, GetCanonicalRootsRequest, GetHeadRequest, SubscribeEventsRequest,
 };
 use cc_proto::error_info_from_status;
+use cc_seam::{BlockImportedPayload, BlockImportedVerdict, FinalizedCheckpointPayload};
 use cc_store::engine::Engine;
 use cc_store::meta::WriteCursor;
 use cc_store::{DaStatus, Root, Slot};
@@ -42,9 +43,7 @@ use tonic::{Code, Status};
 use tracing::{debug, error, info, warn};
 
 use crate::metrics::{ReconnectReason, StorageMetrics};
-use crate::migrate::{
-    Migrator, maybe_migrate_on_finalized, parse_finalized_payload, root_from_event,
-};
+use crate::migrate::{Migrator, maybe_migrate_on_finalized, root_from_event};
 use crate::replay::{ReplayDriver, maybe_snapshot_on_finalized};
 use crate::writer::{
     CommitUnit, StagedBlock, StagedColumn, StagedForkChoiceScalars, WriterError, WriterHandle,
@@ -64,9 +63,9 @@ pub(crate) const REASON_CURSOR_TOO_OLD: &str = "CURSOR_TOO_OLD";
 pub(crate) const SESSION_ID_METADATA_KEY: &str = "x-cc-chain-session-id";
 
 /// First payload byte = `ImportBlockVerdict::Imported` (proto enum value 1).
-pub(crate) const BLOCK_PAYLOAD_VERDICT_IMPORTED: u8 = 1;
+pub(crate) const BLOCK_PAYLOAD_VERDICT_IMPORTED: u8 = BlockImportedVerdict::Imported as u8;
 /// First payload byte = `ImportBlockVerdict::DeferredDa` (proto enum value 3).
-pub(crate) const BLOCK_PAYLOAD_VERDICT_DEFERRED_DA: u8 = 3;
+pub(crate) const BLOCK_PAYLOAD_VERDICT_DEFERRED_DA: u8 = BlockImportedVerdict::DeferredDa as u8;
 
 /// Default: one commit per slot — **the loss bound** (§4.4).
 pub(crate) const DEFAULT_COMMIT_SLOTS: u64 = 1;
@@ -1005,15 +1004,25 @@ async fn apply_one_event(
         {
             return Some(end);
         }
-        let finalized_root = root_from_event(&ev.root);
-        let (epoch, state_root) =
-            parse_finalized_payload(&ev.payload).unwrap_or_else(|| (ev.slot / 32, Root::default()));
-        if let Some(mig) = migrator {
-            maybe_migrate_on_finalized(mig, epoch, finalized_root, state_root).await;
-        }
-        // CC-42: snapshot on cadence after migration advances split.
-        if let Some(rep) = replayer {
-            maybe_snapshot_on_finalized(rep, epoch, finalized_root, state_root).await;
+        match FinalizedCheckpointPayload::decode_prefix(&ev.payload) {
+            Some(parsed) => {
+                let finalized_root = root_from_event(&ev.root);
+                let state_root = Root::from_array(parsed.state_root);
+                if let Some(mig) = migrator {
+                    maybe_migrate_on_finalized(mig, parsed.epoch, finalized_root, state_root).await;
+                }
+                // CC-42: snapshot on cadence after migration advances split.
+                if let Some(rep) = replayer {
+                    maybe_snapshot_on_finalized(rep, parsed.epoch, finalized_root, state_root)
+                        .await;
+                }
+            }
+            None => {
+                warn!(
+                    seq = ev.seq,
+                    "skip FINALIZED_CHECKPOINT migrate: payload decode failed"
+                );
+            }
         }
     }
 
@@ -1051,25 +1060,20 @@ fn apply_event(
     let root = root_from_bytes(&ev.root)?;
     match ev.kind() {
         EventKind::BlockImported => {
-            // payload = [verdict_byte] ‖ SignedBeaconBlock SSZ
-            if ev.payload.is_empty() {
-                return Err("BLOCK_IMPORTED empty payload".into());
-            }
-            let verdict = ev.payload[0];
-            let ssz = ev.payload[1..].to_vec();
-            if ssz.is_empty() {
+            let parsed = BlockImportedPayload::decode(&ev.payload)
+                .ok_or_else(|| "BLOCK_IMPORTED payload decode failed".to_string())?;
+            if parsed.block_ssz.is_empty() {
                 acc.note_event(ev.seq, ev.slot, root);
                 return Ok(ApplyAction::Continue);
             }
-            let da = match verdict {
-                BLOCK_PAYLOAD_VERDICT_IMPORTED => Some(DaStatus::Available),
-                BLOCK_PAYLOAD_VERDICT_DEFERRED_DA => Some(DaStatus::Deferred),
-                _ => None,
+            let da = match parsed.verdict {
+                BlockImportedVerdict::Imported => Some(DaStatus::Available),
+                BlockImportedVerdict::DeferredDa => Some(DaStatus::Deferred),
             };
             acc.blocks.push(StagedBlock {
                 slot: Slot::new(ev.slot),
                 root,
-                ssz,
+                ssz: parsed.block_ssz.to_vec(),
                 update_canonical: false,
                 write_state_root: true,
                 da_status: da,
@@ -1106,12 +1110,11 @@ fn apply_event(
             Ok(ApplyAction::Continue)
         }
         EventKind::FinalizedCheckpoint => {
-            if ev.payload.len() >= 40 + 240 {
-                let fc = ev.payload[40..].to_vec();
-                acc.fork_choice = Some(StagedForkChoiceScalars { ssz: fc });
-            } else if ev.payload.len() > 40 {
+            let (_prefix, scalars) = FinalizedCheckpointPayload::decode(&ev.payload)
+                .ok_or_else(|| "FINALIZED_CHECKPOINT payload decode failed".to_string())?;
+            if !scalars.is_empty() {
                 acc.fork_choice = Some(StagedForkChoiceScalars {
-                    ssz: ev.payload[40..].to_vec(),
+                    ssz: scalars.to_vec(),
                 });
             }
             acc.note_event(ev.seq, ev.slot, root);
@@ -1445,15 +1448,12 @@ mod tests {
     }
 
     fn block_event(seq: u64, slot: u64, root: Root, ssz: Vec<u8>) -> Event {
-        let mut payload = Vec::with_capacity(1 + ssz.len());
-        payload.push(BLOCK_PAYLOAD_VERDICT_IMPORTED);
-        payload.extend_from_slice(&ssz);
         Event {
             seq,
             slot,
             root: root.as_slice().to_vec(),
             kind: EventKind::BlockImported as i32,
-            payload,
+            payload: BlockImportedPayload::encode(BlockImportedVerdict::Imported, &ssz).to_vec(),
         }
     }
 
@@ -1475,6 +1475,68 @@ mod tests {
             kind: EventKind::DataColumn as i32,
             payload: ssz,
         }
+    }
+
+    #[test]
+    fn block_imported_unknown_verdict_fails_closed() {
+        let mut acc = Accumulator::default();
+        let ev = Event {
+            seq: 0,
+            slot: 1,
+            root: root_n(1).as_slice().to_vec(),
+            kind: EventKind::BlockImported as i32,
+            payload: vec![0, 1, 2, 3],
+        };
+        let err = apply_event(&mut acc, &ev, false).unwrap_err();
+        assert!(err.contains("decode failed"));
+        assert!(acc.blocks.is_empty());
+    }
+
+    #[test]
+    fn finalized_short_payload_fails_closed() {
+        let mut acc = Accumulator::default();
+        let ev = Event {
+            seq: 0,
+            slot: 32,
+            root: root_n(1).as_slice().to_vec(),
+            kind: EventKind::FinalizedCheckpoint as i32,
+            payload: vec![1, 2, 3],
+        };
+        let err = apply_event(&mut acc, &ev, false).unwrap_err();
+        assert!(err.contains("decode failed"));
+        assert!(acc.fork_choice.is_none());
+        assert!(FinalizedCheckpointPayload::decode_prefix(&ev.payload).is_none());
+    }
+
+    /// S2-A-08: production event-payload decode must not index fixed offsets.
+    #[test]
+    fn production_event_payload_decode_has_no_fixed_byte_offset() {
+        let wb = include_str!("write_behind.rs");
+        let mig = include_str!("migrate.rs");
+        let prod_wb = wb.split("mod tests").next().unwrap();
+        let prod_mig = mig.split("mod tests").next().unwrap();
+        for (name, src) in [("write_behind", prod_wb), ("migrate", prod_mig)] {
+            assert!(
+                !src.contains("ev.payload["),
+                "{name}: production decode indexed ev.payload"
+            );
+            assert!(
+                !src.contains("payload[.."),
+                "{name}: production decode sliced payload[.."
+            );
+            assert!(
+                !src.contains("payload[8.."),
+                "{name}: production decode sliced payload[8.."
+            );
+            assert!(
+                !src.contains("payload[40.."),
+                "{name}: production decode sliced payload[40.."
+            );
+        }
+        assert!(prod_wb.contains("BlockImportedPayload::decode"));
+        assert!(prod_wb.contains("FinalizedCheckpointPayload"));
+        assert!(prod_mig.contains("FinalizedCheckpointPayload::decode_prefix"));
+        assert!(!prod_wb.contains("Root::default()"));
     }
 
     #[test]

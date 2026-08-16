@@ -56,33 +56,13 @@ use crate::tick::{GossipClock, admit_block_slot_if_within_disparity};
 /// First payload byte of `BLOCK_IMPORTED` (Architecture §4.2).
 ///
 /// Typed so the ring payload is not a bare `u8` with a silent-default reader.
-/// Unknown discriminants must fail closed ([`Self::from_u8`]), never become 0.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum BlockImportedPayloadVerdict {
-    Imported = ImportBlockVerdict::Imported as u8,
-    DeferredDa = ImportBlockVerdict::DeferredDa as u8,
-}
+/// Unknown discriminants must fail closed ([`BlockImportedPayloadVerdict::from_u8`]).
+pub use cc_seam::BlockImportedVerdict as BlockImportedPayloadVerdict;
 
-impl BlockImportedPayloadVerdict {
-    /// Wire first-byte value.
-    #[must_use]
-    pub const fn as_u8(self) -> u8 {
-        self as u8
-    }
-
-    /// Fail-closed decode. `None` for an unknown discriminant (never default).
-    #[must_use]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        if v == Self::Imported as u8 {
-            Some(Self::Imported)
-        } else if v == Self::DeferredDa as u8 {
-            Some(Self::DeferredDa)
-        } else {
-            None
-        }
-    }
-}
+const _: () = {
+    assert!(ImportBlockVerdict::Imported as u8 == BlockImportedPayloadVerdict::Imported as u8);
+    assert!(ImportBlockVerdict::DeferredDa as u8 == BlockImportedPayloadVerdict::DeferredDa as u8);
+};
 
 /// First payload byte for `BLOCK_IMPORTED` after a successful import (Architecture §4.2).
 pub const BLOCK_PAYLOAD_VERDICT_IMPORTED: u8 = BlockImportedPayloadVerdict::Imported as u8;
@@ -162,10 +142,7 @@ pub const FORK_CHOICE_SCALARS_SSZ_LEN: usize = 240;
 
 /// Build `BLOCK_IMPORTED` payload: `[verdict_byte] ‖ SignedBeaconBlock SSZ`.
 pub fn block_imported_payload(verdict: BlockImportedPayloadVerdict, block_ssz: &[u8]) -> Bytes {
-    let mut out = Vec::with_capacity(1 + block_ssz.len());
-    out.push(verdict.as_u8());
-    out.extend_from_slice(block_ssz);
-    Bytes::from(out)
+    cc_seam::BlockImportedPayload::encode(verdict, block_ssz)
 }
 
 /// Fail-closed split of a `BLOCK_IMPORTED` payload. Unknown first byte is `None`.
@@ -173,8 +150,8 @@ pub fn block_imported_payload(verdict: BlockImportedPayloadVerdict, block_ssz: &
 pub fn split_block_imported_payload(
     payload: &[u8],
 ) -> Option<(BlockImportedPayloadVerdict, &[u8])> {
-    let (disc, rest) = payload.split_first()?;
-    Some((BlockImportedPayloadVerdict::from_u8(*disc)?, rest))
+    let parsed = cc_seam::BlockImportedPayload::decode(payload)?;
+    Some((parsed.verdict, parsed.block_ssz))
 }
 
 fn import_response(verdict: ImportBlockVerdict, reason: &ImportReason) -> ImportBlockResponse {
