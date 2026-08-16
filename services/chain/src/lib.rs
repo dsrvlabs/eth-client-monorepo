@@ -14,7 +14,8 @@
 //! - **CC-36a**: third deferral outcome — [`pending_engine`] (64 / 8 slots),
 //!   separate from `pending_da`
 //! - **CC-38a**: block-branch fast-path trigger in [`da`] (template-sized
-//!   `FetchBlobsRequest` only; no cell payload through chain)
+//!   only; no cell payload through chain)
+//! - **S1-A-06**: E3 is a direct [`engine::DirectEngine`] call (no gRPC bridge)
 //!
 //! The binary (`main.rs`) binds first, then awaits local restore
 //! ([`restore`] / CC-45b) for `restore_grace_seconds` before falling back to
@@ -30,7 +31,7 @@ pub mod apply_attestations;
 pub mod checkpoint_sync;
 pub mod core;
 pub mod da;
-pub mod engine_client;
+pub mod engine;
 pub mod epoch_context;
 pub mod events;
 pub mod fcu_driver;
@@ -72,11 +73,10 @@ pub use da::{
     kzg_commitment_to_versioned_hash, recovery_ladder_worst_case_secs,
     versioned_hashes_from_commitments,
 };
-pub use engine_client::{
-    DEFAULT_ENGINE_CONNECT_TIMEOUT, DEFAULT_ENGINE_FETCH_BLOBS_TIMEOUT,
-    DEFAULT_ENGINE_FORKCHOICE_UPDATED_TIMEOUT, DEFAULT_ENGINE_GET_STATE_TIMEOUT,
-    DEFAULT_ENGINE_NEW_PAYLOAD_TIMEOUT, DEFAULT_ENGINE_URI, EngineApiClient, EngineRpcDeadlines,
-    fire_fetch_blobs, fire_fetch_blobs_with, poll_engine_online, poll_engine_online_with,
+pub use engine::{
+    DEFAULT_ENGINE_FETCH_BLOBS_TIMEOUT, DEFAULT_ENGINE_FORKCHOICE_UPDATED_TIMEOUT,
+    DEFAULT_ENGINE_GET_STATE_TIMEOUT, DEFAULT_ENGINE_NEW_PAYLOAD_TIMEOUT, DirectEngine,
+    SharedEngine,
 };
 pub use epoch_context::{EpochContext, EpochContextStore};
 pub use events::{
@@ -86,7 +86,7 @@ pub use events::{
     REASON_CURSOR_TOO_OLD, REASON_CURSOR_UNKNOWN_SESSION, SESSION_ID_METADATA_KEY,
 };
 pub use fcu_driver::{
-    FcuBuildError, FcuDriver, FcuSink, FcuSkip, ForkchoiceState, GrpcFcuSink, RecordingFcuSink,
+    FcuBuildError, FcuDriver, FcuSink, FcuSkip, ForkchoiceState, RecordingFcuSink,
     build_forkchoice_state, safe_is_ancestor_of_head,
 };
 pub use head::{HeadSnapshot, HeadSnapshotStore};

@@ -228,17 +228,8 @@ message InjectColumns {
   bytes beacon_block_root = 1;
   uint64 slot = 2;
   repeated bytes sidecar_ssz = 3;
-  // Always true on the production path. The field exists so the trust
-  // assumption is explicit on the wire rather than implied by the RPC's name
-  // (§5.8). p2p may *read* it as a trust *hint*.
-  //
-  // SECURITY RESIDUAL (S-38a-1 → CC-38b): this is a client-asserted bool on an
-  // unauthenticated internal stream — **not** an authenticated claim. CC-38b
-  // MUST NOT skip KZG / inclusion-proof re-verification solely because this is
-  // true, until mutual auth (mTLS / allowlist / shared token) exists. Prefer
-  // re-verify-always + metric label, or fail-closed without auth. Compose
-  // publish of :9002 elevates this residual (S-38a-2).
-  bool trusted_local = 4;
+  reserved 4;
+  reserved "trusted_local";
 }
 
 // p2p → engine (downward on the reverse direction).

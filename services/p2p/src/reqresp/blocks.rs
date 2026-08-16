@@ -877,6 +877,7 @@ mod tests {
             BlocksByRangeRequest {
                 start_slot: Slot::new(105),
                 count: 2,
+                step: BlocksByRangeRequest::STEP,
             },
         )
         .expect("in-window empty range is success, not ResourceUnavailable");
@@ -885,15 +886,11 @@ mod tests {
         // Wire: zero chunks encode to an empty body. Spec-compliant decoders
         // (including serve-probe's independent codec) treat that as a
         // well-formed empty success stream, not result-byte 3.
-        let enc = SszSnappyFraming::encode_response(
-            &planned.chunks,
-            Protocol::BeaconBlocksByRangeV2,
-        )
-        .unwrap();
-        assert!(enc.is_empty(), "zero-chunk success is an empty stream body");
-        let dec =
-            SszSnappyFraming::decode_response(&enc, Protocol::BeaconBlocksByRangeV2)
+        let enc =
+            SszSnappyFraming::encode_response(&planned.chunks, Protocol::BeaconBlocksByRangeV2)
                 .unwrap();
+        assert!(enc.is_empty(), "zero-chunk success is an empty stream body");
+        let dec = SszSnappyFraming::decode_response(&enc, Protocol::BeaconBlocksByRangeV2).unwrap();
         assert!(dec.is_empty());
     }
 

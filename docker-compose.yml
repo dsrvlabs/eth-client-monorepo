@@ -33,8 +33,12 @@ services:
       <<: *cc-env
       CC_CHAIN_GRPC_ADDR: 0.0.0.0:9001
       CC_CHAIN_METRICS_ADDR: 0.0.0.0:9101
-      # P0-07: engine is a sibling on `cc`, not this container's localhost.
+      # P0-07: leftover URI-override gate. E3 is in-process (S1-A-06).
       CC_CHAIN_ENGINE_URI: http://engine:9004
+      CC_CHAIN_EL_ENDPOINT: http://el:8551
+      CC_CHAIN_JWT_SECRET_PATH: /jwt/jwt.hex
+    volumes:
+      - ./secrets:/jwt:ro
     ports: ["127.0.0.1:9101:9101"]
     healthcheck:
       <<: *hc

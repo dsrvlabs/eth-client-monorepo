@@ -6,14 +6,16 @@ use std::path::Path;
 
 #[test]
 fn production_main_wires_blob_bound_from_chain_config() {
-    let src = include_str!("../src/main.rs");
-    let compact: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+    let src = include_str!("../../../crates/engine-api/src/api.rs");
+    let production = src.split("#[cfg(test)]").next().expect("production half");
+    let compact: String = production.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(
         compact.contains("load_network_chain_config"),
         "production main must sandbox-load ChainConfig from network_config"
     );
     assert!(
-        compact.contains("BlobBound::from_chain_config(&chain)"),
+        compact.contains("BlobBound::from_chain_config(&self.chain)")
+            || compact.contains("BlobBound::from_chain_config(&chain)"),
         "production FastpathLane bound must come from ChainConfig"
     );
     assert!(
@@ -21,7 +23,7 @@ fn production_main_wires_blob_bound_from_chain_config() {
         "production must not call unsandboxed ChainConfig::from_yaml_file"
     );
     assert!(
-        !src.contains("include_str!"),
+        !production.contains("include_str!"),
         "production must not embed a compiled YAML fallback"
     );
     let fixture_ident = concat!("hoodi_blob", "_bound");
@@ -33,10 +35,7 @@ fn production_main_wires_blob_bound_from_chain_config() {
         !include_str!("../src/lib.rs").contains(fixture_ident),
         "cc-engine must not re-export the test fixture"
     );
-    assert!(
-        !include_str!("../src/inject.rs").contains(fixture_ident),
-        "inject production/test helper must not name the test fixture"
-    );
+
     let api_mod = include_str!("../../../crates/engine-api/src/fastpath/mod.rs");
     let api_prod = api_mod
         .split("#[cfg(test)]")

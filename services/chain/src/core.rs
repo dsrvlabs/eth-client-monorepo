@@ -54,9 +54,9 @@ use tonic::Status;
 
 use crate::apply_attestations::apply_attestations;
 use crate::da::{DEFAULT_DA_PENDING_TIMEOUT_SLOTS, PendingDa};
-use crate::engine_client::{fire_fetch_blobs, poll_engine_online};
+use crate::engine::SharedEngine;
 use crate::epoch_context::{EpochContext, EpochContextStore};
-use crate::fcu_driver::{FcuDriver, GrpcFcuSink};
+use crate::fcu_driver::FcuDriver;
 use crate::head::{HeadSnapshot, HeadSnapshotStore};
 use crate::import::{ImportCounters, ImportOutcome, import_block_with_early};
 use crate::liveness::LivenessError;
@@ -806,8 +806,8 @@ pub struct CoreConfig {
     pub da_pending_timeout_slots: u64,
     /// Slots a deferred block may wait for the execution engine (default 8).
     pub engine_pending_timeout_slots: u64,
-    /// gRPC URI for `EngineService` (CC-32b). Not a health peer (ADR P3-02).
-    pub engine_uri: String,
+    /// In-process engine API (S1-A-06). `None` in fixture tests with no EL.
+    pub engine: Option<SharedEngine>,
     /// Spawn the per-slot `SlotTick` floor (fcU floor + pending_* expiry + wall-clock
     /// `on_tick`).
     ///
@@ -830,7 +830,7 @@ impl Default for CoreConfig {
             peer_das: None,
             da_pending_timeout_slots: DEFAULT_DA_PENDING_TIMEOUT_SLOTS,
             engine_pending_timeout_slots: DEFAULT_ENGINE_PENDING_TIMEOUT_SLOTS,
-            engine_uri: crate::engine_client::DEFAULT_ENGINE_URI.to_owned(),
+            engine: None,
             slot_tick_enabled: false,
             maximum_gossip_clock_disparity: DEFAULT_MAXIMUM_GOSSIP_CLOCK_DISPARITY,
         }
@@ -1278,9 +1278,8 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
         None
     };
 
-    // Capture multi-threaded runtime handle for GrpcFcuSink (§2.4). Absent in
-    // pure unit tests that spawn the core off a runtime → fcU stays disabled.
-    let rt_handle = tokio::runtime::Handle::try_current().ok();
+    // Runtime handle is unused after S1-A-06 (E3 is in-process). Kept off
+    // the core thread so fixture tests without an engine still compile.
     let sched_thread = Arc::clone(&sched);
     let lane_wake_thread = Arc::clone(&lane_wake);
 
@@ -1298,7 +1297,6 @@ pub fn spawn_core_thread_with_epoch<P: Preset + 'static>(
                 core_cfg,
                 sched_thread,
                 lane_wake_thread,
-                rt_handle,
             );
         })
         .unwrap_or_else(|e| {
@@ -1627,7 +1625,6 @@ fn core_loop<P: Preset>(
     core_cfg: CoreConfig,
     sched: Arc<SharedScheduler>,
     lane_wake: Arc<LaneWake>,
-    rt_handle: Option<tokio::runtime::Handle>,
 ) {
     let mut residency =
         Residency::<P>::new(core_cfg.max_resident_states, core_cfg.body_ring_capacity);
@@ -1651,23 +1648,16 @@ fn core_loop<P: Preset>(
     let mut pending_engine = PendingEngine::new();
     // Last observed engine Online bit (CC-36a Offline→Online redrive edge).
     let mut last_engine_online = false;
-    let engine_uri = core_cfg.engine_uri.clone();
-    // Keep a handle for GetEngineState polling (fcU sink consumes its own clone).
-    let poll_handle = rt_handle.clone();
+    let engine = core_cfg.engine.clone();
 
     // CC-33: forkchoiceUpdated driver (off attestation path — after import /
-    // on slot tick). Requires a multi-threaded runtime handle for gRPC.
-    let fcu: Option<FcuDriver<GrpcFcuSink>> = rt_handle.map(|h| {
-        let sink = Arc::new(GrpcFcuSink::new(h, engine_uri.clone()));
-        tracing::info!(
-            engine_uri = %engine_uri,
-            session_id = sink.session_id(),
-            "fcU driver armed (CC-33)"
-        );
-        FcuDriver::new(sink)
+    // on slot tick). Direct `cc-engine-api` call (S1-A-06).
+    let fcu: Option<FcuDriver<crate::engine::DirectEngine>> = engine.as_ref().map(|e| {
+        tracing::info!(session_id = e.session_id(), "fcU driver armed (CC-33)");
+        FcuDriver::new(Arc::clone(e))
     });
     if fcu.is_none() {
-        tracing::debug!("fcU driver disabled (no tokio runtime handle on core spawn)");
+        tracing::debug!("fcU driver disabled (no in-process engine on core spawn)");
     }
 
     loop {
@@ -1728,9 +1718,9 @@ fn core_loop<P: Preset>(
                 // CC-38a: fire template-sized FetchBlobs on DA-defer (never cells).
                 if let Ok(ref o) = outcome
                     && let Some(trigger) = o.block_branch.as_ref()
-                    && let Some(h) = poll_handle.as_ref()
+                    && let Some(e) = engine.as_ref()
                 {
-                    fire_fetch_blobs(h, &engine_uri, trigger.to_proto());
+                    e.fetch_blobs(trigger);
                 }
                 // Republish EpochContext when the head epoch advances (§16/4).
                 if outcome.is_ok() {
@@ -1778,9 +1768,9 @@ fn core_loop<P: Preset>(
                 // CC-38a block-branch (same as ImportBlock; template-only).
                 if let Ok(ref o) = outcome
                     && let Some(trigger) = o.block_branch.as_ref()
-                    && let Some(h) = poll_handle.as_ref()
+                    && let Some(e) = engine.as_ref()
                 {
-                    fire_fetch_blobs(h, &engine_uri, trigger.to_proto());
+                    e.fetch_blobs(trigger);
                 }
                 if outcome.is_ok() {
                     maybe_publish_epoch_context(
@@ -1856,8 +1846,7 @@ fn core_loop<P: Preset>(
                     da_timeout_slots,
                     engine_timeout_slots,
                     &metrics,
-                    poll_handle.as_ref(),
-                    &engine_uri,
+                    engine.as_ref(),
                     &mut last_engine_online,
                     &mut residency,
                     &config,
@@ -1944,8 +1933,7 @@ fn handle_slot_tick<P: Preset>(
     da_timeout_slots: u64,
     engine_timeout_slots: u64,
     metrics: &ChainMetrics,
-    poll_handle: Option<&tokio::runtime::Handle>,
-    engine_uri: &str,
+    engine: Option<&SharedEngine>,
     last_engine_online: &mut bool,
     residency: &mut Residency<P>,
     config: &ChainConfig,
@@ -1956,7 +1944,7 @@ fn handle_slot_tick<P: Preset>(
     epoch_sequence: &mut u64,
     last_published_epoch: &mut u64,
     epoch: &EpochContextStore,
-    fcu: Option<&FcuDriver<GrpcFcuSink>>,
+    fcu: Option<&FcuDriver<crate::engine::DirectEngine>>,
     verify: BlockSignatureStrategy,
 ) {
     apply_tick_clock(
@@ -1968,8 +1956,8 @@ fn handle_slot_tick<P: Preset>(
         metrics,
     );
 
-    if let Some(h) = poll_handle {
-        let online = poll_engine_online(h, engine_uri);
+    if let Some(e) = engine {
+        let online = e.is_online();
         if online && !*last_engine_online && !pending_engine.is_empty() {
             tracing::info!(
                 n = pending_engine.len(),
@@ -2005,7 +1993,10 @@ fn handle_slot_tick<P: Preset>(
 }
 
 /// Post-import / post-attestation fcU emission (errors are logged, never fatal).
-fn emit_fcu_head<P: Preset>(store: &Store<P>, fcu: Option<&FcuDriver<GrpcFcuSink>>) {
+fn emit_fcu_head<P: Preset>(
+    store: &Store<P>,
+    fcu: Option<&FcuDriver<crate::engine::DirectEngine>>,
+) {
     let Some(driver) = fcu else {
         return;
     };

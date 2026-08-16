@@ -261,7 +261,6 @@ async fn handle_inbound(
                 new,
                 dup,
                 rej,
-                trusted_local = inject.trusted_local,
                 "engine stream: InjectColumns processed"
             );
         }
@@ -421,7 +420,6 @@ mod tests {
                     beacon_block_root: vec![9u8; 32],
                     slot: 99,
                     sidecar_ssz: vec![minimal_sidecar_ssz(0, 99, 1)],
-                    trusted_local: true,
                 })),
             },
         )

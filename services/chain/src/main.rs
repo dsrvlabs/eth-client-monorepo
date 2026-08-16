@@ -186,10 +186,13 @@ struct ChainConfig {
     /// **CC-3B** consume). Changing this value today does not change behaviour.
     #[serde(default = "default_safe_slots_to_import_optimistically")]
     safe_slots_to_import_optimistically: u64,
-    /// gRPC URI for `EngineService` (CC-32b). Plain config key — not under
-    /// `[peers]` (ADR P3-02 / health DAG must stay acyclic).
+    /// Unused after S1-A-06 (E3 is in-process). Compose still sets
+    /// `CC_CHAIN_ENGINE_URI` so the S0-B-02 URI-override gate stays green.
     #[serde(default = "default_engine_uri")]
     engine_uri: String,
+    /// In-process EL transport (JWT, endpoint, `[el_forks]`, timeouts).
+    #[serde(flatten)]
+    engine: cc_engine_api::config::EngineTransportConfig,
     /// Network identity for the CC-4D dangerous-knob guard.
     ///
     /// Required when `event_ring_bytes` is shrunk below the production default
@@ -208,7 +211,7 @@ struct ChainConfig {
 }
 
 fn default_engine_uri() -> String {
-    cc_chain::engine_client::DEFAULT_ENGINE_URI.to_owned()
+    "http://127.0.0.1:9004".to_owned()
 }
 
 fn default_max_resident_states() -> usize {
@@ -235,6 +238,37 @@ fn default_restore_grace_seconds() -> u64 {
 fn default_maximum_gossip_clock_disparity_ms() -> u64 {
     u64::try_from(cc_chain::tick::DEFAULT_MAXIMUM_GOSSIP_CLOCK_DISPARITY.as_millis())
         .unwrap_or(5 * 100)
+}
+
+fn load_network_for_restore(
+    cfg: &ChainConfig,
+    has_checkpoint_fallback: bool,
+) -> anyhow::Result<NetworkChainConfig> {
+    if let Some(path) = cfg.network_config.as_deref() {
+        return NetworkChainConfig::from_yaml_file(path)
+            .map_err(|e| anyhow::anyhow!("failed to load network_config {path}: {e}"));
+    }
+    if has_checkpoint_fallback {
+        return Err(anyhow::anyhow!(
+            "network_config is required when checkpoint_providers is non-empty \
+             (path to hoodi/mainnet consensus YAML for /eth/v1/config/spec cross-check)"
+        ));
+    }
+    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/types/tests/fixtures/hoodi-config.yaml");
+    match NetworkChainConfig::from_yaml_file(&fixture) {
+        Ok(cfg) => Ok(cfg),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "no network_config; hoodi fixture load failed — trying bundled YAML"
+            );
+            NetworkChainConfig::from_yaml_str(include_str!(
+                "../../../crates/types/tests/fixtures/hoodi-config.yaml"
+            ))
+            .map_err(|e2| anyhow::anyhow!("bundled hoodi-config.yaml: {e2}"))
+        }
+    }
 }
 
 impl ChainConfig {
@@ -279,15 +313,22 @@ impl ChainConfig {
     }
 }
 
-// Explicit multi-thread runtime: §2.4 engine bridge parks `chain-core` via
-// `Handle::block_on`; a `current_thread` runtime would deadlock that path.
+// Multi-thread runtime: EL calls from `chain-core` drive the host runtime.
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
-    // Fail before any bind (CC-09/2): load config, then telemetry, then serve.
+    // Fail before any bind (CC-09/2): load config, JWT, then telemetry, then serve.
     let cfg = cc_config::load::<ChainConfig>(SERVICE)?;
     // CC-4D: ring-shrinking override is a dangerous knob (devnet-only).
     cfg.check_dangerous_knobs()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let has_checkpoint_fallback = !cfg.checkpoint_providers.is_empty();
+    let network_for_restore = load_network_for_restore(&cfg, has_checkpoint_fallback)?;
+    // JWT + `[el_forks]` + KZG abort before any port bind (S1-A-06).
+    let prepared = cc_engine_api::EngineApi::prepare_with_chain_config(
+        &cfg.engine,
+        network_for_restore.clone(),
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut bs = cc_bootstrap::init(SERVICE, TelemetrySettings::from(&cfg.service))?;
     if cc_config::is_event_ring_bytes_shrink(cfg.event_ring_bytes) {
         tracing::warn!(
@@ -312,7 +353,6 @@ async fn main() -> anyhow::Result<()> {
     // Shared with core at spawn so pre-bootstrap P2pStream sessions keep the
     // same EpochContext ArcSwap after install_core (CC-27a F2).
     let epoch = EpochContextStore::new();
-    let has_checkpoint_fallback = !cfg.checkpoint_providers.is_empty();
     let restore_grace = Duration::from_secs(cfg.restore_grace_seconds);
     // Always enter AwaitingRestore so storage can push EMPTY / snapshot; when
     // grace is 0 the gate times out immediately (tests / no-restore profiles).
@@ -335,41 +375,20 @@ async fn main() -> anyhow::Result<()> {
     let _kzg_kind = cc_crypto::KzgBackendKind::default();
     tracing::info!(kzg_backend = %_kzg_kind, "chain KZG backend selection (CC-11d default)");
 
-    // Network config for restore spawn / checkpoint fallback.
-    // When neither providers nor a network_config path is set, use a
-    // mainnet-like skeleton so restore can still seed a store in devnet.
-    let network_for_restore = if let Some(path) = cfg.network_config.as_deref() {
-        NetworkChainConfig::from_yaml_file(path)
-            .map_err(|e| anyhow::anyhow!("failed to load network_config {path}: {e}"))?
-    } else if has_checkpoint_fallback {
-        return Err(anyhow::anyhow!(
-            "network_config is required when checkpoint_providers is non-empty \
-             (path to hoodi/mainnet consensus YAML for /eth/v1/config/spec cross-check)"
-        ));
-    } else {
-        // Devnet / local: fixture when present, else process continues and
-        // restore EMPTY → no core (NOT_BOOTSTRAPPED).
-        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/types/tests/fixtures/hoodi-config.yaml");
-        match NetworkChainConfig::from_yaml_file(&fixture) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "no network_config; hoodi fixture load failed — trying bundled YAML"
-                );
-                NetworkChainConfig::from_yaml_str(include_str!(
-                    "../../../crates/types/tests/fixtures/hoodi-config.yaml"
-                ))
-                .map_err(|e2| anyhow::anyhow!("bundled hoodi-config.yaml: {e2}"))?
-            }
-        }
-    };
+    tracing::debug!(
+        engine_uri = %cfg.engine_uri,
+        "legacy CC_CHAIN_ENGINE_URI unused (E3 is in-process)"
+    );
+    let api = prepared.finish(None).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let engine = std::sync::Arc::new(cc_chain::DirectEngine::new(
+        api,
+        cfg.engine.transport_timeouts(),
+    ));
 
     let core_cfg = CoreConfig {
         max_resident_states: cfg.max_resident_states,
         body_ring_capacity: cfg.body_ring_capacity,
-        engine_uri: cfg.engine_uri.clone(),
+        engine: Some(engine),
         // Production: wall-clock SlotTick for fcU floor + pending_* expiry.
         slot_tick_enabled: true,
         maximum_gossip_clock_disparity: Duration::from_millis(

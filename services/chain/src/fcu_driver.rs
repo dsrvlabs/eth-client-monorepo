@@ -25,17 +25,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use cc_fork_choice::{ProtoArray, Store};
-use cc_proto::EngineRpcReason;
-use cc_proto::engine::ForkchoiceUpdatedRequest;
-use cc_proto::engine::engine_service_client::EngineServiceClient;
 use cc_types::preset::Preset;
 use cc_types::primitives::{Hash256, Root, Slot};
-use tokio::runtime::Handle;
-use tonic::transport::Channel;
-
-use cc_state_transition::EngineError;
-
-use crate::engine_client::{EngineRpcDeadlines, block_on_deadline};
 
 /// One `ForkchoiceStateV1` emission built from proto-array execution hashes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,126 +110,6 @@ impl FcuSink for RecordingFcuSink {
             .push(*state);
         Ok(())
     }
-}
-
-/// gRPC sink over `EngineService.ForkchoiceUpdated` (production path).
-#[derive(Debug)]
-pub struct GrpcFcuSink {
-    handle: Handle,
-    client: std::sync::Mutex<Option<EngineServiceClient<Channel>>>,
-    /// Serialises in-flight RPCs so concurrent emits cannot pipeline reorder.
-    emit_lock: std::sync::Mutex<()>,
-    uri: String,
-    /// Process/session id; engine resets high-water when this changes (§3.8/2).
-    session_id: u64,
-    deadlines: EngineRpcDeadlines,
-}
-
-impl GrpcFcuSink {
-    /// Construct with a captured multi-threaded runtime handle (§2.4).
-    ///
-    /// Generates a fresh random `session_id` so a chain restart against a live
-    /// engine resets the sequence high-water mark.
-    #[must_use]
-    pub fn new(handle: Handle, uri: impl Into<String>) -> Self {
-        Self::with_session(handle, uri, random_session_id())
-    }
-
-    /// Construct with an explicit session id (tests).
-    #[must_use]
-    pub fn with_session(handle: Handle, uri: impl Into<String>, session_id: u64) -> Self {
-        Self::with_session_and_deadlines(handle, uri, session_id, EngineRpcDeadlines::default())
-    }
-
-    /// Construct with explicit session id and RPC deadlines (injected-timeout tests).
-    #[must_use]
-    pub fn with_session_and_deadlines(
-        handle: Handle,
-        uri: impl Into<String>,
-        session_id: u64,
-        deadlines: EngineRpcDeadlines,
-    ) -> Self {
-        Self {
-            handle,
-            client: std::sync::Mutex::new(None),
-            emit_lock: std::sync::Mutex::new(()),
-            uri: uri.into(),
-            session_id,
-            deadlines,
-        }
-    }
-
-    /// Session id stamped on every request.
-    #[must_use]
-    pub fn session_id(&self) -> u64 {
-        self.session_id
-    }
-
-    fn client_blocking(&self) -> Result<EngineServiceClient<Channel>, String> {
-        let mut guard = self
-            .client
-            .lock()
-            .map_err(|_| "fcu client mutex poisoned".to_owned())?;
-        if guard.is_none() {
-            let uri = self.uri.clone();
-            let timeout = self.deadlines.connect;
-            let c = block_on_deadline(&self.handle, timeout, async {
-                EngineServiceClient::connect(uri)
-                    .await
-                    .map_err(|e| EngineError::Transport(format!("engine connect: {e}")))
-            })
-            .map_err(|e| e.to_string())?;
-            *guard = Some(c);
-        }
-        guard
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| "engine client missing after connect".to_owned())
-    }
-}
-
-impl FcuSink for GrpcFcuSink {
-    fn emit(&self, state: &ForkchoiceState) -> Result<(), String> {
-        let _emit = self
-            .emit_lock
-            .lock()
-            .map_err(|_| "fcu emit lock poisoned".to_owned())?;
-        let mut client = self.client_blocking()?;
-        let req = ForkchoiceUpdatedRequest {
-            head_block_hash: state.head_block_hash.as_slice().to_vec(),
-            safe_block_hash: state.safe_block_hash.as_slice().to_vec(),
-            finalized_block_hash: state.finalized_block_hash.as_slice().to_vec(),
-            sequence: state.sequence,
-            session_id: self.session_id,
-            head_slot: state.head_slot.as_u64(),
-        };
-        let timeout = self.deadlines.forkchoice_updated;
-        block_on_deadline(&self.handle, timeout, async {
-            match client.forkchoice_updated(req).await {
-                Ok(_) => Ok(()),
-                Err(e) => Err(classify_fcu_rpc_error(&e)),
-            }
-        })
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-}
-
-/// Map engine fcU gRPC failures via [`EngineRpcReason`], never a message prefix.
-pub(crate) fn classify_fcu_rpc_error(status: &tonic::Status) -> EngineError {
-    if EngineRpcReason::from_status(status) == Some(EngineRpcReason::FcuDroppedStale) {
-        EngineError::Transport(format!(
-            "ForkchoiceUpdated dropped stale: {}",
-            status.message()
-        ))
-    } else {
-        EngineError::Transport(format!("ForkchoiceUpdated: {status}"))
-    }
-}
-
-fn random_session_id() -> u64 {
-    // Never zero: engine treats 0 as "unspecified" (no session-change reset).
-    getrandom::u64().unwrap_or(0xC33C_33C3_u64) | 1
 }
 
 /// fcU driver: builds the triple, assigns sequences, drops superseded, floor.
@@ -478,28 +349,5 @@ pub fn safe_is_ancestor_of_head(
             }
             None => return false,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use super::*;
-
-    #[test]
-    fn classify_fcu_uses_error_info_not_message_prefix() {
-        let stale = EngineRpcReason::FcuDroppedStale.to_status(
-            tonic::Code::Aborted,
-            "forkchoiceUpdated sequence 3 dropped as stale (high_water=4)",
-        );
-        let err = classify_fcu_rpc_error(&stale);
-        assert!(err.to_string().contains("dropped stale"));
-        assert!(!stale.message().contains("FCU_DROPPED_STALE:"));
-
-        let other = tonic::Status::unavailable("engine down");
-        let err = classify_fcu_rpc_error(&other);
-        assert!(err.to_string().contains("ForkchoiceUpdated:"));
-        assert!(!err.to_string().contains("dropped stale"));
     }
 }

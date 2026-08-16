@@ -22,7 +22,7 @@ use cc_proto::chain::{
     RestoreBlock, RestoreChunk, RestoreDaStatus, RestoreFooter, RestoreHeader, RestoreResponse,
     restore_chunk::Body as RestoreBody,
 };
-use cc_state_transition::BlockSignatureStrategy;
+use cc_state_transition::{BlockSignatureStrategy, ExecutionEngine};
 #[cfg(not(feature = "s0-a-31-observe"))]
 use cc_types::BeaconState;
 use cc_types::config::ChainConfig;
@@ -410,7 +410,7 @@ pub struct RestoreApplyInput<'a, P: Preset> {
     /// Fork-choice scalars SSZ (240 B) — may be empty to skip.
     pub fork_choice_scalars_ssz: &'a [u8],
     pub chain_config: &'a ChainConfig,
-    pub engine_uri: String,
+    pub engine: Arc<dyn ExecutionEngine<P>>,
     /// Expected head from footer.
     pub expected_head_root: Root,
     pub expected_head_slot: u64,
@@ -480,10 +480,7 @@ pub fn apply_restore_set<P: Preset + 'static>(
 
     let peer_das = Arc::new(PeerDasAvailability::new());
     let da_for_store: Arc<dyn cc_fork_choice::DataAvailability> = peer_das.clone();
-    let engine = Arc::new(
-        crate::engine_client::EngineApiClient::new(input.engine_uri.clone())
-            .map_err(|e| Status::internal(format!("restore engine client: {e}")))?,
-    );
+    let engine = Arc::clone(&input.engine);
 
     let mut store: Store<P> = get_forkchoice_store(
         state,
@@ -753,14 +750,44 @@ pub fn spawn_core_from_restore<P: Preset + 'static>(
 
 /// Owned inputs for [`apply_restore_set_blocking`] (handler + tests).
 #[allow(missing_debug_implementations)]
-struct RestoreApplyOwned {
+fn restore_engine<P: Preset + 'static>(
+    core_cfg: &CoreConfig,
+) -> Result<Arc<dyn ExecutionEngine<P>>, Status> {
+    if let Some(engine) = core_cfg.engine.clone() {
+        return Ok(engine);
+    }
+    #[cfg(any(test, feature = "s0-a-31-observe"))]
+    {
+        Ok(Arc::new(RestoreFallbackEngine))
+    }
+    #[cfg(not(any(test, feature = "s0-a-31-observe")))]
+    Err(Status::failed_precondition(
+        "restore: in-process engine not configured",
+    ))
+}
+
+#[cfg(any(test, feature = "s0-a-31-observe"))]
+#[derive(Debug, Default)]
+struct RestoreFallbackEngine;
+
+#[cfg(any(test, feature = "s0-a-31-observe"))]
+impl<P: Preset> ExecutionEngine<P> for RestoreFallbackEngine {
+    fn verify_and_notify_new_payload(
+        &self,
+        _request: cc_state_transition::NewPayloadRequest<'_, P>,
+    ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
+        Ok(cc_state_transition::PayloadStatus::Valid)
+    }
+}
+
+struct RestoreApplyOwned<P: Preset + 'static> {
     state_ssz: Vec<u8>,
     anchor_block_ssz: Vec<u8>,
     anchor_block_fork: u32,
     blocks: Vec<RestoreBlock>,
     fork_choice_scalars_ssz: Vec<u8>,
     chain_config: ChainConfig,
-    engine_uri: String,
+    engine: Arc<dyn ExecutionEngine<P>>,
     expected_head_root: Root,
     expected_head_slot: u64,
     metrics: ChainMetrics,
@@ -771,7 +798,7 @@ struct RestoreApplyOwned {
 /// `EngineApiClient` uses `Handle::block_on` for lazy connect and NewPayload;
 /// that panics on a tonic worker.
 async fn apply_restore_set_blocking<P: Preset + 'static>(
-    owned: RestoreApplyOwned,
+    owned: RestoreApplyOwned<P>,
 ) -> Result<RestoreApplyResult<P>, Status> {
     tokio::task::spawn_blocking(move || {
         apply_restore_set::<P>(RestoreApplyInput {
@@ -785,7 +812,7 @@ async fn apply_restore_set_blocking<P: Preset + 'static>(
             blocks: &owned.blocks,
             fork_choice_scalars_ssz: &owned.fork_choice_scalars_ssz,
             chain_config: &owned.chain_config,
-            engine_uri: owned.engine_uri,
+            engine: Arc::clone(&owned.engine),
             expected_head_root: owned.expected_head_root,
             expected_head_slot: owned.expected_head_slot,
             metrics: &owned.metrics,
@@ -900,14 +927,14 @@ async fn apply_accumulated_restore<P: Preset + 'static>(
         blocks: acc.blocks,
         fork_choice_scalars_ssz: header.fork_choice_scalars_ssz,
         chain_config: deps.chain_config.clone(),
-        engine_uri: deps.core_cfg.engine_uri.clone(),
+        engine: restore_engine::<P>(&deps.core_cfg)?,
         expected_head_root,
         expected_head_slot,
         metrics: deps.metrics.clone(),
     };
 
-    // EngineApiClient parks on Handle::block_on (lazy connect + newPayload).
-    // That panics on this tonic worker; the blocking pool is not a worker.
+    // DirectEngine may drive the tokio runtime from this call; the blocking
+    // pool is not a runtime worker (S0-A-28).
     let applied = {
         let _join_guard = RestoreInFlightGuard {
             gate: deps.gate.as_ref(),
@@ -951,12 +978,7 @@ mod tests {
     use super::*;
     use cc_crypto::{bls_verify_count, take_bls_verify_count};
     use cc_fork_choice::{DataAvailability, ExecutionStatus, HarnessAvailability, ProtoNodeBlock};
-    use cc_proto::engine::engine_service_server::{EngineService, EngineServiceServer};
-    use cc_proto::engine::{
-        ForkchoiceUpdatedRequest, ForkchoiceUpdatedResponse, GetEngineStateRequest,
-        GetEngineStateResponse, GetInfoRequest, GetInfoResponse,
-        NewPayloadRequest as ProtoNewPayloadRequest, NewPayloadResponse, PayloadStatusV1,
-    };
+
     use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
     use cc_types::containers::{BeaconBlockHeader, Validator};
     use cc_types::preset::Minimal;
@@ -965,10 +987,8 @@ mod tests {
     };
     use cc_types::{BeaconBlock, BeaconBlockBody, BeaconState, SignedBeaconBlock};
     use ssz::Encode;
-    use std::net::SocketAddr;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use tokio::sync::oneshot;
     use tree_hash::{Hash256, TreeHash};
 
     #[derive(Debug, Default, Clone, Copy)]
@@ -1501,81 +1521,21 @@ mod tests {
         );
     }
 
-    /// Always-VALID engine gRPC (counts NewPayload). Distinct from `AcceptEngine`,
-    /// which never reaches `Handle::block_on` and hid this panic.
+    /// Counts NewPayload. Distinct from `AcceptEngine` so restore proves the
+    /// production engine object is invoked (S0-A-28 / S1-A-06).
     #[derive(Debug, Default)]
     struct CountingEngine {
         calls: AtomicU64,
     }
 
-    #[tonic::async_trait]
-    impl EngineService for CountingEngine {
-        async fn get_info(
+    impl<P: Preset> ExecutionEngine<P> for CountingEngine {
+        fn verify_and_notify_new_payload(
             &self,
-            _: tonic::Request<GetInfoRequest>,
-        ) -> Result<tonic::Response<GetInfoResponse>, Status> {
-            Ok(tonic::Response::new(GetInfoResponse { build_info: None }))
-        }
-
-        async fn new_payload(
-            &self,
-            _: tonic::Request<ProtoNewPayloadRequest>,
-        ) -> Result<tonic::Response<NewPayloadResponse>, Status> {
+            _request: cc_state_transition::NewPayloadRequest<'_, P>,
+        ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(tonic::Response::new(NewPayloadResponse {
-                payload_status: Some(PayloadStatusV1 {
-                    status: "VALID".into(),
-                    latest_valid_hash: None,
-                    validation_error: None,
-                }),
-            }))
+            Ok(cc_state_transition::PayloadStatus::Valid)
         }
-
-        async fn forkchoice_updated(
-            &self,
-            _: tonic::Request<ForkchoiceUpdatedRequest>,
-        ) -> Result<tonic::Response<ForkchoiceUpdatedResponse>, Status> {
-            Ok(tonic::Response::new(ForkchoiceUpdatedResponse {
-                payload_status: Some(PayloadStatusV1 {
-                    status: "VALID".into(),
-                    latest_valid_hash: None,
-                    validation_error: None,
-                }),
-                payload_id: None,
-            }))
-        }
-
-        async fn get_engine_state(
-            &self,
-            _: tonic::Request<GetEngineStateRequest>,
-        ) -> Result<tonic::Response<GetEngineStateResponse>, Status> {
-            Ok(tonic::Response::new(GetEngineStateResponse {
-                el_offline: false,
-                internal_state: "synced".into(),
-            }))
-        }
-    }
-
-    async fn spawn_counting_engine() -> (SocketAddr, oneshot::Sender<()>, Arc<CountingEngine>) {
-        let mock = Arc::new(CountingEngine::default());
-        let svc = EngineServiceServer::from_arc(Arc::clone(&mock));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let (tx, rx) = oneshot::channel::<()>();
-        tokio::spawn(async move {
-            tonic::transport::Server::builder()
-                .add_service(svc)
-                .serve_with_incoming_shutdown(
-                    tokio_stream::wrappers::TcpListenerStream::new(listener),
-                    async move {
-                        let _ = rx.await;
-                    },
-                )
-                .await
-                .unwrap();
-        });
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        (addr, tx, mock)
     }
 
     fn seed_payload_restore_state() -> BeaconState<Minimal> {
@@ -1641,15 +1601,14 @@ mod tests {
         }
     }
 
-    /// S0-A-28: `apply_restore_set` from a runtime worker + real `EngineApiClient`
-    /// + a payload-carrying block must not panic (`Handle::block_on` on a worker).
+    /// S0-A-28: `apply_restore_set` from a runtime worker + a real engine
+    /// object + a payload-carrying block must not panic.
     ///
     /// Goes through [`apply_restore_set_blocking`] — the same wrap the handler
     /// uses — so removing `spawn_blocking` there fails this test.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn apply_restore_set_from_runtime_worker_with_real_engine_does_not_panic() {
-        let (addr, shutdown, mock) = spawn_counting_engine().await;
-        let uri = format!("http://{addr}");
+        let mock = Arc::new(CountingEngine::default());
 
         let mut snapshot = seed_payload_restore_state();
         let post_root = snapshot.canonical_root();
@@ -1685,7 +1644,7 @@ mod tests {
             blocks: vec![restore_block],
             fork_choice_scalars_ssz: Vec::new(),
             chain_config: config,
-            engine_uri: uri,
+            engine: Arc::clone(&mock) as Arc<dyn ExecutionEngine<Minimal>>,
             expected_head_root: child_root,
             expected_head_slot: 1,
             metrics,
@@ -1697,10 +1656,8 @@ mod tests {
         };
         assert!(
             mock.calls.load(Ordering::SeqCst) >= 1,
-            "payload-carrying restore block must reach EngineApiClient \
-             (connect + newPayload block_on); AcceptEngine never would; \
-             apply={apply_dbg}"
+            "payload-carrying restore block must reach CountingEngine \
+             (not AcceptEngine); apply={apply_dbg}"
         );
-        let _ = shutdown.send(());
     }
 }

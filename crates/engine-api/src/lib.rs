@@ -1,18 +1,19 @@
 //! Engine API client: three-lane transport, JWT signer, health machine,
-//! method adapters, and getBlobsV2 fastpath.
+//! method adapters, getBlobsV2 fastpath, and the S1-A-06 in-process host.
 //!
-//! S1-A-05: [`methods`] and [`fastpath`] live here (verbatim). `cc-engine`
-//! re-exports them via `pub use`.
-//! S1-A-03: [`jwt.rs`](jwt.rs) stays crate-private so `JwtSecret` is not a
-//! crate-public item (ADR-R-03).
+//! [`jwt.rs`](jwt.rs) stays crate-private so `JwtSecret` is not a crate-public
+//! item (ADR-R-03).
 
 #![cfg_attr(test, allow(dead_code, unreachable_pub))]
 
+pub mod api;
 pub mod capabilities;
 pub mod config;
 pub mod errors;
 pub mod fastpath;
 pub mod methods;
+pub mod metrics;
+pub mod network_config;
 pub mod state;
 pub mod transport;
 pub mod version;
@@ -21,10 +22,11 @@ pub mod version;
 #[allow(dead_code, unreachable_pub)]
 mod jwt;
 
-// Metric types stay in the service crate until A-06 deletes them; compiled
-// here so methods/fastpath/transport can be real (not test-only) modules.
-#[path = "../../../services/engine/src/metrics.rs"]
-pub mod metrics;
+pub use api::{EngineApi, EngineBuildError, PreparedEngine};
+pub use network_config::{
+    NETWORK_CONFIG_MAX_FILE_BYTES, NetworkConfigError, load_network_chain_config,
+    validate_network_config_path,
+};
 
 impl transport::EngineTransport {
     /// Load the JWT secret from [`config::EngineTransportConfig::jwt_secret_path`]

@@ -267,12 +267,7 @@ impl ArmTrace {
     }
 }
 
-async fn run_arm(
-    name: &'static str,
-    snap: &RestoreSnapshot,
-    engine_uri: String,
-    raw: bool,
-) -> ArmTrace {
+async fn run_arm(name: &'static str, snap: &RestoreSnapshot, raw: bool) -> ArmTrace {
     restore_force_raw_decode(raw);
     reset_restore_trace();
 
@@ -287,7 +282,6 @@ async fn run_arm(
         metrics,
         chain_config: snap.config.clone(),
         core_cfg: CoreConfig {
-            engine_uri,
             slot_tick_enabled: false,
             ..CoreConfig::default()
         },
@@ -387,19 +381,10 @@ async fn hoodi_restore_observation_where_it_fails() {
         t_load.elapsed().as_secs_f64()
     );
 
-    let (addr, shutdown, mock) = spawn_counting_engine().await;
-    let uri = format!("http://{addr}");
-
-    let hydrated = run_arm("hydrated", &snap, uri.clone(), false).await;
+    let hydrated = run_arm("hydrated", &snap, false).await;
     hydrated.dump();
-    let raw = run_arm("raw", &snap, uri, true).await;
+    let raw = run_arm("raw", &snap, true).await;
     raw.dump();
-
-    let _ = shutdown.send(());
-    eprintln!(
-        "S0-A-31: engine newPayload calls={}",
-        mock.calls.load(Ordering::SeqCst)
-    );
 
     for arm in [&hydrated, &raw] {
         assert!(

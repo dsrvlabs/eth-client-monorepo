@@ -13,7 +13,7 @@
 //!
 //! # Security (S-38a-1 / S-38b-1)
 //!
-//! - **KZG:** never skip solely on `trusted_local` without [`AuthMode::Authenticated`].
+//! - **KZG:** never skipped because the caller is in-process (ADR-P3-15 / S1-A-06).
 //! - **Inclusion multiproof:** **always** re-verified — never skipped, even when a
 //!   future auth path allows KZG skip (S-38b-1).
 //!
@@ -22,8 +22,8 @@
 //! [`AuthMode::Authenticated`] is a **software knob** (`with_auth`), not proof of
 //! mTLS / allowlist / token. Production hosts **must** leave the default
 //! [`AuthMode::Unauthenticated`] until real mutual auth is wired. A mistaken
-//! `with_auth(Authenticated)` plus engine's always-`trusted_local=true` would
-//! silently skip **KZG only** (inclusion still always runs).
+//! `with_auth(Authenticated)` must not skip KZG: the wire `trusted_local`
+//! bool was deleted at S1-A-06 (ADR-P3-15).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -56,17 +56,14 @@ use super::subscription::{LocalSubscription, SubscriptionHandle};
 ///
 /// # Footgun
 ///
-/// This is **not** bound to transport auth. Only set [`Self::Authenticated`]
-/// when the process has established mutual auth out-of-band. Mis-setting it
-/// skips KZG when `trusted_local` is also true — inclusion multiproof is
-/// still always verified (S-38b-1).
+/// This is **not** bound to transport auth. KZG is never skipped on inject
+/// after S1-A-06 deleted `InjectColumns.trusted_local` (ADR-P3-15).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AuthMode {
-    /// No mutual auth — never trust `trusted_local` alone for KZG skip.
+    /// No mutual auth.
     #[default]
     Unauthenticated,
-    /// Mutual auth established (future / ops-gated). KZG skip may key on
-    /// `trusted_local`. **Does not** skip inclusion multiproof.
+    /// Mutual auth established (future / ops-gated). Does **not** skip KZG.
     Authenticated,
 }
 
@@ -80,11 +77,12 @@ impl AuthMode {
 
 /// Whether production may skip KZG re-verification for this inject.
 ///
-/// **MUST NOT** return true solely because `trusted_local` is true.
-/// Requires both the wire hint **and** [`AuthMode::Authenticated`].
+/// Always false: the wire `trusted_local` bool is gone (S1-A-06) and
+/// in-process is **not** a reason to skip (ADR-P3-15).
 #[must_use]
-pub fn should_skip_kzg(trusted_local: bool, auth: AuthMode) -> bool {
-    trusted_local && auth.is_authenticated()
+pub fn should_skip_kzg(auth: AuthMode) -> bool {
+    let _ = auth;
+    false
 }
 
 /// How KZG is applied on the inject path.
@@ -94,8 +92,7 @@ pub fn should_skip_kzg(trusted_local: bool, auth: AuthMode) -> bool {
 pub enum KzgPolicy {
     /// Always re-verify KZG (default production without auth).
     AlwaysVerify,
-    /// Skip KZG when `should_skip_kzg` allows (auth + trusted_local).
-    /// Inclusion multiproof is still always verified (S-38b-1).
+    /// Historical name: S1-A-06 deleted the wire hint, so this never skips.
     SkipWhenAuthenticatedTrusted,
 }
 
@@ -533,10 +530,9 @@ impl InjectPipeline {
     pub fn inject(&self, msg: &InjectColumns) -> Vec<InjectSidecarResult> {
         let root = root_from_bytes(&msg.beacon_block_root);
         let slot_hint = msg.slot;
-        let trusted_local = msg.trusted_local;
         let skip_kzg = match self.kzg_policy {
             KzgPolicy::AlwaysVerify => false,
-            KzgPolicy::SkipWhenAuthenticatedTrusted => should_skip_kzg(trusted_local, self.auth),
+            KzgPolicy::SkipWhenAuthenticatedTrusted => should_skip_kzg(self.auth),
         };
 
         let sub = self.subscription.current();
@@ -833,17 +829,14 @@ mod tests {
     }
 
     #[test]
-    fn trusted_local_without_auth_does_not_skip_kzg() {
-        // SECURITY residual S-38a-1: trusted_local alone is insufficient.
+    fn inject_never_skips_kzg_after_trusted_local_deleted() {
         assert!(
-            !should_skip_kzg(true, AuthMode::Unauthenticated),
-            "must not skip KZG solely on trusted_local without auth"
+            !should_skip_kzg(AuthMode::Unauthenticated),
+            "must not skip KZG without the deleted wire hint"
         );
-        assert!(!should_skip_kzg(false, AuthMode::Unauthenticated));
-        assert!(!should_skip_kzg(false, AuthMode::Authenticated));
         assert!(
-            should_skip_kzg(true, AuthMode::Authenticated),
-            "skip only with auth + trusted_local"
+            !should_skip_kzg(AuthMode::Authenticated),
+            "in-process / Authenticated is not a reason to skip (ADR-P3-15)"
         );
     }
 
@@ -869,7 +862,7 @@ mod tests {
             beacon_block_root: root(1).to_vec(),
             slot: 10,
             sidecar_ssz: vec![minimal_sidecar_ssz(0, 10, 1)],
-            trusted_local: true, // wire claims trust — MUST NOT skip without auth
+            // wire claims trust — MUST NOT skip without auth
         };
         let results = pipeline.inject(&msg);
         assert_eq!(results.len(), 1);
@@ -888,7 +881,6 @@ mod tests {
             beacon_block_root: root(2).to_vec(),
             slot: 20,
             sidecar_ssz: vec![minimal_sidecar_ssz(0, 20, 3)],
-            trusted_local: true,
         };
         let results = pipeline.inject(&msg);
         assert_eq!(results[0].outcome, InjectOutcome::New);
@@ -918,7 +910,6 @@ mod tests {
             beacon_block_root: root(3).to_vec(),
             slot: 30,
             sidecar_ssz: vec![ssz.clone()],
-            trusted_local: true,
         };
         assert_eq!(pipeline.inject(&msg)[0].outcome, InjectOutcome::New);
         // Subsequent inject of the same column → duplicate (seen set).
@@ -946,7 +937,6 @@ mod tests {
             beacon_block_root: root(4).to_vec(),
             slot: 40,
             sidecar_ssz: vec![minimal_sidecar_ssz(0, 40, 1), minimal_sidecar_ssz(5, 40, 1)],
-            trusted_local: true,
         };
         let results = pipeline.inject(&msg);
         assert!(results[0].published, "subscribed index publishes");
@@ -992,7 +982,6 @@ mod tests {
             beacon_block_root: block_root.to_vec(),
             slot: 50,
             sidecar_ssz,
-            trusted_local: true,
         };
         let results = pipeline.inject(&msg);
         assert!(results.iter().all(|r| r.outcome == InjectOutcome::New));
@@ -1019,7 +1008,6 @@ mod tests {
             beacon_block_root: root(6).to_vec(),
             slot: 60,
             sidecar_ssz,
-            trusted_local: true,
         };
         let results = pipeline.inject(&msg);
         let news = results
@@ -1061,7 +1049,6 @@ mod tests {
             beacon_block_root: root(7).to_vec(),
             slot: 70,
             sidecar_ssz,
-            trusted_local: true,
         };
         let results = pipeline.inject(&msg);
         assert!(
@@ -1118,7 +1105,6 @@ mod tests {
             beacon_block_root: root(9).to_vec(),
             slot: 80,
             sidecar_ssz,
-            trusted_local: true,
         };
         let results = pipeline.inject(&msg);
         assert!(
@@ -1170,7 +1156,6 @@ mod tests {
             beacon_block_root: root(11).to_vec(),
             slot: 11,
             sidecar_ssz: vec![minimal_sidecar_ssz(0, 11, 1)],
-            trusted_local: true, // KZG skip allowed under auth
         };
         let results = pipeline.inject(&msg);
         assert_eq!(

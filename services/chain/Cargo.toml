@@ -35,6 +35,7 @@ bytes = { workspace = true }
 cc-bootstrap = { workspace = true }
 cc-config = { workspace = true }
 cc-crypto = { workspace = true }
+cc-engine-api = { workspace = true }
 cc-fork-choice = { workspace = true }
 cc-proto = { workspace = true }
 cc-scheduler = { workspace = true }

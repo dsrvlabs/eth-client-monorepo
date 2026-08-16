@@ -51,7 +51,7 @@ http_or_jwt_allowed() {
   if [[ "$pkg" == "cc-engine-api" ]]; then
     return 0
   fi
-  # Transitional: signer/HTTP still live in the process binary (S1-A-02..06).
+  # Transitional host binary may still declare HTTP/JWT for container ITs.
   if [[ "$pkg" == "cc-engine" ]]; then
     return 0
   fi
@@ -351,7 +351,8 @@ allowed_deps() {
     cc-spec-tests)        echo "" ;;
     # Self-devnet generator (CC-2K member; content is CC-2Ja).
     cc-devnet-gen)        echo "cc-types cc-crypto cc-state-transition cc-config" ;;
-    cc-chain)             echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-state-transition cc-fork-choice cc-scheduler cc-seam" ;;
+    # S1-A-06: append cc-engine-api (direct E3 call; never JWT).
+    cc-chain)             echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-state-transition cc-fork-choice cc-scheduler cc-seam cc-engine-api" ;;
     # Phase 2: services/p2p may take cc-libp2p (CC-2K / Architecture §1.2).
     cc-p2p)               echo "cc-bootstrap cc-config cc-proto cc-types cc-crypto cc-libp2p cc-seam" ;;
     cc-attestation)       echo "cc-bootstrap cc-config cc-proto" ;;

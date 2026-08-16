@@ -1215,12 +1215,9 @@ impl P2pService for P2pGrpcService {
     ///
     /// # Security residual (S-38a-1 / S-38a-2)
     ///
-    /// `InjectColumns.trusted_local` is client-asserted on an unauthenticated
-    /// stream. The inject pipeline **never** skips KZG solely on this flag —
-    /// skip requires [`crate::engine_stream::AuthMode::Authenticated`] (a
-    /// software knob — do not flip without real mTLS/allowlist/token).
-    /// Inclusion multiproof is **always** re-verified (S-38b-1). Compose
-    /// host-publish of `:9002` elevates residual S-38a-2 (ops/network policy).
+    /// The inject pipeline **never** skips KZG (ADR-P3-15 / S1-A-06 deleted
+    /// the wire `trusted_local` hint). Inclusion multiproof is **always**
+    /// re-verified (S-38b-1).
     async fn engine_stream(
         &self,
         request: Request<Streaming<EngineToP2p>>,

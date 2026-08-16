@@ -81,7 +81,7 @@ pub trait ExecutionEngine<P: Preset>: Send + Sync {
 
 // Phase-1 optimistic always-Valid production stub **deleted** at CC-32b (not
 // renamed, not feature-gated, not exported). Production uses
-// `services/chain/src/engine_client.rs` (`EngineApiClient`). Unit tests that
+// `services/chain/src/engine.rs` (`DirectEngine`). Unit tests that
 // need always-Valid define a private harness type in their own module.
 
 #[cfg(test)]

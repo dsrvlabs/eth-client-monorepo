@@ -1,46 +1,30 @@
-//! `cc-engine` library surface.
+//! `cc-engine` library surface — thin host over [`cc_engine_api`].
 //!
-//! - **CC-3Aa**: Phase 3 metric family declarations (binary registers them;
-//!   observations land in the requirements that own each family)
-//! - **CC-30a**: Engine API transport (three lanes, JWT, error taxonomy,
-//!   soft deadline, secret loader) — offline half
-//! - **CC-30b**: Container auth against real geth — `iat` skew pair, 403-vs-401
-//!   typed errors, geth-format `crc32` line (`tests/auth_container.rs`)
-//! - **CC-31**: Method set, fork gate (`method_for` on payload timestamp),
-//!   `ADVERTISED_CAPABILITIES`, capability cache clear edges
-//! - **CC-32b**: `NewPayload` / `ForkchoiceUpdated` / `GetEngineState` server,
-//!   SSZ→JSON encode, `cc_engine_payload_status_total` observations
-//! - **CC-33**: `forkchoiceUpdatedV3` adapter, sequence high-water (resets on
-//!   reconnect), three-value payloadStatus decoder, `-38002`/`-38006` handling
-//! - **CC-36a**: four-state engine machine, `eth_syncing` upcheck on the upcheck
-//!   lane, detached+floored drive, fcU re-send on Synced edge
-//! - **CC-37a**: `getBlobsV2` on the fastpath lane — two triggers (chain block /
-//!   p2p column), single-flight by `beacon_block_root`, null-is-miss classification,
-//!   runtime `max_blobs_per_block` bound (CC-1G), 1 s timeout off the ST thread
-//! - **CC-37b**: `CellKzg::compute_cells` on `spawn_blocking`, zip with EL proofs,
-//!   128-way transpose, inclusion proof from the block, subscribe-only filter
-//!   before the process boundary (inject is CC-38)
-//! - **CC-38a**: ninth contract engine side — `EngineStream` client (`inject`),
-//!   Phase 2 §10.6 reconnect curve, `FetchBlobs` unary for the chain block branch,
-//!   column branch down the reverse stream direction (p2p server is CC-38b)
+//! S1-A-06: transport, JWT, health, methods, fastpath, and the production
+//! constructor live in `cc-engine-api`. This crate stays a workspace member
+//! so the 4-container topology can still run for A/B (`[ARCH]` §9.1).
 
 #![allow(missing_docs)]
 
+pub use cc_engine_api::api::{EngineApi, EngineBuildError, PreparedEngine};
 pub use cc_engine_api::capabilities;
 pub use cc_engine_api::config;
 pub use cc_engine_api::errors;
 pub use cc_engine_api::fastpath;
 pub use cc_engine_api::methods;
 pub use cc_engine_api::metrics;
+pub use cc_engine_api::network_config::{
+    NETWORK_CONFIG_MAX_FILE_BYTES, NetworkConfigError, load_network_chain_config,
+    validate_network_config_path,
+};
 pub use cc_engine_api::state;
 pub use cc_engine_api::transport;
 pub use cc_engine_api::version;
 
-pub mod inject;
-// Private on cc-engine-api (ADR-R-03); same file so the type stays one impl.
+// Private on cc-engine-api (ADR-R-03); same file so container ITs can load a
+// hex secret without making `JwtSecret` crate-public on the API crate.
 #[path = "../../../crates/engine-api/src/jwt.rs"]
 pub mod jwt;
-pub mod service;
 
 pub use cc_proto::EngineRpcReason;
 pub use fastpath::cells::{
@@ -59,14 +43,6 @@ pub use fastpath::{
     COMPLETED_LOG_BOUND, EnqueueOutcome, FASTPATH_QUEUE_BOUND, FastpathLane, InjectItem, Trigger,
     TriggerOwner, production_cell_kzg, reconstruct_and_filter, template_from_commitments,
 };
-pub use inject::{
-    BACKOFF_CAP, BACKOFF_INITIAL, DecodedFetch, INBOUND_QUEUE_BOUND, INJECT_QUEUE_BOUND,
-    InjectQueue, InjectStreamConfig, SIDECAR_TEMPLATE_SIZE_SOFT_MAX, decode_fetch_blobs_request,
-    decode_wire_template, encode_fetch_blobs_request, encode_wire_template,
-    fetch_blobs_request_wire_size, full_jitter, new_session_id, next_backoff,
-    run_inject_stream_client, sidecar_template_within_size_budget, subscription_from_wire,
-    subscription_to_wire, wait_reconnect_backoff,
-};
 pub use methods::eth_syncing::{EthSyncingResult, eth_syncing};
 pub use methods::fcu::{
     FcuDroppedStale, FcuGatedError, FcuSequenceGate, build_fcu_params, decode_fcu_payload_status,
@@ -77,105 +53,8 @@ pub use methods::get_blobs::{
     VERSIONED_HASH_VERSION_KZG, build_get_blobs_v2_params, classify_null, get_blobs_v2,
     kzg_commitment_to_versioned_hash, versioned_hashes_from_commitments,
 };
+pub use methods::new_payload::DecodedPayloadStatus;
 pub use state::{
     CachedForkchoiceState, EngineState, EngineStateHandle, EngineStateInternal, EngineStateMachine,
     StateTransition, TransitionReason, UpcheckOutcome, admits_el_call, spawn_upcheck_driver,
 };
-
-/// Consensus YAML size cap (Hoodi/mainnet fixtures are ~2 KiB).
-///
-/// Metadata is checked before any body read so `/dev/zero` / FIFOs cannot
-/// hang or OOM the fail-before-bind path.
-pub const NETWORK_CONFIG_MAX_FILE_BYTES: u64 = 256 * 1024;
-
-/// Fail-before-bind error for `network_config`. Display is path-free and
-/// body-free so a mis-pointed JWT hex file cannot leak the secret or its path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NetworkConfigError {
-    /// Empty configured path.
-    EmptyPath,
-    /// Path contained a `..` component.
-    PathEscape,
-    /// Missing path or metadata/read failure.
-    Unreadable,
-    /// Not a regular file (`/dev/zero`, FIFO, directory).
-    NotRegularFile,
-    /// File larger than [`NETWORK_CONFIG_MAX_FILE_BYTES`].
-    TooLarge { size: u64 },
-    /// Same path as the JWT secret (after `..` / `.` normalisation).
-    JwtSecretCollision,
-    /// Bytes were not a consensus-specs chain-config map.
-    Yaml,
-}
-
-impl std::fmt::Display for NetworkConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EmptyPath => write!(f, "network_config path is empty"),
-            Self::PathEscape => write!(f, "network_config path must not contain '..'"),
-            Self::Unreadable => write!(f, "network_config is unreadable"),
-            Self::NotRegularFile => write!(f, "network_config is not a regular file"),
-            Self::TooLarge { size } => write!(
-                f,
-                "network_config is {size} bytes; max {NETWORK_CONFIG_MAX_FILE_BYTES}"
-            ),
-            Self::JwtSecretCollision => {
-                write!(f, "network_config must not be the JWT secret file")
-            }
-            Self::Yaml => write!(f, "network_config is not valid chain-config YAML"),
-        }
-    }
-}
-
-impl std::error::Error for NetworkConfigError {}
-
-/// Refuse empty paths, `..` components, and stray `.` (JWT / node-key shape).
-pub fn validate_network_config_path(
-    path: impl AsRef<std::path::Path>,
-) -> Result<std::path::PathBuf, NetworkConfigError> {
-    use std::path::{Component, PathBuf};
-    let path = path.as_ref();
-    if path.as_os_str().is_empty() {
-        return Err(NetworkConfigError::EmptyPath);
-    }
-    let mut out = PathBuf::new();
-    for c in path.components() {
-        match c {
-            Component::Prefix(p) => out.push(p.as_os_str()),
-            Component::RootDir => out.push(Component::RootDir.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => return Err(NetworkConfigError::PathEscape),
-            Component::Normal(s) => out.push(s),
-        }
-    }
-    if out.as_os_str().is_empty() {
-        return Err(NetworkConfigError::EmptyPath);
-    }
-    Ok(out)
-}
-
-/// Load [`cc_types::ChainConfig`] for the production blob-count gate.
-///
-/// Sandbox: no `..`, regular file only, size-capped before read. Parse errors
-/// are kind-only (no serde `Display`, no path) so a JWT hex file cannot leak.
-pub fn load_network_chain_config(
-    path: impl AsRef<std::path::Path>,
-    jwt_secret_path: Option<&std::path::Path>,
-) -> Result<cc_types::ChainConfig, NetworkConfigError> {
-    let path = validate_network_config_path(path)?;
-    if let Some(jwt) = jwt_secret_path
-        && let Ok(jwt) = validate_network_config_path(jwt)
-        && path == jwt
-    {
-        return Err(NetworkConfigError::JwtSecretCollision);
-    }
-    let meta = std::fs::metadata(&path).map_err(|_| NetworkConfigError::Unreadable)?;
-    if !meta.is_file() {
-        return Err(NetworkConfigError::NotRegularFile);
-    }
-    if meta.len() > NETWORK_CONFIG_MAX_FILE_BYTES {
-        return Err(NetworkConfigError::TooLarge { size: meta.len() });
-    }
-    let text = std::fs::read_to_string(&path).map_err(|_| NetworkConfigError::Unreadable)?;
-    cc_types::ChainConfig::from_yaml_str(&text).map_err(|_| NetworkConfigError::Yaml)
-}

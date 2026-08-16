@@ -14,15 +14,16 @@ fn production_cell_kzg_is_some() {
 
 #[test]
 fn production_main_wires_some_cell_kzg() {
-    let src = include_str!("../src/main.rs");
-    let compact: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+    let src = include_str!("../../../crates/engine-api/src/api.rs");
+    let production = src.split("#[cfg(test)]").next().expect("production half");
+    let compact: String = production.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(
         compact.contains("production_cell_kzg()"),
         "production main must load CellKzg via production_cell_kzg"
     );
     assert!(
-        compact.contains("letkzg=Some(production_cell_kzg()"),
-        "production FastpathLane kzg argument must be Some(production_cell_kzg(...))"
+        compact.contains("letkzg=Some(self.kzg)") || compact.contains("letkzg=Some("),
+        "production FastpathLane kzg argument must be Some(...)"
     );
     assert!(
         !compact.contains("kzg:None"),

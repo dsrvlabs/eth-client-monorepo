@@ -173,9 +173,9 @@ E3, P0-15's and P1-B/11's surface) and the `trusted_local` bool. E3 becomes a di
 
 **Acceptance for the group**
 1. [x] `cargo test -p cc-engine-api` passes with the tests that moved with the code.
-2. [ ] `services/chain/src/engine_client.rs` no longer exists; no `handle.block_on` remains on any
+2. [x] `services/chain/src/engine_client.rs` no longer exists; no `handle.block_on` remains on any
    chain→engine path.
-3. [ ] The `trusted_local` bool and its proto comment recording the security residual ✓
+3. [x] The `trusted_local` bool and its proto comment recording the security residual ✓
    (`p2p.proto:240-249`) are gone.
 
 ---
