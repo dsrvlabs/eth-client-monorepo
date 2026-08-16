@@ -100,7 +100,7 @@ deletes the citation.
 | ADR-P3-12 | a | accepted | docs/adr/ADR-P3-12.md |
 | ADR-P3-13 | a | accepted | docs/adr/ADR-P3-13.md |
 | ADR-P3-14 | b | proposed; revisit at S2 | docs/adr/ADR-P3-14.md |
-| ADR-P3-15 | b | unwritten (b) | - |
+| ADR-P3-15 | b | accepted | docs/adr/ADR-P3-15.md |
 | ADR-P3-16 | b | superseded; superseded-by ADR-R-03 | docs/adr/ADR-R-03.md |
 | ADR-P4-01 | a | accepted | docs/adr/ADR-P4-01.md |
 | ADR-P4-03 | b | accepted | docs/adr/ADR-P4-03.md |
@@ -126,3 +126,8 @@ above (that table is the 58 cited ids). This section is not a second
 S1-B-18 lands [`ADR-R-01.md`](ADR-R-01.md) — Status: accepted. Records the
 R-1 discharge order (types land, transport later). Does not supersede a
 §10.4 row.
+
+S1-B-13 names **ADR-R-07** as the future successor of `ADR-P3-15` (X-6:
+`[ARCH]` §10.4's "ADR-R-05" is the slashing-protection record, `S0-B-14`).
+The file is not written — this issue keeps the live skip. Do not add
+`ADR-R-07` to the 58-row table.

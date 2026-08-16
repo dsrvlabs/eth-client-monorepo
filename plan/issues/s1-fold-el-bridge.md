@@ -651,6 +651,19 @@ can produce. Each records a decision whose owner is the person who made it; they
 slashing-protection record** (written at S0, `S0-B-14`). One of the two needs a new id. Recommend
 `ADR-P3-15` take **`ADR-R-07`**, leaving §10.5's enumeration intact.
 
+##### `S1-B-13` · Gate (b) — `ADR-P3-15`
+
+- [x] `docs/adr/ADR-P3-15.md` in house MADR; Status: accepted; production
+      fastpath skips `verify_cell_kzg_proof_batch` (`cfg(test)` only);
+      in-process is **not** why the skip is correct (local EL spec SHOULD +
+      cheap bind).
+- [x] Successor id is `ADR-R-07` (X-6); not `ADR-R-05` (slashing /
+      `S0-B-14`). File not written — this issue re-affirms the live rule.
+- [x] `S1-A-06` / S3 must not silently delete the skip when the wire
+      `trusted_local` bool / EngineStream dies.
+- [x] `docs/adr/reconciliation.md` `ADR-P3-15` row is `accepted` →
+      `docs/adr/ADR-P3-15.md`.
+
 ##### `S1-B-14` · Gate (b) — `ADR-P4-03`
 
 - [x] `docs/adr/ADR-P4-03.md` in house MADR; Status: accepted; chain relays column SSZ
