@@ -601,6 +601,17 @@ can produce. Each records a decision whose owner is the person who made it; they
 | `S1-B-15` | `ADR-P2-13` | per-task panic policy: **catch and restart rather than abort the process**. **Directly determines whether X1 is measurable** (⟡ D-11) — the ADR must state that the catch path gains a counter before S3 | **on the X1 critical path**; read by `S3a-B-19` |
 | `S1-B-16` | the remaining 7: `ADR-07` (*re-decided at S3*), `ADR-09` (*re-decide at S3*), `ADR-P1-04` (*supersede at S4a* — milhouse changes it), `ADR-P1-11` (*storage stops being a consumer at S2*; survives for API consumers, consequences rewritten), `ADR-P2-10` (gossip topic scoring weight **0** on every topic; **P0-17a wires §5.6 scoring at S3** — the deferral ends, record the new weights), `ADR-P2-11` (`ColumnSidecar` contract-only, no producer; supersede at S2), `ADR-P3-14` (EL dependency is `service_started`, never `service_healthy`; re-decide when compose collapses at S2) | each carries `Status: proposed` + an explicit **"revisit at Sn"** line, per R-17 |
 
+##### `S1-B-16` · Gate (b) — the remaining 7, `Status: proposed` + revisit at Sn
+
+- [x] `docs/adr/ADR-07.md` house-MADR; Status: proposed · revisit at S3; p2p dials chain; health DAG roots at chain.
+- [x] `docs/adr/ADR-09.md` house-MADR; Status: proposed · revisit at S3; `debian:bookworm-slim`, not distroless.
+- [x] `docs/adr/ADR-P1-04.md` house-MADR; Status: proposed · revisit at S4a; cached state-root path; milhouse supersedes.
+- [x] `docs/adr/ADR-P1-11.md` house-MADR; Status: proposed · revisit at S2; `session_id` + two cursor reasons; storage consumer ends.
+- [x] `docs/adr/ADR-P2-10.md` house-MADR; Status: proposed · revisit at S3; P3/P3b weight 0; P0-17a records new weights.
+- [x] `docs/adr/ADR-P2-11.md` house-MADR; Status: proposed · revisit at S2; `ColumnSidecar` contract-only; supersede with ADR-R-02.
+- [x] `docs/adr/ADR-P3-14.md` house-MADR; Status: proposed · revisit at S2; EL `service_started`, never `service_healthy`.
+- [x] `docs/adr/reconciliation.md` seven S1-B-16 rows are `proposed; revisit at Sn` → matching `docs/adr/ADR-*.md` paths.
+
 **Id conflict to resolve in `S1-B-13` — flagged by this decomposition (`X-6`).** `[ARCH]` §10.4 routes
 `ADR-P3-15`'s replacement decision to *"ADR-R-05"*, but §10.5's **`ADR-R-05` is the
 slashing-protection record** (written at S0, `S0-B-14`). One of the two needs a new id. Recommend

@@ -60,17 +60,17 @@ deletes the citation.
 | ADR-04 | a | accepted | docs/adr/ADR-04.md |
 | ADR-05 | a | accepted | docs/adr/ADR-05.md |
 | ADR-06 | a | accepted | docs/adr/ADR-06.md |
-| ADR-07 | b | unwritten (b) | - |
-| ADR-09 | b | unwritten (b) | - |
+| ADR-07 | b | proposed; revisit at S3 | docs/adr/ADR-07.md |
+| ADR-09 | b | proposed; revisit at S3 | docs/adr/ADR-09.md |
 | ADR-11 | a | accepted | docs/adr/ADR-11.md |
 | ADR-12 | a | accepted | docs/adr/ADR-12.md |
-| ADR-P1-04 | b | unwritten (b) | - |
+| ADR-P1-04 | b | proposed; revisit at S4a | docs/adr/ADR-P1-04.md |
 | ADR-P1-05 | a | accepted | docs/adr/ADR-P1-05.md |
 | ADR-P1-07 | a | accepted | docs/adr/ADR-P1-07.md |
 | ADR-P1-08 | a | accepted | docs/adr/ADR-P1-08.md |
 | ADR-P1-09 | a | accepted | docs/adr/ADR-P1-09.md |
 | ADR-P1-10 | a | accepted | docs/adr/ADR-P1-10.md |
-| ADR-P1-11 | b | unwritten (b) | - |
+| ADR-P1-11 | b | proposed; revisit at S2 | docs/adr/ADR-P1-11.md |
 | ADR-P1-12 | a | accepted | docs/adr/ADR-P1-12.md |
 | ADR-P1-13 | c | deleted | - |
 | ADR-P1-14 | a | accepted | docs/adr/ADR-P1-14.md |
@@ -82,8 +82,8 @@ deletes the citation.
 | ADR-P2-07 | a | accepted | docs/adr/ADR-P2-07.md |
 | ADR-P2-08 | a | accepted | docs/adr/ADR-P2-08.md |
 | ADR-P2-09 | a | accepted | docs/adr/ADR-P2-09.md |
-| ADR-P2-10 | b | unwritten (b) | - |
-| ADR-P2-11 | b | unwritten (b) | - |
+| ADR-P2-10 | b | proposed; revisit at S3 | docs/adr/ADR-P2-10.md |
+| ADR-P2-11 | b | proposed; revisit at S2 | docs/adr/ADR-P2-11.md |
 | ADR-P2-13 | b | accepted | docs/adr/ADR-P2-13.md |
 | ADR-P2-14 | a | accepted | docs/adr/ADR-P2-14.md |
 | ADR-P3-01 | a | accepted | docs/adr/ADR-P3-01.md |
@@ -99,7 +99,7 @@ deletes the citation.
 | ADR-P3-11 | a | accepted | docs/adr/ADR-P3-11.md |
 | ADR-P3-12 | a | accepted | docs/adr/ADR-P3-12.md |
 | ADR-P3-13 | a | accepted | docs/adr/ADR-P3-13.md |
-| ADR-P3-14 | b | unwritten (b) | - |
+| ADR-P3-14 | b | proposed; revisit at S2 | docs/adr/ADR-P3-14.md |
 | ADR-P3-15 | b | unwritten (b) | - |
 | ADR-P3-16 | b | superseded; superseded-by ADR-R-03 | docs/adr/ADR-R-03.md |
 | ADR-P4-01 | a | accepted | docs/adr/ADR-P4-01.md |
