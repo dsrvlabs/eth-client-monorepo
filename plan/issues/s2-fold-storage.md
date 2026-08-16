@@ -605,6 +605,21 @@ same evidential status as an X1 counter that has only been merged.
 archive. Budget re-sync time into this drill and record it in the Phase 4 clause-1 trial table — this
 is exactly why `S3b-W-05` (20/20 restart trials) is scheduled **after** S2 (D11).
 
+**Acceptance (`S2-B-13` only)**
+- [x] Operator procedure at [`docs/s2-rollback.md`](../../docs/s2-rollback.md) records (a)–(c)
+- [x] Linked from [`s2-exit-note.md`](s2-exit-note.md) (append; W10 / E2.5 not rewritten)
+- [x] Live topology from this tree: this HEAD's 4-container is **not** the pre-S2 writer
+      (`write_behind.rs` gone; `_archive` dropped; `archive: None`); last SHA that
+      still has the file is `e854b1d`
+- [x] Live `WriteCursor`: stream-seq input gone after `S2-A-09`; record still exists;
+      `ArchiveWriter` restamp is unused by composed hosts; leftover cursor frozen
+- [x] Same-file mounts named (`cc-store-data:/app/data`, `cc-p2p-identity`); host
+      `data/storage` is not those volumes
+- [x] Clean shutdown still required; compose `stop` fires the writer watch, host
+      `cc-beacon-core` TERM does not
+- [x] Does not claim `S2-B-14` rehearsal; does not invent soak / re-sync numbers
+- [ ] `S2-B-14` / E2.4 rehearsal (not this issue)
+
 ---
 
 ### `S2-B-15` · **W10 prerequisite** — begin sourcing the five foreign clients

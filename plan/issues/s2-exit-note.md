@@ -181,3 +181,56 @@ Test: `crates/types/src/state/caches.rs`
 - Map clone **scales with N** (test/dev 10_083 ns → 156_459 ns; release 3_083 ns → 46_042 ns). That is the cost that used to ride on `StateCaches::clone`.
 - State clone **does not** (test/dev 2_209 / 2_041 / 2_042 ns; release 625 / 542 / 542 ns) while a 0 / 2k / 50k map is held beside it.
 - At N=50_000 the leftover map-clone tax is **156_459 ns vs 2_042 ns** (test/dev) and **46_042 ns vs 542 ns** (release) — the state clone is not paying the table copy.
+
+## S2-B-13 — rollback operator procedure
+
+**This issue does not discharge E2.4.** That belongs to `S2-B-14`
+(rehearsal). The procedure was **written, not rehearsed**. No A/B
+scrape. No soak numbers. No restart-trial row.
+
+Recorded 2026-08-16 on `feature/s2-b-13-rollback-procedure` (uncommitted)
+branched from `develop` `3e8d529`. Worktree
+`/Users/nil/.grok/worktrees/dsrv-eth-client-monorepo/subagent-01a009f5-9a99-7c01-9299-06f2fc88f289`.
+
+Operator procedure: [`docs/s2-rollback.md`](../../docs/s2-rollback.md).
+
+S2 is the only stage with a data-shape consequence. The redb schema
+does not change; the writer's input does:
+
+| | Rule |
+|---|---|
+| **(a)** | On-disk format unchanged (`SCHEMA_VERSION = 1`, `WriteCursor` SSZ unchanged). The previous topology can open the same `<data_dir>/store.redb`. |
+| **(b)** | Rollback **must** be preceded by a clean shutdown. |
+| **(c)** | No migration in either direction. |
+
+### Live `WriteCursor` (read from this tree)
+
+`S2-A-09` deleted `write_behind.rs`. **Stream-seq is already gone as the
+writer's input on both hosts this HEAD starts.** The `WriteCursor`
+record still exists (`session_id`, `seq`, `slot`, `root` at
+`meta.write_cursor`).
+
+`ArchiveWriter::submit_writer_batch` **would** restamp that record in
+the same P0 batch (refuses a missing cursor; does not invent `0/0`).
+Neither composed host calls it: `cc-beacon-core` never builds
+`ArchiveWriter`; compose `storage` builds one and drops it; compose
+`chain` has `archive: None`. Leftover on-disk `seq` is frozen. This
+tree does **not** write a new batch-seq into `WriteCursor.seq`.
+
+`docker compose up` from this HEAD is **not** the pre-S2 writer. Last
+commit that still has `write_behind.rs` is `e854b1d` (`78a90e1^`). No
+image tag is pinned here.
+
+Clean shutdown is still required (exclusive redb lock; writer mailbox
+does not drain on the shutdown watch). Compose `stop storage` fires
+that watch via `pre_drain_fire_shutdown`. Host `kill -TERM` on
+`cc-beacon-core` does **not** — pre-drain only joins chain-core.
+
+Same-file open: compose default mounts are named volumes
+`cc-store-data:/app/data` and `cc-p2p-identity` (`/identity` on
+storage, `/app/data` on p2p). They are not host `data/storage` or
+`./data/node_key`. See the procedure.
+
+`S2-B-14` is the drill. R-10 here is RestoreFromStore still on the
+4-container host (`S2-J-02` not done), not write-behind coming back.
+No duration is invented.
