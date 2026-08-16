@@ -605,3 +605,207 @@ async fn column_ingest_uses_typed_batch_index() {
 
     events.shutdown().await;
 }
+
+#[tokio::test]
+async fn column_ingest_backpressure_is_not_mapped_to_ignore() {
+    use async_trait::async_trait;
+    use cc_chain::epoch_context::EpochContextStore;
+    use cc_chain::head::HeadSnapshotStore;
+    use cc_chain::p2p_stream::{P2pStreamDeps, serve_p2p_stream};
+    use cc_seam::{ArchiveWrite, ColumnBatch, SeamError};
+    use cc_types::preset::Mainnet;
+    use cc_types::sidecar::DataColumnSidecar;
+    use futures::StreamExt;
+    use std::sync::{Arc, RwLock};
+    use tokio_stream::wrappers::ReceiverStream;
+
+    struct BackpressureArchive;
+
+    #[async_trait]
+    impl ArchiveWrite for BackpressureArchive {
+        async fn ingest_columns(&self, _batch: ColumnBatch) -> Result<(), SeamError> {
+            Err(SeamError::Backpressure {
+                bound: 32,
+                waited_ms: 0,
+            })
+        }
+    }
+
+    let handle: cc_chain::ArchiveWriteHandle = Arc::new(BackpressureArchive);
+    let events = EventsHandle::spawn(EventsConfig {
+        ring_capacity: 16,
+        ring_bytes: usize::MAX,
+        subscriber_queue_capacity: 8,
+        session_id: Some(0x47),
+    });
+    let mut sub = events.subscribe(None).await.unwrap();
+    let deps = P2pStreamDeps::with_archive(
+        HeadSnapshotStore::new(),
+        EpochContextStore::new(),
+        Arc::new(RwLock::new(None)),
+        Some(events.event_sender()),
+        Some(handle),
+    );
+
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(4);
+    let inbound = ReceiverStream::new(in_rx).map(Ok);
+    let mut outbound = serve_p2p_stream(deps.clone(), inbound).await.unwrap();
+
+    in_tx
+        .send(P2pToChain {
+            seq: 1,
+            msg: Some(p2p_to_chain::Msg::Hello(cc_proto::p2p::StreamHello {
+                session_id: 1,
+                resume_seq: 0,
+            })),
+        })
+        .await
+        .unwrap();
+    let _ = tokio::time::timeout(Duration::from_millis(200), outbound.next())
+        .await
+        .expect("view timeout")
+        .expect("view end");
+
+    let mut sc = DataColumnSidecar::<Mainnet> {
+        index: 1,
+        ..Default::default()
+    };
+    sc.signed_block_header.message.slot = Slot::new(8);
+    in_tx
+        .send(P2pToChain {
+            seq: 2,
+            msg: Some(p2p_to_chain::Msg::Column(ColumnSidecar {
+                ssz: sc.as_ssz_bytes(),
+                fork: 0,
+                root: vec![0x11u8; 32],
+                column_index: 1,
+                subnet_id: 1,
+            })),
+        })
+        .await
+        .unwrap();
+
+    let msg = tokio::time::timeout(Duration::from_millis(200), outbound.next())
+        .await
+        .expect("backpressure timeout")
+        .expect("stream end");
+    match msg {
+        Err(status) => {
+            assert_eq!(
+                status.code(),
+                tonic::Code::ResourceExhausted,
+                "Policy A surfaces RESOURCE_EXHAUSTED, got {status}"
+            );
+        }
+        Ok(out) => match out.msg {
+            Some(chain_to_p2p::Msg::Verdict(v)) => {
+                panic!(
+                    "Backpressure must not map to Ignore ACK (acceptance={}, reason={})",
+                    v.acceptance, v.reason
+                );
+            }
+            other => panic!("expected RESOURCE_EXHAUSTED, got {other:?}"),
+        },
+    }
+    let ev = tokio::time::timeout(Duration::from_millis(150), sub.recv()).await;
+    assert!(ev.is_err(), "column SSZ must not enter the event ring");
+
+    events.shutdown().await;
+}
+
+#[tokio::test]
+async fn column_ingest_invalid_argument_is_not_already_known() {
+    use async_trait::async_trait;
+    use cc_chain::epoch_context::EpochContextStore;
+    use cc_chain::head::HeadSnapshotStore;
+    use cc_chain::p2p_stream::{P2pStreamDeps, serve_p2p_stream};
+    use cc_seam::{ArchiveWrite, ColumnBatch, SeamError};
+    use cc_types::preset::Mainnet;
+    use cc_types::sidecar::DataColumnSidecar;
+    use futures::StreamExt;
+    use std::sync::{Arc, RwLock};
+    use tokio_stream::wrappers::ReceiverStream;
+
+    struct RejectingArchive;
+
+    #[async_trait]
+    impl ArchiveWrite for RejectingArchive {
+        async fn ingest_columns(&self, _batch: ColumnBatch) -> Result<(), SeamError> {
+            Err(SeamError::InvalidArgument(
+                "a batch may only extend the durable frontier, never jump it".into(),
+            ))
+        }
+    }
+
+    let handle: cc_chain::ArchiveWriteHandle = Arc::new(RejectingArchive);
+    let events = EventsHandle::spawn(EventsConfig {
+        ring_capacity: 16,
+        ring_bytes: usize::MAX,
+        subscriber_queue_capacity: 8,
+        session_id: Some(0x48),
+    });
+    let deps = P2pStreamDeps::with_archive(
+        HeadSnapshotStore::new(),
+        EpochContextStore::new(),
+        Arc::new(RwLock::new(None)),
+        Some(events.event_sender()),
+        Some(handle),
+    );
+
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(4);
+    let inbound = ReceiverStream::new(in_rx).map(Ok);
+    let mut outbound = serve_p2p_stream(deps, inbound).await.unwrap();
+
+    in_tx
+        .send(P2pToChain {
+            seq: 1,
+            msg: Some(p2p_to_chain::Msg::Hello(cc_proto::p2p::StreamHello {
+                session_id: 1,
+                resume_seq: 0,
+            })),
+        })
+        .await
+        .unwrap();
+    let _ = tokio::time::timeout(Duration::from_millis(200), outbound.next())
+        .await
+        .expect("view timeout")
+        .expect("view end");
+
+    let mut sc = DataColumnSidecar::<Mainnet> {
+        index: 2,
+        ..Default::default()
+    };
+    sc.signed_block_header.message.slot = Slot::new(9);
+    in_tx
+        .send(P2pToChain {
+            seq: 2,
+            msg: Some(p2p_to_chain::Msg::Column(ColumnSidecar {
+                ssz: sc.as_ssz_bytes(),
+                fork: 0,
+                root: vec![0x22u8; 32],
+                column_index: 2,
+                subnet_id: 2,
+            })),
+        })
+        .await
+        .unwrap();
+
+    let msg = tokio::time::timeout(Duration::from_millis(200), outbound.next())
+        .await
+        .expect("verdict timeout")
+        .expect("verdict end")
+        .expect("verdict");
+    match msg.msg {
+        Some(chain_to_p2p::Msg::Verdict(v)) => {
+            assert_eq!(v.reason, Reason::Invalid as i32);
+            assert_ne!(
+                v.reason,
+                Reason::AlreadyKnown as i32,
+                "InvalidArgument must stay fail-closed, not silent AlreadyKnown"
+            );
+        }
+        other => panic!("expected fail-closed verdict, got {other:?}"),
+    }
+
+    events.shutdown().await;
+}

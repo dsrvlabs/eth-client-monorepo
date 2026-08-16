@@ -83,7 +83,7 @@ deletes the citation.
 | ADR-P2-08 | a | accepted | docs/adr/ADR-P2-08.md |
 | ADR-P2-09 | a | accepted | docs/adr/ADR-P2-09.md |
 | ADR-P2-10 | b | proposed; revisit at S3 | docs/adr/ADR-P2-10.md |
-| ADR-P2-11 | b | proposed; revisit at S2 | docs/adr/ADR-P2-11.md |
+| ADR-P2-11 | b | superseded; superseded-by ADR-R-02 | docs/adr/ADR-P2-11.md |
 | ADR-P2-13 | b | accepted | docs/adr/ADR-P2-13.md |
 | ADR-P2-14 | a | accepted | docs/adr/ADR-P2-14.md |
 | ADR-P3-01 | a | accepted | docs/adr/ADR-P3-01.md |
@@ -103,7 +103,7 @@ deletes the citation.
 | ADR-P3-15 | b | accepted | docs/adr/ADR-P3-15.md |
 | ADR-P3-16 | b | superseded; superseded-by ADR-R-03 | docs/adr/ADR-R-03.md |
 | ADR-P4-01 | a | accepted | docs/adr/ADR-P4-01.md |
-| ADR-P4-03 | b | accepted | docs/adr/ADR-P4-03.md |
+| ADR-P4-03 | b | superseded; superseded-by ADR-R-02 | docs/adr/ADR-P4-03.md |
 | ADR-P4-04 | a | accepted | docs/adr/ADR-P4-04.md |
 | ADR-P4-05 | a | accepted | docs/adr/ADR-P4-05.md |
 | ADR-P4-06 | a | accepted | docs/adr/ADR-P4-06.md |
@@ -138,3 +138,10 @@ liveness is proved by a deadline-bounded no-op through the consensus core
 same N successes restore). `S1-B-12` records that this supersedes
 `ADR-P3-02` (parked-core-green is no longer acceptable). `[ARCH]` named
 ADR-R-03 as that successor; R-03 is JWT isolation (`S1-B-11`).
+
+S2-A-07 lands [`ADR-R-02.md`](ADR-R-02.md) — Status: accepted. Records
+Policy B→A on the node's own archive ingest (`SeamError::Backpressure`
+stalls import; not an Ignore ACK). `beacon-core` owning redb and the
+event bus ceasing to be a data plane are part of the record. Supersedes
+`ADR-P2-11` / `ADR-P4-07` / `ADR-P4-03`. Does not fully supersede
+`ADR-07` (S3 transport re-decision remains). Not a census row.

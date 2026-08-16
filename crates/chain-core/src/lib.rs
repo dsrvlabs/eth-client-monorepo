@@ -18,6 +18,8 @@
 //! do not enter the ring.
 //! S2-A-06: the batch head is `(parent_root, slot)`. A batch may only
 //! extend the durable frontier, never jump it.
+//! S2-A-07: archive ingest Backpressure is Policy A (ADR-R-02). The
+//! `p2p_stream` caller must not map it to `Acceptance::Ignore`.
 //!
 //! ADR-P1-09, ADR-P1-12, and ADR-P3-05 ride the moved sources unchanged —
 //! `pending_engine` stays a separate map from `pending_da`.

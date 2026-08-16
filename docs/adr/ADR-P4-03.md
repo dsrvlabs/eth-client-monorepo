@@ -1,15 +1,15 @@
 # ADR-P4-03 — Chain relays column SSZ without decoding
 
-- **Status:** accepted · superseded-by: — · **Date:** 2026-08-16 (reconstructed)
+- **Status:** superseded-by ADR-R-02 · **Date:** 2026-08-16 (reconstructed)
 - **Phase:** 4 (in force now; S2 replacement recorded here)
 - **Issues:** S1-B-14, CC-44a, S2-A-04, S2-A-05, S2-A-07
 - **Citations:** 1 census site — `services/chain/src/p2p_stream.rs:17-18` (handler: `:615-631`; counter: `:119-121,160-163`; wiring: `services/chain/src/service.rs:117-118`; bus ctor: `services/chain/src/events/mod.rs:214-226`; consumer: `services/storage/src/write_behind.rs:1081-1088`; contract: `services/chain/tests/p2p_stream_contract.rs:821-836`; `services/chain/tests/event_payloads.rs:333-411`)
 - **Provenance:** re-derived from code (2026-08-16); S2 typed-ingest replacement recorded here
 
-This is the Phase-4 no-decode relay. It is **right for a relay and wrong
-for an owner.** `[ARCH]` §10.4 / `S1-B-14` require the S2 change to be
-written down now; `ADR-R-02` (`S2-A-07`) is the file that supersedes
-this one when the ingest lands.
+This is a **history record**. The Phase-4 no-decode relay was **right for
+a relay and wrong for an owner.** `[ARCH]` §10.4 / `S1-B-14` required the
+S2 change to be written down; `ADR-R-02` (`S2-A-07`) is the file that
+supersedes this one. Typed ingest is live; Policy B→A is recorded there.
 
 ## Context
 
@@ -162,5 +162,5 @@ not survive the owner fold.
 | S2-A-04 | `ArchiveWrite` + typed `ColumnBatch` on `cc-seam`. `index` is a field. |
 | S2-A-05 | Direct `ingest_columns`. Delete the byte-offset parse and its zero fallback. Column bytes never enter the ring. |
 | S2-A-06 | Top-of-batch `(parent_root, slot)` continuity bind. |
-| S2-A-07 | **ADR-R-02** lands; this file becomes `superseded; superseded-by ADR-R-02`. Policy B → A is recorded there, not as a silent amendment here. |
+| S2-A-07 | **Done.** ADR-R-02 landed; this file is `superseded-by ADR-R-02`. Policy B → A is recorded there. |
 | S2+ | A new no-decode column path into the archive is a defect against ADR-R-02. |

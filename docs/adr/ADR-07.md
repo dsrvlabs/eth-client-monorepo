@@ -28,11 +28,11 @@ because clients point at chain and chain does not point back.
 of a stream between two processes. Once both ends may live in one process,
 "who dials" is not a topology question.
 
-`[ARCH]` §10.5's **ADR-R-02** (created at S2, `S2-A-07`) lists *"the direction
+`[ARCH]` §10.5's **ADR-R-02** (landed at S2, `S2-A-07`) lists *"the direction
 half of ADR-07"* among what it supersedes. That is the S2 half of the chain
 (archive ownership / event bus not a data plane). It is **not** the S3
-re-decision of E1's transport. Do not treat ADR-R-02 landing as this record
-becoming `accepted`.
+re-decision of E1's transport. ADR-R-02 landing does **not** mark this
+record `accepted` or fully superseded.
 
 ## Decision
 
@@ -101,6 +101,6 @@ needs a resolving document *now*.
 | Stage | What happens to this record |
 |---|---|
 | S1 | This file. No code change. Seam typing does not flip who dials. |
-| S2 | ADR-R-02 (`S2-A-07`) may supersede the *direction half* as part of folding storage. The S3 re-decision remains. |
+| S2 | ADR-R-02 (`S2-A-07`) notes the *direction half* as part of folding storage. The S3 re-decision remains. |
 | S3 | **This ADR is revisited.** Record the chosen E1 impl. Supersede or re-accept. |
 | S3+ | A leftover "p2p must dial chain" comment on an in-process path is a defect against the S3 write-up. |

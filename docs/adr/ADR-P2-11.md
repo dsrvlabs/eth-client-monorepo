@@ -1,15 +1,16 @@
 # ADR-P2-11 — `ColumnSidecar` on `P2pStream` is contract-only; no producer
 
-- **Status:** proposed · revisit at S2 · superseded-by: — · **Date:** 2026-08-16
+- **Status:** superseded-by ADR-R-02 · **Date:** 2026-08-16
 - **Phase:** 2 (oneof reserved for Phase 4 storage; S2 deletes the path)
 - **Issues:** S1-B-16, S2-A-04, S2-A-05, S2-A-07
 - **Citations:** 1 site — `proto/eth/p2p/v1/p2p.proto:100-101` (message `:123-130`)
 - **Provenance:** re-derived from code (2026-08-16) — records the contract-only arm; supersede at S2 with ADR-R-02
 
-This is **ADR-P2-11**. `[ARCH]` §10.4 class **(b)**: *"`ColumnSidecar` on the
+This is a **history record**. `[ARCH]` §10.4 class **(b)**: *"`ColumnSidecar` on the
 stream is contract-only in Phase 2; no producer"* and *"S2 changes the column
-path entirely (§4.3); supersede with ADR-R-02."* This file is the R-17
-placeholder.
+path entirely (§4.3); supersede with ADR-R-02."* ADR-R-02 (`S2-A-07`) is that
+supersession: typed `ArchiveWrite` ingest; the reserved oneof is not the
+archive path. The proto arm stays until a later proto change.
 
 ## Context
 
@@ -43,11 +44,9 @@ Do not start publishing `P2pToChain.column` from `services/p2p` in S1
 Chain may keep the relay so a test can push an arm; that is not a
 producer.
 
-**Revisit at S2.** Supersede this file with **ADR-R-02** when the typed
-column ingest lands (`S2-A-04` / `S2-A-05` / `S2-A-07`). After
-supersession the oneof is historical; deleting it is a proto change
-owned by that stage, not by this record. This file stays `proposed`
-until then.
+**Revisited at S2.** Superseded by **ADR-R-02**. The oneof is historical;
+deleting it is a proto change owned by a later issue, not by this
+record.
 
 ## Consequences
 
@@ -91,5 +90,5 @@ tuned.
 | Stage | What happens to this record |
 |---|---|
 | S1 | This file. No producer. |
-| S2 | **Revisit.** Typed ingest + ADR-R-02 supersede this. Mark `superseded; superseded-by ADR-R-02`. |
+| S2 | **Done.** Typed ingest + ADR-R-02 supersede this. Status: `superseded-by ADR-R-02`. |
 | S3+ | A new `P2pToChain.column` sender is a defect against ADR-R-02. |

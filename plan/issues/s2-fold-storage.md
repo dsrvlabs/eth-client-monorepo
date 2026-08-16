@@ -247,6 +247,13 @@ the supersession target for `ADR-P2-11`, `ADR-P4-07` and (per `S1-B-16`) `ADR-07
 chain. `[PLAN]` R-17 flagged `ADR-R-02` as *"created at S2"* — this is that creation, and `S1-B-16`
 carries the `Status: proposed` placeholder that made the S2 entry gate satisfiable.
 
+**Acceptance (`S2-A-07` only)**
+- [x] ADR-R-02 written, Status accepted
+- [x] Live archive ingest Backpressure stalls import (test)
+- [x] write_behind still exists
+- [x] ADR-P2-11 superseded-by ADR-R-02
+- [x] Event fan-out still Policy B
+
 ---
 
 ### `S2-A-08` · P1-D/11 (S2 half) — typed event structs · 2–3 pd / **5 pts** (≈)

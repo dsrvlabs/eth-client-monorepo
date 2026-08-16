@@ -16,6 +16,8 @@
 //!   (§10.5). Unknown topic → structured `INVALID_ARGUMENT` / `UNKNOWN_TOPIC`.
 //! - `ColumnSidecar` is decoded into a typed `ColumnBatch` and ingested
 //!   via `ArchiveWrite` (S2-A-05). Column bytes do not enter the ring.
+//! - Archive mailbox overflow is Policy A (ADR-R-02): `SeamError::Backpressure`
+//!   stalls import. It is not an `Acceptance::Ignore` ACK.
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,6 +30,7 @@ use cc_proto::p2p::{
     PublishRequest, Reason, Verdict, chain_to_p2p, p2p_to_chain,
 };
 use cc_proto::status_with_error_info;
+use cc_seam::SeamError;
 use futures::{Stream, StreamExt};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
@@ -708,18 +711,7 @@ where
                 .await;
             };
             if let Err(e) = archive.ingest_columns(batch).await {
-                tracing::error!(error = %e, "column ingest failed");
-                return send_verdict(
-                    out_tx,
-                    next_seq,
-                    Verdict {
-                        correlation_id,
-                        acceptance: Acceptance::Ignore as i32,
-                        reason: Reason::Internal as i32,
-                        import: ImportResult::None as i32,
-                    },
-                )
-                .await;
+                return emit_column_ingest_err(out_tx, next_seq, correlation_id, e).await;
             }
             send_verdict(
                 out_tx,
@@ -888,6 +880,75 @@ where
         }
     };
     send_verdict(out_tx, next_seq, verdict).await
+}
+
+/// Outcome of `ArchiveWrite::ingest_columns` on the stream (ADR-R-02).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColumnIngestOutcome {
+    /// Policy A: stall import. Not an Ignore ACK.
+    Backpressure { bound: usize, waited_ms: u64 },
+    /// Fail-closed. Not silent AlreadyKnown.
+    FailClosed { reason: Reason },
+}
+
+/// Classify an `ingest_columns` error. Backpressure is not mapped to Ignore.
+fn classify_column_ingest(err: &SeamError) -> ColumnIngestOutcome {
+    match err {
+        SeamError::Backpressure { bound, waited_ms } => ColumnIngestOutcome::Backpressure {
+            bound: *bound,
+            waited_ms: *waited_ms,
+        },
+        SeamError::InvalidArgument(_) => ColumnIngestOutcome::FailClosed {
+            reason: Reason::Invalid,
+        },
+        SeamError::Unavailable(_) | SeamError::FailedPrecondition { .. } => {
+            ColumnIngestOutcome::FailClosed {
+                reason: Reason::Internal,
+            }
+        }
+    }
+}
+
+/// Policy A (ADR-R-02): archive mailbox overflow is `RESOURCE_EXHAUSTED`.
+/// Other ingest errors stay fail-closed (not AlreadyKnown).
+async fn emit_column_ingest_err<F>(
+    out_tx: &mpsc::Sender<Result<ChainToP2p, Status>>,
+    next_seq: &mut F,
+    correlation_id: Vec<u8>,
+    err: SeamError,
+) -> Result<(), ()>
+where
+    F: FnMut() -> u64,
+{
+    match classify_column_ingest(&err) {
+        ColumnIngestOutcome::Backpressure { bound, waited_ms } => {
+            tracing::error!(
+                bound,
+                waited_ms,
+                "column ingest backpressure; stalling import (ADR-R-02 policy A)"
+            );
+            let _ = out_tx
+                .send(Err(Status::resource_exhausted(format!(
+                    "archive writer mailbox full after {waited_ms}ms (bound {bound})"
+                ))))
+                .await;
+            Err(())
+        }
+        ColumnIngestOutcome::FailClosed { reason } => {
+            tracing::error!(error = %err, "column ingest failed");
+            send_verdict(
+                out_tx,
+                next_seq,
+                Verdict {
+                    correlation_id,
+                    acceptance: Acceptance::Ignore as i32,
+                    reason: reason as i32,
+                    import: ImportResult::None as i32,
+                },
+            )
+            .await
+        }
+    }
 }
 
 async fn send_verdict<F>(
@@ -1126,5 +1187,53 @@ mod tests {
             &ImportReason::TooOld,
         );
         assert_eq!(v.reason, Reason::AlreadyKnown as i32);
+    }
+
+    #[test]
+    fn archive_backpressure_is_not_mapped_to_ignore() {
+        let out = classify_column_ingest(&SeamError::Backpressure {
+            bound: 32,
+            waited_ms: 0,
+        });
+        assert!(
+            matches!(
+                out,
+                ColumnIngestOutcome::Backpressure {
+                    bound: 32,
+                    waited_ms: 0
+                }
+            ),
+            "Backpressure must stall import, not become an Ignore ACK, got {out:?}"
+        );
+        assert!(
+            !matches!(out, ColumnIngestOutcome::FailClosed { reason } if reason == Reason::Internal),
+            "Policy B mapped Backpressure to Ignore/Internal"
+        );
+    }
+
+    #[test]
+    fn archive_invalid_argument_is_fail_closed_not_already_known() {
+        let out = classify_column_ingest(&SeamError::InvalidArgument("bad batch".into()));
+        assert!(
+            matches!(
+                out,
+                ColumnIngestOutcome::FailClosed { reason }
+                    if reason == Reason::Invalid && reason != Reason::AlreadyKnown
+            ),
+            "expected fail-closed Invalid, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn archive_unavailable_is_fail_closed_not_already_known() {
+        let out = classify_column_ingest(&SeamError::Unavailable("writer gone".into()));
+        assert!(
+            matches!(
+                out,
+                ColumnIngestOutcome::FailClosed { reason }
+                    if reason == Reason::Internal && reason != Reason::AlreadyKnown
+            ),
+            "expected fail-closed Internal, got {out:?}"
+        );
     }
 }

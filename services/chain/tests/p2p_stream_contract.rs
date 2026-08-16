@@ -844,6 +844,14 @@ fn column_sidecar_decode_lives_in_chain_core() {
         !stream_src.contains("EventInput::data_column"),
         "column bytes must not enter the ring"
     );
+    assert!(
+        stream_src.contains("classify_column_ingest"),
+        "p2p_stream must classify ingest errors (ADR-R-02)"
+    );
+    assert!(
+        stream_src.contains("SeamError::Backpressure"),
+        "p2p_stream must name SeamError::Backpressure (not map all errors to Ignore)"
+    );
     let ingest_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../crates/chain-core/src/ingest.rs"
@@ -851,5 +859,21 @@ fn column_sidecar_decode_lives_in_chain_core() {
     assert!(
         ingest_src.contains("DataColumnSidecar"),
         "chain-core ingest names the sidecar to populate ColumnBatch"
+    );
+    assert!(
+        std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/storage-core/src/write_behind.rs"
+        ))
+        .exists(),
+        "write_behind still exists (S2-A-09 deletes it, not S2-A-07)"
+    );
+    let fanout_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/chain-core/src/events/fanout.rs"
+    ));
+    assert!(
+        fanout_src.contains("try_send"),
+        "event fan-out stays Policy B (try_send, drop the subscriber)"
     );
 }

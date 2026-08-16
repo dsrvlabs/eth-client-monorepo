@@ -147,6 +147,23 @@ mod tests {
         assert!(archive.batches.lock().unwrap().is_empty());
     }
 
+    #[tokio::test]
+    async fn ingest_forwards_backpressure() {
+        let archive = RecordingArchive::default();
+        *archive.fail.lock().unwrap() = Some(SeamError::Backpressure {
+            bound: 32,
+            waited_ms: 0,
+        });
+        let err = ingest_column_ssz(&archive, sidecar_ssz(1, 1), [0; 32])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, SeamError::Backpressure { bound: 32, .. }),
+            "ingest must forward Backpressure, not swallow it as success, got {err:?}"
+        );
+        assert!(archive.batches.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn recording_archive_is_dyn() {
         let _: Arc<dyn ArchiveWrite> = Arc::new(RecordingArchive::default());
