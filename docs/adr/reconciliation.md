@@ -56,13 +56,13 @@ deletes the citation.
 
 | id | bucket | status | resolving |
 |---|---|---|---|
-| ADR-04 | a | unwritten (a) | - |
-| ADR-05 | a | unwritten (a) | - |
-| ADR-06 | a | unwritten (a) | - |
+| ADR-04 | a | accepted | docs/adr/ADR-04.md |
+| ADR-05 | a | accepted | docs/adr/ADR-05.md |
+| ADR-06 | a | accepted | docs/adr/ADR-06.md |
 | ADR-07 | b | unwritten (b) | - |
 | ADR-09 | b | unwritten (b) | - |
-| ADR-11 | a | unwritten (a) | - |
-| ADR-12 | a | unwritten (a) | - |
+| ADR-11 | a | accepted | docs/adr/ADR-11.md |
+| ADR-12 | a | accepted | docs/adr/ADR-12.md |
 | ADR-P1-04 | b | unwritten (b) | - |
 | ADR-P1-05 | a | unwritten (a) | - |
 | ADR-P1-07 | a | unwritten (a) | - |
@@ -72,7 +72,7 @@ deletes the citation.
 | ADR-P1-11 | b | unwritten (b) | - |
 | ADR-P1-12 | a | unwritten (a) | - |
 | ADR-P1-13 | c | stale (c) | - |
-| ADR-P1-14 | a | unwritten (a) | - |
+| ADR-P1-14 | a | accepted | docs/adr/ADR-P1-14.md |
 | ADR-P1-15 | a | unwritten (a) | - |
 | ADR-P2-02 | a | accepted | docs/adr/ADR-P2-02.md |
 | ADR-P2-04 | a | unwritten (a) | - |
@@ -85,7 +85,7 @@ deletes the citation.
 | ADR-P2-11 | b | unwritten (b) | - |
 | ADR-P2-13 | b | unwritten (b) | - |
 | ADR-P2-14 | a | accepted | docs/adr/ADR-P2-14.md |
-| ADR-P3-01 | a | unwritten (a) | - |
+| ADR-P3-01 | a | accepted | docs/adr/ADR-P3-01.md |
 | ADR-P3-02 | b | unwritten (b) | - |
 | ADR-P3-03 | a | unwritten (a) | - |
 | ADR-P3-04 | a | unwritten (a) | - |
@@ -110,7 +110,7 @@ deletes the citation.
 | ADR-P4-08 | a | unwritten (a) | - |
 | ADR-P4-09 | a | unwritten (a) | - |
 | ADR-P4-10 | a | unwritten (a) | - |
-| ADR-P4-11 | a | unwritten (a) | - |
-| ADR-P4-12 | a | unwritten (a) | - |
+| ADR-P4-11 | a | accepted | docs/adr/ADR-P4-11.md |
+| ADR-P4-12 | a | accepted | docs/adr/ADR-P4-12.md |
 | ADR-P4-13 | a | unwritten (a) | - |
 | ADR-P4-14 | a | unwritten (a) | - |

@@ -483,11 +483,25 @@ this mailbox), `ADR-P4-12` (the prober's independent codec — why P0-06 exists)
 (`I-node-id` — §4.2's boot policy).
 
 **One (a) row carries a correction:** `ADR-P3-01` cites *"Phase 3 adds no workspace member"* alongside
-a member count of **16**; the workspace has **20** today ✓ (`Cargo.toml:3-27`). Record the ADR **and**
-fix the count in `docs/phase-3-acceptance.md:607`.
+a member count of **16**; the workspace has **23** today ✓ (`Cargo.toml:3-33`). Record the ADR **and**
+fix the count in `docs/phase-3-acceptance.md` (live Member-count / CC-3K /8 row).
 
 **Acceptance** — every id in the bucket resolves under `docs/adr/`; `S1-B-06`'s gate is green for
 them.
+
+##### `S1-B-07` · Gate (a) 1/4 — proto / build / CI / supply-chain ids
+
+- [x] `docs/adr/ADR-04.md` house MADR; Status: accepted; protox + `tonic-prost-build`; generated `.rs` not checked in.
+- [x] `docs/adr/ADR-05.md` house MADR; Status: accepted; `buf breaking` at `FILE`; messages never move file.
+- [x] `docs/adr/ADR-06.md` house MADR; Status: accepted; bootstrap telemetry pin.
+- [x] `docs/adr/ADR-11.md` house MADR; Status: accepted; spec-vector fetch re-hashes by default.
+- [x] `docs/adr/ADR-12.md` house MADR; Status: accepted; `figment` is the config loader.
+- [x] `docs/adr/ADR-P1-14.md` house MADR; Status: accepted; vendored `google.rpc` under `third_party`.
+- [x] `docs/adr/ADR-P3-01.md` house MADR; Status: accepted; Phase 3 adds no member; live count **23**.
+- [x] `docs/adr/ADR-P4-11.md` house MADR; Status: accepted; soak clause not discharged without the discharging stage.
+- [x] `docs/adr/ADR-P4-12.md` house MADR; Status: accepted; **load-bearing** independent probe codec (why P0-06 exists); `cc-wire` forbidden.
+- [x] `docs/phase-3-acceptance.md` Member-count row records Phase-3-close **16** and today's **23**.
+- [x] `docs/adr/reconciliation.md` nine S1-B-07 rows are `accepted` → `docs/adr/ADR-*.md`.
 
 ##### `S1-B-09` · Gate (a) 3/4 — p2p ids
 
