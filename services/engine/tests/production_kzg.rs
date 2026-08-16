@@ -30,7 +30,7 @@ fn production_main_wires_some_cell_kzg() {
     );
     // Positional 5th arg after tracker `None` is the named `kzg` binding.
     assert!(
-        compact.contains("hoodi_blob_bound(),None,kzg,SubscriptionSet::empty()"),
+        compact.contains("bound,None,kzg,SubscriptionSet::empty()"),
         "production FastpathLane::new must pass the Some-wrapped kzg binding"
     );
 }

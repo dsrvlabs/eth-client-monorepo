@@ -681,14 +681,16 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+    use crate::BlobBound;
     use crate::config::EngineTransportConfig;
-    use crate::fastpath::{hoodi_blob_bound, template_from_commitments};
+    use crate::fastpath::template_from_commitments;
     use crate::metrics::EngineMetrics;
     use crate::transport::EngineTransport;
     use cc_proto::p2p::p2p_service_server::{P2pService, P2pServiceServer};
     use cc_proto::p2p::{
         GetInfoRequest, GetInfoResponse, SetCustodyGroupCountRequest, SetCustodyGroupCountResponse,
     };
+    use cc_types::ChainConfig;
     use futures::Stream;
     use prometheus_client::registry::Registry;
     use std::pin::Pin;
@@ -714,11 +716,19 @@ mod tests {
 
     type SharedForTest = Arc<EngineTransport>;
 
+    fn test_blob_bound() -> BlobBound {
+        let cfg = ChainConfig::from_yaml_str(include_str!(
+            "../../../crates/types/tests/fixtures/hoodi-config.yaml"
+        ))
+        .expect("hoodi fixture");
+        BlobBound::from_chain_config(&cfg).expect("hoodi fixture bound")
+    }
+
     fn lane_empty(m: Option<EngineMetrics>) -> FastpathLane {
         FastpathLane::new(
             transport(),
             m,
-            hoodi_blob_bound(),
+            test_blob_bound(),
             None,
             None,
             SubscriptionSet::empty(),

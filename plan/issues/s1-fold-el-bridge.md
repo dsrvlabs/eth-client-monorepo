@@ -405,6 +405,9 @@ fixture**, for the blob-count gate. Links P1-D/18 (test-harness state in product
 **Acceptance** — the bound comes from `ChainConfig` (the field added at `S0-A-07`); a grep for
 `hoodi_blob_bound` outside `#[cfg(test)]` returns 0.
 
+1. [x] Production FastpathLane blob-count bound comes from `ChainConfig` (`blob_schedule` + `max_blobs_per_block_electra` from `S0-A-07`)
+2. [x] A grep for `hoodi_blob_bound` outside `#[cfg(test)]` returns 0
+
 ### `S1-B-03` · P1-A/24 — zeroed KZG inclusion proof · 1.5–2 pd / **3 pts** (≈)
 **Touch** `services/chain/src/da.rs:395` — the block-branch `FetchBlobs` template always carries a
 zeroed KZG inclusion proof in production.

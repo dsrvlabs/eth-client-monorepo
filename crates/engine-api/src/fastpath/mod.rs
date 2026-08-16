@@ -88,29 +88,6 @@ impl InjectItem {
 /// Prevents unbounded growth once the lane is process-global (CC-37a review F3).
 pub const COMPLETED_LOG_BOUND: usize = 32;
 
-/// Hoodi-like blob schedule for tests and local wiring.
-///
-/// Entry epochs/maxima mirror the committed Hoodi `BLOB_SCHEDULE` (CC-1G). Kept
-/// out of `fetch.rs` so that file stays free of blob-count literals (CC-37a AC).
-#[must_use]
-#[allow(clippy::expect_used)] // static fixture table; validation failure is a test bug
-pub fn hoodi_blob_bound() -> BlobBound {
-    use cc_types::config::{BlobParameters, BlobSchedule};
-    use cc_types::primitives::Epoch;
-    let entries = vec![
-        BlobParameters {
-            epoch: Epoch::new(52_480),
-            max_blobs_per_block: 15,
-        },
-        BlobParameters {
-            epoch: Epoch::new(54_016),
-            max_blobs_per_block: 21,
-        },
-    ];
-    let schedule = BlobSchedule::try_from_entries(entries).expect("hoodi fixture schedule");
-    BlobBound::new(schedule, Epoch::new(2_048), 9)
-}
-
 /// Production CellKzg for the getBlobsV2 fastpath (CC-37b).
 ///
 /// `FastpathLane::new`'s `kzg` argument is `None` = fetch-only. Production must
@@ -627,17 +604,39 @@ mod tests {
     use super::*;
     use crate::config::{TimeoutKnobs, TransportTimeouts, soft_deadline_ms};
     use crate::jwt::JwtSecret;
-    use crate::methods::get_blobs::VERSIONED_HASH_VERSION_KZG;
+    use crate::methods::get_blobs::{GET_BLOBS_V2_MAX_HASHES, VERSIONED_HASH_VERSION_KZG};
     use crate::methods::names;
     use crate::metrics::EngineMethod;
     use crate::metrics::{EngineMetrics, GetBlobsResultLabels, MethodLabels};
     use crate::transport::{EngineTransport, Lane};
+    use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig};
+    use cc_types::primitives::Epoch;
     use prometheus_client::registry::Registry;
     use serde_json::{Value, json};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
     use wiremock::matchers::method as http_method;
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+    /// Hoodi-like blob schedule for tests.
+    ///
+    /// Entry epochs/maxima mirror the committed Hoodi `BLOB_SCHEDULE` (CC-1G).
+    /// Kept out of `fetch.rs` so that file stays free of blob-count literals
+    /// (CC-37a AC). Production uses [`BlobBound::from_chain_config`].
+    fn hoodi_blob_bound() -> BlobBound {
+        let entries = vec![
+            BlobParameters {
+                epoch: Epoch::new(52_480),
+                max_blobs_per_block: 15,
+            },
+            BlobParameters {
+                epoch: Epoch::new(54_016),
+                max_blobs_per_block: 21,
+            },
+        ];
+        let schedule = BlobSchedule::try_from_entries(entries).expect("hoodi fixture schedule");
+        BlobBound::new(schedule, Epoch::new(2_048), 9)
+    }
 
     fn metrics() -> EngineMetrics {
         let mut registry = Registry::default();
@@ -1641,5 +1640,56 @@ mod tests {
             SubscriptionSet::empty(),
         );
         assert!(lane.has_kzg());
+    }
+
+    /// S1-B-02: `from_chain_config` reads `max_blobs_per_block_electra` (S0-A-07).
+    #[test]
+    fn blob_bound_from_chain_config_uses_electra_max() {
+        let yaml = include_str!("../../../../crates/types/tests/fixtures/hoodi-config.yaml");
+        let mut cfg = ChainConfig::from_yaml_str(yaml).expect("hoodi yaml");
+        let hoodi = hoodi_blob_bound();
+        for epoch in [0_u64, 2_048, 52_480, 54_016, 100_000] {
+            let e = Epoch::new(epoch);
+            assert_eq!(
+                BlobBound::from_chain_config(&cfg)
+                    .expect("hoodi yaml")
+                    .get_blob_parameters(e),
+                hoodi.get_blob_parameters(e),
+                "hoodi yaml vs fixture at epoch {epoch}"
+            );
+        }
+        cfg.max_blobs_per_block_electra = 11;
+        let mutated = BlobBound::from_chain_config(&cfg).expect("electra max 11");
+        assert_eq!(
+            mutated
+                .get_blob_parameters(Epoch::new(0))
+                .max_blobs_per_block,
+            11,
+            "pre-BPO bound must follow ChainConfig.max_blobs_per_block_electra"
+        );
+    }
+
+    #[test]
+    fn from_chain_config_refuses_zero_and_el_ceiling() {
+        let yaml = include_str!("../../../../crates/types/tests/fixtures/hoodi-config.yaml");
+        let mut cfg = ChainConfig::from_yaml_str(yaml).expect("hoodi yaml");
+        cfg.max_blobs_per_block_electra = 0;
+        assert!(
+            BlobBound::from_chain_config(&cfg).is_err(),
+            "zero Electra max must not start"
+        );
+        cfg.max_blobs_per_block_electra = GET_BLOBS_V2_MAX_HASHES as u64;
+        assert!(
+            BlobBound::from_chain_config(&cfg).is_err(),
+            "EL 128 ceiling as the schedule max disables the CC-1G gate"
+        );
+        cfg.max_blobs_per_block_electra = 9;
+        let mut entries = cfg.blob_schedule.entries().to_vec();
+        entries[1].max_blobs_per_block = GET_BLOBS_V2_MAX_HASHES as u64;
+        cfg.blob_schedule = BlobSchedule::try_from_entries(entries).expect("schedule");
+        assert!(
+            BlobBound::from_chain_config(&cfg).is_err(),
+            "schedule entry at the EL ceiling must not start"
+        );
     }
 }

@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use cc_types::config::{BlobParameters, BlobSchedule};
+use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig};
 use cc_types::preset::{Mainnet, Preset};
 use cc_types::primitives::Epoch;
 use cc_types::sidecar::DataColumnSidecar;
@@ -91,6 +91,26 @@ impl BlobBound {
         }
     }
 
+    /// Production constructor: schedule + Electra fallback from loaded [`ChainConfig`].
+    ///
+    /// Uses `blob_schedule`, `electra_fork_epoch`, and `max_blobs_per_block_electra`
+    /// (the S0-A-07 field). Callers load the YAML; this type does not.
+    ///
+    /// Fail-closed: every max must be `> 0` and **below** the EL
+    /// [`GET_BLOBS_V2_MAX_HASHES`] ceiling. A max of 0 or of 128+ would disable
+    /// the CC-1G gate (only the EL 128 check would remain).
+    pub fn from_chain_config(cfg: &ChainConfig) -> Result<Self, &'static str> {
+        check_blob_count_max(cfg.max_blobs_per_block_electra)?;
+        for entry in cfg.blob_schedule.entries() {
+            check_blob_count_max(entry.max_blobs_per_block)?;
+        }
+        Ok(Self::new(
+            cfg.blob_schedule.clone(),
+            cfg.electra_fork_epoch,
+            cfg.max_blobs_per_block_electra,
+        ))
+    }
+
     /// CC-1G `get_blob_parameters(epoch)`.
     #[must_use]
     pub fn get_blob_parameters(&self, epoch: Epoch) -> BlobParameters {
@@ -100,6 +120,20 @@ impl BlobBound {
             self.max_blobs_per_block_electra,
         )
     }
+}
+
+/// Refuse 0 (empty gate) and any max at/above the EL 128-hash ceiling.
+///
+/// Uses [`GET_BLOBS_V2_MAX_HASHES`] so this file stays free of blob-count
+/// literals (CC-37a).
+fn check_blob_count_max(n: u64) -> Result<(), &'static str> {
+    if n == 0 {
+        return Err("blob-count max must be > 0");
+    }
+    if n >= GET_BLOBS_V2_MAX_HASHES as u64 {
+        return Err("blob-count max must stay below the EL getBlobsV2 128-hash ceiling");
+    }
+    Ok(())
 }
 
 /// One fetch request after single-flight admission.

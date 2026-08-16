@@ -11,14 +11,16 @@
 //! `ExecutionPayload<P>` is generic over `Preset` and SSZ decoding needs a
 //! concrete `P`; this is the existing chain decision applied consistently.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use cc_bootstrap::{PeerSpec, ServiceSpec, TelemetrySettings};
 use cc_config::ServiceConfig;
+use cc_engine::BlobBound;
 use cc_engine::SubscriptionSet;
 use cc_engine::capabilities::CapabilityCache;
 use cc_engine::config::EngineTransportConfig;
-use cc_engine::fastpath::{FastpathLane, hoodi_blob_bound, production_cell_kzg};
+use cc_engine::fastpath::{FastpathLane, production_cell_kzg};
 use cc_engine::inject::{INJECT_QUEUE_BOUND, InjectStreamConfig, run_inject_stream_client};
 use cc_engine::jwt::JwtSecret;
 use cc_engine::metrics::EngineMetrics;
@@ -48,6 +50,11 @@ const FETCH_BLOBS_METHOD: &str = "/eth.engine.v1.EngineService/FetchBlobs";
 /// Per-service config: shared [`ServiceConfig`] plus engine transport (CC-30a).
 #[derive(Debug, Deserialize)]
 struct EngineConfig {
+    /// Consensus-specs YAML for the getBlobs blob-count gate (S1-B-02).
+    ///
+    /// Required: a missing path must not fall back to a compiled test fixture.
+    /// Override: `CC_ENGINE_NETWORK_CONFIG`.
+    network_config: PathBuf,
     #[serde(flatten)]
     service: ServiceConfig,
     #[serde(flatten)]
@@ -89,6 +96,13 @@ async fn main() -> anyhow::Result<()> {
     // then telemetry, then serve. A mis-mounted secret must not leave us
     // listening while the EL 401s forever.
     let cfg = cc_config::load::<EngineConfig>(SERVICE)?;
+    // P1-A/26: blob-count gate from loaded ChainConfig, not a test fixture.
+    // Sandboxed read (no `..`, regular file, size cap) before JWT / init / bind.
+    // Errors are kind-only — never interpolate jwt_secret_path or YAML body.
+    let chain = cc_engine::load_network_chain_config(
+        &cfg.network_config,
+        Some(cfg.transport.jwt_secret_path.as_path()),
+    )?;
     // JWT secret: abort before any port bind (CC-30/1, §7). Load before init so
     // a bad secret never opens metrics/gRPC listeners.
     let jwt = JwtSecret::load(&cfg.transport.jwt_secret_path)
@@ -133,10 +147,12 @@ async fn main() -> anyhow::Result<()> {
     // Subscription starts empty (fail-closed) until p2p pushes SubscriptionSet.
     // Abort before serve if the committed trusted setup cannot load (P1-A/25).
     let kzg = Some(production_cell_kzg().map_err(|e| anyhow::anyhow!("KZG trusted setup: {e}"))?);
+    let bound = BlobBound::from_chain_config(&chain)
+        .map_err(|e| anyhow::anyhow!("network_config blob bound: {e}"))?;
     let lane = FastpathLane::new(
         Arc::clone(&transport),
         Some(engine_metrics.clone()),
-        hoodi_blob_bound(),
+        bound,
         None,
         kzg,
         SubscriptionSet::empty(),

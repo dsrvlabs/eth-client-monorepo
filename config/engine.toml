@@ -11,6 +11,12 @@ log_filter = "info"
 # must not make engine NOT_SERVING (the fast path is an accelerator).
 p2p_uri = "http://127.0.0.1:9002"
 
+# Consensus-specs YAML for the getBlobs blob-count gate (S0-A-07 / S1-B-02).
+# Supplies blob_schedule + max_blobs_per_block_electra. A missing path is a
+# startup error — production must not fall back to a compiled test fixture.
+# Override: CC_ENGINE_NETWORK_CONFIG=...
+network_config = "crates/types/tests/fixtures/hoodi-config.yaml"
+
 # ── CC-30a Engine API transport (Architecture §3.6, §7) ─────────────────────
 # Root-level keys (must appear *before* any [table] that would capture them).
 # Authenticated JSON-RPC endpoint (compose: http://el:8551).
