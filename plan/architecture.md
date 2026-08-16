@@ -401,6 +401,26 @@ pub trait P2pEgress: Send + Sync + 'static {
 }
 ```
 
+**The conformance suite is 11 named cases** (S1-A-12). Each case is a trait
+method or a §2.2 overflow row. Cases 1–8 share one assertion on both
+`InProcess` and `Ipc` in `crates/seam/src/conformance.rs`. Case 9 is an impl
+split (not one shared assertion). Cases 10–11 are overflow rows that are not
+seam methods; they stay in `cc-chain`. The count 11 is this list, not a pad.
+
+| # | Case | Trace | Home |
+|---|---|---|---|
+| 1 | `backpressure_surfaces_after_deadline` | Policy A, `submit_gossip` | `cc-seam` both impls |
+| 2 | `da_backpressure_surfaces_after_deadline` | Policy A, `notify_data_available` (E2) | `cc-seam` both impls |
+| 3 | `publish_drop_is_observable` | Policy C, `publish` | `cc-seam` both impls |
+| 4 | `update_view_never_fails` | `update_view` | `cc-seam` both impls |
+| 5 | `oversize_column_is_invalid_argument` | `submit_column_sidecar` | `cc-seam` both impls |
+| 6 | `closed_ingress_is_unavailable` | `submit_gossip` / `notify_data_available` | `cc-seam` both impls |
+| 7 | `closed_publish_is_unavailable` | `publish` | `cc-seam` both impls |
+| 8 | `closed_column_is_unavailable` | `submit_column_sidecar` | `cc-seam` both impls |
+| 9 | impl split (not one assertion) | InProcess: 4096 ring admits when import is full. Ipc: live session admits a sidecar (`Ok`); never Policy A `Backpressure` (ADR-R-01) | `cc-seam` impl-split |
+| 10 | `events::slow_subscriber_is_terminated_not_stalled` | Policy B | `cc-chain` |
+| 11 | `core::slot_tick_is_never_shed` | Policy D | `cc-chain` |
+
 **Where backpressure is expressed.** In exactly one place per edge: the bound on the
 receiving queue, named as a constant, plus the `send_timeout` on the sending side. Both
 are already the house pattern — `COMMAND_CHANNEL_CAPACITY = 64` ✓ (`core.rs:54`),
@@ -484,8 +504,8 @@ a module boundary.
       │ trait ChainIngress  { submit_gossip, ... }   │
       │ trait P2pEgress     { publish, update_view } │
       │ enum  SeamError     { Backpressure, ... }    │
-      │ mod   conformance   { 11 tests both impls    │
-      │                       must pass }            │
+      │ mod   conformance   { 11 named cases (§2.1); │
+      │                       1–8 both; 9 split }    │
       └───────────┬──────────────────────┬───────────┘
                   │                      │
       ┌───────────▼──────────┐  ┌────────▼───────────────────┐

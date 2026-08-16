@@ -242,6 +242,7 @@ impl Ipc {
     /// Remaining `out_tx` slots. Policy A occupancy is `capacity() == 0`
     /// at [`CHAIN_OUT_BOUND`] — Ipc's send-side bound, not Loop B's 64.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn out_lane_capacity(&self) -> usize {
         self.out_tx.capacity()
     }
@@ -251,6 +252,7 @@ impl Ipc {
     /// auto-advance the clock before overflow. `Full` means already full;
     /// `Closed` cannot satisfy occupancy.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn fill_out_lane(&self) {
         for _ in 0..CHAIN_OUT_BOUND {
             let (reply, _rx) = oneshot::channel();
@@ -1212,8 +1214,8 @@ impl P2pEgress for IpcEgress {
 }
 
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+pub(crate) mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use crate::ObjectKind;
@@ -1255,15 +1257,18 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Default)]
-    struct EchoChain;
+    #[derive(Debug)]
+    struct ModeChain {
+        exhaust_on_object: bool,
+    }
 
     #[tonic::async_trait]
-    impl ChainService for EchoChain {
+    impl ChainService for ModeChain {
         async fn p2p_stream(
             &self,
             request: tonic::Request<tonic::Streaming<P2pToChain>>,
         ) -> Result<tonic::Response<BoxStreamChainToP2p>, tonic::Status> {
+            let exhaust_on_object = self.exhaust_on_object;
             let mut inbound = request.into_inner();
             let (tx, rx) = tokio_mpsc::channel(16);
             tokio::spawn(async move {
@@ -1285,6 +1290,14 @@ mod tests {
                                 .await;
                         }
                         Some(p2p_to_chain::Msg::Object(obj)) => {
+                            if exhaust_on_object {
+                                let _ = tx
+                                    .send(Err(tonic::Status::resource_exhausted(
+                                        "import lane full",
+                                    )))
+                                    .await;
+                                break;
+                            }
                             seq += 1;
                             let _ = tx
                                 .send(Ok(ChainToP2p {
@@ -1307,13 +1320,17 @@ mod tests {
     }
 
     async fn spawn_echo_grpc() -> (SocketAddr, oneshot::Sender<()>) {
+        spawn_mode_grpc(false).await
+    }
+
+    async fn spawn_mode_grpc(exhaust_on_object: bool) -> (SocketAddr, oneshot::Sender<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         tokio::spawn(async move {
             let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
             let _ = Server::builder()
-                .add_service(ChainServiceServer::new(EchoChain))
+                .add_service(ChainServiceServer::new(ModeChain { exhaust_on_object }))
                 .serve_with_incoming_shutdown(incoming, async {
                     let _ = shutdown_rx.await;
                 })
@@ -1321,6 +1338,69 @@ mod tests {
         });
         tokio::time::sleep(Duration::from_millis(30)).await;
         (addr, shutdown_tx)
+    }
+
+    /// Named-case Ipc wrappers dial this and poll `run_ipc_loop`.
+    pub(crate) struct LiveIpc {
+        pub(crate) ipc: Ipc,
+        pub(crate) egress: IpcEgress,
+        pub(crate) mailbox: IpcMailbox,
+        shutdown_tx: watch::Sender<bool>,
+        stop: Option<oneshot::Sender<()>>,
+        join: tokio::task::JoinHandle<()>,
+    }
+
+    impl LiveIpc {
+        pub(crate) async fn echo() -> Self {
+            Self::connect(false).await
+        }
+
+        pub(crate) async fn exhaust_on_object() -> Self {
+            Self::connect(true).await
+        }
+
+        async fn connect(exhaust_on_object: bool) -> Self {
+            let (addr, stop) = spawn_mode_grpc(exhaust_on_object).await;
+            let (shutdown_tx, shutdown_rx) = watch::channel(false);
+            let cfg = IpcConfig {
+                chain_uri: format!("http://{addr}"),
+                connect_timeout: Duration::from_millis(250),
+                ..IpcConfig::default()
+            };
+            let (ipc, egress, mailbox, task) = Ipc::connect(cfg, shutdown_rx);
+            let live = Self {
+                ipc,
+                egress,
+                mailbox,
+                shutdown_tx,
+                stop: Some(stop),
+                join: tokio::spawn(task),
+            };
+            live.wait_session().await;
+            live
+        }
+
+        pub(crate) async fn wait_session(&self) {
+            for _ in 0..100 {
+                if self.mailbox.load_view().view_kind == 4 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            panic!("ipc session did not open (no StreamHello view)");
+        }
+
+        pub(crate) fn stop_server(&mut self) {
+            if let Some(stop) = self.stop.take() {
+                let _ = stop.send(());
+            }
+        }
+
+        pub(crate) async fn shutdown(mut self) {
+            let _ = self.shutdown_tx.send(true);
+            self.stop_server();
+            let _ = tokio::time::timeout(Duration::from_secs(2), self.join).await;
+        }
     }
 
     #[test]

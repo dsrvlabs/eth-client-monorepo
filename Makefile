@@ -68,6 +68,10 @@ check: ## Type-check workspace (no codegen of binaries)
 test: ## Run tests with cargo-nextest (CI profile)
 	$(CARGO) nextest run $(NEXTEST_FLAGS)
 
+.PHONY: test-seam
+test-seam: ## Conformance suite against both seam impls (E1.3)
+	$(CARGO) test -p cc-seam $(CARGO_FLAGS)
+
 .PHONY: test-cargo
 test-cargo: ## Run tests with cargo test (fallback without nextest)
 	$(CARGO) test --workspace $(CARGO_FLAGS)
@@ -301,7 +305,7 @@ compose-proof: compose check-compose-uris-runtime prove-health check-offhost-sca
 # ══════════════════════════════════════════════════════════════════════════════
 
 .PHONY: ci
-ci: lint test proto deps ## Required local CI gates (no compose/vectors)
+ci: lint test-seam test proto deps ## Required local CI gates (no compose/vectors)
 
 .PHONY: clean
 clean: ## cargo clean

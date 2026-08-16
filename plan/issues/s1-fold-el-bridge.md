@@ -280,11 +280,31 @@ would be exactly the silent change R-1 predicts.
 - [x] `core::slot_tick_is_never_shed` asserted (policy D; landed `S0-A-14`)
 - [x] A–D remain separate; no new `SeamError` variants; no A-12 remaining tests
 
-**Under-specified — flag in `S1-A-12`.** `[PLAN]` and `[ARCH]` both say **11 tests**. `[ARCH]` §2.2
-names **four**. The remaining **seven are unnamed in either source.** Do not invent them silently:
-`S1-A-12`'s first deliverable is the enumerated list of 11, reviewed before any is written, with each
-test traced to a trait method or an overflow row. If the honest count is not 11, say so and correct
-the figure in `[ARCH]` §2.1.
+**Enumerated (`S1-A-12`).** Honest count **is** 11: each case is a trait method or a §2.2 overflow
+row. Cases 1–8 share one assertion on both impls in `crates/seam/src/conformance.rs`. Case 9 is an
+impl split (not one shared assertion). Cases 10–11 are overflow rows that are not seam methods
+(landed `S1-A-11`; stay in `cc-chain`). Figure kept in `[ARCH]` §2.1.
+
+| # | Case | Trace |
+|---|---|---|
+| 1 | `backpressure_surfaces_after_deadline` | Policy A, `submit_gossip` (`S1-A-10`) |
+| 2 | `da_backpressure_surfaces_after_deadline` | Policy A, `notify_data_available` |
+| 3 | `publish_drop_is_observable` | Policy C, `publish` (`S1-A-11`) |
+| 4 | `update_view_never_fails` | `update_view` |
+| 5 | `oversize_column_is_invalid_argument` | `submit_column_sidecar` |
+| 6 | `closed_ingress_is_unavailable` | `submit_gossip` / `notify_data_available` |
+| 7 | `closed_publish_is_unavailable` | `publish` |
+| 8 | `closed_column_is_unavailable` | `submit_column_sidecar` |
+| 9 | impl split (not one assertion) | InProcess: HOL-free admit on full import. Ipc: live admit, never Policy A |
+| 10 | `events::slow_subscriber_is_terminated_not_stalled` | Policy B (`S1-A-11`) |
+| 11 | `core::slot_tick_is_never_shed` | Policy D (`S1-A-11`) |
+
+**Acceptance (`S1-A-12` only)**
+
+- [x] Enumerated 11 named cases (trait method or §2.2 row) in `[ARCH]` §2.1; count is honest, not padded
+- [x] Remaining cases 2, 4–8 share one assertion on both impls; case 9 is a documented impl split (no 12th case)
+- [x] `cargo test -p cc-seam` against both impls; `make ci` / `ci.yml` run it (E1.3)
+- [x] A–D remain separate; no new `SeamError` variants; B and D stay in `cc-chain`
 
 **Acceptance for the group** — `cargo test -p cc-seam` passes against **both** impls (`InProcess` and
 `Ipc`), not one, and CI runs both (E1.3).
@@ -946,6 +966,6 @@ Finding: `plan/issues/spike-notes.md` ## Q-1. JWT rule untouched (S1-A-01).
 |---|---|
 | 1 | **The `crates/engine-api` extraction is 8–12 pd in `[PLAN]`; decomposed it is 8.5–12.5 pd** — consistent. **The `cc-seam` group is 10–14 pd in `[PLAN]`; decomposed 11–15 pd** — consistent. The gate is 19–26 pd in §3 and 19–32 pd in §4; decomposed **22.25–30.25 pd**, inside §4's range and above §3's. Use §4's figure. |
 | 2 | **Calendar.** Stream A carries 33–47.5 pd → **8.25–11.9 wk** at 4 effective pd/engineer-week, against `[PLAN]`'s 7–9 wk. Stream B carries 29.25–40.75 pd → 7.3–10.2 wk. The two streams are well balanced; the phase simply runs ~1–2 wk long at the top of the range. `[PLAN]` §12's lever — *a dedicated technical writer for the ADR corpus* — buys the (a) bucket (7–9 pd) but **not** the 12 (b) rows, which need the decision owners. |
-| 3 | **The 11 conformance tests are named as a count, not a list.** `[ARCH]` §2.2 names four. Seven are unspecified in either source. `S1-A-12` enumerates them before writing them; if the honest number is not 11, the source figure needs correcting rather than the test list padding. |
+| 3 | **The 11 conformance tests are named as a count, not a list.** `[ARCH]` §2.2 names four. Seven are unspecified in either source. `S1-A-12` enumerated them in `[ARCH]` §2.1; the honest number is 11 (1–8 share one assertion on both impls; case 9 is an impl split; B and D stay in `cc-chain`). |
 | 4 | **P2-D/19 is "19 engine policy edges" with three named and no `file:line` for the other 16.** `S1-B-04` scopes to the three named; the rest are unestimatable as written. |
 | 5 | **`X-6`, this decomposition's finding:** `[ARCH]` §10.4 assigns `ADR-P3-15`'s replacement to `ADR-R-05`, which §10.5 already uses for the slashing-protection record. Two decisions, one id. Resolved in `S1-B-13` by moving `ADR-P3-15`'s successor to `ADR-R-07`. |

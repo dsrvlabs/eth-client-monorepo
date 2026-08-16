@@ -145,6 +145,10 @@ jobs:
         with:
           tool: cargo-nextest
 
+      # E1.3 / S1-A-12: both InProcess and Ipc must pass the cc-seam suite.
+      - name: cargo test -p cc-seam (both impls)
+        run: cargo test -p cc-seam --locked
+
       # Spec-vector tarball cache (Phase 0 shape) — minimal ssz_static needs the tree.
       - name: Resolve spec-vector cache path
         id: vectors
