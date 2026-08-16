@@ -1,4 +1,4 @@
-# fixture — S0/S1-claimed cells filled; later-stage patches may stay blank
+# fixture — S0/S1/S2-claimed cells filled; later-stage patches may stay blank
 
 ## 5. Requirement ledger
 
@@ -16,7 +16,7 @@
 | Q3 change | Size | Disposition | Discharged by |
 |---|---|---|---|
 | 1 — top-up | S | `patch @ S0` | `bbbbbbbbbbbb` |
-| 3 — move cache | M | `patch @ S2` | |
+| 3 — move cache | M | `patch @ S2` | `ffffffffffff` |
 
 ### 5.2 P1 — required
 
@@ -25,7 +25,7 @@
 | # | Location | Requirement | Disposition | Discharged by |
 |---|---|---|---|---|
 | 1 | serve.rs | frontier bind | `patch @ S0` | `S0-B-10` |
-| 2 | backfill.rs | admission | `patch @ S2` | |
+| 2 | backfill.rs | admission | `patch @ S2` | `S2-B-07` |
 
 #### P1-B — Medium quality
 

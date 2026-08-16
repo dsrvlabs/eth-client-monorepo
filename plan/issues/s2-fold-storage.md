@@ -435,6 +435,10 @@ argument that "no commit fixed it".
 (`[PRD]` §5.0 / E0.9). Also append `S2` to `CLAIM_STAGES` in `scripts/check-m3-discharged-by.sh`.
 A blank S2-claimed cell is a CI failure. That is the program's *no-P0-vanishes-silently* check.
 
+- [x] `S2` appended to `CLAIM_STAGES` in `scripts/check-m3-discharged-by.sh`.
+- [x] `[PRD]` §5.1/§5.2 `Discharged by` filled for every S2-claimed row (owning issue id until SHA lands).
+- [x] Fixture self-test includes an S2 case and is green.
+
 ---
 
 ## S2 exit criteria — and which issue earns each
