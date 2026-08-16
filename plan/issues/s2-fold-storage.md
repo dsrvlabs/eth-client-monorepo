@@ -492,6 +492,8 @@ recoverable record of the pending drop survives restart.
 **Touch** `services/storage/src/serve.rs:484`. The documented 256 MiB ceiling is not enforced.
 **Acceptance** — the permit is held for the lifetime of the response body; a test with two concurrent
 large unary serves observes the ceiling.
+- [x] The permit is held for the lifetime of the response body
+- [x] A test with two concurrent large unary serves observes the ceiling
 
 ### `S2-B-11` · P1-B/3 — multi-second CPU on the async runtime thread · 1.5–2 pd / **3 pts** (≈)
 **Touch** `crates/storage-core/src/replay.rs` (was `services/storage/src/replay.rs:354`). A 200 MB SSZ decode + tree-hash on a runtime worker.

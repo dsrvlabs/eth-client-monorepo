@@ -28,7 +28,7 @@ use crate::prune::{
 use crate::replay::{self, ReplayConfig, ReplayDriver, spawn_replay_task};
 use crate::restore_client;
 use crate::resume;
-use crate::serve::{self, ServeConfig, StorageServer};
+use crate::serve::{self, ServeConfig, StorageServer, UnaryPermitService};
 use crate::write_behind::{self, WriteBehindConfig, spawn_write_behind};
 use crate::writer::{
     self, WriterBounds, WriterFaults, WriterHandle, load_write_cursor, spawn_writer,
@@ -736,7 +736,9 @@ pub async fn run() -> anyhow::Result<()> {
         }
         None => StorageServer::stub(storage_metrics, cfg.serve_config()),
     };
-    let routes = Routes::default().add_service(StorageServiceServer::new(storage_svc));
+    let routes = Routes::default().add_service(UnaryPermitService::new(StorageServiceServer::new(
+        storage_svc,
+    )));
     let options = ServeOptions {
         on_pre_drain: Some(pre_drain_fire_shutdown(shutdown_tx)),
         ..ServeOptions::default()

@@ -43,7 +43,9 @@
 //!
 //! `serve_buffer_bytes` (default 64 MiB) × `serve_permits` (default 4) = **256 MiB**
 //! serve-path ceiling. Over `serve_queue_timeout` the semaphore answers
-//! `RESOURCE_EXHAUSTED`, never an empty success.
+//! `RESOURCE_EXHAUSTED`, never an empty success. Unary permits are held on the
+//! HTTP body (not handler locals or `http::Extensions`) so a slow consumer
+//! keeps the ceiling in force.
 //!
 //! # SEC-4I-1 — `GetSnapshotState` stream admission
 //!
@@ -64,6 +66,7 @@
 //! boundary**, never mid-block. Column range/root responses emit whole
 //! `columns_for_block` units only.
 
+use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -95,7 +98,9 @@ use futures::Stream;
 use futures::StreamExt;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio_stream::wrappers::WatchStream;
-use tonic::codegen::BoxStream;
+use tonic::codegen::http::{Request as HttpRequest, Response as HttpResponse};
+use tonic::codegen::{Body as HttpBody, BoxFuture, BoxStream, Service as TowerService};
+use tonic::server::NamedService;
 use tonic::{Request, Response, Status};
 
 use crate::backfill::{
@@ -479,11 +484,14 @@ impl StorageService for StorageServer {
     ) -> Result<Response<GetBlocksResponse>, Status> {
         let protocol = ServeProtocol::BlocksByRange;
         let started = Instant::now();
-        let _permit = self.admit(protocol).await?;
+        let permit = self.admit(protocol).await?;
         let req = request.into_inner();
         if req.count == 0 {
             self.record_serve(protocol, ServeResult::Ok, started, 0);
-            return Ok(Response::new(GetBlocksResponse { blocks: vec![] }));
+            return Ok(unary_with_permit(
+                permit,
+                GetBlocksResponse { blocks: vec![] },
+            ));
         }
         if req.count > MAX_BLOCKS_BY_RANGE {
             self.record_serve(protocol, ServeResult::Error, started, 0);
@@ -526,7 +534,7 @@ impl StorageService for StorageServer {
         }
         let bytes: u64 = blocks.iter().map(|b| b.ssz.len() as u64).sum();
         self.record_serve(protocol, ServeResult::Ok, started, bytes);
-        Ok(Response::new(GetBlocksResponse { blocks }))
+        Ok(unary_with_permit(permit, GetBlocksResponse { blocks }))
     }
 
     async fn get_blocks_by_root(
@@ -535,7 +543,7 @@ impl StorageService for StorageServer {
     ) -> Result<Response<GetBlocksResponse>, Status> {
         let protocol = ServeProtocol::BlocksByRoot;
         let started = Instant::now();
-        let _permit = self.admit(protocol).await?;
+        let permit = self.admit(protocol).await?;
         let req = request.into_inner();
         if req.roots.len() > MAX_BY_ROOT {
             self.record_serve(protocol, ServeResult::Error, started, 0);
@@ -581,7 +589,7 @@ impl StorageService for StorageServer {
             return Err(Status::unavailable("no requested roots available"));
         }
         self.record_serve(protocol, ServeResult::Ok, started, total);
-        Ok(Response::new(GetBlocksResponse { blocks }))
+        Ok(unary_with_permit(permit, GetBlocksResponse { blocks }))
     }
 
     async fn get_columns_by_range(
@@ -590,11 +598,14 @@ impl StorageService for StorageServer {
     ) -> Result<Response<GetColumnsResponse>, Status> {
         let protocol = ServeProtocol::ColumnsByRange;
         let started = Instant::now();
-        let _permit = self.admit(protocol).await?;
+        let permit = self.admit(protocol).await?;
         let req = request.into_inner();
         if req.count == 0 {
             self.record_serve(protocol, ServeResult::Ok, started, 0);
-            return Ok(Response::new(GetColumnsResponse { columns: vec![] }));
+            return Ok(unary_with_permit(
+                permit,
+                GetColumnsResponse { columns: vec![] },
+            ));
         }
         if req.count > MAX_COLUMNS_BY_RANGE_SLOTS {
             self.record_serve(protocol, ServeResult::Error, started, 0);
@@ -650,7 +661,7 @@ impl StorageService for StorageServer {
         }
         let bytes: u64 = columns.iter().map(|c| c.ssz.len() as u64).sum();
         self.record_serve(protocol, ServeResult::Ok, started, bytes);
-        Ok(Response::new(GetColumnsResponse { columns }))
+        Ok(unary_with_permit(permit, GetColumnsResponse { columns }))
     }
 
     async fn get_columns_by_root(
@@ -659,7 +670,7 @@ impl StorageService for StorageServer {
     ) -> Result<Response<GetColumnsResponse>, Status> {
         let protocol = ServeProtocol::ColumnsByRoot;
         let started = Instant::now();
-        let _permit = self.admit(protocol).await?;
+        let permit = self.admit(protocol).await?;
         let req = request.into_inner();
         if req.identifiers.len() > MAX_BY_ROOT {
             self.record_serve(protocol, ServeResult::Error, started, 0);
@@ -740,7 +751,7 @@ impl StorageService for StorageServer {
             return Err(Status::unavailable("no requested columns available"));
         }
         self.record_serve(protocol, ServeResult::Ok, started, total);
-        Ok(Response::new(GetColumnsResponse { columns }))
+        Ok(unary_with_permit(permit, GetColumnsResponse { columns }))
     }
 
     async fn put_backfill_batch(
@@ -892,26 +903,26 @@ impl StorageService for StorageServer {
             .id
             .ok_or_else(|| Status::invalid_argument("GetHistoricalBlock.id is required"))?;
 
-        let (protocol, block) = match id {
+        let (protocol, block, permit) = match id {
             HistoricalBlockId::Root(bytes) => {
                 let protocol = ServeProtocol::HistoricalBlockByRoot;
-                let _permit = self.admit(protocol).await?;
+                let permit = self.admit(protocol).await?;
                 let root = parse_root(&bytes)?;
                 let engine = self.engine()?;
                 let materialise_start = Instant::now();
                 let block = historical_block_by_root(engine, &root).map_err(store_status)?;
                 self.observe_read_txn(materialise_start);
-                (protocol, block)
+                (protocol, block, permit)
             }
             HistoricalBlockId::Slot(slot) => {
                 let protocol = ServeProtocol::HistoricalBlockBySlot;
-                let _permit = self.admit(protocol).await?;
+                let permit = self.admit(protocol).await?;
                 let engine = self.engine()?;
                 let materialise_start = Instant::now();
                 let block =
                     historical_block_by_slot(engine, Slot::new(slot)).map_err(store_status)?;
                 self.observe_read_txn(materialise_start);
-                (protocol, block)
+                (protocol, block, permit)
             }
         };
 
@@ -921,11 +932,14 @@ impl StorageService for StorageServer {
         };
         let bytes = block.ssz.len() as u64;
         self.record_serve(protocol, ServeResult::Ok, started, bytes);
-        Ok(Response::new(GetHistoricalBlockResponse {
-            ssz: block.ssz,
-            slot: block.slot.as_u64(),
-            root: block.root.as_slice().to_vec(),
-        }))
+        Ok(unary_with_permit(
+            permit,
+            GetHistoricalBlockResponse {
+                ssz: block.ssz,
+                slot: block.slot.as_u64(),
+                root: block.root.as_slice().to_vec(),
+            },
+        ))
     }
 
     async fn get_snapshot_state(
@@ -981,7 +995,7 @@ impl StorageService for StorageServer {
     ) -> Result<Response<GetFinalizedCheckpointHistoryResponse>, Status> {
         let protocol = ServeProtocol::FinalizedCheckpointHistory;
         let started = Instant::now();
-        let _permit = self.admit(protocol).await?;
+        let permit = self.admit(protocol).await?;
         let engine = self.engine()?;
         let materialise_start = Instant::now();
         let hist = finalized_checkpoint_history(engine).map_err(store_status)?;
@@ -997,15 +1011,123 @@ impl StorageService for StorageServer {
         // Small response; byte count is the sum of root lengths.
         let bytes: u64 = checkpoints.iter().map(|c| c.root.len() as u64).sum();
         self.record_serve(protocol, ServeResult::Ok, started, bytes);
-        Ok(Response::new(GetFinalizedCheckpointHistoryResponse {
-            checkpoints,
-        }))
+        Ok(unary_with_permit(
+            permit,
+            GetFinalizedCheckpointHistoryResponse { checkpoints },
+        ))
     }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Park the admit permit on the tonic response so [`UnaryPermitService`] can
+/// lift it onto the HTTP body. h2 clears extensions at header send.
+fn unary_with_permit<T>(permit: OwnedSemaphorePermit, body: T) -> Response<T> {
+    let mut response = Response::new(body);
+    response
+        .extensions_mut()
+        .insert(UnaryServePermit(Arc::new(permit)));
+    response
+}
+
+/// Carrier through tonic encode. `http::Extensions::insert` requires `Clone`.
+#[derive(Clone, Debug)]
+struct UnaryServePermit(#[allow(dead_code)] Arc<OwnedSemaphorePermit>);
+
+/// HTTP body that owns the admit permit until the consumer finishes.
+pub(crate) struct PermitBody<B> {
+    inner: B,
+    _permit: Option<UnaryServePermit>,
+}
+
+impl<B: fmt::Debug> fmt::Debug for PermitBody<B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PermitBody")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<B> HttpBody for PermitBody<B>
+where
+    B: HttpBody + Unpin,
+{
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        Pin::new(&mut self.inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+/// Move the admit permit off extensions and onto the body.
+///
+/// Must run after tonic wraps the unary in `EncodeBody` and before hyper/h2
+/// send headers (`h2` `send_response` clears extensions).
+fn lift_unary_permit<B>(mut response: HttpResponse<B>) -> HttpResponse<PermitBody<B>> {
+    let permit = response.extensions_mut().remove::<UnaryServePermit>();
+    let (parts, inner) = response.into_parts();
+    HttpResponse::from_parts(
+        parts,
+        PermitBody {
+            inner,
+            _permit: permit,
+        },
+    )
+}
+
+/// Lifts a unary admit permit from response extensions onto the HTTP body.
+#[derive(Clone, Debug)]
+pub(crate) struct UnaryPermitService<S> {
+    inner: S,
+}
+
+impl<S> UnaryPermitService<S> {
+    pub(crate) fn new(inner: S) -> Self {
+        Self { inner }
+    }
+}
+
+impl<S> NamedService for UnaryPermitService<S>
+where
+    S: NamedService,
+{
+    const NAME: &'static str = S::NAME;
+}
+
+impl<S, ReqBody, ResBody> TowerService<HttpRequest<ReqBody>> for UnaryPermitService<S>
+where
+    S: TowerService<HttpRequest<ReqBody>, Response = HttpResponse<ResBody>>,
+    S::Error: Send + 'static,
+    S::Future: Send + 'static,
+    ResBody: Send + 'static,
+{
+    type Response = HttpResponse<PermitBody<ResBody>>;
+    type Error = S::Error;
+    type Future = BoxFuture<Self::Response, Self::Error>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: HttpRequest<ReqBody>) -> Self::Future {
+        let fut = self.inner.call(req);
+        Box::pin(async move { Ok(lift_unary_permit(fut.await?)) })
+    }
+}
 
 /// Progressive `StateChunk` stream that holds the snapshot admit permit for its
 /// full lifetime (SEC-4I-1).
@@ -1501,6 +1623,33 @@ mod tests {
         }
         eng.commit(b).unwrap();
         out
+    }
+
+    fn seed_large_block(eng: &Engine, slot: u64, extra_bytes: usize) -> Vec<u8> {
+        let root = Root::from_array({
+            let mut a = [0u8; 32];
+            a[0..8].copy_from_slice(&slot.to_be_bytes());
+            a
+        });
+        let mut ssz = synth_block(slot, &Root::ZERO, &root_n(1));
+        ssz.resize(ssz.len().saturating_add(extra_bytes), 0xAB);
+        let mut b = eng.batch();
+        {
+            let rt = eng.read().unwrap();
+            put_block(
+                &rt,
+                &mut b,
+                Slot::new(slot),
+                &root,
+                &ssz,
+                BlockRegion::Hot,
+                false,
+            )
+            .unwrap();
+            put_canonical(&rt, &mut b, Slot::new(slot), &root).unwrap();
+        }
+        eng.commit(b).unwrap();
+        ssz
     }
 
     fn seed_columns(eng: &Engine, start: u64, count: u64, indices: &[u16]) {
@@ -2157,6 +2306,108 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn grpc_blocks_by_range_http(start_slot: u64, count: u64) -> HttpRequest<tonic::body::Body> {
+        use http_body_util::Full;
+        use prost::Message;
+
+        let payload = GetBlocksByRangeRequest { start_slot, count }.encode_to_vec();
+        let mut frame = Vec::with_capacity(5 + payload.len());
+        frame.push(0);
+        frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&payload);
+        HttpRequest::builder()
+            .method("POST")
+            .uri("/eth.storage.v1.StorageService/GetBlocksByRange")
+            .header("content-type", "application/grpc")
+            .body(tonic::body::Body::new(Full::new(bytes::Bytes::from(frame))))
+            .unwrap()
+    }
+
+    fn grpc_status_code<B>(resp: &HttpResponse<B>) -> Option<tonic::Code> {
+        resp.headers()
+            .get("grpc-status")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<i32>().ok())
+            .map(tonic::Code::from)
+    }
+
+    /// P1-B/2 / S2-B-10: permit lives on the HTTP body. Two concurrent large
+    /// serves through tonic encode + h2 `extensions.clear()` observe the ceiling.
+    #[tokio::test]
+    async fn unary_serve_holds_permit_for_response_body_lifetime() {
+        let (dir, eng) = open_engine("unary-permit-body");
+        // ~1 MiB body: large enough to be a real serve-path buffer, small enough
+        // for a unit test. One permit ⇒ peak admitted = this body, not 2×.
+        let large = seed_large_block(&eng, 0, 1024 * 1024);
+        let cfg = ServeConfig {
+            buffer_bytes: large.len() as u64,
+            permits: 1,
+            queue_timeout: Duration::from_millis(50),
+            ..ServeConfig::default()
+        };
+        assert_eq!(
+            cfg.buffer_bytes * cfg.permits as u64,
+            large.len() as u64,
+            "scaled ceiling is one large unary body"
+        );
+        let storage = Arc::new(server_with(Arc::clone(&eng), cfg));
+        let svc = UnaryPermitService::new(StorageServiceServer::from_arc(Arc::clone(&storage)));
+
+        let mut s1 = svc.clone();
+        let mut s2 = svc.clone();
+        let (mut first, mut second) = tokio::join!(
+            async move { s1.call(grpc_blocks_by_range_http(0, 1)).await.unwrap() },
+            async move { s2.call(grpc_blocks_by_range_http(0, 1)).await.unwrap() },
+        );
+        // h2 `send_response` drops every extension before the body is written.
+        first.extensions_mut().clear();
+        second.extensions_mut().clear();
+
+        let ok = [grpc_status_code(&first), grpc_status_code(&second)]
+            .into_iter()
+            .filter(|c| c.is_none() || *c == Some(tonic::Code::Ok))
+            .count();
+        let exhausted = [grpc_status_code(&first), grpc_status_code(&second)]
+            .into_iter()
+            .filter(|c| *c == Some(tonic::Code::ResourceExhausted))
+            .count();
+        assert_eq!(
+            ok,
+            1,
+            "exactly one of two concurrent large unaries admits; first={:?} second={:?}",
+            grpc_status_code(&first),
+            grpc_status_code(&second)
+        );
+        assert_eq!(
+            exhausted,
+            1,
+            "the other observes the 1-permit ceiling; first={:?} second={:?}",
+            grpc_status_code(&first),
+            grpc_status_code(&second)
+        );
+        assert_eq!(
+            storage.admits.available_permits(),
+            0,
+            "held HTTP body must still occupy the permit after extensions.clear()"
+        );
+
+        drop(first);
+        drop(second);
+        assert_eq!(storage.admits.available_permits(), 1);
+
+        let again = svc
+            .clone()
+            .call(grpc_blocks_by_range_http(0, 1))
+            .await
+            .unwrap();
+        let again_code = grpc_status_code(&again);
+        assert!(
+            again_code.is_none() || again_code == Some(tonic::Code::Ok),
+            "admit after body drop must succeed, got {again_code:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn materialise_cap_never_loads_past_buffer() {
         // Regression: must stop loading once budget is hit (not load-all-then-shrink).
@@ -2751,7 +3002,7 @@ mod tests {
     #[test]
     fn storage_service_server_type_constructs() {
         let srv = StorageServer::stub(metrics(), ServeConfig::default());
-        let _ = StorageServiceServer::new(srv);
+        let _ = UnaryPermitService::new(StorageServiceServer::new(srv));
     }
 
     /// Force-delete every block key in `[start, start+count)` (direct engine
