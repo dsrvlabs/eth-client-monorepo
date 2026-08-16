@@ -266,6 +266,13 @@ would be exactly the silent change R-1 predicts.
 | **C** try_send, drop the *message*, log | publish queue → swarm cmd queue full ✓ `service.rs:794-797` | `error!(...)`, **no caller signal** | `Ok(Published::Dropped)` — **a value, not a log line** | `publish_drop_is_observable` | `S1-A-11` |
 | **D** try_send, drop *silently* | `SlotTick` into the full 64-deep channel ✓ `core.rs:527-532` | **none** | **deleted** — the tick has its own never-shed lane | `core::slot_tick_is_never_shed` | `S1-A-11` (assert it, landed at `S0-A-14`) |
 
+**Acceptance (`S1-A-10` only)**
+
+- [x] `crates/seam/src/conformance.rs` — `backpressure_surfaces_after_deadline`
+- [x] Fill the send path and assert occupancy; `SeamError::Backpressure` names the impl bound (`IMPORT_LANE_DEPTH` / `CHAIN_OUT_BOUND`) and elapsed ≥ `IMPORT_SEND_TIMEOUT`
+- [x] Runs against both `InProcess` and `Ipc` (`start_paused`; no wall-clock 2 s)
+- [x] No new `SeamError` variants; Ipc's bound is existing `CHAIN_OUT_BOUND` (not a second 64-deep queue); no production transport selected
+
 **Under-specified — flag in `S1-A-12`.** `[PLAN]` and `[ARCH]` both say **11 tests**. `[ARCH]` §2.2
 names **four**. The remaining **seven are unnamed in either source.** Do not invent them silently:
 `S1-A-12`'s first deliverable is the enumerated list of 11, reviewed before any is written, with each

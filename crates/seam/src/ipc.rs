@@ -238,6 +238,54 @@ impl Ipc {
         let task = run_ipc_loop(cfg, out_rx, publish_tx, view, shutdown, upward);
         (ipc, egress, mailbox, task)
     }
+
+    /// Remaining `out_tx` slots. Policy A occupancy is `capacity() == 0`
+    /// at [`CHAIN_OUT_BOUND`] — Ipc's send-side bound, not Loop B's 64.
+    #[cfg(test)]
+    pub(crate) fn out_lane_capacity(&self) -> usize {
+        self.out_tx.capacity()
+    }
+
+    /// Occupy every `out_tx` slot without parking a send-timeout waiter.
+    /// Paused `submit_gossip` waiters sit on `IMPORT_SEND_TIMEOUT` and
+    /// auto-advance the clock before overflow. `Full` means already full;
+    /// `Closed` cannot satisfy occupancy.
+    #[cfg(test)]
+    pub(crate) fn fill_out_lane(&self) {
+        for _ in 0..CHAIN_OUT_BOUND {
+            let (reply, _rx) = oneshot::channel();
+            match self.out_tx.try_send(IpcOut::Gossip {
+                obj: GossipObject {
+                    ssz: Vec::new(),
+                    fork: 0,
+                    root: [0; 32],
+                    kind: ObjectKind::Block,
+                    subnet_id: 0,
+                },
+                reply,
+                enqueued_at: Instant::now(),
+            }) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => break,
+                Err(TrySendError::Closed(_)) => {
+                    assert!(
+                        !self.out_tx.is_closed(),
+                        "ipc out_tx closed; cannot occupy CHAIN_OUT_BOUND"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            self.out_tx.max_capacity(),
+            CHAIN_OUT_BOUND,
+            "Ipc Policy A send bound is CHAIN_OUT_BOUND"
+        );
+        assert_eq!(
+            self.out_tx.capacity(),
+            0,
+            "Ipc send path must be full at CHAIN_OUT_BOUND before the deadline waiter"
+        );
+    }
 }
 
 enum IpcOut {

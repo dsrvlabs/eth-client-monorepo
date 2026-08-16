@@ -11,6 +11,8 @@
 //! [`IpcEgress`] is mailbox-only. Both stay buildable permanently
 //! (`[ARCH]` §9.2).
 
+#[cfg(test)]
+mod conformance;
 mod in_process;
 mod ipc;
 
