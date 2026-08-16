@@ -27,8 +27,6 @@
 
 #![allow(missing_docs)]
 
-use cc_chain_core as _;
-
 #[path = "../../../crates/chain-core/src/apply_attestations.rs"]
 pub mod apply_attestations;
 pub mod checkpoint_sync;
@@ -151,3 +149,5 @@ pub use tick::{DEFAULT_MAXIMUM_GOSSIP_CLOCK_DISPARITY, GossipClock};
 pub type ChainIngressHandle = std::sync::Arc<dyn cc_seam::ChainIngress>;
 /// chain → p2p handle. Named here so this edge is not a transport type.
 pub type P2pEgressHandle = std::sync::Arc<dyn cc_seam::P2pEgress>;
+/// Archive ingest handle. Named in `cc-chain-core`; never a storage type.
+pub use cc_chain_core::ArchiveWriteHandle;

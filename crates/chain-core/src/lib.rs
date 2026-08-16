@@ -8,11 +8,17 @@
 //! (verbatim). `cc-chain` compiles them via `#[path]`. `main.rs` stays the
 //! service binary until S2-A-03.
 //!
+//! S2-A-04: this crate names [`ArchiveWriteHandle`] (`Arc<dyn ArchiveWrite>`).
+//! It never names a storage type. Ingest is S2-A-05.
+//!
 //! Unit tests compile the moved files against still-service-owned siblings
 //! (not a rewrite of `crate::` paths). ADR-P1-09, ADR-P1-12, and ADR-P3-05
 //! ride the moved sources unchanged — `pending_engine` stays a separate map.
 
 #![cfg_attr(test, allow(dead_code, unreachable_pub, unused_imports))]
+
+/// Archive ingest handle. Named here so chain-core never holds a storage type.
+pub type ArchiveWriteHandle = std::sync::Arc<dyn cc_seam::ArchiveWrite>;
 
 #[cfg(test)]
 #[path = "apply_attestations.rs"]
@@ -68,3 +74,13 @@ mod service;
 #[cfg(test)]
 #[path = "../../../services/chain/src/tick.rs"]
 mod tick;
+
+#[cfg(test)]
+mod archive_write_name {
+    use super::ArchiveWriteHandle;
+
+    #[test]
+    fn names_arc_dyn_archive_write() {
+        let _: Option<ArchiveWriteHandle> = None;
+    }
+}

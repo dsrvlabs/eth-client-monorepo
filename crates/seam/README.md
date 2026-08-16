@@ -3,6 +3,13 @@
 Typed handles and overflow contracts for internal service edges
 (`[ARCH]` §2.1).
 
+- `ChainIngress` / `P2pEgress` — p2p ↔ core (E1+E2).
+- `ArchiveWrite` — chain-core → archive typed column ingest (S2-A-04).
+  Payload is `ColumnBatch { slot, block_root, index, ssz }`; **`index` is
+  a field**. Overflow is policy **A**: the writer mailbox (ADR-P4-04)
+  surfaces `SeamError::Backpressure` to the import path. Ingest lands at
+  `S2-A-05`; this crate names the contract only.
+
 Transport impls:
 
 - `InProcess` — bounded tokio mpsc + oneshot replies (S1-A-08). Single Hull.

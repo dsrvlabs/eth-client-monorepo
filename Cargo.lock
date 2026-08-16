@@ -1040,6 +1040,7 @@ dependencies = [
  "cc-fork-choice",
  "cc-proto",
  "cc-scheduler",
+ "cc-seam",
  "cc-state-transition",
  "cc-types",
  "ethereum_ssz",
@@ -1267,6 +1268,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "bytes",
  "cc-proto",
  "futures",
  "getrandom 0.3.4",

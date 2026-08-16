@@ -145,6 +145,12 @@ writer mailbox's three-class priority admission surfacing `SeamError::Backpressu
 path — ADR-P4-04 ✓ `services/storage/src/writer.rs:1`), and `chain-core` names `Arc<dyn ArchiveWrite>`,
 never a storage type.
 
+- [x] `ArchiveWrite` + typed `ColumnBatch` on `cc-seam`. `index` is a field, not a guess
+- [x] Overflow contract is policy **A**: writer mailbox (ADR-P4-04) surfaces `SeamError::Backpressure`
+- [x] `chain-core` names `Arc<dyn ArchiveWrite>`, never a storage type
+- [x] `cc-seam` appended to `cc-chain-core` `allowed_deps` (never re-sort)
+- [x] No ingest (`S2-A-05`); no byte-offset parse deletion; no `ADR-R-02`
+
 ---
 
 ### `S2-A-05` · Direct column ingest — delete the byte-offset parse

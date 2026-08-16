@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 # InProcess is leaf-shaped; Ipc is the only workspace edge (`cc-proto`).
 async-trait = { workspace = true }
+bytes = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 arc-swap = { workspace = true }

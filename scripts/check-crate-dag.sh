@@ -396,7 +396,8 @@ allowed_deps() {
     cc-seam)              echo "cc-proto" ;;
     # S2-A-01: moved core/import/apply_attestations (test-compiled via #[path]).
     # S2-A-02: append cc-engine-api (engine.rs sibling for crate::engine; never JWT).
-    cc-chain-core)        echo "cc-types cc-crypto cc-state-transition cc-fork-choice cc-scheduler cc-proto cc-bootstrap cc-engine-api" ;;
+    # S2-A-04: append cc-seam (`ArchiveWrite` handle; never a storage type).
+    cc-chain-core)        echo "cc-types cc-crypto cc-state-transition cc-fork-choice cc-scheduler cc-proto cc-bootstrap cc-engine-api cc-seam" ;;
     # S2-B-01: writer + serve tests need store/proto/bootstrap/types.
     # backfill.rs is not a member of this crate. Not JWT/HTTP-grandfathered.
     cc-storage-core)      echo "cc-store cc-proto cc-bootstrap cc-types" ;;

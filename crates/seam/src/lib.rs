@@ -2,7 +2,8 @@
 //! (`[ARCH]` §2.1).
 //!
 //! Methods mirror today's proto `oneof` arms (gossip / DA / column sidecar
-//! / publish / view) without taking `cc-proto` types.
+//! / publish / view) without taking `cc-proto` types. [`ArchiveWrite`] is
+//! the S2 archive ingest handle: a typed [`ColumnBatch`], not a proto arm.
 //!
 //! [`InProcess`] is the Single Hull transport: its lanes **are** the live
 //! import / column / publish queues. Do not wrap them in front of the
@@ -73,6 +74,12 @@ impl std::fmt::Display for FailedPreconditionReason {
 
 /// 32-byte consensus identity. Not `cc-types::Root` and not a proto `bytes`.
 pub type Root = [u8; 32];
+
+/// Column identifier. Seam-owned; not `cc-types::ColumnIndex`.
+pub type ColumnIndex = u64;
+
+/// Opaque SSZ payload. Seam-owned; not a proto `bytes`.
+pub type Bytes = bytes::Bytes;
 
 /// Gossip object family. Seam-owned; not an `eth.p2p.v1.ObjectKind` integer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -263,6 +270,44 @@ pub trait P2pEgress: Send + Sync + 'static {
     fn update_view(&self, view: ChainView);
 }
 
+/// Typed column ingest unit. **`index` is a field, not a byte-offset guess**
+/// (`[ARCH]` §4.3 / S2-A-04).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnBatch {
+    pub slot: u64,
+    pub block_root: Root,
+    pub index: ColumnIndex,
+    pub ssz: Bytes,
+}
+
+/// chain-core → storage-core. Typed column ingest (E7 replacement, S2-A-04).
+///
+/// `chain-core` holds `Arc<dyn ArchiveWrite>`. It MUST NOT name a storage
+/// type (`cc-store`, `cc-storage-core`, writer handle).
+///
+/// # Overflow contract — `ingest_columns`
+///
+/// Policy **A** (ADR-P4-04 ✓ `crates/storage-core/src/writer.rs:1` /
+/// `services/storage/src/writer.rs:1`): overflow is the writer mailbox's
+/// three-class priority admission, surfaced as [`SeamError::Backpressure`]
+/// to the import path.
+///
+/// The receiving bound is the live P0 class: `WRITER_P0_BOUND = 32`, on
+/// full **block** (never drop). P1 is bound 64 / block. P2 is bound 256 /
+/// drop-newest. `ingest_columns` is P0. This handle does not introduce a
+/// second bound and MUST NOT re-derive those literals as a new mailbox.
+///
+/// A full P0 mailbox MUST return [`SeamError::Backpressure`]. It MUST NOT
+/// silently drop, MUST NOT terminate the caller (policy B), and MUST NOT
+/// return `Ok` after a shed (policy C). Implementations that cannot block
+/// MUST still surface Backpressure.
+///
+/// Ingest itself is S2-A-05. This issue names the trait and the batch.
+#[async_trait]
+pub trait ArchiveWrite: Send + Sync + 'static {
+    async fn ingest_columns(&self, batch: ColumnBatch) -> Result<(), SeamError>;
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -297,6 +342,16 @@ mod tests {
         fn update_view(&self, _view: ChainView) {}
     }
 
+    #[async_trait]
+    impl ArchiveWrite for Unused {
+        async fn ingest_columns(&self, _batch: ColumnBatch) -> Result<(), SeamError> {
+            Err(SeamError::Backpressure {
+                bound: 32,
+                waited_ms: 0,
+            })
+        }
+    }
+
     #[test]
     fn chain_ingress_is_dyn() {
         let _: Arc<dyn ChainIngress> = Arc::new(Unused);
@@ -305,6 +360,25 @@ mod tests {
     #[test]
     fn p2p_egress_is_dyn() {
         let _: Arc<dyn P2pEgress> = Arc::new(Unused);
+    }
+
+    #[test]
+    fn archive_write_is_dyn() {
+        let _: Arc<dyn ArchiveWrite> = Arc::new(Unused);
+    }
+
+    #[test]
+    fn column_batch_index_is_a_field() {
+        let batch = ColumnBatch {
+            slot: 7,
+            block_root: [1; 32],
+            index: 42,
+            ssz: Bytes::from_static(b"ssz"),
+        };
+        assert_eq!(batch.slot, 7);
+        assert_eq!(batch.block_root, [1; 32]);
+        assert_eq!(batch.index, 42);
+        assert_eq!(batch.ssz.as_ref(), b"ssz");
     }
 
     #[test]
