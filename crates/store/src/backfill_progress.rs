@@ -239,6 +239,15 @@ pub fn serve_window_above_block_target(
         > block_backfill_target_slot(current_epoch, min_epochs).as_u64()
 }
 
+/// Slot span of the CC-4A block serve window: `min_epochs × SLOTS_PER_EPOCH`.
+///
+/// `I-contig` must cover at least this many slots (P0-18/2). Hoodi / mainnet
+/// `min_epochs` is `256 + 65_536 / 2` (see [`crate::window::compute_min_epochs_for_block_requests`]).
+#[must_use]
+pub const fn block_serve_window_slots(min_epochs: u64) -> u64 {
+    min_epochs.saturating_mul(SLOTS_PER_EPOCH)
+}
+
 // ── Resume ──────────────────────────────────────────────────────────────────
 
 /// Resume frontier for columns: `C` from durable progress (or `fallback`).
@@ -576,5 +585,16 @@ mod tests {
         assert!(!serve_window_above_block_target(
             target, current, min_epochs
         ));
+    }
+
+    #[test]
+    fn hoodi_block_serve_window_slots_exceed_legacy_range_cap() {
+        let min_epochs = 256u64 + 65_536 / 2;
+        let slots = block_serve_window_slots(min_epochs);
+        assert_eq!(slots, min_epochs.saturating_mul(SLOTS_PER_EPOCH));
+        assert!(
+            slots > crate::engine::MAX_RANGE_ENTRIES as u64,
+            "P0-18/2: serve window {slots} sat above the old I-contig cap"
+        );
     }
 }

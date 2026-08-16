@@ -429,11 +429,18 @@ the issues are actionable; write these back into `[PRD]` §5.1.
 - [x] Registry reconciliation walks `Engine::table_names()` only (`iter_shard_tables` / `find_unregistered_table`) — O(active), not O(all shards ever)
 - [x] A test simulating 30+ days of shard rollover (and more unique names than the intern cap) does not exhaust the table namespace
 
+**Acceptance (`S2-B-05` only)**
+- [x] `MAX_CONTIG_WALK_SLOTS` is ≥ the CC-4A block serve window (`min_epochs × SLOTS_PER_EPOCH`)
+- [x] `I-contig` walks the window in `MAX_RANGE_ENTRIES`-sized slot chunks (a single range call cannot sit below the window)
+- [x] A test with a serve window wider than the legacy `MAX_RANGE_ENTRIES` cap completes the check
+- [x] P0-18/3 (`S2-B-06` `open()` bound) not implemented
+- [x] Interned table names / `MAX_INTERNED_TABLE_NAMES` untouched (`S2-B-04`)
+
 **Acceptance for the group**
 1. `S2-B-04` — a test simulating 30+ days of shard rollover does not exhaust the table namespace, and
    the registry reconciliation stays O(active shards), not O(all shards ever). ✓
 2. `S2-B-05` — the cap is ≥ the configured serve window, or the walk is chunked; a test with a serve
-   window wider than today's cap completes the check.
+   window wider than today's cap completes the check. ✓
 3. `S2-B-06` — `open()` returns within a stated bound on a multi-GB store; the bound is a config value
    with a named default, and exceeding it is an error rather than an unbounded wait. **Measured on a
    store at supernode scale, not a `TempDir`** — a scan that is fast on 10 MB proves nothing.

@@ -12,13 +12,12 @@
 //! `I-contig` is the expensive check. It never walks every integer slot in a
 //! sparse `[oldest, head]` span (that would DoS open on a two-row corrupt
 //! store with a huge head). Instead it:
-//! 1. Materialises the canonical index via `ReadTxn::range` (already capped at
-//!    [`crate::engine::MAX_RANGE_ENTRIES`]),
+//! 1. Walks the canonical index in slot chunks of
+//!    [`crate::engine::MAX_RANGE_ENTRIES`] (one `ReadTxn::range` per chunk),
 //! 2. Fails closed with [`StoreError::Limit`] if the advertised span exceeds
-//!    [`MAX_CONTIG_WALK_SLOTS`],
+//!    [`MAX_CONTIG_WALK_SLOTS`] (sized to the CC-4A block serve window),
 //! 3. Verifies holes with an O(|canonical| + |holes|) gap-coverage walk.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -26,6 +25,7 @@ use ssz::Decode;
 
 use cc_types::{Root, Slot};
 
+use crate::backfill_progress::block_serve_window_slots;
 use crate::engine::{Engine, MAX_RANGE_ENTRIES, ReadTxn, StoreError};
 use crate::keys::{
     SLOTS_PER_EPOCH, block_shard_id, block_shard_start_slot, column_shard_start_slot,
@@ -42,12 +42,26 @@ use crate::schema::{is_registered_table, iter_shard_tables};
 /// Default `storage.snapshot_ring` when config has not set one (CC-42 / Architecture §3.6).
 pub const DEFAULT_SNAPSHOT_RING: u64 = 4;
 
+/// Hoodi / mainnet CC-4A floor (`MIN_VALIDATOR_WITHDRAWABILITY_DELAY +
+/// CHURN_LIMIT_QUOTIENT / 2`). Authority is
+/// [`crate::window::compute_min_epochs_for_block_requests`]; this is that
+/// arithmetic as a `const` so the walk cap can be sized at compile time.
+const HOODI_MIN_EPOCHS_FOR_BLOCK_REQUESTS: u64 = 256 + 65_536 / 2;
+
 /// Hard cap on the `I-contig` walk span (`head − oldest + 1`) (SEC-4H-1).
 ///
-/// Aligned with [`MAX_RANGE_ENTRIES`]: a full serve window is ~985k canonical
-/// slots; anything larger is refused as `StoreError::Limit` rather than
-/// iterating for unbounded wall time at open.
-pub const MAX_CONTIG_WALK_SLOTS: u64 = MAX_RANGE_ENTRIES as u64;
+/// Must cover a full CC-4A block serve window
+/// ([`block_serve_window_slots`]) plus the current epoch so an inclusive
+/// `[start_slot(current − min_epochs), last slot of current]` walk does not
+/// fail closed. Previously this equalled [`MAX_RANGE_ENTRIES`] (1048576),
+/// which sits 8192 slots below the Hoodi/mainnet window (P0-18/2).
+/// Anything larger is refused as `StoreError::Limit`.
+pub const MAX_CONTIG_WALK_SLOTS: u64 =
+    block_serve_window_slots(HOODI_MIN_EPOCHS_FOR_BLOCK_REQUESTS).saturating_add(SLOTS_PER_EPOCH);
+
+const _: () =
+    assert!(MAX_CONTIG_WALK_SLOTS >= block_serve_window_slots(HOODI_MIN_EPOCHS_FOR_BLOCK_REQUESTS));
+const _: () = assert!(MAX_CONTIG_WALK_SLOTS > MAX_RANGE_ENTRIES as u64);
 
 /// Cap on snapshot rows inspected for `I-ring` before fail-closed Limit.
 /// Ring depth is config (default 4); a grossly over-full table is corruption
@@ -364,6 +378,8 @@ fn read_meta_ssz<T: Decode>(rt: &ReadTxn, key: &str) -> Result<Option<T>, StoreE
 /// **SEC-4H-1:** never walks every integer in a sparse span. Uses gap coverage
 /// over the sorted canonical index (O(|canonical| + |holes|)). Span larger than
 /// [`MAX_CONTIG_WALK_SLOTS`] → [`StoreError::Limit`] (fail closed at open).
+/// Canonical is read in [`MAX_RANGE_ENTRIES`]-slot chunks so a full serve
+/// window (wider than one range call) still completes.
 fn check_contig(rt: &ReadTxn) -> Result<Option<InvariantViolation>, StoreError> {
     let Some(anchor) = read_meta_ssz::<AnchorInfo>(rt, KEY_ANCHOR_INFO)? else {
         return Ok(None);
@@ -372,51 +388,33 @@ fn check_contig(rt: &ReadTxn) -> Result<Option<InvariantViolation>, StoreError> 
         .map(|w| w.holes.to_vec())
         .unwrap_or_default();
 
-    // Collect canonical slots in the walk range.
-    // `ReadTxn::range` already fails closed at MAX_RANGE_ENTRIES (SEC-40b-4).
-    let lo = encode_cold_block_key(anchor.oldest_block_slot);
-    let hi = encode_cold_block_key(Slot::new(u64::MAX));
-    let mut present = BTreeSet::new();
-    let mut head = anchor.oldest_block_slot;
-    for item in rt.range("canonical", &lo, &hi)? {
-        let (k, v) = item?;
-        let Some((slot, _)) = decode_canonical_entry(&k, &v) else {
-            continue;
-        };
-        if slot.as_u64() < anchor.oldest_block_slot.as_u64() {
-            continue;
-        }
-        present.insert(slot.as_u64());
-        if slot.as_u64() > head.as_u64() {
-            head = slot;
-        }
-    }
-    if present.is_empty() {
-        return Ok(None);
-    }
-
     let oldest = anchor.oldest_block_slot.as_u64();
-    let end = head.as_u64();
-    // Fail closed on absurd spans before any further work (SEC-4H-1).
-    let span = end.saturating_sub(oldest).saturating_add(1);
-    if span > MAX_CONTIG_WALK_SLOTS {
-        return Err(StoreError::limit(format!(
-            "I-contig walk span {span} slots (oldest={oldest}, head={end}) exceeds \
-             MAX_CONTIG_WALK_SLOTS ({MAX_CONTIG_WALK_SLOTS}); refuse rather than DoS open"
-        )));
+    // Exclusive end of the allowed walk. A canonical row at or beyond this
+    // means span > MAX_CONTIG_WALK_SLOTS.
+    let walk_hi = oldest.saturating_add(MAX_CONTIG_WALK_SLOTS);
+    let present = collect_canonical_slots_chunked(rt, oldest, walk_hi)?;
+
+    let end = match present.last().copied() {
+        Some(head) => head,
+        None => {
+            if first_canonical_at_or_after(rt, walk_hi)?.is_some() {
+                return Err(contig_span_limit(oldest, walk_hi));
+            }
+            return Ok(None);
+        }
+    };
+    if let Some(far) = first_canonical_at_or_after(rt, walk_hi)? {
+        return Err(contig_span_limit(oldest, far.max(end)));
     }
 
     // Gap-based coverage: O(|present| + |holes|), not O(span).
-    let sorted: Vec<u64> = present.iter().copied().collect();
-    // Leading gap [oldest, first_present).
-    let first = sorted[0];
+    let first = present[0];
     if first > oldest
         && let Some(hole_slot) = first_uncovered_slot(oldest, first, &holes)
     {
         return Ok(Some(contig_hole_violation(hole_slot, oldest, end)));
     }
-    // Between consecutive present slots: gap [a+1, b).
-    for w in sorted.windows(2) {
+    for w in present.windows(2) {
         let a = w[0];
         let b = w[1];
         let gap_lo = a.saturating_add(1);
@@ -427,6 +425,72 @@ fn check_contig(rt: &ReadTxn) -> Result<Option<InvariantViolation>, StoreError> 
         }
     }
     Ok(None)
+}
+
+fn contig_span_limit(oldest: u64, end: u64) -> StoreError {
+    let span = end.saturating_sub(oldest).saturating_add(1);
+    StoreError::limit(format!(
+        "I-contig walk span {span} slots (oldest={oldest}, head={end}) exceeds \
+         MAX_CONTIG_WALK_SLOTS ({MAX_CONTIG_WALK_SLOTS}); refuse rather than DoS open"
+    ))
+}
+
+/// Canonical slots in half-open `[oldest, walk_hi)`, chunked so each
+/// `ReadTxn::range` stays within [`MAX_RANGE_ENTRIES`].
+fn collect_canonical_slots_chunked(
+    rt: &ReadTxn,
+    oldest: u64,
+    walk_hi: u64,
+) -> Result<Vec<u64>, StoreError> {
+    let mut present = Vec::new();
+    let chunk = MAX_RANGE_ENTRIES as u64;
+    let mut lo = oldest;
+    while lo < walk_hi {
+        let hi = walk_hi.min(lo.saturating_add(chunk));
+        if hi <= lo {
+            break;
+        }
+        let lo_key = encode_cold_block_key(Slot::new(lo));
+        let hi_key = encode_cold_block_key(Slot::new(hi));
+        for item in rt.range("canonical", &lo_key, &hi_key)? {
+            let (k, v) = item?;
+            let Some((slot, _)) = decode_canonical_entry(&k, &v) else {
+                continue;
+            };
+            if slot.as_u64() >= oldest {
+                present.push(slot.as_u64());
+            }
+        }
+        lo = hi;
+    }
+    Ok(present)
+}
+
+/// First canonical slot at or after `start`, or `None` if the tail is empty.
+///
+/// A [`StoreError::Limit`] from the tail range means the tail is dense — treat
+/// that as "something exists at or after `start`" without materialising it.
+fn first_canonical_at_or_after(rt: &ReadTxn, start: u64) -> Result<Option<u64>, StoreError> {
+    if start == u64::MAX {
+        return Ok(None);
+    }
+    let lo = encode_cold_block_key(Slot::new(start));
+    let hi = encode_cold_block_key(Slot::new(u64::MAX));
+    match rt.range("canonical", &lo, &hi) {
+        Ok(iter) => {
+            for item in iter {
+                let (k, v) = item?;
+                if let Some((slot, _)) = decode_canonical_entry(&k, &v)
+                    && slot.as_u64() >= start
+                {
+                    return Ok(Some(slot.as_u64()));
+                }
+            }
+            Ok(None)
+        }
+        Err(StoreError::Limit(_)) => Ok(Some(start)),
+        Err(e) => Err(e),
+    }
 }
 
 fn contig_hole_violation(slot: u64, oldest: u64, end: u64) -> InvariantViolation {
@@ -823,6 +887,7 @@ mod tests {
     use cc_types::{BlobParameters, BlobSchedule, ChainConfig, Checkpoint, Epoch, PresetName};
     use ssz::Encode;
     use ssz_types::VariableList;
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1173,6 +1238,71 @@ mod tests {
             msg.contains("I-contig") && msg.contains("MAX_CONTIG_WALK_SLOTS"),
             "{msg}"
         );
+    }
+
+    /// P0-18/2: a CC-4A serve window wider than the legacy `MAX_RANGE_ENTRIES`
+    /// cap must complete `I-contig` (cap covers the window; walk is chunked).
+    #[test]
+    fn contig_check_completes_for_serve_window_wider_than_legacy_range_cap() {
+        let min_epochs = 256u64 + 65_536 / 2;
+        let serve_slots = block_serve_window_slots(min_epochs);
+        assert!(
+            serve_slots > MAX_RANGE_ENTRIES as u64,
+            "legacy cap was MAX_RANGE_ENTRIES; serve window must exceed it ({serve_slots})"
+        );
+        assert!(
+            MAX_CONTIG_WALK_SLOTS >= serve_slots,
+            "walk cap {MAX_CONTIG_WALK_SLOTS} must cover serve window {serve_slots}"
+        );
+
+        let f = Fixture::new("contig-serve-window");
+        f.delete_row("canonical", &encode_cold_block_key(Slot::new(10)));
+        f.delete_row("canonical", &encode_cold_block_key(Slot::new(11)));
+        f.delete_row("canonical", &encode_cold_block_key(Slot::new(12)));
+        let oldest = 10u64;
+        // Inclusive [oldest, head] span equals the configured serve window.
+        let head = oldest.saturating_add(serve_slots).saturating_sub(1);
+        f.put_row(
+            "canonical",
+            &encode_cold_block_key(Slot::new(oldest)),
+            root(0x10).as_slice(),
+        );
+        f.put_row(
+            "canonical",
+            &encode_cold_block_key(Slot::new(head)),
+            root(0xEE).as_slice(),
+        );
+        let hole = SlotRange {
+            start: Slot::new(oldest.saturating_add(1)),
+            end: Slot::new(head),
+        };
+        let window = ServeWindow {
+            earliest_available_slot: Slot::new(oldest),
+            cgc: 4,
+            branch: 0,
+            block_floor: Slot::new(oldest),
+            column_floor: Slot::new(oldest),
+            holes: VariableList::new(vec![hole]).expect("one hole fits"),
+        };
+        f.put_meta(KEY_SERVE_WINDOW, &window.as_ssz_bytes());
+        let cursor = WriteCursor {
+            session_id: 1,
+            seq: 1,
+            slot: Slot::new(head),
+            root: root(0xEE),
+        };
+        f.put_meta(KEY_WRITE_CURSOR, &cursor.as_ssz_bytes());
+        f.put_row(
+            "blocks_hot",
+            &encode_hot_block_key(Slot::new(head), &root(0xEE)),
+            b"far",
+        );
+
+        check_invariants(f.engine(), InvariantCheckMode::Open, &f.ctx(), None)
+            .expect("serve window wider than legacy MAX_RANGE_ENTRIES cap must complete");
+        let n = check_invariants(f.engine(), InvariantCheckMode::PostPass, &f.ctx(), None)
+            .expect("post-pass must complete");
+        assert_eq!(n, 0, "recorded hole covers the sparse interior");
     }
 
     #[test]
