@@ -43,6 +43,7 @@ status, or resolving, and an unwritten row still resolves.
 | `unwritten (a)` | (a) row; ADR body not written (`S1-B-07`…`S1-B-10`) |
 | `unwritten (b)` | (b) row; decision not recorded (`S1-B-11`…`S1-B-16`) |
 | `stale (c)` | (c) row; citation to delete (`S1-B-17`) |
+| `deleted` | (c) row; code citation removed; no ADR (subject gone or premise deleted) |
 | `accepted` | document exists; `Status: accepted` |
 | `proposed` | document exists; `Status: proposed` |
 | `proposed; revisit at Sn` | R-17 form; `Sn` is the owning stage |
@@ -71,7 +72,7 @@ deletes the citation.
 | ADR-P1-10 | a | accepted | docs/adr/ADR-P1-10.md |
 | ADR-P1-11 | b | unwritten (b) | - |
 | ADR-P1-12 | a | accepted | docs/adr/ADR-P1-12.md |
-| ADR-P1-13 | c | stale (c) | - |
+| ADR-P1-13 | c | deleted | - |
 | ADR-P1-14 | a | accepted | docs/adr/ADR-P1-14.md |
 | ADR-P1-15 | a | accepted | docs/adr/ADR-P1-15.md |
 | ADR-P2-02 | a | accepted | docs/adr/ADR-P2-02.md |
@@ -90,7 +91,7 @@ deletes the citation.
 | ADR-P3-03 | a | accepted | docs/adr/ADR-P3-03.md |
 | ADR-P3-04 | a | accepted | docs/adr/ADR-P3-04.md |
 | ADR-P3-05 | a | accepted | docs/adr/ADR-P3-05.md |
-| ADR-P3-06 | c | stale (c) | - |
+| ADR-P3-06 | c | deleted | - |
 | ADR-P3-07 | a | accepted | docs/adr/ADR-P3-07.md |
 | ADR-P3-08 | a | accepted | docs/adr/ADR-P3-08.md |
 | ADR-P3-09 | a | accepted | docs/adr/ADR-P3-09.md |
@@ -106,7 +107,7 @@ deletes the citation.
 | ADR-P4-04 | a | accepted | docs/adr/ADR-P4-04.md |
 | ADR-P4-05 | a | accepted | docs/adr/ADR-P4-05.md |
 | ADR-P4-06 | a | accepted | docs/adr/ADR-P4-06.md |
-| ADR-P4-07 | c | stale (c) | - |
+| ADR-P4-07 | c | superseded; superseded-by ADR-R-02 | docs/adr/ADR-P4-07.md |
 | ADR-P4-08 | a | accepted | docs/adr/ADR-P4-08.md |
 | ADR-P4-09 | a | accepted | docs/adr/ADR-P4-09.md |
 | ADR-P4-10 | a | accepted | docs/adr/ADR-P4-10.md |

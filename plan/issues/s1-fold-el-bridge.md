@@ -630,6 +630,20 @@ slashing-protection record** (written at S0, `S0-B-14`). One of the two needs a 
 Note the enumerated table gives 3 (c) rows while §10.4's totals line says 4 — `[PLAN]` X-1. If a
 fourth surfaces while doing this issue, record it rather than adjudicating the count silently.
 
+**Extra sites of `ADR-P3-06` (same id, not a fourth (c) row).** `[ARCH]` n=5; the table
+names `p2p.proto:23,253`. Also cited at `services/engine/src/inject.rs:3,609` and
+`services/chain/src/da.rs:930` (reverse-direction / column-branch, not the "nine rather
+than ten" sentence). Those citations deleted with the premise sites. Residual
+"ninth contract" nicknames without an ADR id (engine/p2p module docs, `storage.proto`)
+are not (c) rows. No fourth (c) **id** surfaced — X-1's 3-vs-4 is unadjudicated.
+
+- [x] `scripts/check-crate-dag.sh` — `ADR-P1-13` citation deleted; cc-driver removal stays a plain comment.
+- [x] `proto/eth/p2p/v1/p2p.proto` — `ADR-P3-06` "nine contracts" premise citations deleted; no ADR written.
+- [x] Extra `ADR-P3-06` sites (`inject.rs`, `da.rs`) — same id; citations deleted.
+- [x] `docs/adr/ADR-P4-07.md` house-MADR; Status: superseded-by ADR-R-02; restore citations left for S2.
+- [x] `docs/adr/reconciliation.md` three (c) rows: P1-13 / P3-06 `deleted`; P4-07 `superseded; superseded-by ADR-R-02`.
+- [x] No fourth (c) id surfaced.
+
 ---
 
 ### `S1-B-18` · **ADR-R-01** — typed handles with a stated overflow policy

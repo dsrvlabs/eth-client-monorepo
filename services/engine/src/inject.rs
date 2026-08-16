@@ -1,6 +1,6 @@
 //! Engine→p2p inject stream client — the ninth contract, engine side (CC-38a).
 //!
-//! Architecture §5.2 / ADR P3-06 / ADR P3-02:
+//! Architecture §5.2 / ADR P3-02:
 //! - `engine` **dials** `p2p` (plain config URI — **not** a health peer).
 //! - Upward: [`EngineHello`] then [`InjectColumns`] (subscribed sidecars only).
 //! - Downward: [`SubscriptionSet`] and column-branch [`FetchBlobsRequest`].
@@ -606,7 +606,7 @@ async fn handle_inbound(msg: &P2pToEngine, lane: &FastpathLane) {
             lane.set_subscription(local).await;
         }
         Some(p2p_to_engine::Msg::Fetch(fetch)) => {
-            // Column-branch trigger — no chain involvement (CC-38 /6, ADR P3-06).
+            // Column-branch trigger — no chain involvement (CC-38 /6).
             match decode_fetch_blobs_request(fetch) {
                 Some(decoded) => {
                     let root = decoded.beacon_block_root;

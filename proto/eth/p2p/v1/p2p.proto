@@ -17,10 +17,9 @@ service P2pService {
   // CC-21d: runtime custody-group-count hook. Phase 2 has no production caller;
   // Phase 6's attached-validator tracker (or an operator) invokes this.
   rpc SetCustodyGroupCount(SetCustodyGroupCountRequest) returns (SetCustodyGroupCountResponse);
-  // CC-38a / Architecture §5.2 — THE NINTH CONTRACT.
+  // CC-38a / Architecture §5.2 — EngineStream.
   // engine dials p2p (ADR P3-02: not a health peer). Sidecars go up; the
-  // subscription set and the column-triggered fetch come down. Bidirectional is
-  // what keeps the topology at nine rather than ten (ADR P3-06, ≠13/9).
+  // subscription set and the column-triggered fetch come down.
   // Server lives in services/p2p (CC-38b); client lives in services/engine.
   rpc EngineStream(stream EngineToP2p) returns (stream P2pToEngine);
 }
@@ -249,8 +248,7 @@ message P2pToEngine {
     // On hello and on every set_custody_group_count change.
     SubscriptionSet subscriptions = 2;
     // Column-triggered branch of the fast path (CC-38 / Architecture §5.1).
-    // Travels down this reverse direction so the topology stays at nine
-    // rather than gaining a separate p2p→engine edge (ADR P3-06, ≠13/9).
+    // Travels down this reverse direction of EngineStream.
     eth.engine.v1.FetchBlobsRequest fetch = 3;
   }
 }

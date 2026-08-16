@@ -927,7 +927,7 @@ mod tests {
 
         // ── Column branch (p2p-owned): chain records **zero** interaction ───
         // Simulated by not touching counters — chain never sees column bytes
-        // (Phase 2 §10.3; ADR P3-06 reverse-direction design).
+        // (Phase 2 §10.3; reverse-direction design).
         let column_branch_chain_bytes = 0u64;
 
         assert_eq!(counters.count(), 1);

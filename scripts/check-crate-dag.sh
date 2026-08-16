@@ -332,7 +332,7 @@ METADATA="$(cargo metadata --no-deps --format-version 1 --locked)"
 # Empty list = root with no workspace deps.
 # Services may take cc-types/cc-crypto for chain, p2p, and engine (Phase 1
 # allowance + Phase 3 CC-32b: engine decodes ExecutionPayload SSZ via cc-types).
-# cc-driver edge rule removed with the crate at CC-28 (was ADR-P1-13: {cc-proto, cc-config}).
+# cc-driver edge rule removed with the crate at CC-28 (allowed workspace deps were cc-proto, cc-config).
 # cc-spec-tests has no workspace edges (zero outgoing); cc-types may take it as a
 # test-only harness edge for ssz_static / vector runners (dev-dependency).
 allowed_deps() {
