@@ -979,6 +979,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cc-beacon-import"
+version = "0.1.0"
+dependencies = [
+ "cc-beacon-inproc",
+ "cc-crypto",
+ "cc-fork-choice",
+ "cc-seam",
+ "cc-state-transition",
+ "cc-storage-core",
+ "cc-store",
+ "cc-types",
+ "ethereum_ssz",
+ "prometheus-client",
+ "ssz_types",
+ "tokio",
+ "tree_hash",
+]
+
+[[package]]
 name = "cc-beacon-inproc"
 version = "0.1.0"
 dependencies = [

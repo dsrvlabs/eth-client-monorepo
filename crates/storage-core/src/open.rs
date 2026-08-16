@@ -11,6 +11,7 @@ use cc_store::{ConfigDigestInput, Store, StoreOpenOptions};
 use cc_types::{ChainConfig, Root};
 use tokio::sync::watch;
 
+use crate::archive_write::ArchiveWriter;
 use crate::durable_set::{
     DurableSetContext, load_expected_node_id_from_key_path, refuse_missing_key_if_anchor_present,
 };
@@ -173,8 +174,9 @@ pub struct DurableSet {
 /// One writer started from an [`OpenedStore`]. Exactly one per process.
 #[derive(Debug)]
 pub struct StorageRuntime {
-    _engine: Arc<Engine>,
+    engine: Arc<Engine>,
     _writer: WriterHandle,
+    archive: ArchiveWriter,
     shutdown_tx: watch::Sender<bool>,
 }
 
@@ -183,6 +185,18 @@ impl StorageRuntime {
     #[must_use]
     pub fn writer_count(&self) -> usize {
         1
+    }
+
+    /// Live archive ingest (P0 mailbox). S2-A-14 import persist.
+    #[must_use]
+    pub fn archive(&self) -> ArchiveWriter {
+        self.archive.clone()
+    }
+
+    /// Borrow the opened engine (same redb as boot).
+    #[must_use]
+    pub fn engine(&self) -> &Engine {
+        &self.engine
     }
 
     /// Signal writer shutdown (tests / pre-drain).
@@ -263,8 +277,27 @@ pub fn start_writer(
     metrics: StorageMetrics,
     process_fatal: bool,
 ) -> StorageRuntime {
+    start_writer_on_engine(Arc::new(db.into_engine()), metrics, process_fatal)
+}
+
+/// Start the writer on an already-opened [`cc_store::Store`] (A-13 → A-14).
+pub fn start_writer_from_store(
+    store: cc_store::Store,
+    metrics: StorageMetrics,
+    process_fatal: bool,
+) -> StorageRuntime {
+    start_writer_on_engine(Arc::new(store.into_engine()), metrics, process_fatal)
+}
+
+fn start_writer_on_engine(
+    engine: Arc<Engine>,
+    metrics: StorageMetrics,
+    process_fatal: bool,
+) -> StorageRuntime {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let engine = Arc::new(db.into_engine());
+    if let Err(e) = ArchiveWriter::ensure_write_cursor(&engine) {
+        tracing::warn!(error = %e, "ensure_write_cursor failed");
+    }
     let writer = spawn_writer(
         Arc::clone(&engine),
         metrics,
@@ -273,9 +306,11 @@ pub fn start_writer(
         shutdown_rx,
         process_fatal,
     );
+    let archive = ArchiveWriter::new(writer.clone(), Arc::clone(&engine));
     StorageRuntime {
-        _engine: engine,
+        engine,
         _writer: writer,
+        archive,
         shutdown_tx,
     }
 }

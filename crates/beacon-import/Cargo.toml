@@ -1,0 +1,30 @@
+[package]
+name = "cc-beacon-import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# S2-A-14: drive on_block + ArchiveWrite ingest. Must not take cc-proto / tonic.
+# storage-core / seam are default-features=false so cargo tree stays proto-free.
+cc-beacon-inproc = { workspace = true }
+cc-crypto = { workspace = true }
+cc-fork-choice = { workspace = true }
+cc-seam = { path = "../seam", default-features = false }
+cc-state-transition = { workspace = true }
+cc-storage-core = { path = "../storage-core", default-features = false }
+cc-store = { workspace = true }
+cc-types = { workspace = true }
+ethereum_ssz = { workspace = true }
+ssz_types = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tree_hash = { workspace = true }
+
+[dev-dependencies]
+prometheus-client = { workspace = true }

@@ -12,10 +12,11 @@
 //! [`IpcEgress`] is mailbox-only. Both stay buildable permanently
 //! (`[ARCH]` §9.2).
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ipc"))]
 mod conformance;
 mod event_payloads;
 mod in_process;
+#[cfg(feature = "ipc")]
 mod ipc;
 
 pub use event_payloads::{
@@ -26,6 +27,7 @@ pub use in_process::{
     DEFAULT_RING_CAPACITY, IMPORT_LANE_DEPTH, IMPORT_SEND_TIMEOUT, ImportMsg, InProcess,
     InProcessMailbox, MAX_EVENT_PAYLOAD_BYTES, PUBLISH_BOUND,
 };
+#[cfg(feature = "ipc")]
 pub use ipc::{
     BACKOFF_CAP, BACKOFF_INITIAL, CHAIN_OUT_BOUND, DEFAULT_VERDICT_TIMEOUT, Ipc, IpcConfig,
     IpcEgress, IpcMailbox, IpcUpward, REASON_NOT_BOOTSTRAPPED, full_jitter, map_tonic_status,
@@ -275,6 +277,20 @@ pub trait P2pEgress: Send + Sync + 'static {
     fn update_view(&self, view: ChainView);
 }
 
+/// Signed-block ingest unit for the archive writer (S2-A-14).
+///
+/// Same continuity bind as [`ColumnBatch`]: a batch may only extend the
+/// durable frontier. Genesis uses `parent_root == block_root` so the first
+/// row satisfies the bind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngestBlock {
+    /// Parent the block attaches to (or the block's own root at genesis).
+    pub parent_root: Root,
+    pub slot: u64,
+    pub block_root: Root,
+    pub ssz: Bytes,
+}
+
 /// Typed column ingest unit. **`index` is a field, not a byte-offset guess**
 /// (`[ARCH]` §4.3 / S2-A-04).
 ///
@@ -320,6 +336,32 @@ pub struct ColumnBatch {
 #[async_trait]
 pub trait ArchiveWrite: Send + Sync + 'static {
     async fn ingest_columns(&self, batch: ColumnBatch) -> Result<(), SeamError>;
+
+    /// Persist an imported signed block through the live P0 writer.
+    ///
+    /// Default is a no-op so column-only test doubles stay valid. Production
+    /// [`ArchiveWriter`] submits a `CommitUnit` (mailbox + one batch).
+    async fn ingest_block(&self, block: IngestBlock) -> Result<(), SeamError> {
+        let _ = block;
+        Ok(())
+    }
+
+    /// Sync ingest for the core OS thread (not a tokio worker).
+    fn ingest_block_blocking(&self, block: IngestBlock) -> Result<(), SeamError> {
+        let _ = block;
+        Ok(())
+    }
+
+    /// Whether this block's durable rows (body) are already in the store.
+    ///
+    /// Default is `false` so test doubles still persist on a DUPLICATE retry
+    /// (M2). Production [`ArchiveWriter`] returns the live body presence.
+    /// Import must not call [`Self::ingest_block`] with `update_canonical`
+    /// when this is `true` — that rewinds the durable tip (H3).
+    fn block_is_durable(&self, root: Root) -> Result<bool, SeamError> {
+        let _ = root;
+        Ok(false)
+    }
 }
 
 #[cfg(test)]

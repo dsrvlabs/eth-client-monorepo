@@ -788,7 +788,7 @@ pub enum QueryReply {
 }
 
 /// Configuration for spawning the core thread.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CoreConfig {
     pub max_resident_states: usize,
     pub body_ring_capacity: usize,
@@ -819,6 +819,20 @@ pub struct CoreConfig {
     pub slot_tick_enabled: bool,
     /// `MAXIMUM_GOSSIP_CLOCK_DISPARITY` (config; never inlined at the check).
     pub maximum_gossip_clock_disparity: Duration,
+    /// Archive persist handle (S2-A-14). `None` in fixture tests.
+    pub archive: Option<crate::ArchiveWriteHandle>,
+}
+
+impl std::fmt::Debug for CoreConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CoreConfig")
+            .field("max_resident_states", &self.max_resident_states)
+            .field("body_ring_capacity", &self.body_ring_capacity)
+            .field("verify", &self.verify)
+            .field("slot_tick_enabled", &self.slot_tick_enabled)
+            .field("archive", &self.archive.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for CoreConfig {
@@ -833,6 +847,7 @@ impl Default for CoreConfig {
             engine: None,
             slot_tick_enabled: false,
             maximum_gossip_clock_disparity: DEFAULT_MAXIMUM_GOSSIP_CLOCK_DISPARITY,
+            archive: None,
         }
     }
 }
@@ -1649,6 +1664,7 @@ fn core_loop<P: Preset>(
     // Last observed engine Online bit (CC-36a Offline→Online redrive edge).
     let mut last_engine_online = false;
     let engine = core_cfg.engine.clone();
+    let archive = core_cfg.archive.clone();
 
     // CC-33: forkchoiceUpdated driver (off attestation path — after import /
     // on slot tick). Direct `cc-engine-api` call (S1-A-06).
@@ -1712,6 +1728,7 @@ fn core_loop<P: Preset>(
                     Some(&mut pending_da),
                     Some(&mut pending_engine),
                     import_gossip_clock(slot_tick_enabled, gossip_disparity),
+                    archive.as_ref(),
                 );
                 metrics.set_da_pending_occupancy(pending_da.len() as u64);
                 metrics.set_pending_engine_occupancy(pending_engine.len() as u64);
@@ -1762,6 +1779,7 @@ fn core_loop<P: Preset>(
                     Some(&mut pending_da),
                     Some(&mut pending_engine),
                     import_gossip_clock(slot_tick_enabled, gossip_disparity),
+                    archive.as_ref(),
                 );
                 metrics.set_da_pending_occupancy(pending_da.len() as u64);
                 metrics.set_pending_engine_occupancy(pending_engine.len() as u64);
@@ -1830,6 +1848,7 @@ fn core_loop<P: Preset>(
                     &mut last_published_epoch,
                     &epoch,
                     import_gossip_clock(slot_tick_enabled, gossip_disparity),
+                    archive.as_ref(),
                 );
                 // Re-import may have moved head.
                 emit_fcu_head(&store, fcu.as_ref());
@@ -1859,6 +1878,7 @@ fn core_loop<P: Preset>(
                     &epoch,
                     fcu.as_ref(),
                     verify,
+                    archive.as_ref(),
                 );
             }
             CoreCommand::Shutdown { done } => {
@@ -1946,6 +1966,7 @@ fn handle_slot_tick<P: Preset>(
     epoch: &EpochContextStore,
     fcu: Option<&FcuDriver<crate::engine::DirectEngine>>,
     verify: BlockSignatureStrategy,
+    archive: Option<&crate::ArchiveWriteHandle>,
 ) {
     apply_tick_clock(
         store,
@@ -1978,6 +1999,7 @@ fn handle_slot_tick<P: Preset>(
                 epoch_sequence,
                 last_published_epoch,
                 epoch,
+                archive,
             );
             emit_fcu_head(store, fcu);
         }
@@ -2057,6 +2079,7 @@ fn handle_data_available<P: Preset>(
     last_published_epoch: &mut u64,
     epoch: &EpochContextStore,
     gossip_clock: Option<GossipClock>,
+    archive: Option<&crate::ArchiveWriteHandle>,
 ) {
     if let Some(da) = peer_das {
         da.mark_available(root);
@@ -2105,6 +2128,7 @@ fn handle_data_available<P: Preset>(
         Some(pending_da),
         None, // re-drive is DA-only; engine map is separate
         gossip_clock,
+        archive,
     );
     if outcome.is_ok() {
         maybe_publish_epoch_context(store, config, epoch, epoch_sequence, last_published_epoch);
@@ -2150,6 +2174,7 @@ fn redrive_pending_engine<P: Preset>(
     epoch_sequence: &mut u64,
     last_published_epoch: &mut u64,
     epoch: &EpochContextStore,
+    archive: Option<&crate::ArchiveWriteHandle>,
 ) {
     let entries = pending_engine.drain_oldest_first();
     metrics.set_pending_engine_occupancy(pending_engine.len() as u64);
@@ -2183,6 +2208,7 @@ fn redrive_pending_engine<P: Preset>(
             Some(pending_da),
             Some(pending_engine),
             None,
+            archive,
         );
         metrics.set_da_pending_occupancy(pending_da.len() as u64);
         metrics.set_pending_engine_occupancy(pending_engine.len() as u64);

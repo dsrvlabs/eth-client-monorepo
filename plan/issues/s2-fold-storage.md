@@ -360,6 +360,15 @@ write-behind path — unlike slashing protection.
 - [x] Test binary `cargo tree` contains no `tonic` and no `cc-proto` (script + CI, not Cargo.toml-by-eye)
 - [x] Harness does not import-assert (S2-A-14) and does not delete restore (S2-J-02)
 
+**Acceptance (`S2-A-14` only)**
+- [x] After in-process boot, a block is imported via `on_block` and persisted through
+  production `ArchiveWrite::ingest_block` (writer mailbox / `CommitUnit`)
+- [x] Durable rows in the same redb: `canonical[slot] == root`, body present,
+  `WriteCursor` advanced; rows survive reopen
+- [x] `cc-beacon-inproc` and `cc-beacon-import` `cargo tree` have no `tonic` / `cc-proto`
+  (`--locked` fail-closed)
+- [x] Does not implement `S2-A-15` A/B
+
 ---
 
 ### `S2-A-15` · §9.0 A/B run + exit note · 2–3 pd / **5 pts**

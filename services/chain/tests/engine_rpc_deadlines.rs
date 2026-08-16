@@ -258,6 +258,7 @@ async fn black_holed_engine_defers_block_not_park() {
                 None,
                 Some(&mut pending_engine),
                 None,
+                None,
             )
             .expect("import path must succeed as a deferral, not Status");
 

@@ -174,6 +174,11 @@ if http_or_jwt_allowed cc-beacon-inproc jsonwebtoken \
   echo "error: self-test: cc-beacon-inproc must not be JWT- or HTTP-grandfathered (S2-A-13)" >&2
   selftest_failed=1
 fi
+if http_or_jwt_allowed cc-beacon-import jsonwebtoken \
+  || http_or_jwt_allowed cc-beacon-import reqwest; then
+  echo "error: self-test: cc-beacon-import must not be JWT- or HTTP-grandfathered (S2-A-14)" >&2
+  selftest_failed=1
+fi
 
 # Function-level: both directions forbidden; seam (and any other edge) is not this rule.
 if chain_p2p_allowed cc-chain cc-p2p; then
@@ -427,6 +432,8 @@ allowed_deps() {
     cc-beacon-core)       echo "cc-bootstrap cc-config cc-proto cc-types cc-chain-core cc-storage-core cc-engine-api cc-chain" ;;
     # S2-A-13: proto-free in-process boot harness. Never proto / tonic / JWT.
     cc-beacon-inproc)     echo "cc-store cc-types" ;;
+    # S2-A-14: proto-free import → durable test crate. Never proto / tonic / JWT.
+    cc-beacon-import)     echo "cc-beacon-inproc cc-store cc-types cc-fork-choice cc-state-transition cc-storage-core cc-seam cc-crypto" ;;
     *)
       echo "error: unknown workspace member: $1" >&2
       return 1

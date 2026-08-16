@@ -268,6 +268,17 @@ impl WriterHandle {
         done_rx.await.map_err(|_| WriterError::ShutDown)?
     }
 
+    /// Blocking P0 commit wait (core OS thread / S2-A-14 ingest).
+    pub(crate) fn blocking_submit_p0_committed(
+        &self,
+        mut unit: CommitUnit,
+    ) -> Result<(), WriterError> {
+        let (done_tx, done_rx) = oneshot::channel();
+        unit.done = Some(done_tx);
+        self.blocking_submit_p0(unit)?;
+        done_rx.blocking_recv().map_err(|_| WriterError::ShutDown)?
+    }
+
     /// Current approximate P0 queue depth (for metrics scrape).
     #[must_use]
     pub(crate) fn p0_capacity_hint(&self) -> usize {

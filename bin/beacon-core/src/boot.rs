@@ -425,6 +425,7 @@ pub async fn run() -> anyhow::Result<()> {
         writers = storage.writer_count(),
         "storage-core writer started (one handle)"
     );
+    let archive: cc_chain_core::ArchiveWriteHandle = std::sync::Arc::new(storage.archive());
 
     let events = EventsHandle::spawn(EventsConfig {
         ring_capacity: cfg.event_ring_events,
@@ -444,6 +445,7 @@ pub async fn run() -> anyhow::Result<()> {
         maximum_gossip_clock_disparity: Duration::from_millis(
             cfg.maximum_gossip_clock_disparity_ms,
         ),
+        archive: Some(archive),
         ..CoreConfig::default()
     };
 

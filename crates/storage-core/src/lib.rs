@@ -17,11 +17,14 @@
 //! S2-J-02: E4 RestoreFromStore client is gone.
 
 #![cfg_attr(test, allow(dead_code, unreachable_pub))]
+#![cfg_attr(not(feature = "grpc"), allow(dead_code))]
 
 mod archive_write;
 mod backfill;
+#[cfg(feature = "grpc")]
 mod boot;
 mod durable_set;
+#[cfg(feature = "grpc")]
 mod history;
 mod metrics;
 mod migrate;
@@ -31,16 +34,20 @@ mod replay;
 mod resume;
 #[cfg(test)]
 mod rollback_rehearsal;
+#[cfg(feature = "grpc")]
 mod serve;
 #[cfg(test)]
 mod test_tmpdir;
 mod writer;
 
+pub use archive_write::ArchiveWriter;
+#[cfg(feature = "grpc")]
 pub use boot::run;
 pub use durable_set::{DurableBlock, DurableDaStatus};
 pub use metrics::StorageMetrics;
 pub use open::{
     DurableSet, OpenOpts, OpenedStore, StorageRuntime, durable_set, open, start_writer,
+    start_writer_from_store,
 };
 
 #[cfg(test)]

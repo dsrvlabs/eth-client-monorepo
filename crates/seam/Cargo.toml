@@ -10,6 +10,11 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["ipc"]
+# Ipc is the tonic client. ArchiveWrite / InProcess stay proto-free (S2-A-14).
+ipc = ["dep:cc-proto", "dep:tonic"]
+
 [dependencies]
 # InProcess is leaf-shaped; Ipc is the only workspace edge (`cc-proto`).
 async-trait = { workspace = true }
@@ -17,8 +22,8 @@ bytes = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 arc-swap = { workspace = true }
-cc-proto = { workspace = true }
-tonic = { workspace = true }
+cc-proto = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = { workspace = true }
 getrandom = { workspace = true }

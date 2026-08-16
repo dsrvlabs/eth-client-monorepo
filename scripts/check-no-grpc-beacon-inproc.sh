@@ -55,16 +55,24 @@ if [[ "$ARG" == "--self-test" ]]; then
   exit 0
 fi
 
-TREE="$(cargo tree -p cc-beacon-inproc --edges normal,build,dev --locked 2>/dev/null \
-  || cargo tree -p cc-beacon-inproc --edges normal,build,dev)"
-hits="$(grpc_hits "$TREE")"
-if [[ -n "$hits" ]]; then
-  echo "error: cc-beacon-inproc pulls tonic or cc-proto (S2-A-13):" >&2
-  echo "$hits" >&2
-  echo >&2
-  echo "hint: the in-process harness must not depend on gRPC crates." >&2
-  echo "      keep the test crate on cc-store / cc-types only." >&2
-  exit 1
-fi
+check_pkg() {
+  local pkg="$1"
+  local tree
+  tree="$(cargo tree -p "$pkg" --edges normal,build,dev --locked)" || {
+    echo "error: cargo tree -p $pkg --locked failed (S2-A-14: do not fall back to unlocked)" >&2
+    exit 1
+  }
+  local hits
+  hits="$(grpc_hits "$tree")"
+  if [[ -n "$hits" ]]; then
+    echo "error: $pkg pulls tonic or cc-proto (S2-A-13/A-14):" >&2
+    echo "$hits" >&2
+    echo >&2
+    echo "hint: the in-process import path must not depend on gRPC crates." >&2
+    exit 1
+  fi
+  echo "ok: $pkg cargo tree has no tonic / cc-proto"
+}
 
-echo "ok: cc-beacon-inproc cargo tree has no tonic / cc-proto"
+check_pkg cc-beacon-inproc
+check_pkg cc-beacon-import

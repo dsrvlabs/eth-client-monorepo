@@ -169,7 +169,7 @@ check-http: ## No HTTP client on the block-import path (CC-28/2)
 	bash $(SCRIPTS)/check-no-http-import-path.sh
 
 .PHONY: check-inproc-grpc
-check-inproc-grpc: ## S2-A-13: in-process harness cargo tree has no tonic / cc-proto
+check-inproc-grpc: ## S2-A-13/A-14: in-process import path cargo tree has no tonic / cc-proto
 	bash $(SCRIPTS)/check-no-grpc-beacon-inproc.sh
 
 .PHONY: check-remodelling

@@ -284,6 +284,7 @@ fn gossip_path_no_early_accept_without_valid_proposer_sig() {
         None,
         None,
         None,
+        None,
     )
     .expect("outcome");
 
@@ -351,6 +352,7 @@ fn unary_path_verifies_proposer_signature_under_default_config() {
         None,
         None,
         None,
+        None,
     )
     .expect("outcome");
 
@@ -408,6 +410,7 @@ fn unary_default_config_verifies_body_signatures_in_state_transition() {
         &mut snap_seq,
         request,
         CoreConfig::default().verify,
+        None,
         None,
         None,
         None,
@@ -483,6 +486,7 @@ fn early_accept_fires_before_two_second_da_stall() {
             None,
             None,
             None,
+            None,
         )
     });
 
@@ -551,6 +555,7 @@ fn late_import_reject_forced_after_early_accept() {
         None,
         None,
         None,
+        None,
     )
     .expect("outcome");
 
@@ -607,6 +612,7 @@ fn late_import_internal_forced_after_early_accept() {
         None,
         Some(early_tx),
         Some(inject),
+        None,
         None,
         None,
         None,
@@ -708,6 +714,7 @@ fn future_slot_is_terminal_ignore_reason() {
         cc_state_transition::BlockSignatureStrategy::NoVerification,
         None,
         None, // unary-style — still hits cheap future_slot
+        None,
         None,
         None,
         None,
@@ -1016,6 +1023,7 @@ fn block_three_epochs_past_head_is_not_proposer_reject() {
         cc_state_transition::BlockSignatureStrategy::NoVerification,
         Some(&epoch_ctx),
         Some(early_tx),
+        None,
         None,
         None,
         None,

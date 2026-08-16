@@ -38,6 +38,8 @@ members = [
   "bin/beacon-core",
   # S2-A-13 proto-free in-process boot harness ([ARCH] §8.2): 26 → 27.
   "crates/beacon-inproc",
+  # S2-A-14: import → durable test crate. Proto-free tree (no tonic / cc-proto).
+  "crates/beacon-import",
 ]
 
 [workspace.package]
@@ -207,6 +209,8 @@ cc-storage-core = { path = "crates/storage-core" }
 cc-beacon-core = { path = "bin/beacon-core" }
 # S2-A-13: proto-free in-process boot harness ([ARCH] §8.2). No tonic / cc-proto.
 cc-beacon-inproc = { path = "crates/beacon-inproc" }
+# S2-A-14: import → durable assertion crate. Default-features off on grpc crates.
+cc-beacon-import = { path = "crates/beacon-import" }
 # S2-J-01: checkpoint_sync stays on cc-chain (HTTP grandfather).
 cc-chain = { path = "services/chain" }
 

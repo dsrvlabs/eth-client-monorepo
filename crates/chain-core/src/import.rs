@@ -9,9 +9,10 @@
 //! ```
 //!
 //! The pre-computed `ImportBlockRequest.root` is a **probe only**: a hit that is
-//! **fully imported** (`store.blocks` **and** proto-array) returns `DUPLICATE`
-//! without decoding or re-running transition. A partial (header without
-//! proto-array) falls through so `on_block` can resume (SEC-4).
+//! **fully imported** (`store.blocks` **and** proto-array) skips transition.
+//! If an archive handle is present, that path still persists when durable
+//! rows are missing (M2). A partial (header without proto-array) falls
+//! through so `on_block` can resume (SEC-4).
 //!
 //! # Gossip-verify fast path (CC-27c)
 //!
@@ -45,6 +46,7 @@ use ssz_derive::Encode as SszEncode;
 use tonic::Status;
 use tree_hash::TreeHash;
 
+use crate::ArchiveWriteHandle;
 use crate::da::{BlockBranchTrigger, PendingDa, PendingDaEntry, block_branch_trigger_from_signed};
 use crate::epoch_context::EpochContext;
 use crate::events::EventInput;
@@ -317,6 +319,7 @@ pub fn import_block<P: Preset>(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -360,11 +363,26 @@ pub fn import_block_with_early<P: Preset>(
     pending_da: Option<&mut PendingDa>,
     pending_engine: Option<&mut PendingEngine>,
     gossip_clock: Option<GossipClock>,
+    archive: Option<&ArchiveWriteHandle>,
 ) -> Result<ImportOutcome, Status> {
     let gossip_path = early_accept_tx.is_some() || inject_after_early.is_some();
     // --- 1. decode-free dedup probe (ADR-P1-10 / SEC-4) ----------------------
     let probe = parse_root(&request.root)?;
     if is_fully_imported(store, &probe) {
+        // FC already has the block (e.g. persist failed after on_block). Persist
+        // only when that block's durable rows are missing. Re-ingest of an
+        // already-durable ancestor with update_canonical rewinds the tip (H3).
+        if let Some(archive) = archive {
+            let signed = decode_signed_block::<P>(&request.ssz, request.fork)?;
+            let true_root = Root::from_hash256(TreeHash::tree_hash_root(&signed.message));
+            if true_root != probe {
+                metrics.inc_import_root_mismatch();
+                return Err(Status::invalid_argument(format!(
+                    "supplied root {probe} does not match decoded hash_tree_root {true_root}"
+                )));
+            }
+            persist_duplicate_if_missing(archive, &signed, probe, &request.ssz)?;
+        }
         metrics.inc_import_result(ImportResult::Duplicate);
         return Ok(ImportOutcome {
             response: import_response(ImportBlockVerdict::Duplicate, &ImportReason::None),
@@ -482,6 +500,7 @@ pub fn import_block_with_early<P: Preset>(
             b.root,
             on_block_secs,
             early_accept,
+            archive,
         ),
         Ok(BlockImport::Deferred(DeferralReason::DataUnavailable)) => {
             // Park for re-drive when DataAvailable lands (CC-24d / §8.3).
@@ -818,6 +837,60 @@ fn verify_block_proposer_sig<P: Preset>(
     set.verify(strategy)
 }
 
+fn seam_root(root: Root) -> cc_seam::Root {
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(root.as_slice());
+    arr
+}
+
+fn map_archive_err(err: cc_seam::SeamError) -> Status {
+    match err {
+        cc_seam::SeamError::Backpressure { .. } => Status::resource_exhausted(err.to_string()),
+        cc_seam::SeamError::InvalidArgument(msg) => Status::invalid_argument(msg),
+        other => Status::unavailable(other.to_string()),
+    }
+}
+
+/// Persist a successfully imported block through the live archive writer.
+fn persist_imported_block<P: Preset>(
+    archive: &ArchiveWriteHandle,
+    signed: &SignedBeaconBlock<P>,
+    block_root: Root,
+    arrival_ssz: &[u8],
+) -> Result<(), Status> {
+    let parent = signed.message.parent_root;
+    let parent_root = if parent == Root::ZERO {
+        seam_root(block_root)
+    } else {
+        seam_root(parent)
+    };
+    let block = cc_seam::IngestBlock {
+        parent_root,
+        slot: signed.message.slot.as_u64(),
+        block_root: seam_root(block_root),
+        ssz: Bytes::copy_from_slice(arrival_ssz),
+    };
+    archive
+        .ingest_block_blocking(block)
+        .map_err(map_archive_err)
+}
+
+/// DUPLICATE retry: persist only if this block is not already durable (H3).
+fn persist_duplicate_if_missing<P: Preset>(
+    archive: &ArchiveWriteHandle,
+    signed: &SignedBeaconBlock<P>,
+    block_root: Root,
+    arrival_ssz: &[u8],
+) -> Result<(), Status> {
+    if archive
+        .block_is_durable(seam_root(block_root))
+        .map_err(map_archive_err)?
+    {
+        return Ok(());
+    }
+    persist_imported_block(archive, signed, block_root, arrival_ssz)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn finish_imported<P: Preset>(
     store: &mut Store<P>,
@@ -832,6 +905,7 @@ fn finish_imported<P: Preset>(
     block_root: Root,
     on_block_secs: f64,
     early_accept: bool,
+    archive: Option<&ArchiveWriteHandle>,
 ) -> Result<ImportOutcome, Status> {
     let slot = signed.message.slot.as_u64();
     let slots_per_epoch = P::SLOTS_PER_EPOCH.max(1);
@@ -911,6 +985,10 @@ fn finish_imported<P: Preset>(
         .get(&finalized.root)
         .map(|h| h.state_root)
         .unwrap_or(Root::ZERO);
+    if let Some(archive) = archive {
+        persist_imported_block(archive, signed, block_root, arrival_ssz)?;
+    }
+
     publish_import_events(
         event_tx,
         metrics,
@@ -1175,7 +1253,7 @@ pub fn publish_snapshot_then_events(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use cc_fork_choice::{
@@ -1200,6 +1278,208 @@ mod tests {
         ) -> Result<cc_state_transition::PayloadStatus, cc_state_transition::EngineError> {
             Ok(cc_state_transition::PayloadStatus::Valid)
         }
+    }
+
+    fn persist_retry_config() -> ChainConfig {
+        use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
+        use cc_types::primitives::{ExecutionAddress, ForkVersion};
+        ChainConfig {
+            preset_base: PresetName::Minimal,
+            config_name: "minimal".into(),
+            genesis_fork_version: ForkVersion::from_array([0x00, 0x00, 0x00, 0x01]),
+            altair_fork_version: ForkVersion::from_array([0x01, 0x00, 0x00, 0x01]),
+            altair_fork_epoch: Epoch::new(0),
+            bellatrix_fork_version: ForkVersion::from_array([0x02, 0x00, 0x00, 0x01]),
+            bellatrix_fork_epoch: Epoch::new(0),
+            capella_fork_version: ForkVersion::from_array([0x03, 0x00, 0x00, 0x01]),
+            capella_fork_epoch: Epoch::new(0),
+            deneb_fork_version: ForkVersion::from_array([0x04, 0x00, 0x00, 0x01]),
+            deneb_fork_epoch: Epoch::new(0),
+            electra_fork_version: ForkVersion::from_array([0x05, 0x00, 0x00, 0x01]),
+            electra_fork_epoch: Epoch::new(0),
+            fulu_fork_version: ForkVersion::from_array([0x06, 0x00, 0x00, 0x01]),
+            fulu_fork_epoch: Epoch::new(0),
+            seconds_per_slot: 6,
+            blob_schedule: BlobSchedule::try_from_entries(vec![BlobParameters {
+                epoch: Epoch::new(0),
+                max_blobs_per_block: 9,
+            }])
+            .unwrap(),
+            deposit_chain_id: 0,
+            deposit_contract_address: ExecutionAddress::ZERO,
+            churn_limit_quotient: 32,
+            min_per_epoch_churn_limit_electra: 64_000_000_000,
+            max_per_epoch_activation_exit_churn_limit: 128_000_000_000,
+            shard_committee_period: Epoch::new(64),
+            max_blobs_per_block_electra: 9,
+        }
+    }
+
+    fn persist_retry_child() -> (
+        cc_fork_choice::Store<Minimal>,
+        ChainConfig,
+        ImportBlockRequest,
+        Root,
+    ) {
+        use cc_fork_choice::{HarnessAvailability, get_forkchoice_store, on_tick};
+        use cc_types::BeaconBlockBody;
+        use cc_types::containers::Validator;
+        use cc_types::primitives::{BlsPublicKey, Gwei};
+        use ssz_types::FixedVector;
+        use std::sync::Arc;
+
+        let config = persist_retry_config();
+        let mut state = BeaconState::<Minimal>::default();
+        state.set_genesis_time(0);
+        state.set_slot(Slot::new(0));
+        for i in 0u8..3 {
+            let mut raw = [0u8; 48];
+            raw[0] = i.saturating_add(1);
+            state
+                .validators_push(Validator {
+                    pubkey: BlsPublicKey::from_array(raw),
+                    ..Validator::default()
+                })
+                .unwrap();
+            state.balances_push(Gwei::new(32_000_000_000)).unwrap();
+        }
+        let committee_keys: Vec<BlsPublicKey> = (0..Minimal::SYNC_COMMITTEE_SIZE as usize)
+            .map(|i| {
+                let mut raw = [0u8; 48];
+                raw[0] = (i % 3) as u8 + 1;
+                BlsPublicKey::from_array(raw)
+            })
+            .collect();
+        let committee = cc_types::containers::SyncCommittee {
+            pubkeys: FixedVector::new(committee_keys.clone()).expect("sync committee size"),
+            aggregate_pubkey: committee_keys[0],
+        };
+        state.set_current_sync_committee(committee.clone());
+        state.set_next_sync_committee(committee);
+        let body = BeaconBlockBody::<Minimal>::default();
+        let body_root = Root::from_hash256(TreeHash::tree_hash_root(&body));
+        state.set_latest_block_header(BeaconBlockHeader {
+            slot: Slot::new(0),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: Root::ZERO,
+            state_root: Root::ZERO,
+            body_root,
+        });
+        let state_root = state.canonical_root();
+        let mut header = *state.latest_block_header();
+        header.state_root = state_root;
+        state.set_latest_block_header(header);
+        let anchor_block = BeaconBlock {
+            slot: Slot::new(0),
+            proposer_index: ValidatorIndex::new(0),
+            parent_root: Root::ZERO,
+            state_root,
+            body,
+        };
+        let mut store = get_forkchoice_store(
+            state.clone(),
+            &anchor_block,
+            Arc::new(AcceptEngine),
+            Arc::new(HarnessAvailability),
+            config.seconds_per_slot,
+        )
+        .unwrap();
+        on_tick(&mut store, config.seconds_per_slot.saturating_mul(2)).unwrap();
+        let anchor_root = Root::from_hash256(TreeHash::tree_hash_root(&anchor_block));
+        let (request, true_root) = valid_child_request(&store, anchor_root, &config);
+        (store, config, request, true_root)
+    }
+
+    fn valid_child_request(
+        store: &cc_fork_choice::Store<Minimal>,
+        parent_root: Root,
+        config: &ChainConfig,
+    ) -> (ImportBlockRequest, Root) {
+        use cc_crypto::INFINITY_SIGNATURE;
+        use cc_state_transition::{
+            TransitionContext, get_beacon_proposer_index, get_current_epoch,
+            get_expected_withdrawals, get_randao_mix, process_slots,
+        };
+        use cc_types::containers::SyncAggregate;
+        use cc_types::execution::ExecutionPayload;
+        use cc_types::{BeaconBlockBody, SignedBeaconBlock};
+        use ssz_types::VariableList;
+
+        let parent_state = store.block_state(&parent_root).unwrap().clone();
+        let engine = AcceptEngine;
+        let ctx = TransitionContext::new(config, &engine);
+        ctx.top_up_pubkey_cache(&parent_state);
+        let mut st = parent_state.clone();
+        let next_slot = Slot::new(st.slot().as_u64() + 1);
+        let _ = process_slots(&mut st, next_slot, config).expect("process_slots");
+        let proposer = get_beacon_proposer_index(&st).expect("proposer");
+        let (withdrawals, _) = get_expected_withdrawals(&st).expect("withdrawals");
+        let epoch = get_current_epoch(&st);
+        let prev_randao = get_randao_mix(&st, epoch).expect("randao");
+        let timestamp = cc_state_transition::compute_time_at_slot(
+            st.genesis_time(),
+            next_slot,
+            config.seconds_per_slot,
+        );
+        let parent_hash = st.latest_execution_payload_header().block_hash;
+        let payload = ExecutionPayload::<Minimal> {
+            parent_hash,
+            prev_randao,
+            timestamp,
+            block_number: st.latest_execution_payload_header().block_number + 1,
+            gas_limit: st.latest_execution_payload_header().gas_limit,
+            withdrawals: VariableList::new(withdrawals).expect("withdrawals list"),
+            ..Default::default()
+        };
+        let body = BeaconBlockBody::<Minimal> {
+            execution_payload: payload,
+            eth1_data: st.eth1_data(),
+            sync_aggregate: SyncAggregate {
+                sync_committee_bits: Default::default(),
+                sync_committee_signature: cc_types::primitives::BlsSignature::from_array(
+                    INFINITY_SIGNATURE,
+                ),
+            },
+            ..Default::default()
+        };
+        let mut message = BeaconBlock {
+            slot: next_slot,
+            proposer_index: proposer,
+            parent_root,
+            state_root: Root::ZERO,
+            body,
+        };
+        let trial_signed = SignedBeaconBlock {
+            message: message.clone(),
+            signature: Default::default(),
+        };
+        let mut trial = parent_state;
+        match cc_state_transition::state_transition(
+            &mut trial,
+            &trial_signed,
+            &ctx,
+            BlockSignatureStrategy::NoVerification,
+        ) {
+            Err(cc_state_transition::BlockError::StateRootMismatch { actual, .. }) => {
+                message.state_root = actual;
+            }
+            Ok(()) => {
+                message.state_root = trial.canonical_root();
+            }
+            Err(e) => panic!("state_transition for fixture: {e}"),
+        }
+        let child = SignedBeaconBlock {
+            message,
+            signature: Default::default(),
+        };
+        let true_root = Root::from_hash256(TreeHash::tree_hash_root(&child.message));
+        let request = ImportBlockRequest {
+            ssz: encode_signed_block(&child),
+            fork: 0,
+            root: true_root.as_slice().to_vec(),
+            source: 0,
+        };
+        (request, true_root)
     }
 
     fn wrap_marker_state(marker: u64) -> BeaconState<Minimal> {
@@ -1562,6 +1842,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(metrics.pubkey_cache_len_value() as usize, validators_len);
@@ -1569,6 +1850,243 @@ mod tests {
             !metrics.pubkey_cache_alert_firing(),
             "topped-up context map must match the parent registry"
         );
+    }
+
+    /// M2: persist Err after `on_block` must not report success, and a later
+    /// DUPLICATE retry must still persist.
+    #[test]
+    fn persist_fail_after_import_retries_on_duplicate() {
+        use crate::ArchiveWriteHandle;
+        use crate::residency::Residency;
+        use cc_seam::{ArchiveWrite, IngestBlock, SeamError};
+        use std::sync::atomic::AtomicU32;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Debug)]
+        struct FailThenRecord {
+            fails_left: AtomicU32,
+            persisted: Mutex<Vec<[u8; 32]>>,
+        }
+
+        #[async_trait::async_trait]
+        impl ArchiveWrite for FailThenRecord {
+            async fn ingest_columns(&self, _batch: cc_seam::ColumnBatch) -> Result<(), SeamError> {
+                Ok(())
+            }
+
+            async fn ingest_block(&self, block: IngestBlock) -> Result<(), SeamError> {
+                self.ingest_block_blocking(block)
+            }
+
+            fn ingest_block_blocking(&self, block: IngestBlock) -> Result<(), SeamError> {
+                if self.fails_left.load(Ordering::SeqCst) > 0 {
+                    self.fails_left.fetch_sub(1, Ordering::SeqCst);
+                    return Err(SeamError::Unavailable("injected persist fail".into()));
+                }
+                self.persisted.lock().unwrap().push(block.block_root);
+                Ok(())
+            }
+        }
+
+        let (mut store, config, request, true_root) = persist_retry_child();
+
+        let archive_impl = Arc::new(FailThenRecord {
+            fails_left: AtomicU32::new(1),
+            persisted: Mutex::new(Vec::new()),
+        });
+        let archive: ArchiveWriteHandle = archive_impl.clone();
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let head = HeadSnapshotStore::new();
+        let (event_tx, _) = mpsc::channel(4);
+        let counters = ImportCounters::default();
+        let mut residency = Residency::<Minimal>::new(64, 32);
+        let mut snap_seq = 0u64;
+
+        let first = import_block_with_early(
+            &mut store,
+            &mut residency,
+            &config,
+            &head,
+            &event_tx,
+            &metrics,
+            &counters,
+            &mut snap_seq,
+            request.clone(),
+            BlockSignatureStrategy::NoVerification,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&archive),
+        );
+        assert!(
+            first.is_err(),
+            "persist fail after on_block must not report success: {first:?}"
+        );
+        assert!(
+            is_fully_imported(&store, &true_root),
+            "on_block already applied; retry must see DUPLICATE"
+        );
+
+        let second = import_block_with_early(
+            &mut store,
+            &mut residency,
+            &config,
+            &head,
+            &event_tx,
+            &metrics,
+            &counters,
+            &mut snap_seq,
+            request,
+            BlockSignatureStrategy::NoVerification,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&archive),
+        )
+        .expect("duplicate retry must persist then return DUPLICATE");
+        assert_eq!(
+            second.response.verdict,
+            ImportBlockVerdict::Duplicate as i32
+        );
+        assert!(!second.transition_invoked);
+        let persisted = archive_impl.persisted.lock().unwrap();
+        assert_eq!(persisted.len(), 1, "retry must persist the missing rows");
+        assert_eq!(persisted[0], seam_root(true_root));
+    }
+
+    /// H3: after A then B are durable, re-import A must not persist again.
+    #[test]
+    fn duplicate_already_durable_ancestor_does_not_repersist() {
+        use crate::ArchiveWriteHandle;
+        use crate::residency::Residency;
+        use cc_fork_choice::on_tick;
+        use cc_seam::{ArchiveWrite, IngestBlock, SeamError};
+        use std::collections::HashSet;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Debug, Default)]
+        struct RecordDurable {
+            persisted: Mutex<Vec<[u8; 32]>>,
+        }
+
+        #[async_trait::async_trait]
+        impl ArchiveWrite for RecordDurable {
+            async fn ingest_columns(&self, _batch: cc_seam::ColumnBatch) -> Result<(), SeamError> {
+                Ok(())
+            }
+
+            async fn ingest_block(&self, block: IngestBlock) -> Result<(), SeamError> {
+                self.ingest_block_blocking(block)
+            }
+
+            fn ingest_block_blocking(&self, block: IngestBlock) -> Result<(), SeamError> {
+                self.persisted.lock().unwrap().push(block.block_root);
+                Ok(())
+            }
+
+            fn block_is_durable(&self, root: cc_seam::Root) -> Result<bool, SeamError> {
+                Ok(self.persisted.lock().unwrap().contains(&root))
+            }
+        }
+
+        let (mut store, config, req_a, root_a) = persist_retry_child();
+        let archive_impl = Arc::new(RecordDurable::default());
+        let archive: ArchiveWriteHandle = archive_impl.clone();
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let head = HeadSnapshotStore::new();
+        let (event_tx, _) = mpsc::channel(4);
+        let counters = ImportCounters::default();
+        let mut residency = Residency::<Minimal>::new(64, 32);
+        let mut snap_seq = 0u64;
+
+        let first = import_block_with_early(
+            &mut store,
+            &mut residency,
+            &config,
+            &head,
+            &event_tx,
+            &metrics,
+            &counters,
+            &mut snap_seq,
+            req_a.clone(),
+            BlockSignatureStrategy::NoVerification,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&archive),
+        )
+        .expect("import A");
+        assert_eq!(first.response.verdict, ImportBlockVerdict::Imported as i32);
+
+        on_tick(&mut store, config.seconds_per_slot.saturating_mul(3)).unwrap();
+        let (req_b, root_b) = valid_child_request(&store, root_a, &config);
+        let second = import_block_with_early(
+            &mut store,
+            &mut residency,
+            &config,
+            &head,
+            &event_tx,
+            &metrics,
+            &counters,
+            &mut snap_seq,
+            req_b,
+            BlockSignatureStrategy::NoVerification,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&archive),
+        )
+        .expect("import B");
+        assert_eq!(second.response.verdict, ImportBlockVerdict::Imported as i32);
+
+        let replay = import_block_with_early(
+            &mut store,
+            &mut residency,
+            &config,
+            &head,
+            &event_tx,
+            &metrics,
+            &counters,
+            &mut snap_seq,
+            req_a,
+            BlockSignatureStrategy::NoVerification,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&archive),
+        )
+        .expect("re-import A is DUPLICATE");
+        assert_eq!(
+            replay.response.verdict,
+            ImportBlockVerdict::Duplicate as i32
+        );
+        assert!(!replay.transition_invoked);
+        let persisted = archive_impl.persisted.lock().unwrap();
+        assert_eq!(
+            persisted.len(),
+            2,
+            "already-durable A must not be ingested again: {persisted:?}"
+        );
+        let set: HashSet<_> = persisted.iter().copied().collect();
+        assert!(set.contains(&seam_root(root_a)));
+        assert!(set.contains(&seam_root(root_b)));
     }
 
     fn test_root(b: u8) -> Root {

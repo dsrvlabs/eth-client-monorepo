@@ -10,15 +10,20 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["grpc"]
+# Serve / boot host. Writer + ArchiveWrite stay proto-free (S2-A-14).
+grpc = ["dep:cc-proto", "dep:tonic", "dep:cc-bootstrap", "cc-seam/ipc"]
+
 [dependencies]
 # S2-B-03: production host. No JWT signer / HTTP client ([ARCH] §6.2 — not grandfathered).
 # S2-A-05: ArchiveWrite impl over the live P0 mailbox.
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-cc-bootstrap = { workspace = true }
-cc-seam = { workspace = true }
+cc-bootstrap = { workspace = true, optional = true }
+cc-seam = { path = "../seam", default-features = false }
 cc-config = { workspace = true }
-cc-proto = { workspace = true }
+cc-proto = { workspace = true, optional = true }
 cc-state-transition = { workspace = true }
 cc-store = { workspace = true }
 cc-types = { workspace = true }
@@ -30,7 +35,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { version = "0.1", features = ["sync"] }
-tonic = { workspace = true }
+tonic = { workspace = true, optional = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

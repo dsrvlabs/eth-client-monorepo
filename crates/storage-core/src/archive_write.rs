@@ -14,13 +14,16 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cc_seam::{ArchiveWrite, ColumnBatch, SeamError};
+use cc_seam::{ArchiveWrite, ColumnBatch, IngestBlock, SeamError};
+use cc_store::blocks::{parent_root_at_offset, slot_at_offset};
 use cc_store::columns::{
     COLUMN_HEADER_PARENT_ROOT_SSZ_OFFSET, MIN_COLUMN_SSZ_LEN, NUMBER_OF_COLUMNS,
     column_parent_root_at_offset,
 };
 use cc_store::engine::{Engine, StoreError};
-use cc_store::{Root, Slot};
+use cc_store::meta::WriteCursor;
+use cc_store::{Root, Slot, SszEncode, TABLE_BLOCKS_HOT, TABLE_CANONICAL};
+use cc_types::{ForkName, Mainnet, Minimal, SignedBeaconBlock};
 
 use crate::writer::{
     CommitUnit, StagedBlock, StagedColumn, WriterError, WriterHandle, block_present,
@@ -29,7 +32,7 @@ use crate::writer::{
 
 /// Typed ingest adapter. Holds the live writer handle — no second mailbox.
 #[derive(Debug, Clone)]
-pub(crate) struct ArchiveWriter {
+pub struct ArchiveWriter {
     writer: WriterHandle,
     engine: Arc<Engine>,
 }
@@ -37,6 +40,29 @@ pub(crate) struct ArchiveWriter {
 impl ArchiveWriter {
     pub(crate) fn new(writer: WriterHandle, engine: Arc<Engine>) -> Self {
         Self { writer, engine }
+    }
+
+    /// Seed a genesis write cursor when the store has none (S2-A-14).
+    ///
+    /// Ingest restamps this record; it does not invent `session_id=0`/`seq=0`
+    /// at submit time.
+    pub(crate) fn ensure_write_cursor(engine: &Engine) -> Result<(), StoreError> {
+        if load_write_cursor(engine)?.is_some() {
+            return Ok(());
+        }
+        let cursor = WriteCursor {
+            session_id: 1,
+            seq: 0,
+            slot: Slot::new(0),
+            root: Root::ZERO,
+        };
+        let mut batch = engine.batch();
+        batch.put(
+            cc_store::meta::TABLE_META,
+            cc_store::meta::KEY_WRITE_CURSOR.as_bytes(),
+            &cursor.as_ssz_bytes(),
+        );
+        engine.commit(batch)
     }
 }
 
@@ -128,27 +154,69 @@ fn admit_top_of_batch_continuity(engine: &Engine, batch: &WriterBatch) -> Result
 }
 
 impl ArchiveWriter {
-    async fn submit_writer_batch(&self, batch: WriterBatch) -> Result<(), SeamError> {
-        admit_top_of_batch_continuity(&self.engine, &batch)?;
-        // CommitUnit always restamps KEY_WRITE_CURSOR (D-4). Never invent
-        // session_id=0/seq=0 — that rewinds a missing cursor to zeros.
-        let cursor = load_write_cursor(&self.engine)
+    fn load_or_missing_cursor(&self) -> Result<WriteCursor, SeamError> {
+        load_write_cursor(&self.engine)
             .map_err(|e| SeamError::Unavailable(e.to_string()))?
             .ok_or_else(|| {
                 SeamError::Unavailable(
                     "no durable write cursor; refuse to invent a zero cursor".into(),
                 )
-            })?;
-        let unit = CommitUnit {
+            })
+    }
+
+    fn unit_for_batch(
+        &self,
+        batch: WriterBatch,
+        cursor: WriteCursor,
+    ) -> Result<CommitUnit, SeamError> {
+        admit_top_of_batch_continuity(&self.engine, &batch)?;
+        Ok(CommitUnit {
             blocks: batch.blocks,
             columns: batch.columns,
             fork_choice: None,
             cursor,
             done: None,
-        };
+        })
+    }
+
+    async fn submit_writer_batch(&self, batch: WriterBatch) -> Result<(), SeamError> {
+        // Columns restamp the existing cursor (batch-seq unchanged).
+        let cursor = self.load_or_missing_cursor()?;
+        let unit = self.unit_for_batch(batch, cursor)?;
         self.writer
             .submit_p0_committed(unit)
             .await
+            .map_err(map_writer_err)
+    }
+
+    fn block_unit(&self, batch: WriterBatch) -> Result<CommitUnit, SeamError> {
+        let prev = self.load_or_missing_cursor()?;
+        let (slot, root) = batch
+            .blocks
+            .last()
+            .map(|b| (b.slot, b.root))
+            .unwrap_or((prev.slot, prev.root));
+        let cursor = WriteCursor {
+            session_id: prev.session_id,
+            seq: prev.seq.saturating_add(1),
+            slot,
+            root,
+        };
+        self.unit_for_batch(batch, cursor)
+    }
+
+    async fn submit_block_batch(&self, batch: WriterBatch) -> Result<(), SeamError> {
+        let unit = self.block_unit(batch)?;
+        self.writer
+            .submit_p0_committed(unit)
+            .await
+            .map_err(map_writer_err)
+    }
+
+    fn submit_block_batch_blocking(&self, batch: WriterBatch) -> Result<(), SeamError> {
+        let unit = self.block_unit(batch)?;
+        self.writer
+            .blocking_submit_p0_committed(unit)
             .map_err(map_writer_err)
     }
 }
@@ -168,6 +236,140 @@ impl ArchiveWrite for ArchiveWriter {
         })
         .await
     }
+
+    async fn ingest_block(&self, block: IngestBlock) -> Result<(), SeamError> {
+        match bind_ingest_block(&self.engine, block)? {
+            Some(batch) => self.submit_block_batch(batch).await,
+            None => Ok(()),
+        }
+    }
+
+    fn ingest_block_blocking(&self, block: IngestBlock) -> Result<(), SeamError> {
+        match bind_ingest_block(&self.engine, block)? {
+            Some(batch) => self.submit_block_batch_blocking(batch),
+            None => Ok(()),
+        }
+    }
+
+    fn block_is_durable(&self, root: cc_seam::Root) -> Result<bool, SeamError> {
+        block_present(&self.engine, &Root::from_array(root))
+            .map_err(|e| SeamError::Unavailable(e.to_string()))
+    }
+}
+
+/// Bind caller `(slot, parent_root, block_root)` to the SSZ payload (H1).
+///
+/// Slot and parent_root are fixed-offset header peeks (same style as column
+/// parent/index). `block_root` must equal `hash_tree_root(message)` under a
+/// Fulu decode (Mainnet or Minimal). Self-parent is first-seed only.
+fn bind_ingest_block(
+    engine: &Engine,
+    block: IngestBlock,
+) -> Result<Option<WriterBatch>, SeamError> {
+    let ssz = block.ssz.as_ref();
+    let ssz_slot = slot_at_offset(ssz).map_err(|e| SeamError::InvalidArgument(e.to_string()))?;
+    let claimed_slot = Slot::new(block.slot);
+    if ssz_slot != claimed_slot {
+        return Err(SeamError::InvalidArgument(format!(
+            "slot mismatch: caller {} != SSZ header slot {}",
+            claimed_slot.as_u64(),
+            ssz_slot.as_u64()
+        )));
+    }
+
+    let ssz_parent =
+        parent_root_at_offset(ssz).map_err(|e| SeamError::InvalidArgument(e.to_string()))?;
+    let claimed_parent = Root::from_array(block.parent_root);
+    let claimed_root = Root::from_array(block.block_root);
+
+    if !ssz_block_root_matches(ssz, &claimed_root)? {
+        return Err(SeamError::InvalidArgument(
+            "block_root mismatch: caller != hash_tree_root of SSZ payload".into(),
+        ));
+    }
+
+    let genesis_remap = ssz_parent == Root::ZERO && claimed_parent == claimed_root;
+    if ssz_parent != claimed_parent && !genesis_remap {
+        return Err(SeamError::InvalidArgument(format!(
+            "parent_root mismatch: caller != SSZ header parent_root at offset {}",
+            cc_store::PARENT_ROOT_SSZ_OFFSET
+        )));
+    }
+
+    if claimed_parent == claimed_root && durable_head_present(engine)? {
+        return Err(SeamError::InvalidArgument(
+            "self-parent is only allowed as the first seed (empty store / no canonical head)"
+                .into(),
+        ));
+    }
+
+    // Already-durable body: do not submit with update_canonical (H3).
+    // rewrite_from_head from this root would delete every canonical row above.
+    if block_present(engine, &claimed_root).map_err(|e| SeamError::Unavailable(e.to_string()))? {
+        return Ok(None);
+    }
+
+    Ok(Some(WriterBatch {
+        head: Some(ContinuityHead {
+            parent_root: claimed_parent,
+            slot: claimed_slot,
+        }),
+        blocks: vec![StagedBlock {
+            slot: claimed_slot,
+            root: claimed_root,
+            ssz: block.ssz.to_vec(),
+            update_canonical: true,
+            write_state_root: false,
+            da_status: None,
+        }],
+        columns: Vec::new(),
+    }))
+}
+
+fn ssz_block_root_matches(ssz: &[u8], claimed: &Root) -> Result<bool, SeamError> {
+    let mut decoded = false;
+    for computed in [
+        SignedBeaconBlock::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, ssz)
+            .ok()
+            .map(|b| Root::from_hash256(b.canonical_root())),
+        SignedBeaconBlock::<Minimal>::from_ssz_bytes_with(ForkName::Fulu, ssz)
+            .ok()
+            .map(|b| Root::from_hash256(b.canonical_root())),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        decoded = true;
+        if computed == *claimed {
+            return Ok(true);
+        }
+    }
+    if decoded {
+        return Ok(false);
+    }
+    Err(SeamError::InvalidArgument(
+        "signed block SSZ did not decode; refuse unvalidated ingest".into(),
+    ))
+}
+
+fn durable_head_present(engine: &Engine) -> Result<bool, SeamError> {
+    let rt = engine
+        .read()
+        .map_err(|e| SeamError::Unavailable(e.to_string()))?;
+    let lo = cc_store::keys::encode_cold_block_key(Slot::ZERO);
+    let hi = cc_store::keys::encode_cold_block_key(Slot::new(u64::MAX));
+    let mut canon = rt
+        .range_max(TABLE_CANONICAL, &lo, &hi, 1)
+        .map_err(|e| SeamError::Unavailable(e.to_string()))?;
+    if canon.next().is_some() {
+        return Ok(true);
+    }
+    let blo = [0u8; 40];
+    let bhi = [0xffu8; 40];
+    let mut blocks = rt
+        .range_max(TABLE_BLOCKS_HOT, &blo, &bhi, 1)
+        .map_err(|e| SeamError::Unavailable(e.to_string()))?;
+    Ok(blocks.next().is_some())
 }
 
 #[cfg(test)]
@@ -181,6 +383,7 @@ mod tests {
     use cc_store::blocks::{
         MIN_BLOCK_SSZ_LEN, PARENT_ROOT_SSZ_OFFSET, SLOT_SSZ_OFFSET, STATE_ROOT_SSZ_OFFSET,
     };
+    use cc_store::canonical::get_canonical;
     use cc_store::columns::{
         COLUMN_HEADER_PARENT_ROOT_SSZ_OFFSET, COLUMN_HEADER_SLOT_SSZ_OFFSET,
         COLUMN_INDEX_SSZ_OFFSET, DATA_COLUMN_SIDECAR_FIXED_BYTES, get_column_by_root,
@@ -189,7 +392,9 @@ mod tests {
     use cc_store::keys::BlockRegion;
     use cc_store::meta::WriteCursor;
     use cc_store::{get_block_by_root, put_block};
+    use cc_types::{BeaconBlock, SignedBeaconBlock};
     use prometheus_client::registry::Registry;
+    use ssz::Encode;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::watch;
@@ -492,7 +697,16 @@ mod tests {
             shutdown_rx,
             false,
         );
-        let archive = ArchiveWriter::new(handle, Arc::clone(&engine));
+        let archive = ArchiveWriter::new(handle.clone(), Arc::clone(&engine));
+        handle
+            .submit_p0_committed(CommitUnit::cursor_only(WriteCursor {
+                session_id: 1,
+                seq: 1,
+                slot: Slot::new(0),
+                root: Root::ZERO,
+            }))
+            .await
+            .unwrap();
         let root = Root::from_array([0x42; 32]);
         let err = archive
             .submit_writer_batch(WriterBatch {
@@ -581,6 +795,194 @@ mod tests {
             .is_none()
         );
 
+        let _ = shutdown_tx.send(true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn signed_minimal(slot: u64, parent: Root) -> (Root, Vec<u8>) {
+        let signed = SignedBeaconBlock::<Minimal> {
+            message: BeaconBlock {
+                slot: Slot::new(slot),
+                parent_root: parent,
+                ..Default::default()
+            },
+            signature: Default::default(),
+        };
+        (
+            Root::from_hash256(signed.canonical_root()),
+            signed.as_ssz_bytes(),
+        )
+    }
+
+    fn block_archive(label: &str) -> (PathBuf, Arc<Engine>, ArchiveWriter, watch::Sender<bool>) {
+        let (dir, engine) = eng(label);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = spawn_writer(
+            Arc::clone(&engine),
+            metrics(),
+            WriterBounds::default(),
+            WriterFaults::default(),
+            shutdown_rx,
+            false,
+        );
+        ArchiveWriter::ensure_write_cursor(&engine).unwrap();
+        let archive = ArchiveWriter::new(handle, Arc::clone(&engine));
+        (dir, engine, archive, shutdown_tx)
+    }
+
+    #[tokio::test]
+    async fn ingest_block_rejects_slot_mismatch() {
+        let (dir, _engine, archive, shutdown_tx) = block_archive("slot-bind");
+        let (root, ssz) = signed_minimal(1, Root::ZERO);
+        let err = archive
+            .ingest_block(IngestBlock {
+                parent_root: root.into_array(),
+                slot: 9,
+                block_root: root.into_array(),
+                ssz: Bytes::from(ssz),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SeamError::InvalidArgument(_)));
+        assert!(err.to_string().contains("slot mismatch"), "{err}");
+        let _ = shutdown_tx.send(true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ingest_block_rejects_root_mismatch() {
+        let (dir, _engine, archive, shutdown_tx) = block_archive("root-bind");
+        let (_root, ssz) = signed_minimal(1, Root::ZERO);
+        let err = archive
+            .ingest_block(IngestBlock {
+                parent_root: [0xAB; 32],
+                slot: 1,
+                block_root: [0xAB; 32],
+                ssz: Bytes::from(ssz),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SeamError::InvalidArgument(_)));
+        assert!(
+            err.to_string().contains("block_root mismatch")
+                || err.to_string().contains("did not decode"),
+            "{err}"
+        );
+        let _ = shutdown_tx.send(true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ingest_block_rejects_self_parent_after_head_exists() {
+        let (dir, engine, archive, shutdown_tx) = block_archive("self-parent");
+        let (g_root, g_ssz) = signed_minimal(0, Root::ZERO);
+        archive
+            .ingest_block(IngestBlock {
+                parent_root: g_root.into_array(),
+                slot: 0,
+                block_root: g_root.into_array(),
+                ssz: Bytes::from(g_ssz),
+            })
+            .await
+            .unwrap();
+        assert!(durable_head_present(&engine).unwrap());
+
+        let (fake_root, fake_ssz) = signed_minimal(3, Root::ZERO);
+        let err = archive
+            .ingest_block(IngestBlock {
+                parent_root: fake_root.into_array(),
+                slot: 3,
+                block_root: fake_root.into_array(),
+                ssz: Bytes::from(fake_ssz),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SeamError::InvalidArgument(_)));
+        assert!(err.to_string().contains("self-parent"), "{err}");
+        let rt = engine.read().unwrap();
+        assert!(get_block_by_root(&rt, &fake_root).unwrap().is_none());
+        let _ = shutdown_tx.send(true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ingest_block_reimport_ancestor_keeps_durable_head() {
+        let (dir, engine, archive, shutdown_tx) = block_archive("h3-no-rewind");
+        let (g_root, g_ssz) = signed_minimal(0, Root::ZERO);
+        archive
+            .ingest_block(IngestBlock {
+                parent_root: g_root.into_array(),
+                slot: 0,
+                block_root: g_root.into_array(),
+                ssz: Bytes::from(g_ssz),
+            })
+            .await
+            .unwrap();
+        let (a_root, a_ssz) = signed_minimal(1, g_root);
+        archive
+            .ingest_block(IngestBlock {
+                parent_root: g_root.into_array(),
+                slot: 1,
+                block_root: a_root.into_array(),
+                ssz: Bytes::from(a_ssz.clone()),
+            })
+            .await
+            .unwrap();
+        let (b_root, b_ssz) = signed_minimal(2, a_root);
+        archive
+            .ingest_block(IngestBlock {
+                parent_root: a_root.into_array(),
+                slot: 2,
+                block_root: b_root.into_array(),
+                ssz: Bytes::from(b_ssz.clone()),
+            })
+            .await
+            .unwrap();
+
+        archive
+            .ingest_block(IngestBlock {
+                parent_root: g_root.into_array(),
+                slot: 1,
+                block_root: a_root.into_array(),
+                ssz: Bytes::from(a_ssz.clone()),
+            })
+            .await
+            .expect("re-ingest of durable A must not fail");
+
+        let rt = engine.read().unwrap();
+        assert_eq!(get_canonical(&rt, Slot::new(1)).unwrap(), Some(a_root));
+        assert_eq!(
+            get_canonical(&rt, Slot::new(2)).unwrap(),
+            Some(b_root),
+            "re-ingest of A must not rewind durable head off B"
+        );
+        assert_eq!(
+            get_block_by_root(&rt, &a_root).unwrap().as_deref(),
+            Some(a_ssz.as_slice())
+        );
+        assert_eq!(
+            get_block_by_root(&rt, &b_root).unwrap().as_deref(),
+            Some(b_ssz.as_slice())
+        );
+        let _ = shutdown_tx.send(true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ingest_block_rejects_opaque_synth_ssz() {
+        let (dir, _engine, archive, shutdown_tx) = block_archive("opaque");
+        let ssz = synth_block(1, &Root::ZERO, &Root::from_array([0xF0; 32]));
+        let err = archive
+            .ingest_block(IngestBlock {
+                parent_root: [0x11; 32],
+                slot: 1,
+                block_root: [0x11; 32],
+                ssz: Bytes::from(ssz),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SeamError::InvalidArgument(_)));
+        assert!(err.to_string().contains("did not decode"), "{err}");
         let _ = shutdown_tx.send(true);
         let _ = std::fs::remove_dir_all(&dir);
     }
