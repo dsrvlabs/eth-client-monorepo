@@ -2580,20 +2580,20 @@ mod tests {
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
         assert!(err.message().contains("non-monotone"));
 
-        // Descending commit still works when it extends the frontier
-        // (first row root == stored blocks_oldest_parent).
-        let ssz5 = synth_block(5, &root_n(0x04), &root_n(1));
+        // Adjacent extension still works (first row root == stored
+        // blocks_oldest_parent and first slot == blocks_oldest − 1).
+        let ssz9 = synth_block(9, &root_n(0x08), &root_n(1));
         srv.put_backfill_batch(Request::new(PutBackfillBatchRequest {
             blocks: vec![BackfillBlock {
-                slot: 5,
+                slot: 9,
                 root: Root::ZERO.as_slice().to_vec(),
-                ssz: ssz5,
+                ssz: ssz9,
             }],
             columns: vec![],
             progress: Some(ProtoBackfillProgress {
-                blocks_oldest: 5,
-                blocks_oldest_parent: root_n(0x04).as_slice().to_vec(),
-                columns_oldest: 5,
+                blocks_oldest: 9,
+                blocks_oldest_parent: root_n(0x08).as_slice().to_vec(),
+                columns_oldest: 9,
                 per_index_oldest: vec![],
             }),
         }))
@@ -2708,6 +2708,285 @@ mod tests {
 
         let rt = eng.read().unwrap();
         assert!(get_block_by_root(&rt, &root).unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_backfill_batch_jump_down_across_hole_is_rejected() {
+        let (dir, eng) = open_engine("bf-hole");
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+        let root10 = root_n(0x10);
+        seed_anchor_oldest_parent(&eng, root10);
+        let ssz10 = synth_block(10, &Root::ZERO, &root_n(1));
+        srv.put_backfill_batch(Request::new(PutBackfillBatchRequest {
+            blocks: vec![BackfillBlock {
+                slot: 10,
+                root: root10.as_slice().to_vec(),
+                ssz: ssz10,
+            }],
+            columns: vec![],
+            progress: Some(ProtoBackfillProgress {
+                blocks_oldest: 10,
+                blocks_oldest_parent: Root::ZERO.as_slice().to_vec(),
+                columns_oldest: 10,
+                per_index_oldest: vec![],
+            }),
+        }))
+        .await
+        .unwrap();
+
+        // Explicit hole: parent bind would pass (root == blocks_oldest_parent)
+        // but slot 8 skips 9, so named oldest would jump 10 → 8.
+        let hole_root = Root::ZERO;
+        let ssz8 = synth_block(8, &root_n(0x07), &root_n(1));
+        let err = srv
+            .put_backfill_batch(Request::new(PutBackfillBatchRequest {
+                blocks: vec![BackfillBlock {
+                    slot: 8,
+                    root: hole_root.as_slice().to_vec(),
+                    ssz: ssz8,
+                }],
+                columns: vec![],
+                progress: Some(ProtoBackfillProgress {
+                    blocks_oldest: 8,
+                    blocks_oldest_parent: root_n(0x07).as_slice().to_vec(),
+                    columns_oldest: 8,
+                    per_index_oldest: vec![],
+                }),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            err.message().contains("durable frontier") && err.message().contains("never jump"),
+            "must state the S2 invariant: {err}"
+        );
+        assert!(err.message().contains("not adjacent"), "{err}");
+
+        {
+            let rt = eng.read().unwrap();
+            assert!(get_block_by_root(&rt, &hole_root).unwrap().is_none());
+            assert!(
+                cc_store::get_canonical(&rt, Slot::new(8))
+                    .unwrap()
+                    .is_none()
+            );
+            let stored = cc_store::load_backfill_progress_txn(&rt).unwrap().unwrap();
+            assert_eq!(stored.blocks_oldest, Slot::new(10));
+        }
+
+        // Adjacent extension (slot 9) is still accepted.
+        let ssz9 = synth_block(9, &root_n(0x08), &root_n(1));
+        srv.put_backfill_batch(Request::new(PutBackfillBatchRequest {
+            blocks: vec![BackfillBlock {
+                slot: 9,
+                root: Root::ZERO.as_slice().to_vec(),
+                ssz: ssz9,
+            }],
+            columns: vec![],
+            progress: Some(ProtoBackfillProgress {
+                blocks_oldest: 9,
+                blocks_oldest_parent: root_n(0x08).as_slice().to_vec(),
+                columns_oldest: 9,
+                per_index_oldest: vec![],
+            }),
+        }))
+        .await
+        .unwrap();
+
+        let rt = eng.read().unwrap();
+        let stored = cc_store::load_backfill_progress_txn(&rt).unwrap().unwrap();
+        assert_eq!(stored.blocks_oldest, Slot::new(9));
+        assert_eq!(stored.blocks_oldest_parent, root_n(0x08));
+        assert!(
+            cc_store::get_canonical(&rt, Slot::new(8))
+                .unwrap()
+                .is_none(),
+            "rejected hole must stay empty after adjacent extension"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_backfill_batch_intra_batch_sandwich_is_rejected() {
+        let (dir, eng) = open_engine("bf-sandwich");
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+        let root10 = root_n(0x10);
+        seed_anchor_oldest_parent(&eng, root10);
+        let ssz10 = synth_block(10, &Root::ZERO, &root_n(1));
+        srv.put_backfill_batch(Request::new(PutBackfillBatchRequest {
+            blocks: vec![BackfillBlock {
+                slot: 10,
+                root: root10.as_slice().to_vec(),
+                ssz: ssz10,
+            }],
+            columns: vec![],
+            progress: Some(ProtoBackfillProgress {
+                blocks_oldest: 10,
+                blocks_oldest_parent: Root::ZERO.as_slice().to_vec(),
+                columns_oldest: 10,
+                per_index_oldest: vec![],
+            }),
+        }))
+        .await
+        .unwrap();
+
+        // Top row attaches (slot 9 / root == named parent); lowest is 0.
+        // Parent(9) == root of slot 0 — the intra-batch hole 1–8.
+        let r0 = root_n(0xAA);
+        let ssz9 = synth_block(9, &r0, &root_n(1));
+        let ssz0 = synth_block(0, &root_n(0xBB), &root_n(1));
+        let err = srv
+            .put_backfill_batch(Request::new(PutBackfillBatchRequest {
+                blocks: vec![
+                    BackfillBlock {
+                        slot: 9,
+                        root: Root::ZERO.as_slice().to_vec(),
+                        ssz: ssz9,
+                    },
+                    BackfillBlock {
+                        slot: 0,
+                        root: r0.as_slice().to_vec(),
+                        ssz: ssz0,
+                    },
+                ],
+                columns: vec![],
+                progress: Some(ProtoBackfillProgress {
+                    blocks_oldest: 0,
+                    blocks_oldest_parent: root_n(0xBB).as_slice().to_vec(),
+                    columns_oldest: 0,
+                    per_index_oldest: vec![],
+                }),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            err.message().contains("durable frontier") && err.message().contains("never jump"),
+            "must state the S2 invariant: {err}"
+        );
+        assert!(err.message().contains("not slot-contiguous"), "{err}");
+
+        {
+            let rt = eng.read().unwrap();
+            assert!(get_block_by_root(&rt, &r0).unwrap().is_none());
+            assert!(
+                cc_store::get_canonical(&rt, Slot::new(0))
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                cc_store::get_canonical(&rt, Slot::new(9))
+                    .unwrap()
+                    .is_none()
+            );
+            let stored = cc_store::load_backfill_progress_txn(&rt).unwrap().unwrap();
+            assert_eq!(stored.blocks_oldest, Slot::new(10));
+        }
+
+        // Adjacent contiguous [9, 8] still commits.
+        let r8 = root_n(0x08);
+        let ssz9 = synth_block(9, &r8, &root_n(1));
+        let ssz8 = synth_block(8, &root_n(0x07), &root_n(1));
+        srv.put_backfill_batch(Request::new(PutBackfillBatchRequest {
+            blocks: vec![
+                BackfillBlock {
+                    slot: 9,
+                    root: Root::ZERO.as_slice().to_vec(),
+                    ssz: ssz9,
+                },
+                BackfillBlock {
+                    slot: 8,
+                    root: r8.as_slice().to_vec(),
+                    ssz: ssz8,
+                },
+            ],
+            columns: vec![],
+            progress: Some(ProtoBackfillProgress {
+                blocks_oldest: 8,
+                blocks_oldest_parent: root_n(0x07).as_slice().to_vec(),
+                columns_oldest: 8,
+                per_index_oldest: vec![],
+            }),
+        }))
+        .await
+        .unwrap();
+
+        let rt = eng.read().unwrap();
+        let stored = cc_store::load_backfill_progress_txn(&rt).unwrap().unwrap();
+        assert_eq!(stored.blocks_oldest, Slot::new(8));
+        assert_eq!(stored.blocks_oldest_parent, root_n(0x07));
+        assert!(get_block_by_root(&rt, &r8).unwrap().is_some());
+        assert!(
+            cc_store::get_canonical(&rt, Slot::new(0))
+                .unwrap()
+                .is_none(),
+            "rejected sandwich must not plant slot 0"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_backfill_batch_stored_oldest_zero_is_not_any_slot_seed() {
+        let (dir, eng) = open_engine("bf-zero-trap");
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+        let root0 = root_n(0x10);
+        seed_anchor_oldest_parent(&eng, root0);
+        let ssz0 = synth_block(0, &Root::ZERO, &root_n(1));
+        srv.put_backfill_batch(Request::new(PutBackfillBatchRequest {
+            blocks: vec![BackfillBlock {
+                slot: 0,
+                root: root0.as_slice().to_vec(),
+                ssz: ssz0,
+            }],
+            columns: vec![],
+            progress: Some(ProtoBackfillProgress {
+                blocks_oldest: 0,
+                blocks_oldest_parent: Root::ZERO.as_slice().to_vec(),
+                columns_oldest: 0,
+                per_index_oldest: vec![],
+            }),
+        }))
+        .await
+        .unwrap();
+
+        // Stored oldest = 0 is set. A later any-slot put must not land.
+        let ssz5 = synth_block(5, &root_n(0x04), &root_n(1));
+        let err = srv
+            .put_backfill_batch(Request::new(PutBackfillBatchRequest {
+                blocks: vec![BackfillBlock {
+                    slot: 5,
+                    root: Root::ZERO.as_slice().to_vec(),
+                    ssz: ssz5,
+                }],
+                columns: vec![],
+                progress: Some(ProtoBackfillProgress {
+                    blocks_oldest: 5,
+                    blocks_oldest_parent: root_n(0x04).as_slice().to_vec(),
+                    columns_oldest: 5,
+                    per_index_oldest: vec![],
+                }),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            err.message().contains("durable frontier") && err.message().contains("never jump"),
+            "{err}"
+        );
+
+        let rt = eng.read().unwrap();
+        assert!(
+            cc_store::get_canonical(&rt, Slot::new(5))
+                .unwrap()
+                .is_none(),
+            "stored oldest=0 must not restore any-slot put_canonical"
+        );
+        let stored = cc_store::load_backfill_progress_txn(&rt).unwrap().unwrap();
+        assert_eq!(stored.blocks_oldest, Slot::new(0));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

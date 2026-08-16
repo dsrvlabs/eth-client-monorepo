@@ -117,7 +117,9 @@ pub(crate) fn proto_progress_to_store(
 /// chain before any engine write (Architecture §6.2 one-contiguous-frontier).
 ///
 /// Higher slot's `parent_root` (SSZ peek) must equal the next-lower block's
-/// claimed root. Claimed slot must match SSZ slot.
+/// claimed root. Claimed slot must match SSZ slot. Slots must be consecutive
+/// (`higher == lower + 1`) so `blocks_oldest` cannot jump a hole inside
+/// the batch.
 pub(crate) fn admit_descending_contiguous(
     blocks: &[BackfillBlockRow],
 ) -> Result<Vec<BackfillBlockRow>, BatchAdmitError> {
@@ -133,6 +135,7 @@ pub(crate) fn admit_descending_contiguous(
             return Err(BatchAdmitError::NotDescending);
         }
     }
+    admit_slot_contiguous_range(&ordered)?;
 
     for b in &ordered {
         let ssz_slot = slot_at_offset(&b.ssz).map_err(|_| BatchAdmitError::FieldMismatch {
@@ -160,6 +163,19 @@ pub(crate) fn admit_descending_contiguous(
         }
     }
     Ok(ordered)
+}
+
+/// Refuse a descending batch whose slots skip — parent linkage alone would
+/// still let `blocks_oldest` jump down across the hole.
+fn admit_slot_contiguous_range(ordered: &[BackfillBlockRow]) -> Result<(), BatchAdmitError> {
+    for w in ordered.windows(2) {
+        if w[0].slot.as_u64() != w[1].slot.as_u64().saturating_add(1) {
+            return Err(BatchAdmitError::FrontierJump {
+                reason: "admitted range is not slot-contiguous",
+            });
+        }
+    }
+    Ok(())
 }
 
 // ── Progress monotony + frontier binding (CC-47b server-side) ────────────────
@@ -317,7 +333,12 @@ pub(crate) fn admit_progress_only_preserves_block_frontier(
 /// "progress optional" path and no empty-progress bypass.
 ///
 /// Named frontier (stored progress, else [`AnchorInfo`]): the first
-/// (highest, frontier-adjacent) row **is** that parent. Unnamed first
+/// (highest, frontier-adjacent) row **is** that parent. A **set** named
+/// slot also requires `first.slot == named_slot − 1` and a slot-contiguous
+/// run down to the new oldest — otherwise `blocks_oldest` would jump
+/// down across a hole. Stored progress is always set, including
+/// `blocks_oldest == 0` (genesis, not a first-seed trampoline). An
+/// anchor slot of 0 with no stored progress is unset. Unnamed first
 /// seed: the first row's SSZ parent must be durable, or must be the
 /// first row itself.
 pub(crate) fn admit_extends_durable_frontier(
@@ -329,17 +350,37 @@ pub(crate) fn admit_extends_durable_frontier(
     let Some(first) = ordered.first() else {
         return Ok(());
     };
+    // Intra-batch holes jump the named oldest even when the top row attaches.
+    admit_slot_contiguous_range(ordered)?;
 
-    if let Some(expected) = stored
-        .map(|s| s.blocks_oldest_parent)
-        .or_else(|| anchor.map(|a| a.oldest_block_parent))
-    {
-        if first.root == expected {
-            return Ok(());
-        }
-        return Err(BatchAdmitError::FrontierJump {
-            reason: "parent is not durable and is not the first row of the same batch",
+    // Stored progress always names a slot (0 = genesis). Anchor slot 0 is unset.
+    let named = stored
+        .map(|s| (s.blocks_oldest, s.blocks_oldest_parent, true))
+        .or_else(|| {
+            anchor.map(|a| {
+                (
+                    a.oldest_block_slot,
+                    a.oldest_block_parent,
+                    a.oldest_block_slot.as_u64() != 0,
+                )
+            })
         });
+
+    if let Some((named_slot, expected, slot_is_set)) = named {
+        if first.root != expected {
+            return Err(BatchAdmitError::FrontierJump {
+                reason: "parent is not durable and is not the first row of the same batch",
+            });
+        }
+        if slot_is_set {
+            let expected_slot = named_slot.as_u64().saturating_sub(1);
+            if first.slot.as_u64() != expected_slot {
+                return Err(BatchAdmitError::FrontierJump {
+                    reason: "batch is not adjacent to the durable frontier",
+                });
+            }
+        }
+        return Ok(());
     }
 
     let parent = parent_root_at_offset(&first.ssz).map_err(|_| BatchAdmitError::FieldMismatch {
@@ -667,6 +708,18 @@ mod tests {
         let ordered = admit_descending_contiguous(&rows).unwrap();
         assert_eq!(ordered[0].slot, Slot::new(9));
         assert_eq!(ordered[2].slot, Slot::new(7));
+
+        // Parent-linked sandwich [9, 0] still jumps slots 1–8.
+        let r0 = Root::from_array([0; 32]);
+        let sandwich = vec![
+            synth(0, &Root::from_array([0xff; 32]), r0),
+            synth(9, &r0, r9),
+        ];
+        assert!(matches!(
+            admit_descending_contiguous(&sandwich),
+            Err(BatchAdmitError::FrontierJump { reason })
+                if reason.contains("not slot-contiguous")
+        ));
 
         // Broken parent: slot 9 claims wrong parent.
         let bad = vec![
@@ -1063,6 +1116,160 @@ mod tests {
                 std::slice::from_ref(&first),
                 None,
                 Some(&anchor),
+                false
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn admit_extends_durable_frontier_rejects_jump_down_across_hole() {
+        use cc_store::{PARENT_ROOT_SSZ_OFFSET, SLOT_SSZ_OFFSET, STATE_ROOT_SSZ_OFFSET};
+
+        fn synth(slot: u64, parent: &Root, root: Root) -> BackfillBlockRow {
+            let mut v = vec![0u8; STATE_ROOT_SSZ_OFFSET + 32];
+            v[0..4].copy_from_slice(&100u32.to_le_bytes());
+            v[SLOT_SSZ_OFFSET..SLOT_SSZ_OFFSET + 8].copy_from_slice(&slot.to_le_bytes());
+            v[PARENT_ROOT_SSZ_OFFSET..PARENT_ROOT_SSZ_OFFSET + 32]
+                .copy_from_slice(parent.as_slice());
+            BackfillBlockRow {
+                slot: Slot::new(slot),
+                root,
+                ssz: v,
+            }
+        }
+
+        // Durable frontier at slot 10 / parent 0xEE. Parent bind alone would
+        // accept a matching-root row at slot 8 and skip 9 — the hole.
+        let expected = Root::from_array([0xEE; 32]);
+        let stored = BackfillProgress {
+            blocks_oldest: Slot::new(10),
+            blocks_oldest_parent: expected,
+            columns_oldest: Slot::new(10),
+            per_index_oldest: Default::default(),
+        };
+        let hole = synth(8, &Root::from_array([0x07; 32]), expected);
+        assert!(matches!(
+            admit_extends_durable_frontier(
+                std::slice::from_ref(&hole),
+                Some(&stored),
+                None,
+                false
+            ),
+            Err(BatchAdmitError::FrontierJump { reason })
+                if reason.contains("not adjacent")
+        ));
+
+        let adjacent = synth(9, &Root::from_array([0x08; 32]), expected);
+        assert!(
+            admit_extends_durable_frontier(
+                std::slice::from_ref(&adjacent),
+                Some(&stored),
+                None,
+                false
+            )
+            .is_ok()
+        );
+
+        // Named anchor slot (no stored progress) has the same bind.
+        let anchor = AnchorInfo {
+            oldest_block_slot: Slot::new(100),
+            oldest_block_parent: expected,
+            ..AnchorInfo::default()
+        };
+        let hole_anchor = synth(90, &Root::from_array([0xFF; 32]), expected);
+        assert!(matches!(
+            admit_extends_durable_frontier(
+                std::slice::from_ref(&hole_anchor),
+                None,
+                Some(&anchor),
+                false
+            ),
+            Err(BatchAdmitError::FrontierJump { reason })
+                if reason.contains("not adjacent")
+        ));
+        let adjacent_anchor = synth(99, &Root::from_array([0x08; 32]), expected);
+        assert!(
+            admit_extends_durable_frontier(
+                std::slice::from_ref(&adjacent_anchor),
+                None,
+                Some(&anchor),
+                false
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn admit_extends_durable_frontier_rejects_intra_batch_sandwich() {
+        use cc_store::{PARENT_ROOT_SSZ_OFFSET, SLOT_SSZ_OFFSET, STATE_ROOT_SSZ_OFFSET};
+
+        fn synth(slot: u64, parent: &Root, root: Root) -> BackfillBlockRow {
+            let mut v = vec![0u8; STATE_ROOT_SSZ_OFFSET + 32];
+            v[0..4].copy_from_slice(&100u32.to_le_bytes());
+            v[SLOT_SSZ_OFFSET..SLOT_SSZ_OFFSET + 8].copy_from_slice(&slot.to_le_bytes());
+            v[PARENT_ROOT_SSZ_OFFSET..PARENT_ROOT_SSZ_OFFSET + 32]
+                .copy_from_slice(parent.as_slice());
+            BackfillBlockRow {
+                slot: Slot::new(slot),
+                root,
+                ssz: v,
+            }
+        }
+
+        // stored oldest = 10 / parent P; top row attaches at 9, lowest is 0.
+        let expected = Root::from_array([0xEE; 32]);
+        let r0 = Root::from_array([0x00; 32]);
+        let stored = BackfillProgress {
+            blocks_oldest: Slot::new(10),
+            blocks_oldest_parent: expected,
+            columns_oldest: Slot::new(10),
+            per_index_oldest: Default::default(),
+        };
+        let sandwich = vec![
+            synth(9, &r0, expected),
+            synth(0, &Root::from_array([0xFF; 32]), r0),
+        ];
+        assert!(matches!(
+            admit_extends_durable_frontier(&sandwich, Some(&stored), None, false),
+            Err(BatchAdmitError::FrontierJump { reason })
+                if reason.contains("not slot-contiguous")
+        ));
+
+        let adjacent = vec![
+            synth(9, &Root::from_array([0x08; 32]), expected),
+            synth(
+                8,
+                &Root::from_array([0x07; 32]),
+                Root::from_array([0x08; 32]),
+            ),
+        ];
+        assert!(admit_extends_durable_frontier(&adjacent, Some(&stored), None, false).is_ok());
+
+        // Stored oldest = 0 is genesis, not a first-seed trampoline.
+        let at_zero = BackfillProgress {
+            blocks_oldest: Slot::new(0),
+            blocks_oldest_parent: expected,
+            columns_oldest: Slot::new(0),
+            per_index_oldest: Default::default(),
+        };
+        let jumped = synth(5, &Root::from_array([0x04; 32]), expected);
+        assert!(matches!(
+            admit_extends_durable_frontier(
+                std::slice::from_ref(&jumped),
+                Some(&at_zero),
+                None,
+                false
+            ),
+            Err(BatchAdmitError::FrontierJump { reason })
+                if reason.contains("not adjacent")
+        ));
+        let stay = synth(0, &Root::from_array([0xFF; 32]), expected);
+        assert!(
+            admit_extends_durable_frontier(
+                std::slice::from_ref(&stay),
+                Some(&at_zero),
+                None,
                 false
             )
             .is_ok()

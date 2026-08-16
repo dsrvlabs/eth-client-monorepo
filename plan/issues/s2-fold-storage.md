@@ -497,9 +497,23 @@ the issues are actionable; write these back into `[PRD]` §5.1.
 ---
 
 ### `S2-B-07` · P1-A/2 — admission never checks the durable frontier · 2–2.5 pd / **5 pts** (≈)
-**Touch** `services/storage/src/backfill.rs:219`. `blocks_oldest` can jump down across a hole.
+**Touch** `crates/storage-core/src/backfill.rs` (moved from `services/storage/src/backfill.rs:219`).
+`blocks_oldest` can jump down across a hole.
 **Deps `S2-A-06`** — same invariant, stated once. **Acceptance** — a batch that would jump the
 frontier is rejected; a test constructs the hole explicitly.
+
+**Acceptance (`S2-B-07` only)**
+- [x] A batch that would jump the durable frontier is rejected; a test constructs the hole explicitly
+  (`put_backfill_batch_jump_down_across_hole_is_rejected`,
+  `admit_extends_durable_frontier_rejects_jump_down_across_hole`)
+- [x] Intra-batch sandwich (adjacent top row + hole to the lowest row) is rejected
+  (`put_backfill_batch_intra_batch_sandwich_is_rejected`,
+  `admit_extends_durable_frontier_rejects_intra_batch_sandwich`)
+- [x] Adjacent **contiguous** extension is still accepted
+- [x] Stored `blocks_oldest == 0` is genesis, not a first-seed trampoline
+  (`put_backfill_batch_stored_oldest_zero_is_not_any_slot_seed`)
+- [x] Invariant quoted verbatim: *a batch may only extend the durable frontier, never jump it.*
+- [x] `S2-B-08` (`per_index` padding / custody-group-count raise) not implemented
 
 ### `S2-B-08` · P1-A/3 — `per_index` padding fabricates progress · 2–2.5 pd / **5 pts** (≈)
 **Touch** `services/storage/src/backfill.rs:87`. Padding fabricates progress for never-custodied
