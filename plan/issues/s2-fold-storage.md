@@ -506,6 +506,12 @@ P2-B/1: ordering-critical `hot_column_root_end` duplicated verbatim across modul
 (`crates/store/src/split.rs:453`). P2-B/2: `get_columns_by_root` reads every column **twice through
 two divergent code paths** (`services/storage/src/serve.rs:711`).
 
+**Acceptance**
+- [x] One `hot_column_root_end` implementation (next to the hot column key encoder).
+- [x] `get_columns_by_root` reads each requested column once (`columns_for_block` after reverse-index slot).
+- [x] Tests: exclusive end is first key of next root / next slot when root is all `0xff`.
+- [x] Tests: MAX_BY_ROOT, earliest_available_slot whole-block refuse, anti-truncation, honesty on missing index.
+
 ---
 
 ### `S2-B-13` · `S2-B-14` · Rollback — **rehearsed, not documented**

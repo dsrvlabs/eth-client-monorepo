@@ -120,6 +120,30 @@ pub fn encode_hot_column_key(slot: Slot, root: &Root, index: u16) -> [u8; 42] {
     out
 }
 
+/// Exclusive end key for all hot columns of `(slot, root)`.
+///
+/// Hot keys sort `slot ‖ root ‖ idx`. The first key that is not this root is
+/// the next root at index 0, or the next slot at `Root::ZERO` when `root` is
+/// all `0xff` (no successor in the 32-byte field).
+pub fn hot_column_root_end(slot: Slot, root: &Root) -> [u8; 42] {
+    let mut next_root = [0u8; 32];
+    next_root.copy_from_slice(root.as_slice());
+    let mut carry = true;
+    for b in next_root.iter_mut().rev() {
+        if !carry {
+            break;
+        }
+        let (n, c) = b.overflowing_add(1);
+        *b = n;
+        carry = c;
+    }
+    if carry {
+        encode_hot_column_key(Slot::new(slot.as_u64().saturating_add(1)), &Root::ZERO, 0)
+    } else {
+        encode_hot_column_key(slot, &Root::from_array(next_root), 0)
+    }
+}
+
 /// Cold column key: `slot:u64be ‖ idx:u16be` (10 B).
 pub fn encode_cold_column_key(slot: Slot, index: u16) -> [u8; 10] {
     let mut out = [0u8; 10];
@@ -482,6 +506,60 @@ mod tests {
         let c = encode_cold_column_key(Slot::new(2), 0);
         assert!(a < b);
         assert!(b < c);
+    }
+
+    #[test]
+    fn hot_column_root_end_is_first_key_of_next_root() {
+        let slot = Slot::new(42);
+        let mut root = [0u8; 32];
+        root[31] = 0x10;
+        let mut next = [0u8; 32];
+        next[31] = 0x11;
+        let end = hot_column_root_end(slot, &Root::from_array(root));
+        assert_eq!(end, encode_hot_column_key(slot, &Root::from_array(next), 0));
+        assert!(encode_hot_column_key(slot, &Root::from_array(root), 0) < end);
+        assert!(encode_hot_column_key(slot, &Root::from_array(root), u16::MAX) < end);
+
+        // Carry through the last byte into the previous one.
+        let mut root_ff = [0u8; 32];
+        root_ff[30] = 0x01;
+        root_ff[31] = 0xff;
+        let mut next_carry = [0u8; 32];
+        next_carry[30] = 0x02;
+        assert_eq!(
+            hot_column_root_end(slot, &Root::from_array(root_ff)),
+            encode_hot_column_key(slot, &Root::from_array(next_carry), 0)
+        );
+    }
+
+    #[test]
+    fn hot_column_root_end_all_0xff_is_next_slot() {
+        let slot = Slot::new(42);
+        let root = Root::from_array([0xff; 32]);
+        let end = hot_column_root_end(slot, &root);
+        assert_eq!(end, encode_hot_column_key(Slot::new(43), &Root::ZERO, 0));
+        assert!(encode_hot_column_key(slot, &root, u16::MAX) < end);
+    }
+
+    #[test]
+    fn hot_column_root_end_defined_once() {
+        let keys = include_str!("keys.rs");
+        let prod = keys.split("#[cfg(test)]").next().unwrap_or(keys);
+        assert_eq!(
+            prod.matches("pub fn hot_column_root_end").count(),
+            1,
+            "exclusive end must live next to encode_hot_column_key"
+        );
+        for (name, src) in [
+            ("columns.rs", include_str!("columns.rs")),
+            ("split.rs", include_str!("split.rs")),
+        ] {
+            let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+            assert!(
+                !prod.contains("fn hot_column_root_end"),
+                "{name} must call keys::hot_column_root_end, not define it"
+            );
+        }
     }
 
     proptest! {

@@ -89,7 +89,7 @@ use cc_store::meta::{
 use cc_store::{
     MAX_BLOCKS_BY_RANGE, MAX_COLUMNS_BY_RANGE_SLOTS, MAX_SNAPSHOT_BYTES, Root, Slot, SszDecode,
     SszEncode, StoreError, blocks_by_range, columns_by_range, columns_for_block, get_block_by_root,
-    get_column_by_root, load_split, parent_root_at_offset, put_block, put_column,
+    load_split, parent_root_at_offset, put_block, put_column,
 };
 use futures::Stream;
 use futures::StreamExt;
@@ -675,7 +675,7 @@ impl StorageService for StorageServer {
         let mut total = 0u64;
         {
             let rt = engine.read().map_err(store_status)?;
-            'ids: for id in &req.identifiers {
+            for id in &req.identifiers {
                 let root = parse_root(&id.block_root)?;
                 let indices: Vec<u16> = id
                     .column_indices
@@ -686,66 +686,43 @@ impl StorageService for StorageServer {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
 
-                // Per-block atomic emit: materialise whole held set, then decide.
-                // Prefer hot; columns_for_block needs slot — resolve via first index.
-                let mut held_for_block: Vec<(u16, Vec<u8>, Slot)> = Vec::new();
-                let mut block_slot: Option<Slot> = None;
+                // Slot from the reverse index only — sidecar bodies load once below.
+                let mut block_slot = None;
                 for &idx in &indices {
-                    match get_column_by_root(&rt, &root, idx, None).map_err(store_status)? {
-                        Some(ssz) => {
-                            let slot =
-                                cc_store::column_slot_at_offset(&ssz).map_err(store_status)?;
-                            if slot.as_u64() < eas {
-                                // Whole block below window — refuse the block unit.
-                                continue 'ids;
-                            }
-                            block_slot = Some(slot);
-                            held_for_block.push((idx, ssz, slot));
-                        }
-                        None => {
-                            // Missing index: honesty → ResourceUnavailable for the whole
-                            // request if nothing else lands; skip this index unit.
-                        }
+                    if let Some(slot) = cc_store::columns::slot_by_column_root(&rt, &root, idx)
+                        .map_err(store_status)?
+                    {
+                        block_slot = Some(slot);
+                        break;
                     }
                 }
-                // Also exercise columns_for_block for anti-truncation composition
-                // when we have a slot.
-                if let Some(slot) = block_slot {
-                    let cfb = columns_for_block(&rt, slot, &root, &indices, BlockRegion::Hot)
-                        .or_else(|_| {
-                            columns_for_block(&rt, slot, &root, &indices, BlockRegion::Cold)
-                        })
-                        .map_err(store_status)?;
-                    // Prefer the per-block helper's held set when non-empty.
-                    if !cfb.held.is_empty() {
-                        let block_bytes: u64 =
-                            cfb.held.iter().map(|(_, ssz)| ssz.len() as u64).sum();
-                        if total.saturating_add(block_bytes) > self.cfg.buffer_bytes {
-                            // Anti-truncation: drop the last whole block.
-                            break;
-                        }
-                        total = total.saturating_add(block_bytes);
-                        for (idx, ssz) in cfb.held {
-                            columns.push(ColumnSsz {
-                                ssz,
-                                slot: slot.as_u64(),
-                                root: root.as_slice().to_vec(),
-                                index: u32::from(idx),
-                            });
-                        }
-                        continue;
-                    }
-                }
-                // Fallback: emit what get_column_by_root found (still whole-block unit).
-                if held_for_block.is_empty() {
+                let Some(slot) = block_slot else {
+                    continue;
+                };
+                if slot.as_u64() < eas {
+                    // Whole block below window — refuse the block unit.
                     continue;
                 }
-                let block_bytes: u64 = held_for_block.iter().map(|(_, s, _)| s.len() as u64).sum();
+
+                let mut cfb = columns_for_block(&rt, slot, &root, &indices, BlockRegion::Hot)
+                    .map_err(store_status)?;
+                if cfb.held.is_empty() {
+                    cfb = columns_for_block(&rt, slot, &root, &indices, BlockRegion::Cold)
+                        .map_err(store_status)?;
+                }
+                // Missing indices stay unnamed here: do not invent sidecars.
+                // Empty held → skip; the request is ResourceUnavailable only if
+                // nothing else lands.
+                if cfb.held.is_empty() {
+                    continue;
+                }
+                let block_bytes: u64 = cfb.held.iter().map(|(_, ssz)| ssz.len() as u64).sum();
                 if total.saturating_add(block_bytes) > self.cfg.buffer_bytes {
+                    // Anti-truncation: drop the last whole block.
                     break;
                 }
                 total = total.saturating_add(block_bytes);
-                for (idx, ssz, slot) in held_for_block {
+                for (idx, ssz) in cfb.held {
                     columns.push(ColumnSsz {
                         ssz,
                         slot: slot.as_u64(),
@@ -1422,6 +1399,7 @@ mod tests {
         column_index_at_offset,
     };
     use cc_store::engine::{Durability, EngineOptions};
+    use cc_store::get_column_by_root;
     use prometheus_client::registry::Registry;
     use sha2::{Digest, Sha256};
     use std::path::PathBuf;
@@ -1872,6 +1850,192 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn slot_root(slot: u64) -> Root {
+        let mut a = [0u8; 32];
+        a[0..8].copy_from_slice(&slot.to_be_bytes());
+        Root::from_array(a)
+    }
+
+    fn columns_id(slot: u64, indices: &[u32]) -> ColumnsByRootIdentifier {
+        ColumnsByRootIdentifier {
+            block_root: slot_root(slot).as_slice().to_vec(),
+            column_indices: indices.to_vec(),
+        }
+    }
+
+    #[tokio::test]
+    async fn columns_by_root_rejects_over_max_identifiers() {
+        let (dir, eng) = open_engine("col-root-max");
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+        let identifiers = (0..=MAX_BY_ROOT as u64)
+            .map(|s| columns_id(s, &[0]))
+            .collect();
+        let err = srv
+            .get_columns_by_root(Request::new(GetColumnsByRootRequest { identifiers }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("exceeds max"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn columns_by_root_below_eas_refuses_whole_block() {
+        let (dir, eng) = open_engine("col-root-eas");
+        seed_columns(&eng, 10, 1, &[0, 1]);
+        seed_columns(&eng, 80, 1, &[0, 1]);
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+        srv.publish_window(ServeWindow {
+            earliest_available_slot: 50,
+            cgc: 4,
+            head_slot: 200,
+            block_floor: 50,
+            column_floor: 50,
+            branch: 2,
+            holes: vec![],
+        });
+
+        let err = srv
+            .get_columns_by_root(Request::new(GetColumnsByRootRequest {
+                identifiers: vec![columns_id(10, &[0, 1])],
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unavailable);
+        assert!(err.message().contains("no requested columns available"));
+
+        let resp = srv
+            .get_columns_by_root(Request::new(GetColumnsByRootRequest {
+                identifiers: vec![columns_id(10, &[0, 1]), columns_id(80, &[0, 1])],
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(resp.columns.iter().all(|c| c.slot == 80));
+        assert_eq!(resp.columns.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn columns_by_root_anti_truncation_drops_last_whole_block() {
+        let (dir, eng) = open_engine("col-root-trunc");
+        seed_columns(&eng, 0, 3, &[0, 1]);
+        let one_sidecar = synth_column(0, 0).len() as u64;
+        let cfg = ServeConfig {
+            buffer_bytes: one_sidecar * 2 + 8, // exactly one whole block of 2 cols
+            permits: 4,
+            queue_timeout: Duration::from_secs(2),
+            ..ServeConfig::default()
+        };
+        let srv = server_with(Arc::clone(&eng), cfg);
+        let resp = srv
+            .get_columns_by_root(Request::new(GetColumnsByRootRequest {
+                identifiers: vec![
+                    columns_id(0, &[0, 1]),
+                    columns_id(1, &[0, 1]),
+                    columns_id(2, &[0, 1]),
+                ],
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(resp.columns.len(), 2);
+        assert!(resp.columns.iter().all(|c| c.slot == 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn columns_by_root_honesty_skips_missing_index() {
+        let (dir, eng) = open_engine("col-root-honest");
+        seed_columns(&eng, 20, 1, &[0]);
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+
+        let resp = srv
+            .get_columns_by_root(Request::new(GetColumnsByRootRequest {
+                identifiers: vec![columns_id(20, &[0, 1])],
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(resp.columns.len(), 1);
+        assert_eq!(resp.columns[0].index, 0);
+        assert_eq!(resp.columns[0].slot, 20);
+
+        let err = srv
+            .get_columns_by_root(Request::new(GetColumnsByRootRequest {
+                identifiers: vec![columns_id(20, &[3, 4])],
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unavailable);
+        assert!(err.message().contains("no requested columns available"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn columns_by_root_reads_cold_region_once() {
+        let (dir, eng) = open_engine("col-root-cold");
+        let slot = 30u64;
+        let root = slot_root(slot);
+        let mut b = eng.batch();
+        {
+            let rt = eng.read().unwrap();
+            for idx in [0u16, 2] {
+                put_column(
+                    &rt,
+                    &mut b,
+                    Slot::new(slot),
+                    &root,
+                    idx,
+                    &synth_column(slot, idx),
+                    BlockRegion::Cold,
+                )
+                .unwrap();
+            }
+        }
+        eng.commit(b).unwrap();
+        let srv = server_with(Arc::clone(&eng), ServeConfig::default());
+        let resp = srv
+            .get_columns_by_root(Request::new(GetColumnsByRootRequest {
+                identifiers: vec![columns_id(slot, &[0, 2])],
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(resp.columns.len(), 2);
+        assert_eq!(resp.columns[0].index, 0);
+        assert_eq!(resp.columns[1].index, 2);
+        for c in &resp.columns {
+            assert_eq!(sha256(&c.ssz), sha256(&synth_column(slot, c.index as u16)));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn get_columns_by_root_uses_one_column_read_path() {
+        let src = include_str!("serve.rs");
+        let start = src
+            .find("async fn get_columns_by_root")
+            .expect("get_columns_by_root handler");
+        let rest = &src[start..];
+        let end = rest
+            .find("async fn put_backfill_batch")
+            .expect("next handler after get_columns_by_root");
+        let body = &rest[..end];
+        assert!(
+            body.contains("columns_for_block"),
+            "by-root must load sidecars via columns_for_block"
+        );
+        assert!(
+            !body.contains("get_column_by_root"),
+            "by-root must not also walk get_column_by_root"
+        );
+        assert!(
+            body.contains("slot_by_column_root"),
+            "slot comes from the reverse index, not a sidecar body"
+        );
     }
 
     #[tokio::test]

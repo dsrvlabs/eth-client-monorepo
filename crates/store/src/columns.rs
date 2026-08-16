@@ -58,7 +58,7 @@ use crate::keys::{
     BlockRegion, COLUMN_SHARD_EPOCHS, SLOTS_PER_EPOCH, cold_column_slot_range, column_shard_id,
     columns_shard_table, decode_cold_column_key, decode_column_slot_by_root_value,
     decode_hot_column_key, encode_cold_column_key, encode_column_slot_by_root_key,
-    encode_column_slot_by_root_value, encode_hot_column_key, encode_root_key,
+    encode_column_slot_by_root_value, encode_hot_column_key, encode_root_key, hot_column_root_end,
 };
 
 // ---------------------------------------------------------------------------
@@ -765,27 +765,6 @@ fn append_hot_slot(
     Ok(())
 }
 
-/// Exclusive end key for all hot columns of `(slot, root)`.
-fn hot_column_root_end(slot: Slot, root: &Root) -> [u8; 42] {
-    // Try incrementing the root as a big-endian 32-byte integer.
-    let mut next_root = [0u8; 32];
-    next_root.copy_from_slice(root.as_slice());
-    let mut carry = true;
-    for b in next_root.iter_mut().rev() {
-        if !carry {
-            break;
-        }
-        let (n, c) = b.overflowing_add(1);
-        *b = n;
-        carry = c;
-    }
-    if !carry {
-        return encode_hot_column_key(slot, &Root::from_array(next_root), 0);
-    }
-    // Root was all 0xff — advance slot.
-    encode_hot_column_key(Slot::new(slot.as_u64().saturating_add(1)), &Root::ZERO, 0)
-}
-
 // ---------------------------------------------------------------------------
 // Stats
 // ---------------------------------------------------------------------------
@@ -855,8 +834,8 @@ mod tests {
     use crate::canonical;
     use crate::engine::{Durability, EngineOptions};
     use crate::keys::{
-        column_shard_of, column_shard_start_slot, column_slots_in, encode_cold_column_key,
-        encode_hot_column_key,
+        column_shard_of, column_shard_start_slot, column_slots_in, decode_hot_column_key,
+        encode_cold_column_key, encode_hot_column_key, hot_column_root_end,
     };
     use proptest::prelude::*;
     use std::path::PathBuf;
@@ -1482,6 +1461,82 @@ mod tests {
             prop_assert_eq!(parsed, Some(("columns", id)));
             prop_assert_eq!(hi.as_u64() - lo.as_u64(), COLUMN_SHARD_EPOCHS * SLOTS_PER_EPOCH);
         }
+    }
+
+    #[test]
+    fn hot_column_root_end_range_stops_before_next_root() {
+        let (dir, eng) = eng("root-end");
+        let slot = Slot::new(9);
+        let mut root_bytes = [0u8; 32];
+        root_bytes[31] = 0x10;
+        let root = Root::from_array(root_bytes);
+        let mut next_bytes = [0u8; 32];
+        next_bytes[31] = 0x11;
+        let next = Root::from_array(next_bytes);
+        let mut b = eng.batch();
+        {
+            let rt = eng.read().unwrap();
+            for (r, idx) in [(&root, 0u16), (&root, 3), (&next, 0)] {
+                let ssz = synth_sidecar(idx, 9);
+                put_column(&rt, &mut b, slot, r, idx, &ssz, BlockRegion::Hot).unwrap();
+            }
+        }
+        eng.commit(b).unwrap();
+
+        let lo = encode_hot_column_key(slot, &root, 0);
+        let hi = hot_column_root_end(slot, &root);
+        assert_eq!(hi, encode_hot_column_key(slot, &next, 0));
+        let rt = eng.read().unwrap();
+        let mut got = Vec::new();
+        for item in rt.range(TABLE_COLUMNS_HOT, &lo, &hi).unwrap() {
+            let (k, _) = item.unwrap();
+            let decoded = decode_hot_column_key(&k).unwrap();
+            got.push(decoded);
+        }
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|(s, r, _)| *s == slot && *r == root));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hot_column_root_end_all_0xff_range_stops_before_next_slot() {
+        let (dir, eng) = eng("root-end-ff");
+        let slot = Slot::new(4);
+        let root = Root::from_array([0xff; 32]);
+        let next_slot = Slot::new(5);
+        let mut b = eng.batch();
+        {
+            let rt = eng.read().unwrap();
+            let ssz = synth_sidecar(1, 4);
+            put_column(&rt, &mut b, slot, &root, 1, &ssz, BlockRegion::Hot).unwrap();
+            let next_ssz = synth_sidecar(0, 5);
+            put_column(
+                &rt,
+                &mut b,
+                next_slot,
+                &Root::ZERO,
+                0,
+                &next_ssz,
+                BlockRegion::Hot,
+            )
+            .unwrap();
+        }
+        eng.commit(b).unwrap();
+
+        let lo = encode_hot_column_key(slot, &root, 0);
+        let hi = hot_column_root_end(slot, &root);
+        assert_eq!(hi, encode_hot_column_key(next_slot, &Root::ZERO, 0));
+        let rt = eng.read().unwrap();
+        let mut got = Vec::new();
+        for item in rt.range(TABLE_COLUMNS_HOT, &lo, &hi).unwrap() {
+            let (k, _) = item.unwrap();
+            got.push(decode_hot_column_key(&k).unwrap());
+        }
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, slot);
+        assert_eq!(got[0].1, root);
+        assert_eq!(got[0].2, 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

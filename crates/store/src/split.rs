@@ -38,7 +38,7 @@ use crate::keys::{
     decode_hot_block_key, decode_hot_column_key, encode_block_slot_by_root_value,
     encode_cold_block_key, encode_cold_column_key, encode_column_slot_by_root_key,
     encode_hot_block_key, encode_hot_column_key, encode_root_key, encode_root_value,
-    hot_block_slot_upper_bound, hot_column_slot_upper_bound,
+    hot_block_slot_upper_bound, hot_column_root_end, hot_column_slot_upper_bound,
 };
 use crate::meta::{KEY_SPLIT, Split, TABLE_META};
 
@@ -444,27 +444,6 @@ pub fn should_migrate_on_finalization(
     let cadence = epochs_per_migration.max(1);
     let split_epoch = epoch_of_slot(split.slot);
     finalized_epoch.saturating_sub(split_epoch) >= cadence
-}
-
-/// Exclusive end key for all hot columns of `(slot, root)`.
-fn hot_column_root_end(slot: Slot, root: &Root) -> [u8; 42] {
-    let mut next_root = [0u8; 32];
-    next_root.copy_from_slice(root.as_slice());
-    let mut carry = true;
-    for b in next_root.iter_mut().rev() {
-        if !carry {
-            break;
-        }
-        let (n, c) = b.overflowing_add(1);
-        *b = n;
-        carry = c;
-    }
-    if carry {
-        // Root was all 0xff — end at next slot, index 0.
-        encode_hot_column_key(Slot::new(slot.as_u64().saturating_add(1)), &Root::ZERO, 0)
-    } else {
-        encode_hot_column_key(slot, &Root::from_array(next_root), 0)
-    }
 }
 
 // ---------------------------------------------------------------------------
