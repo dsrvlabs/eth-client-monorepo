@@ -41,16 +41,16 @@ use crate::{
 
 /// Live import-lane depth (`crates/scheduler/src/config.rs`). Cited for
 /// [`SeamError::Backpressure`]; this handle does not stand up a second lane.
-pub const IMPORT_LANE_DEPTH: usize = 64;
+pub(crate) const IMPORT_LANE_DEPTH: usize = 64;
 
 /// Live import send deadline (`services/chain/src/core.rs`).
-pub const IMPORT_SEND_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const IMPORT_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// SEC-44a-2 payload cap (`services/chain/src/events/mod.rs`).
-pub const MAX_EVENT_PAYLOAD_BYTES: usize = 10 * 1024 * 1024;
+pub(crate) const MAX_EVENT_PAYLOAD_BYTES: usize = 10 * 1024 * 1024;
 
 /// Publish queue (`services/p2p/src/channels.rs`).
-pub const PUBLISH_BOUND: usize = 256;
+pub(crate) const PUBLISH_BOUND: usize = 256;
 
 /// Outbound stream / outstanding cap (`services/p2p/src/channels.rs` `CHAIN_OUT_BOUND`).
 pub const CHAIN_OUT_BOUND: usize = 1024;
