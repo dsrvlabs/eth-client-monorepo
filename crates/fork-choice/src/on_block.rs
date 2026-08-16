@@ -190,6 +190,21 @@ pub fn on_block<P: Preset>(
     config: &ChainConfig,
     verify: BlockSignatureStrategy,
 ) -> Result<BlockImport, OnBlockError> {
+    let engine = Arc::clone(store.engine_arc());
+    let ctx = TransitionContext::new(config, engine.as_ref());
+    on_block_with_context(store, signed_block, &ctx, verify)
+}
+
+/// [`on_block`] with a caller-owned [`TransitionContext`] (S2-A-11).
+///
+/// Import / restore top up `ctx.pubkeys` and report M13 before this call so
+/// the same map is used for the transition.
+pub fn on_block_with_context<P: Preset>(
+    store: &mut Store<P>,
+    signed_block: &SignedBeaconBlock<P>,
+    ctx: &TransitionContext<'_, P>,
+    verify: BlockSignatureStrategy,
+) -> Result<BlockImport, OnBlockError> {
     let block = &signed_block.message;
     let block_root = Root::from_hash256(TreeHash::tree_hash_root(block));
 
@@ -247,11 +262,9 @@ pub fn on_block<P: Preset>(
             "parent state disappeared after check".into(),
         ))?
         .clone();
-    let engine = Arc::clone(store.engine_arc());
-    let ctx = TransitionContext::new(config, engine.as_ref());
     // CC-36a / D-4: engine transport failure is the third outcome — success-path
     // deferral, store unmutated (ST ran on a parent clone; integrate_block not yet).
-    match state_transition(&mut state, signed_block, &ctx, verify) {
+    match state_transition(&mut state, signed_block, ctx, verify) {
         Ok(()) => {}
         Err(BlockError::Engine(cc_state_transition::EngineError::Transport(_))) => {
             return Ok(BlockImport::Deferred(

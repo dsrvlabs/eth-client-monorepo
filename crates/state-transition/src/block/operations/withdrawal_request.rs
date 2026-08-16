@@ -3,7 +3,10 @@
 //! **Invalid requests are no-ops** — the handler returns `Ok(())` without
 //! mutating state rather than rejecting the block.
 
+use std::cell::RefCell;
+
 use cc_types::BeaconState;
+use cc_types::PubkeyIndexMap;
 use cc_types::config::ChainConfig;
 use cc_types::operations::{PendingPartialWithdrawal, WithdrawalRequest};
 use cc_types::preset::Preset;
@@ -31,6 +34,7 @@ pub fn process_withdrawal_request<P: Preset>(
     state: &mut BeaconState<P>,
     withdrawal_request: &WithdrawalRequest,
     config: &ChainConfig,
+    cache: &RefCell<PubkeyIndexMap>,
 ) -> Result<(), BlockError> {
     let amount = withdrawal_request.amount.as_u64();
     let is_full_exit_request = amount == FULL_EXIT_REQUEST_AMOUNT;
@@ -43,7 +47,7 @@ pub fn process_withdrawal_request<P: Preset>(
     }
 
     let Some(index) =
-        get_validator_index_by_pubkey(state, &withdrawal_request.validator_pubkey, None)
+        get_validator_index_by_pubkey(state, &withdrawal_request.validator_pubkey, cache)
     else {
         return Ok(());
     };

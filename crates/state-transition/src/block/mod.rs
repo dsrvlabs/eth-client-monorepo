@@ -102,6 +102,11 @@ impl<'a, P: Preset> TransitionContext<'a, P> {
         self.pubkeys.borrow_mut()
     }
 
+    /// Interior-mutable map for lookups that may backfill (S2-A-11).
+    pub fn pubkey_index_map(&self) -> &RefCell<PubkeyIndexMap> {
+        &self.pubkeys
+    }
+
     /// Fill [`Self::pubkeys`] from the validator registry.
     ///
     /// Append-only and idempotent. Called at the start of
@@ -312,7 +317,6 @@ mod tests {
     fn process_block_completes_with_empty_ops_and_empty_sync() {
         let mut state = BeaconState::<Minimal>::default();
         seed(&mut state);
-        // S2-A-10: PubkeyIndexMap lives on TransitionContext; process_block tops up.
         // eth1 deposits disabled (unset start index) so empty deposits list is ok.
         state.set_deposit_requests_start_index(u64::MAX);
 
@@ -340,6 +344,7 @@ mod tests {
         };
         let engine = AcceptEngine;
         let ctx = TransitionContext::<Minimal>::new(&config, &engine);
+        ctx.top_up_pubkey_cache(&state);
         process_block(&mut state, &block, &ctx, pre).expect("full process_block should complete");
     }
 
@@ -362,7 +367,6 @@ mod tests {
         let mut committee = state.current_sync_committee().clone();
         committee.pubkeys[0] = pk;
         state.set_current_sync_committee(committee);
-        // S2-A-10: PubkeyIndexMap lives on TransitionContext; process_block tops up.
         state
     }
 
@@ -373,6 +377,7 @@ mod tests {
         let config = minimal_test_config();
         let engine = AcceptEngine;
         let ctx = TransitionContext::<Minimal>::new(&config, &engine);
+        ctx.top_up_pubkey_cache(&pre);
 
         let mut advanced = pre.clone();
         let _pre_root = process_slots(&mut advanced, Slot::new(1), &config).unwrap();

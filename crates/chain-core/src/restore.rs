@@ -16,13 +16,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cc_fork_choice::{
-    PeerDasAvailability, Store, get_forkchoice_store, get_head, on_block, on_tick,
+    PeerDasAvailability, Store, get_forkchoice_store, get_head, on_block_with_context, on_tick,
 };
 use cc_proto::chain::{
     RestoreBlock, RestoreChunk, RestoreDaStatus, RestoreFooter, RestoreHeader, RestoreResponse,
     restore_chunk::Body as RestoreBody,
 };
-use cc_state_transition::{BlockSignatureStrategy, ExecutionEngine};
+use cc_state_transition::{BlockSignatureStrategy, ExecutionEngine, TransitionContext};
 #[cfg(not(feature = "s0-a-31-observe"))]
 use cc_types::BeaconState;
 use cc_types::config::ChainConfig;
@@ -465,7 +465,12 @@ pub fn apply_restore_set<P: Preset + 'static>(
         pubkey_cache_len: 0,
         validators_len: state.validators_len(),
     });
-    input.metrics.observe_import_state(&state);
+    let engine = Arc::clone(&input.engine);
+    let ctx = TransitionContext::new(input.chain_config, engine.as_ref());
+    ctx.top_up_pubkey_cache(&state);
+    input
+        .metrics
+        .observe_import_state_with_pubkeys(&state, ctx.pubkeys().len());
 
     // Anchor block: real stored SSZ only — never invent a Default body (SEC).
     let anchor_ssz = input
@@ -482,12 +487,11 @@ pub fn apply_restore_set<P: Preset + 'static>(
 
     let peer_das = Arc::new(PeerDasAvailability::new());
     let da_for_store: Arc<dyn cc_fork_choice::DataAvailability> = peer_das.clone();
-    let engine = Arc::clone(&input.engine);
 
     let mut store: Store<P> = get_forkchoice_store(
         state,
         &anchor_block,
-        engine,
+        Arc::clone(&engine),
         da_for_store,
         input.chain_config.seconds_per_slot,
     )
@@ -553,10 +557,10 @@ pub fn apply_restore_set<P: Preset + 'static>(
             warn!(error = %e, slot = signed.message.slot.as_u64(), "on_tick before restore block failed");
         }
 
-        match on_block(
+        match on_block_with_context(
             &mut store,
             &signed,
-            input.chain_config,
+            &ctx,
             // CC-45 /5: zero BLS across restore replay — skip variant of the seam.
             BlockSignatureStrategy::NoVerification,
         ) {
@@ -979,7 +983,9 @@ mod tests {
 
     use super::*;
     use cc_crypto::{bls_verify_count, take_bls_verify_count};
-    use cc_fork_choice::{DataAvailability, ExecutionStatus, HarnessAvailability, ProtoNodeBlock};
+    use cc_fork_choice::{
+        DataAvailability, ExecutionStatus, HarnessAvailability, ProtoNodeBlock, on_block,
+    };
 
     use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
     use cc_types::containers::{BeaconBlockHeader, Validator};
@@ -1442,7 +1448,7 @@ mod tests {
             .find("from_ssz_bytes_hydrated(ForkName::Fulu, input.state_ssz)")
             .expect("restore decode site");
         let on_block = production
-            .find("match on_block(")
+            .find("match on_block_with_context(")
             .expect("restore on_block site");
         assert!(decode < on_block, "hydrated decode must precede on_block");
         assert!(
@@ -1455,7 +1461,7 @@ mod tests {
              the S0-A-31 raw arm lives in restore_observe.rs behind s0-a-31-observe"
         );
         let observe = production
-            .find("observe_import_state(&state)")
+            .find("observe_import_state_with_pubkeys(&state, ctx.pubkeys().len())")
             .expect("restore must emit M13 gauges on the decoded state");
         assert!(
             decode < observe && observe < on_block,

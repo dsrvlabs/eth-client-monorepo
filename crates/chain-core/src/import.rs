@@ -27,13 +27,13 @@ use std::time::Instant;
 use bytes::Bytes;
 use cc_fork_choice::{
     BlockImport, ChainReorg, DeferralReason, OnBlockError, Store, get_checkpoint_block, get_head,
-    on_block,
+    on_block_with_context,
 };
 use cc_proto::chain::{ImportBlockRequest, ImportBlockResponse, ImportBlockVerdict};
 use cc_state_transition::helpers::misc::compute_start_slot_at_epoch;
 use cc_state_transition::{
-    BlockError, BlockSignatureSet, BlockSignatureStrategy, GossipClass, compute_epoch_at_slot,
-    push_block_proposer_signature,
+    BlockError, BlockSignatureSet, BlockSignatureStrategy, GossipClass, TransitionContext,
+    compute_epoch_at_slot, push_block_proposer_signature,
 };
 use cc_types::config::ChainConfig;
 use cc_types::containers::Checkpoint;
@@ -447,18 +447,23 @@ pub fn import_block_with_early<P: Preset>(
     // so a short cache is visible even if on_block returns CachePoisoned.
     // Cheap gossip already required the header + `ensure_in_store`; a missing
     // state here is a programming bug, not a skippable scrape.
-    let Some(parent_state) = store.block_state(&signed.message.parent_root) else {
-        debug_assert!(
-            false,
-            "parent state resident after cheap-gossip ensure_in_store"
-        );
-        return Err(Status::internal(
-            "parent state missing after cheap-gossip ensure_in_store",
-        ));
-    };
-    metrics.observe_import_state(parent_state);
+    let engine = Arc::clone(store.engine_arc());
+    let ctx = TransitionContext::new(config, engine.as_ref());
+    {
+        let Some(parent_state) = store.block_state(&signed.message.parent_root) else {
+            debug_assert!(
+                false,
+                "parent state resident after cheap-gossip ensure_in_store"
+            );
+            return Err(Status::internal(
+                "parent state missing after cheap-gossip ensure_in_store",
+            ));
+        };
+        ctx.top_up_pubkey_cache(parent_state);
+        metrics.observe_import_state_with_pubkeys(parent_state, ctx.pubkeys().len());
+    }
     let on_block_start = Instant::now();
-    let outcome = on_block(store, &signed, config, verify);
+    let outcome = on_block_with_context(store, &signed, &ctx, verify);
     let on_block_secs = on_block_start.elapsed().as_secs_f64();
     metrics.observe_import_stage(ImportStage::Transition, on_block_secs);
 
@@ -1425,10 +1430,10 @@ mod tests {
         }
     }
 
-    /// M13 / F2: empty pubkey cache + non-empty registry must set the alert
-    /// through `import_block_with_early`, not only a source-order pin.
+    /// M13 / S2-A-11: import tops up the context map and reports that length,
+    /// so a populated registry does not fire the short-cache alarm.
     #[test]
-    fn import_block_with_early_fires_m13_when_parent_cache_empty() {
+    fn import_block_with_early_reports_topped_up_pubkey_cache() {
         use crate::residency::Residency;
         use cc_fork_choice::{HarnessAvailability, get_forkchoice_store, on_tick};
         use cc_types::config::{BlobParameters, BlobSchedule, PresetName};
@@ -1512,7 +1517,8 @@ mod tests {
         on_tick(&mut store, config.seconds_per_slot * 2).unwrap();
         let anchor_root = Root::from_hash256(TreeHash::tree_hash_root(&anchor_block));
         let parent = store.block_state(&anchor_root).unwrap();
-        assert!(parent.validators_len() > 0);
+        let validators_len = parent.validators_len();
+        assert!(validators_len > 0);
 
         let child = SignedBeaconBlock::<Minimal> {
             message: BeaconBlock {
@@ -1558,9 +1564,10 @@ mod tests {
             None,
         )
         .unwrap();
+        assert_eq!(metrics.pubkey_cache_len_value() as usize, validators_len);
         assert!(
-            metrics.pubkey_cache_alert_firing(),
-            "empty pubkey cache vs non-empty registry must fire M13"
+            !metrics.pubkey_cache_alert_firing(),
+            "topped-up context map must match the parent registry"
         );
     }
 

@@ -253,19 +253,14 @@ fn hoodi_config() -> ChainConfig {
     panic!("hoodi-config.yaml not found; {FETCH_HINT}");
 }
 
-fn rebuild_pubkey_cache(_state: &mut BeaconState<Mainnet>) {
-    // S2-A-10: PubkeyIndexMap lives on TransitionContext. STF top-up fills it.
-}
-
 fn load_anchor_state() -> BeaconState<Mainnet> {
     require_fixtures();
     let path = slot_dir().join("beacon_state.ssz");
     let bytes =
         fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}; {FETCH_HINT}", path.display()));
-    let mut state = BeaconState::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, &bytes)
+    let state = BeaconState::<Mainnet>::from_ssz_bytes_with(ForkName::Fulu, &bytes)
         .unwrap_or_else(|e| panic!("decode BeaconState: {e:?}; {FETCH_HINT}"));
     assert_eq!(state.slot().as_u64(), ANCHOR_SLOT, "anchor state slot");
-    rebuild_pubkey_cache(&mut state);
     state
 }
 
@@ -365,6 +360,7 @@ fn make_next_block(
 ) -> (SignedBeaconBlock<Mainnet>, BeaconState<Mainnet>) {
     let engine = AcceptEngine;
     let ctx = TransitionContext::new(config, &engine);
+    ctx.top_up_pubkey_cache(parent_state);
 
     let mut st = parent_state.clone();
     let next_slot = Slot::new(st.slot().as_u64() + 1);

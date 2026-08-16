@@ -19,7 +19,10 @@ pub mod slashings;
 pub mod slashings_reset;
 pub mod sync_committee_updates;
 
+use std::cell::RefCell;
+
 use cc_types::BeaconState;
+use cc_types::PubkeyIndexMap;
 use cc_types::config::ChainConfig;
 use cc_types::preset::Preset;
 
@@ -114,7 +117,8 @@ pub fn process_epoch<P: Preset>(
     process_registry_updates(state, config)?;
     process_slashings(state)?;
     process_eth1_data_reset(state)?;
-    process_pending_deposits(state, config)?;
+    let pubkey_cache = RefCell::new(PubkeyIndexMap::from_registry(state));
+    process_pending_deposits(state, config, &pubkey_cache)?;
     process_pending_consolidations(state)?;
     process_effective_balance_updates(state)?;
     process_slashings_reset(state)?;

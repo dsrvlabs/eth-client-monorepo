@@ -112,7 +112,7 @@ pub fn process_operations<P: Preset>(
         )?;
     }
     for deposit in body.deposits.iter() {
-        process_deposit(state, deposit, config)?;
+        process_deposit(state, deposit, config, ctx.pubkey_index_map())?;
     }
     for exit in body.voluntary_exits.iter() {
         process_voluntary_exit(state, exit, config, verify_signatures)?;
@@ -126,10 +126,10 @@ pub fn process_operations<P: Preset>(
         process_deposit_request(state, req)?;
     }
     for req in body.execution_requests.withdrawals.iter() {
-        process_withdrawal_request(state, req, config)?;
+        process_withdrawal_request(state, req, config, ctx.pubkey_index_map())?;
     }
     for req in body.execution_requests.consolidations.iter() {
-        process_consolidation_request(state, req, config)?;
+        process_consolidation_request(state, req, config, ctx.pubkey_index_map())?;
     }
 
     Ok(())

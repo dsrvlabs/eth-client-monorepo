@@ -1,7 +1,10 @@
 //! Spec `process_deposit` / `apply_deposit` (Electra).
 
+use std::cell::RefCell;
+
 use cc_crypto::{DOMAIN_DEPOSIT, compute_signing_root, verify};
 use cc_types::BeaconState;
+use cc_types::PubkeyIndexMap;
 use cc_types::config::ChainConfig;
 use cc_types::containers::{DepositMessage, Validator};
 use cc_types::operations::{Deposit, PendingDeposit};
@@ -85,6 +88,7 @@ pub fn add_validator_to_registry<P: Preset>(
     pubkey: cc_types::primitives::BlsPublicKey,
     withdrawal_credentials: Root,
     amount: Gwei,
+    cache: &RefCell<PubkeyIndexMap>,
 ) -> Result<ValidatorIndex, BlockError> {
     let index = ValidatorIndex::new(state.validators_len() as u64);
     // Electra apply_deposit path for new validators uses amount=0 for the
@@ -95,6 +99,8 @@ pub fn add_validator_to_registry<P: Preset>(
     state.previous_epoch_participation_push(0)?;
     state.current_epoch_participation_push(0)?;
     state.inactivity_scores_push(0)?;
+    // Extend the context map (S2-A-11). First-wins if the key is already present.
+    cache.borrow_mut().insert(pubkey, index);
     // Registry growth invalidates epoch-derived active-set cache (CC-13b).
     note_registry_or_effective_balance_change(state);
     Ok(index)
@@ -111,13 +117,14 @@ pub fn apply_deposit<P: Preset>(
     amount: Gwei,
     signature: cc_types::primitives::BlsSignature,
     config: &ChainConfig,
+    cache: &RefCell<PubkeyIndexMap>,
 ) -> Result<(), BlockError> {
-    if get_validator_index_by_pubkey(state, &pubkey, None).is_none() {
+    if get_validator_index_by_pubkey(state, &pubkey, cache).is_none() {
         // Proof-of-possession; invalid signature → silently drop (spec).
         if is_valid_deposit_signature(&pubkey, &withdrawal_credentials, amount, &signature, config)?
         {
             // New validator with balance 0; pending deposit carries amount.
-            add_validator_to_registry(state, pubkey, withdrawal_credentials, Gwei::new(0))?;
+            add_validator_to_registry(state, pubkey, withdrawal_credentials, Gwei::new(0), cache)?;
         } else {
             return Ok(());
         }
@@ -139,6 +146,7 @@ pub fn process_deposit<P: Preset>(
     state: &mut BeaconState<P>,
     deposit: &Deposit,
     config: &ChainConfig,
+    cache: &RefCell<PubkeyIndexMap>,
 ) -> Result<(), BlockError> {
     let leaf = Root::from_hash256(TreeHash::tree_hash_root(&deposit.data));
     let branch: Vec<Root> = deposit.proof.iter().copied().collect();
@@ -165,5 +173,6 @@ pub fn process_deposit<P: Preset>(
         deposit.data.amount,
         deposit.data.signature,
         config,
+        cache,
     )
 }

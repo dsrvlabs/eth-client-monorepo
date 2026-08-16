@@ -59,7 +59,7 @@ pub use on_attestation::{
 };
 pub use on_block::{
     OnBlockError, compute_pulled_up_tip, get_checkpoint_block, get_forkchoice_store, on_block,
-    record_block_timeliness, update_proposer_boost_root,
+    on_block_with_context, record_block_timeliness, update_proposer_boost_root,
 };
 pub use on_tick::on_tick;
 pub use proto_array::{

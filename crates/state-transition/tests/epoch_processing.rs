@@ -6,6 +6,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,7 +22,7 @@ use cc_state_transition::{
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::preset::{Mainnet, Minimal, Preset};
 use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion};
-use cc_types::{BeaconState, ForkName};
+use cc_types::{BeaconState, ForkName, PubkeyIndexMap};
 
 fn spec_config_for_preset(preset: PresetName) -> ChainConfig {
     let (name, seconds, genesis, altair, bellatrix, capella, deneb, electra, fulu) = match preset {
@@ -251,10 +252,6 @@ fn list_handlers(tests: &Path, preset: &str) -> BTreeSet<String> {
     set
 }
 
-fn rebuild_pubkey_cache<P: Preset>(_state: &mut BeaconState<P>) {
-    // S2-A-10: PubkeyIndexMap lives on TransitionContext. STF top-up fills it.
-}
-
 fn dispatch<P: Preset>(
     handler: &str,
     state: &mut BeaconState<P>,
@@ -267,7 +264,10 @@ fn dispatch<P: Preset>(
         "registry_updates" => process_registry_updates(state, config),
         "slashings" => process_slashings(state),
         "eth1_data_reset" => process_eth1_data_reset(state),
-        "pending_deposits" => process_pending_deposits(state, config),
+        "pending_deposits" => {
+            let cache = RefCell::new(PubkeyIndexMap::from_registry(state));
+            process_pending_deposits(state, config, &cache)
+        }
         "pending_consolidations" => process_pending_consolidations(state),
         "effective_balance_updates" => process_effective_balance_updates(state),
         "slashings_reset" => process_slashings_reset(state),
@@ -284,7 +284,6 @@ fn run_case<P: Preset>(handler: &str, rel: &str, case_dir: &Path) {
     let pre_bytes = snappy_decompress(&case_dir.join("pre.ssz_snappy"));
     let mut state = BeaconState::<P>::from_ssz_bytes_with(ForkName::Fulu, &pre_bytes)
         .unwrap_or_else(|e| panic!("decode pre {rel}: {e:?}"));
-    rebuild_pubkey_cache(&mut state);
 
     let post_path = case_dir.join("post.ssz_snappy");
     let config = spec_config_for::<P>();

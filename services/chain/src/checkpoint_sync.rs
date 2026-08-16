@@ -34,6 +34,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use cc_fork_choice::{PeerDasAvailability, Store, get_forkchoice_store, on_tick};
+use cc_state_transition::TransitionContext;
 use cc_types::config::{BlobParameters, BlobSchedule, BlobScheduleError, ChainConfig};
 use cc_types::preset::Preset;
 use cc_types::primitives::{Epoch, ForkVersion, Root, parse_hex_bytes};
@@ -1124,7 +1125,13 @@ pub fn spawn_core_from_checkpoint_with_epoch<P: Preset + 'static>(
         slot = fetched.signed_block.message.slot.as_u64(),
         "anchor state caches warmed via canonical_root"
     );
-    metrics.observe_import_state(&fetched.state);
+    let engine = core_cfg
+        .engine
+        .clone()
+        .ok_or_else(|| CheckpointError::Store("in-process engine not configured".into()))?;
+    let ctx = TransitionContext::new(&chain_config, engine.as_ref());
+    ctx.top_up_pubkey_cache(&fetched.state);
+    metrics.observe_import_state_with_pubkeys(&fetched.state, ctx.pubkeys().len());
 
     // Shared PeerDAS available set: store DA + core mark/re-drive (CC-24d).
     let peer_das = Arc::new(PeerDasAvailability::new());
@@ -1132,10 +1139,7 @@ pub fn spawn_core_from_checkpoint_with_epoch<P: Preset + 'static>(
     let mut store: Store<P> = get_forkchoice_store(
         fetched.state,
         &fetched.signed_block.message,
-        core_cfg
-            .engine
-            .clone()
-            .ok_or_else(|| CheckpointError::Store("in-process engine not configured".into()))?,
+        engine,
         da_for_store,
         chain_config.seconds_per_slot,
     )
@@ -2304,15 +2308,22 @@ mod tests {
             .find("pub fn spawn_core_from_checkpoint_with_epoch")
             .expect("checkpoint spawn");
         let spawn_body = &production[spawn..];
+        let top_up = spawn_body
+            .find("ctx.top_up_pubkey_cache(&fetched.state)")
+            .expect("checkpoint spawn must top up the context map");
         let observe = spawn_body
-            .find("observe_import_state(&fetched.state)")
-            .expect("checkpoint spawn must emit M13 gauges");
+            .find("observe_import_state_with_pubkeys(&fetched.state, ctx.pubkeys().len())")
+            .expect("checkpoint spawn must emit M13 gauges from ctx.pubkeys().len()");
         let store = spawn_body
             .find("get_forkchoice_store(")
             .expect("checkpoint store seed");
         assert!(
-            observe < store,
-            "M13 observe must run before the state is moved into the store"
+            top_up < observe && observe < store,
+            "M13 observe must run after ctx top-up and before the state is moved into the store"
+        );
+        assert!(
+            !spawn_body.contains("PubkeyIndexMap::from_registry"),
+            "checkpoint spawn must not scrape a throwaway from_registry length"
         );
     }
 }

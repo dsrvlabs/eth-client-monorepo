@@ -9,6 +9,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,7 +31,8 @@ use cc_types::operations::{
 use cc_types::preset::{Mainnet, Minimal, Preset};
 use cc_types::primitives::{Epoch, ExecutionAddress, ForkVersion, KzgCommitment, Root, Slot};
 use cc_types::{
-    BeaconBlock, BeaconBlockBody, BeaconState, ExecutionPayload, ForkName, SignedBeaconBlock,
+    BeaconBlock, BeaconBlockBody, BeaconState, ExecutionPayload, ForkName, PubkeyIndexMap,
+    SignedBeaconBlock,
 };
 use ssz::{Decode, Encode};
 
@@ -401,10 +403,6 @@ fn read_execution_valid(case_dir: &Path) -> bool {
 // Handlers
 // ---------------------------------------------------------------------------
 
-fn rebuild_pubkey_cache<P: Preset>(_state: &mut BeaconState<P>) {
-    // S2-A-10: PubkeyIndexMap lives on TransitionContext. STF top-up fills it.
-}
-
 fn run_block_header_cases<P: Preset>() {
     let tests = tests_root();
     let prefixes = skiplist_prefixes();
@@ -426,7 +424,6 @@ fn run_block_header_cases<P: Preset>() {
         let pre_bytes = snappy_decompress(&case_dir.join("pre.ssz_snappy"));
         let mut state = BeaconState::<P>::from_ssz_bytes_with(ForkName::Fulu, &pre_bytes)
             .unwrap_or_else(|e| panic!("decode pre {rel}: {e:?}"));
-        rebuild_pubkey_cache(&mut state);
 
         let block_bytes = snappy_decompress(&case_dir.join("block.ssz_snappy"));
         let block = BeaconBlock::<P>::from_ssz_bytes(&block_bytes)
@@ -649,7 +646,13 @@ fn run_single_op_handler<P: Preset, Op, F>(
     decode_op: F,
 ) where
     Op: Decode,
-    F: Fn(&Op, &mut BeaconState<P>, &ChainConfig, bool) -> Result<(), BlockError>,
+    F: Fn(
+        &Op,
+        &mut BeaconState<P>,
+        &ChainConfig,
+        bool,
+        &RefCell<PubkeyIndexMap>,
+    ) -> Result<(), BlockError>,
 {
     let tests = tests_root();
     let prefixes = skiplist_prefixes();
@@ -677,9 +680,7 @@ fn run_single_op_handler<P: Preset, Op, F>(
         let pre_bytes = snappy_decompress(&case_dir.join("pre.ssz_snappy"));
         let mut state = BeaconState::<P>::from_ssz_bytes_with(ForkName::Fulu, &pre_bytes)
             .unwrap_or_else(|e| panic!("decode pre {rel}: {e:?}"));
-
-        // Rebuild pubkey index map from the pre-state (SSZ decode does not fill caches).
-        rebuild_pubkey_cache(&mut state);
+        let cache = RefCell::new(PubkeyIndexMap::from_registry(&state));
 
         let op_bytes = snappy_decompress(&case_dir.join(artifact));
         let op = Op::from_ssz_bytes(&op_bytes)
@@ -687,7 +688,7 @@ fn run_single_op_handler<P: Preset, Op, F>(
 
         let verify = verify_sigs_from_meta(case_dir);
         let post_path = case_dir.join("post.ssz_snappy");
-        let result = decode_op(&op, &mut state, &config, verify);
+        let result = decode_op(&op, &mut state, &config, verify, &cache);
 
         if post_path.is_file() {
             result.unwrap_or_else(|e| panic!("{handler} valid case {rel}: {e}"));
@@ -719,7 +720,7 @@ fn proposer_slashing_minimal() {
         "proposer_slashing",
         "proposer_slashing.ssz_snappy",
         true,
-        |op, state, cfg, verify| process_proposer_slashing(state, op, cfg, verify),
+        |op, state, cfg, verify, _cache| process_proposer_slashing(state, op, cfg, verify),
     );
 }
 
@@ -729,7 +730,7 @@ fn proposer_slashing_mainnet() {
         "proposer_slashing",
         "proposer_slashing.ssz_snappy",
         true,
-        |op, state, cfg, verify| process_proposer_slashing(state, op, cfg, verify),
+        |op, state, cfg, verify, _cache| process_proposer_slashing(state, op, cfg, verify),
     );
 }
 
@@ -739,7 +740,7 @@ fn attester_slashing_minimal() {
         "attester_slashing",
         "attester_slashing.ssz_snappy",
         true,
-        |op, state, cfg, verify| process_attester_slashing(state, op, cfg, verify),
+        |op, state, cfg, verify, _cache| process_attester_slashing(state, op, cfg, verify),
     );
 }
 
@@ -749,7 +750,7 @@ fn attester_slashing_mainnet() {
         "attester_slashing",
         "attester_slashing.ssz_snappy",
         true,
-        |op, state, cfg, verify| process_attester_slashing(state, op, cfg, verify),
+        |op, state, cfg, verify, _cache| process_attester_slashing(state, op, cfg, verify),
     );
 }
 
@@ -759,7 +760,7 @@ fn attestation_minimal() {
         "attestation",
         "attestation.ssz_snappy",
         true,
-        |op, state, _cfg, verify| {
+        |op, state, _cfg, verify, _cache| {
             process_attestation(
                 state,
                 op,
@@ -777,7 +778,7 @@ fn attestation_mainnet() {
         "attestation",
         "attestation.ssz_snappy",
         true,
-        |op, state, _cfg, verify| {
+        |op, state, _cfg, verify, _cache| {
             process_attestation(
                 state,
                 op,
@@ -795,7 +796,7 @@ fn voluntary_exit_minimal() {
         "voluntary_exit",
         "voluntary_exit.ssz_snappy",
         true,
-        |op, state, cfg, verify| process_voluntary_exit(state, op, cfg, verify),
+        |op, state, cfg, verify, _cache| process_voluntary_exit(state, op, cfg, verify),
     );
 }
 
@@ -805,7 +806,7 @@ fn voluntary_exit_mainnet() {
         "voluntary_exit",
         "voluntary_exit.ssz_snappy",
         true,
-        |op, state, cfg, verify| process_voluntary_exit(state, op, cfg, verify),
+        |op, state, cfg, verify, _cache| process_voluntary_exit(state, op, cfg, verify),
     );
 }
 
@@ -815,7 +816,7 @@ fn bls_to_execution_change_minimal() {
         "bls_to_execution_change",
         "address_change.ssz_snappy",
         true,
-        |op, state, cfg, verify| process_bls_to_execution_change(state, op, cfg, verify),
+        |op, state, cfg, verify, _cache| process_bls_to_execution_change(state, op, cfg, verify),
     );
 }
 
@@ -825,7 +826,7 @@ fn bls_to_execution_change_mainnet() {
         "bls_to_execution_change",
         "address_change.ssz_snappy",
         true,
-        |op, state, cfg, verify| process_bls_to_execution_change(state, op, cfg, verify),
+        |op, state, cfg, verify, _cache| process_bls_to_execution_change(state, op, cfg, verify),
     );
 }
 
@@ -839,7 +840,7 @@ fn deposit_request_minimal() {
         "deposit_request",
         "deposit_request.ssz_snappy",
         false, // all on-disk cases are valid (queue-only; no invalid/)
-        |op, state, _cfg, _v| process_deposit_request(state, op),
+        |op, state, _cfg, _v, _cache| process_deposit_request(state, op),
     );
 }
 
@@ -849,7 +850,7 @@ fn deposit_request_mainnet() {
         "deposit_request",
         "deposit_request.ssz_snappy",
         false,
-        |op, state, _cfg, _v| process_deposit_request(state, op),
+        |op, state, _cfg, _v, _cache| process_deposit_request(state, op),
     );
 }
 
@@ -859,7 +860,7 @@ fn withdrawal_request_minimal() {
         "withdrawal_request",
         "withdrawal_request.ssz_snappy",
         false, // incorrect_* cases are valid blocks (no-op), not rejections
-        |op, state, cfg, _v| process_withdrawal_request(state, op, cfg),
+        |op, state, cfg, _v, cache| process_withdrawal_request(state, op, cfg, cache),
     );
 }
 
@@ -869,7 +870,7 @@ fn withdrawal_request_mainnet() {
         "withdrawal_request",
         "withdrawal_request.ssz_snappy",
         false,
-        |op, state, cfg, _v| process_withdrawal_request(state, op, cfg),
+        |op, state, cfg, _v, cache| process_withdrawal_request(state, op, cfg, cache),
     );
 }
 
@@ -879,7 +880,7 @@ fn consolidation_request_minimal() {
         "consolidation_request",
         "consolidation_request.ssz_snappy",
         false, // incorrect_* cases are valid blocks (no-op), not rejections
-        |op, state, cfg, _v| process_consolidation_request(state, op, cfg),
+        |op, state, cfg, _v, cache| process_consolidation_request(state, op, cfg, cache),
     );
 }
 
@@ -889,7 +890,7 @@ fn consolidation_request_mainnet() {
         "consolidation_request",
         "consolidation_request.ssz_snappy",
         false,
-        |op, state, cfg, _v| process_consolidation_request(state, op, cfg),
+        |op, state, cfg, _v, cache| process_consolidation_request(state, op, cfg, cache),
     );
 }
 
@@ -899,9 +900,10 @@ fn sync_aggregate_minimal() {
         "sync_aggregate",
         "sync_aggregate.ssz_snappy",
         true,
-        |op, state, cfg, verify| {
+        |op, state, cfg, verify, _cache| {
             let engine = AcceptEngine;
             let ctx = TransitionContext::new(cfg, &engine);
+            ctx.top_up_pubkey_cache(state);
             process_sync_aggregate_with_opts(state, op, verify, &ctx)
         },
     );
@@ -913,9 +915,10 @@ fn sync_aggregate_mainnet() {
         "sync_aggregate",
         "sync_aggregate.ssz_snappy",
         true,
-        |op, state, cfg, verify| {
+        |op, state, cfg, verify, _cache| {
             let engine = AcceptEngine;
             let ctx = TransitionContext::new(cfg, &engine);
+            ctx.top_up_pubkey_cache(state);
             process_sync_aggregate_with_opts(state, op, verify, &ctx)
         },
     );
@@ -1240,6 +1243,7 @@ fn deposit_top_up_lands_in_pending_deposits_not_balances() {
     let before = state.balances_get(0).unwrap();
     let pending_before = state.pending_deposits_len();
 
+    let cache = RefCell::new(PubkeyIndexMap::from_registry(&state));
     apply_deposit(
         &mut state,
         pk,
@@ -1247,6 +1251,7 @@ fn deposit_top_up_lands_in_pending_deposits_not_balances() {
         Gwei::new(1_000_000_000),
         BlsSignature::default(),
         &spec_config_for_preset(PresetName::Minimal),
+        &cache,
     )
     .unwrap();
 
@@ -1294,6 +1299,7 @@ fn deposit_new_validator_appends_registry_and_pubkey_map() {
 
     let mut state = BeaconState::<Minimal>::default();
     assert_eq!(state.validators_len(), 0);
+    let cache = RefCell::new(PubkeyIndexMap::from_registry(&state));
 
     apply_deposit(
         &mut state,
@@ -1302,6 +1308,7 @@ fn deposit_new_validator_appends_registry_and_pubkey_map() {
         amount,
         signature,
         &spec_config_for_preset(PresetName::Minimal),
+        &cache,
     )
     .unwrap();
 
@@ -1344,7 +1351,7 @@ fn apply_deposit_cache_miss_counts_linear_scan() {
     let _ = cache.borrow_mut().take_linear_scan_count();
 
     assert_eq!(
-        get_validator_index_by_pubkey(&state, &pk, Some(&cache)),
+        get_validator_index_by_pubkey(&state, &pk, &cache),
         Some(ValidatorIndex::new(0))
     );
     assert_eq!(
@@ -1361,12 +1368,13 @@ fn apply_deposit_cache_miss_counts_linear_scan() {
         Gwei::new(1_000_000_000),
         BlsSignature::default(),
         &spec_config_for_preset(PresetName::Minimal),
+        &cache,
     )
     .unwrap();
     assert_eq!(state.pending_deposits_len(), 1);
 
     assert_eq!(
-        get_validator_index_by_pubkey(&state, &pk, Some(&cache)),
+        get_validator_index_by_pubkey(&state, &pk, &cache),
         Some(ValidatorIndex::new(0))
     );
     assert_eq!(
@@ -1382,6 +1390,7 @@ fn apply_deposit_cache_miss_counts_linear_scan() {
         Gwei::new(1_000_000_000),
         BlsSignature::default(),
         &spec_config_for_preset(PresetName::Minimal),
+        &cache,
     )
     .unwrap();
     assert_eq!(state.pending_deposits_len(), 2);
@@ -1660,7 +1669,8 @@ fn invalid_withdrawal_and_consolidation_requests_are_noops() {
         amount: Gwei::new(0),
     };
     let cfg = spec_config_for_preset(PresetName::Minimal);
-    process_withdrawal_request(&mut state, &bad_wd, &cfg).unwrap();
+    let cache = RefCell::new(PubkeyIndexMap::from_registry(&state));
+    process_withdrawal_request(&mut state, &bad_wd, &cfg, &cache).unwrap();
     assert_eq!(state, pre, "invalid withdrawal must leave state unchanged");
 
     // Unknown target pubkey consolidation → no-op.
@@ -1669,7 +1679,7 @@ fn invalid_withdrawal_and_consolidation_requests_are_noops() {
         source_pubkey: pk,
         target_pubkey: BlsPublicKey::from_array([0x22; 48]),
     };
-    process_consolidation_request(&mut state, &bad_con, &cfg).unwrap();
+    process_consolidation_request(&mut state, &bad_con, &cfg, &cache).unwrap();
     assert_eq!(
         state, pre,
         "invalid consolidation must leave state unchanged"
@@ -1770,6 +1780,7 @@ fn sync_aggregate_empty_participants_infinity_signature_passes() {
     let config = spec_config_for_preset(PresetName::Minimal);
     let engine = AcceptEngine;
     let ctx = TransitionContext::<Minimal>::new(&config, &engine);
+    ctx.top_up_pubkey_cache(&state);
     let scans_before = ctx.pubkeys().linear_scan_count();
     process_sync_aggregate_with_opts(&mut state, &agg, true, &ctx)
         .expect("empty+infinity must pass");
@@ -1796,6 +1807,7 @@ fn sync_aggregate_uses_pubkey_index_map_no_registry_scan() {
     let config = spec_config_for_preset(PresetName::Minimal);
     let engine = AcceptEngine;
     let ctx = TransitionContext::<Minimal>::new(&config, &engine);
+    ctx.top_up_pubkey_cache(&state);
     let _ = ctx.pubkeys_mut().take_linear_scan_count();
     let op = SyncAggregate::<Minimal>::from_ssz_bytes(&snappy_decompress(
         &case.join("sync_aggregate.ssz_snappy"),

@@ -1203,10 +1203,10 @@ impl ChainMetrics {
     /// Must run **before** `on_block` / STF so a short cache is visible even
     /// when `process_sync_aggregate` returns `CachePoisoned`.
     ///
-    /// S2-A-10: `PubkeyIndexMap` is not on `BeaconState`. Report length 0
-    /// (fail-closed) so `cc_chain_pubkey_cache_len < cc_chain_validators_len`
-    /// can still fire. Do not invent `validators_len`. S2-A-11 threads
-    /// `ctx.pubkeys().len()` via [`Self::observe_import_state_with_pubkeys`].
+    /// Fail-closed observe when the caller has no context map (reports cache
+    /// length 0). Production import / restore / checkpoint spawn use
+    /// [`Self::observe_import_state_with_pubkeys`] with `ctx.pubkeys().len()`
+    /// (S2-A-11).
     pub fn observe_import_state<P: Preset>(&self, state: &BeaconState<P>) {
         self.observe_import_state_with_pubkeys(state, 0);
     }
@@ -1760,14 +1760,14 @@ mod tests {
         let import_src = include_str!("import.rs");
         let production = import_src.split("#[cfg(test)]").next().unwrap();
         let observe = production
-            .find("observe_import_state(")
+            .find("observe_import_state_with_pubkeys(")
             .expect("import must observe M13 gauges");
         let on_block = production
-            .find("let outcome = on_block(")
+            .find("let outcome = on_block_with_context(")
             .expect("import on_block site");
         assert!(
             observe < on_block,
-            "observe_import_state must run before on_block"
+            "observe_import_state_with_pubkeys must run before on_block"
         );
     }
 

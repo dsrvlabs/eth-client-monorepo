@@ -1,6 +1,9 @@
 //! Spec `process_pending_deposits` / `apply_pending_deposit` (Fulu / Electra).
 
+use std::cell::RefCell;
+
 use cc_types::BeaconState;
+use cc_types::PubkeyIndexMap;
 use cc_types::config::ChainConfig;
 use cc_types::operations::PendingDeposit;
 use cc_types::preset::Preset;
@@ -23,9 +26,10 @@ pub fn apply_pending_deposit<P: Preset>(
     state: &mut BeaconState<P>,
     deposit: &PendingDeposit,
     config: &ChainConfig,
+    cache: &RefCell<PubkeyIndexMap>,
 ) -> Result<(), EpochError> {
     let existing =
-        crate::helpers::accessors::get_validator_index_by_pubkey(state, &deposit.pubkey, None);
+        crate::helpers::accessors::get_validator_index_by_pubkey(state, &deposit.pubkey, cache);
 
     match existing {
         None => {
@@ -43,6 +47,7 @@ pub fn apply_pending_deposit<P: Preset>(
                     deposit.pubkey,
                     deposit.withdrawal_credentials,
                     deposit.amount,
+                    cache,
                 )
                 .map_err(block_to_epoch)?;
             }
@@ -63,6 +68,7 @@ pub fn apply_pending_deposit<P: Preset>(
 pub fn process_pending_deposits<P: Preset>(
     state: &mut BeaconState<P>,
     config: &ChainConfig,
+    cache: &RefCell<PubkeyIndexMap>,
 ) -> Result<(), EpochError> {
     let next_epoch = Epoch::new(get_current_epoch(state).as_u64().saturating_add(1));
     let available_for_processing = state
@@ -97,7 +103,7 @@ pub fn process_pending_deposits<P: Preset>(
             match crate::helpers::accessors::get_validator_index_by_pubkey(
                 state,
                 &deposit.pubkey,
-                None,
+                cache,
             ) {
                 Some(idx) => {
                     let v = state
@@ -112,7 +118,7 @@ pub fn process_pending_deposits<P: Preset>(
             };
 
         if is_validator_withdrawn {
-            apply_pending_deposit(state, deposit, config)?;
+            apply_pending_deposit(state, deposit, config, cache)?;
         } else if is_validator_exited {
             // Postpone until after withdrawable epoch — do not drop.
             deposits_to_postpone.push(*deposit);
@@ -127,7 +133,7 @@ pub fn process_pending_deposits<P: Preset>(
             processed_amount = processed_amount
                 .checked_add(deposit.amount.as_u64())
                 .ok_or(EpochError::ArithmeticOverflow)?;
-            apply_pending_deposit(state, deposit, config)?;
+            apply_pending_deposit(state, deposit, config, cache)?;
         }
 
         next_deposit_index = next_deposit_index

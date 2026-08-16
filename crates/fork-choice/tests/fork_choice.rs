@@ -17,14 +17,14 @@ use std::sync::{Arc, Mutex};
 
 use cc_fork_choice::{
     DataAvailability, ExecutionStatus, HarnessAvailability, get_forkchoice_store, get_head,
-    get_proposer_head, on_attestation, on_attester_slashing, on_block, on_tick,
+    get_proposer_head, on_attestation, on_attester_slashing, on_block_with_context, on_tick,
     store_target_checkpoint_context,
 };
 use cc_state_transition::helpers::accessors::get_indexed_attestation;
 use cc_state_transition::helpers::misc::compute_start_slot_at_epoch;
 use cc_state_transition::{
     BlockSignatureStrategy, EngineError, ExecutionEngine, NewPayloadRequest, PayloadStatus,
-    process_slots,
+    TransitionContext, process_slots,
 };
 use cc_types::BeaconState;
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
@@ -472,11 +472,13 @@ fn run_case<P: Preset>(rel: &str, case_dir: &Path, config: &ChainConfig, da: Arc
     let anchor_block_bytes = snappy_decompress(&case_dir.join("anchor_block.ssz_snappy"));
     let anchor_state = BeaconState::<P>::from_ssz_bytes_with(ForkName::Fulu, &anchor_state_bytes)
         .unwrap_or_else(|e| panic!("anchor_state {rel}: {e:?}"));
-    // S2-A-10: PubkeyIndexMap lives on TransitionContext; on_block tops up.
     let anchor_block = BeaconBlock::<P>::from_ssz_bytes(&anchor_block_bytes)
         .unwrap_or_else(|e| panic!("anchor_block {rel}: {e:?}"));
 
     let engine = Arc::new(ScriptedEngine::default());
+    let engine_ref: Arc<dyn ExecutionEngine<P>> = engine.clone();
+    let ctx = TransitionContext::<P>::new(config, engine_ref.as_ref());
+    ctx.top_up_pubkey_cache(&anchor_state);
     let mut store = get_forkchoice_store(
         anchor_state,
         &anchor_block,
@@ -578,10 +580,10 @@ fn run_case<P: Preset>(rel: &str, case_dir: &Path, config: &ChainConfig, da: Arc
                 }
 
                 let valid = step_valid(step);
-                let result = on_block(
+                let result = on_block_with_context(
                     &mut store,
                     &signed,
-                    config,
+                    &ctx,
                     BlockSignatureStrategy::NoVerification,
                 );
                 match (valid, result) {

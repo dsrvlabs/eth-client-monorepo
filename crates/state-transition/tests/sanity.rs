@@ -161,10 +161,6 @@ fn list_handlers(tests: &Path, preset: &str) -> BTreeSet<String> {
     set
 }
 
-fn rebuild_pubkey_cache<P: Preset>(_state: &mut BeaconState<P>) {
-    // S2-A-10: PubkeyIndexMap lives on TransitionContext. STF top-up fills it.
-}
-
 fn spec_config_for_preset(preset: PresetName) -> ChainConfig {
     let (name, seconds, genesis, altair, bellatrix, capella, deneb, electra, fulu) = match preset {
         PresetName::Mainnet => (
@@ -347,7 +343,6 @@ fn run_blocks_cases<P: Preset>() {
         other => panic!("unknown preset {other}"),
     });
     let engine = AcceptEngine;
-    let ctx = TransitionContext::<P>::new(&config, &engine);
 
     let mut ran = 0usize;
     let mut invalid_ok = 0usize;
@@ -362,7 +357,8 @@ fn run_blocks_cases<P: Preset>() {
         let pre_bytes = snappy_decompress(&case_dir.join("pre.ssz_snappy"));
         let mut state = BeaconState::<P>::from_ssz_bytes_with(ForkName::Fulu, &pre_bytes)
             .unwrap_or_else(|e| panic!("decode pre {rel}: {e:?}"));
-        rebuild_pubkey_cache(&mut state);
+        let ctx = TransitionContext::<P>::new(&config, &engine);
+        ctx.top_up_pubkey_cache(&state);
 
         let blocks_count = read_meta_u64(case_dir, "blocks_count", 1);
         let bls_setting = read_meta_u64(case_dir, "bls_setting", 1) as u8;
@@ -384,8 +380,7 @@ fn run_blocks_cases<P: Preset>() {
                     break;
                 }
             }
-            // Pubkey map may grow if deposits introduced new validators.
-            rebuild_pubkey_cache(&mut state);
+            ctx.top_up_pubkey_cache(&state);
         }
 
         if post_path.is_file() {

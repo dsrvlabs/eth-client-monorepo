@@ -301,6 +301,13 @@ Grandine makes `pubkey_cache` its own crate (`[Q3]` §3, research README cross-c
 - [x] `BeaconState` clone no longer includes the pubkey map (type-level; measurement is `S2-A-12`)
 - [x] No harness rewrite (`S2-A-11`); no clone-cost measurement (`S2-A-12`)
 
+**Acceptance (`S2-A-11` only)**
+- [x] `get_validator_index_by_pubkey` production callers pass the context map (no `None`)
+- [x] deposit / withdrawal / consolidation / pending-deposit handlers query and extend the context map
+- [x] The eight harnesses construct a `TransitionContext` / `PubkeyIndexMap` cache instead of hand-filling `BeaconState`
+- [x] M13 observe sites report `ctx.pubkeys().len()` (import, restore, checkpoint spawn)
+- [x] No clone-cost measurement (`S2-A-12`)
+
 **P0-19/4 (persist the cache in `cc-store`, `[Q3]` **S–M**) is `patch @ S2`, optional.** Not scheduled
 here. If it is picked up, note the distinction `S0-B-14` wrote into the module docs: the pubkey cache
 **is** reconstructible from the state, so losing it is a slow boot, and it **is** safe on the

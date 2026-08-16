@@ -563,6 +563,13 @@ impl PubkeyIndexMap {
         n
     }
 
+    /// Build a map from `state.validators` (S2-A-11 call-site / harness helper).
+    pub fn from_registry<P: crate::preset::Preset>(state: &super::BeaconState<P>) -> Self {
+        let mut map = Self::default();
+        map.import_from_registry(state);
+        map
+    }
+
     /// Fill from `state.validators`. Append-only and idempotent (S2-A-10).
     ///
     /// Walks only `self.len()..validators_len()` so a second call after a

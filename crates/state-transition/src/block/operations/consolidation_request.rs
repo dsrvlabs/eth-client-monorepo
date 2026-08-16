@@ -2,7 +2,10 @@
 //!
 //! **Invalid requests are no-ops** — early `Ok(())` without state mutation.
 
+use std::cell::RefCell;
+
 use cc_types::BeaconState;
+use cc_types::PubkeyIndexMap;
 use cc_types::config::ChainConfig;
 use cc_types::operations::{ConsolidationRequest, PendingConsolidation};
 use cc_types::preset::Preset;
@@ -29,12 +32,13 @@ use crate::helpers::predicates::{
 fn is_valid_switch_to_compounding_request<P: Preset>(
     state: &mut BeaconState<P>,
     consolidation_request: &ConsolidationRequest,
+    cache: &RefCell<PubkeyIndexMap>,
 ) -> bool {
     if consolidation_request.source_pubkey != consolidation_request.target_pubkey {
         return false;
     }
     let Some(source_index) =
-        get_validator_index_by_pubkey(state, &consolidation_request.source_pubkey, None)
+        get_validator_index_by_pubkey(state, &consolidation_request.source_pubkey, cache)
     else {
         return false;
     };
@@ -68,11 +72,12 @@ pub fn process_consolidation_request<P: Preset>(
     state: &mut BeaconState<P>,
     consolidation_request: &ConsolidationRequest,
     config: &ChainConfig,
+    cache: &RefCell<PubkeyIndexMap>,
 ) -> Result<(), BlockError> {
-    if is_valid_switch_to_compounding_request(state, consolidation_request) {
+    if is_valid_switch_to_compounding_request(state, consolidation_request, cache) {
         // Re-resolve after the validity check (map may have been backfilled).
         let Some(source_index) =
-            get_validator_index_by_pubkey(state, &consolidation_request.source_pubkey, None)
+            get_validator_index_by_pubkey(state, &consolidation_request.source_pubkey, cache)
         else {
             return Ok(());
         };
@@ -94,12 +99,12 @@ pub fn process_consolidation_request<P: Preset>(
     }
 
     let Some(source_index) =
-        get_validator_index_by_pubkey(state, &consolidation_request.source_pubkey, None)
+        get_validator_index_by_pubkey(state, &consolidation_request.source_pubkey, cache)
     else {
         return Ok(());
     };
     let Some(target_index) =
-        get_validator_index_by_pubkey(state, &consolidation_request.target_pubkey, None)
+        get_validator_index_by_pubkey(state, &consolidation_request.target_pubkey, cache)
     else {
         return Ok(());
     };

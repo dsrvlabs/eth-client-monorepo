@@ -4,6 +4,8 @@
 //! [`get_beacon_committee`] is provided by [`crate::shuffling`] (cached) and
 //! re-exported here so existing call sites keep the same import path.
 
+use std::cell::RefCell;
+
 use cc_crypto::{
     DOMAIN_BEACON_ATTESTER, compute_domain, compute_signing_root, fast_aggregate_verify, get_domain,
 };
@@ -508,26 +510,22 @@ pub fn get_consolidation_churn_limit<P: Preset>(
 /// back to a linear registry scan that is counted on the map (CC-12d).
 ///
 /// Prefer this when a miss is possible; `process_sync_aggregate` uses the map
-/// only (no scan). The map lives on `TransitionContext` (S2-A-10).
+/// only (no scan). The map lives on `TransitionContext` (S2-A-10 / S2-A-11).
 pub fn get_validator_index_by_pubkey<P: Preset>(
     state: &BeaconState<P>,
     pubkey: &cc_types::primitives::BlsPublicKey,
-    cache: Option<&std::cell::RefCell<cc_types::PubkeyIndexMap>>,
+    cache: &RefCell<cc_types::PubkeyIndexMap>,
 ) -> Option<ValidatorIndex> {
-    if let Some(cache) = cache
-        && let Some(idx) = cache.borrow().get(pubkey)
-    {
+    if let Some(idx) = cache.borrow().get(pubkey) {
         return Some(idx);
     }
-    if let Some(cache) = cache {
-        cache.borrow_mut().note_linear_scan();
-    }
+    cache.borrow_mut().note_linear_scan();
     let found = state
         .validators_iter()
         .enumerate()
         .find(|(_, v)| v.pubkey == *pubkey)
         .map(|(i, _)| ValidatorIndex::new(i as u64));
-    if let (Some(idx), Some(cache)) = (found, cache) {
+    if let Some(idx) = found {
         cache.borrow_mut().insert(*pubkey, idx);
     }
     found

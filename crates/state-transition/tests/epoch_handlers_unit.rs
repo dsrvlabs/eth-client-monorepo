@@ -2,6 +2,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::cell::RefCell;
+
 use cc_state_transition::helpers::accessors::{
     get_activation_exit_churn_limit, get_balance_churn_limit, get_current_epoch,
 };
@@ -15,7 +17,6 @@ use cc_state_transition::{
     process_pending_consolidations, process_pending_deposits, process_proposer_lookahead,
     process_registry_updates, process_sync_committee_updates,
 };
-use cc_types::BeaconState;
 use cc_types::config::{BlobParameters, BlobSchedule, ChainConfig, PresetName};
 use cc_types::containers::{Checkpoint, Validator};
 use cc_types::operations::{PendingConsolidation, PendingDeposit};
@@ -24,6 +25,7 @@ use cc_types::primitives::{
     BlsPublicKey, BlsSignature, Epoch, ExecutionAddress, ForkVersion, Gwei, Root, Slot,
     ValidatorIndex,
 };
+use cc_types::{BeaconState, PubkeyIndexMap};
 
 fn minimal_config() -> ChainConfig {
     ChainConfig {
@@ -263,7 +265,8 @@ fn pending_deposits_postpones_exiting_validator() {
     });
 
     let bal_before = state.balances_get(0).unwrap();
-    process_pending_deposits(&mut state, &minimal_config()).unwrap();
+    let cache = RefCell::new(PubkeyIndexMap::from_registry(&state));
+    process_pending_deposits(&mut state, &minimal_config(), &cache).unwrap();
 
     // Deposit postponed, not applied, not dropped.
     assert_eq!(state.pending_deposits_len(), 1);

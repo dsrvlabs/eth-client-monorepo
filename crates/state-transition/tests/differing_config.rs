@@ -9,6 +9,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::cell::RefCell;
+
 use cc_crypto::{BLS_SIGNATURE_DST, DOMAIN_DEPOSIT, compute_domain, compute_signing_root};
 use cc_state_transition::block::operations::apply_deposit;
 use cc_state_transition::helpers::accessors::deposit_domain;
@@ -19,7 +21,6 @@ use cc_state_transition::helpers::mutators::compute_exit_epoch_and_update_churn;
 use cc_state_transition::{
     apply_pending_deposit, process_pending_deposits, process_voluntary_exit,
 };
-use cc_types::BeaconState;
 use cc_types::config::ChainConfig;
 use cc_types::containers::{DepositMessage, Validator};
 use cc_types::operations::{PendingDeposit, SignedVoluntaryExit, VoluntaryExit};
@@ -27,6 +28,7 @@ use cc_types::preset::{Mainnet, Minimal, Preset};
 use cc_types::primitives::{
     BlsPublicKey, BlsSignature, Epoch, ForkVersion, Gwei, Root, Slot, ValidatorIndex,
 };
+use cc_types::{BeaconState, PubkeyIndexMap};
 
 const DIFFERING_YAML: &str = include_str!("../../types/tests/fixtures/differing-config.yaml");
 const MAINNET_YAML: &str = include_str!("../../types/tests/fixtures/mainnet-config.yaml");
@@ -193,6 +195,7 @@ fn assert_deposit_callers_use_fixture_gfv<P: Preset>(cfg: &ChainConfig) {
     let leftover = sign_pop(deposit_domain(), 0x22, amount);
 
     let mut applied = BeaconState::<P>::default();
+    let applied_cache = RefCell::new(PubkeyIndexMap::from_registry(&applied));
     apply_deposit(
         &mut applied,
         fixture.pubkey,
@@ -200,6 +203,7 @@ fn assert_deposit_callers_use_fixture_gfv<P: Preset>(cfg: &ChainConfig) {
         fixture.amount,
         fixture.signature,
         cfg,
+        &applied_cache,
     )
     .unwrap();
     assert_eq!(
@@ -211,6 +215,7 @@ fn assert_deposit_callers_use_fixture_gfv<P: Preset>(cfg: &ChainConfig) {
     assert_eq!(applied.pending_deposits_len(), 1);
 
     let mut dropped = BeaconState::<P>::default();
+    let dropped_cache = RefCell::new(PubkeyIndexMap::from_registry(&dropped));
     apply_deposit(
         &mut dropped,
         leftover.pubkey,
@@ -218,6 +223,7 @@ fn assert_deposit_callers_use_fixture_gfv<P: Preset>(cfg: &ChainConfig) {
         leftover.amount,
         leftover.signature,
         cfg,
+        &dropped_cache,
     )
     .unwrap();
     assert_eq!(
@@ -230,6 +236,7 @@ fn assert_deposit_callers_use_fixture_gfv<P: Preset>(cfg: &ChainConfig) {
 
     let pending_ok = sign_pop(fixture_domain(cfg), 0x33, amount);
     let mut pending_state = BeaconState::<P>::default();
+    let pending_ok_cache = RefCell::new(PubkeyIndexMap::from_registry(&pending_state));
     apply_pending_deposit(
         &mut pending_state,
         &PendingDeposit {
@@ -240,6 +247,7 @@ fn assert_deposit_callers_use_fixture_gfv<P: Preset>(cfg: &ChainConfig) {
             slot: Slot::new(GENESIS_SLOT),
         },
         cfg,
+        &pending_ok_cache,
     )
     .unwrap();
     assert_eq!(
@@ -252,6 +260,7 @@ fn assert_deposit_callers_use_fixture_gfv<P: Preset>(cfg: &ChainConfig) {
 
     let pending_bad = sign_pop(deposit_domain(), 0x44, amount);
     let mut pending_noop = BeaconState::<P>::default();
+    let pending_bad_cache = RefCell::new(PubkeyIndexMap::from_registry(&pending_noop));
     apply_pending_deposit(
         &mut pending_noop,
         &PendingDeposit {
@@ -262,6 +271,7 @@ fn assert_deposit_callers_use_fixture_gfv<P: Preset>(cfg: &ChainConfig) {
             slot: Slot::new(GENESIS_SLOT),
         },
         cfg,
+        &pending_bad_cache,
     )
     .unwrap();
     assert_eq!(
@@ -282,7 +292,8 @@ fn assert_deposit_callers_use_fixture_gfv<P: Preset>(cfg: &ChainConfig) {
             slot: Slot::new(GENESIS_SLOT),
         })
         .unwrap();
-    process_pending_deposits(&mut epoch_ok, cfg).unwrap();
+    let epoch_ok_cache = RefCell::new(PubkeyIndexMap::from_registry(&epoch_ok));
+    process_pending_deposits(&mut epoch_ok, cfg, &epoch_ok_cache).unwrap();
     assert_eq!(
         epoch_ok.validators_len(),
         1,
@@ -301,7 +312,8 @@ fn assert_deposit_callers_use_fixture_gfv<P: Preset>(cfg: &ChainConfig) {
             slot: Slot::new(GENESIS_SLOT),
         })
         .unwrap();
-    process_pending_deposits(&mut epoch_drop, cfg).unwrap();
+    let epoch_drop_cache = RefCell::new(PubkeyIndexMap::from_registry(&epoch_drop));
+    process_pending_deposits(&mut epoch_drop, cfg, &epoch_drop_cache).unwrap();
     assert_eq!(
         epoch_drop.validators_len(),
         0,
