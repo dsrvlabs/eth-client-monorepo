@@ -43,6 +43,10 @@
 //! Attacks delete **latency**; file **growth** is an engine property
 //! (`cc_storage_disk_bytes / cc_storage_live_set_bytes`).
 //!
+//! **S2-B-09:** durable `PruneMarks` advance only after that drop commits.
+//! A failed `drop_table` leaves marks and cadence unmoved so the next tick
+//! retries — otherwise the stripped shard is leaked permanently.
+//!
 //! ## R-10 early warning
 //!
 //! `cc_storage_writer_queue_depth{class="p0"}` is expected to be **zero at every
@@ -63,7 +67,7 @@ pub(crate) mod shards;
 pub(crate) mod states;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cc_store::engine::Engine;
@@ -205,6 +209,9 @@ pub(crate) enum PassOutcome {
     AlreadyAtMark,
     /// P2 queue full; marks not advanced (retry next tick).
     QueueFull,
+    /// `drop_table` failed; marks **not** advanced so the next tick retries
+    /// the retire (S2-B-09 / P1-A/6). Cadence is also held.
+    DropFailed,
     /// Deadline exceeded mid-pass; committed chunks stay, marks **not** advanced
     /// so the next tick resumes from the durable watermark (CC-46b / §7.3).
     ///
@@ -265,6 +272,9 @@ pub(crate) struct Pruner {
     pub keys_submitted_total: AtomicU64,
     /// Deadline-abandon count (mirrors metric; handy for tests).
     pub deadline_abandons: AtomicU64,
+    /// Test hook (S2-B-09): next shard `drop_table` is reported as failure
+    /// without calling the engine so marks-vs-drop order can be asserted.
+    fail_next_shard_drop: AtomicBool,
 }
 
 impl Pruner {
@@ -311,6 +321,7 @@ impl Pruner {
             max_chunk_keys_observed: AtomicU64::new(0),
             keys_submitted_total: AtomicU64::new(0),
             deadline_abandons: AtomicU64::new(0),
+            fail_next_shard_drop: AtomicBool::new(false),
         }
     }
 
@@ -495,13 +506,7 @@ impl Pruner {
         let rows = plan.rows;
         let bytes = plan.bytes;
         match self
-            .submit_plan_and_marks(
-                StorageClass::Columns,
-                PrunePass::Columns,
-                plan,
-                started,
-                |m| m.columns_up_to = proposed,
-            )
+            .submit_plan(StorageClass::Columns, PrunePass::Columns, plan, started)
             .await
         {
             Ok(SubmitOutcome::Completed) => {}
@@ -528,8 +533,15 @@ impl Pruner {
         }
 
         // One drop_table per tick when a shard is fully retirable (§7.5).
-        if let Err(e) = retire_one_column_shard(&self.engine, &self.metrics, from, proposed) {
+        // S2-B-09: marks stay put until the drop commits so a failed retire
+        // cannot leak the stripped shard (keys were removed from the P2 plan).
+        if let Err(e) = self.retire_column_shard(from, proposed) {
             warn!(target: "cc_storage::prune", error = %e, "columns shard retire failed");
+            return PassOutcome::DropFailed;
+        }
+        if let Err(e) = self.commit_marks(|m| m.columns_up_to = proposed).await {
+            warn!(target: "cc_storage::prune", error = %e, "columns marks put failed");
+            return PassOutcome::QueueFull;
         }
 
         // Cadence marker only after a completed pass (SEC-46b-1).
@@ -623,16 +635,7 @@ impl Pruner {
         let bytes = plan.bytes;
 
         match self
-            .submit_plan_and_marks(
-                StorageClass::Blocks,
-                PrunePass::Blocks,
-                plan,
-                started,
-                |m| {
-                    m.blocks_up_to = proposed;
-                    m.state_roots_up_to = proposed;
-                },
-            )
+            .submit_plan(StorageClass::Blocks, PrunePass::Blocks, plan, started)
             .await
         {
             Ok(SubmitOutcome::Completed) => {}
@@ -658,8 +661,20 @@ impl Pruner {
             }
         }
 
-        if let Err(e) = retire_one_block_shard(&self.engine, &self.metrics, from, proposed) {
+        // S2-B-09: drop commits before marks (same order as the columns pass).
+        if let Err(e) = self.retire_block_shard(from, proposed) {
             warn!(target: "cc_storage::prune", error = %e, "blocks shard retire failed");
+            return PassOutcome::DropFailed;
+        }
+        if let Err(e) = self
+            .commit_marks(|m| {
+                m.blocks_up_to = proposed;
+                m.state_roots_up_to = proposed;
+            })
+            .await
+        {
+            warn!(target: "cc_storage::prune", error = %e, "blocks marks put failed");
+            return PassOutcome::QueueFull;
         }
 
         // Cadence marker only after a completed pass (SEC-46b-1).
@@ -833,17 +848,15 @@ impl Pruner {
 
     // ── P2 submit (chunked + deadline) ──────────────────────────────────────
 
-    async fn submit_plan_and_marks<F>(
+    /// Stage deletes/puts only. Marks stay put so a later `drop_table` can
+    /// fail without leaking a stripped shard (S2-B-09).
+    async fn submit_plan(
         &self,
         class: StorageClass,
         pass: PrunePass,
         plan: PrunePlan,
         started: Instant,
-        mut update_marks: F,
-    ) -> Result<SubmitOutcome, PruneError>
-    where
-        F: FnMut(&mut PruneMarks),
-    {
+    ) -> Result<SubmitOutcome, PruneError> {
         // §7.3: 512 keys, commit, yield_now, deadline check, abandon.
         let stats = submit_deletes_chunked(ChunkSubmitArgs {
             writer: &self.writer,
@@ -873,7 +886,15 @@ impl Pruner {
             };
             self.submit_p2_committed(chunk).await?;
         }
+        Ok(SubmitOutcome::Completed)
+    }
 
+    /// Durable meta put of proposed marks. In-memory snapshot advances only
+    /// after the put commits.
+    async fn commit_marks<F>(&self, mut update_marks: F) -> Result<(), PruneError>
+    where
+        F: FnMut(&mut PruneMarks),
+    {
         // Propose new marks from the current in-memory snapshot **without**
         // mutating it yet. Advance in-memory only after the durable meta put
         // commits — a P2 drop/fail must leave marks unchanged so the next tick
@@ -887,7 +908,7 @@ impl Pruner {
         // No-op mark update (snapshot ring trim often has nothing to change).
         let current = self.marks_snapshot();
         if new_marks == current {
-            return Ok(SubmitOutcome::Completed);
+            return Ok(());
         }
         let ssz = new_marks.as_ssz_bytes();
         let chunk = BackgroundChunk {
@@ -906,7 +927,45 @@ impl Pruner {
             let mut g = self.marks.lock().unwrap_or_else(|e| e.into_inner());
             *g = new_marks;
         }
-        Ok(SubmitOutcome::Completed)
+        Ok(())
+    }
+
+    async fn submit_plan_and_marks<F>(
+        &self,
+        class: StorageClass,
+        pass: PrunePass,
+        plan: PrunePlan,
+        started: Instant,
+        update_marks: F,
+    ) -> Result<SubmitOutcome, PruneError>
+    where
+        F: FnMut(&mut PruneMarks),
+    {
+        match self.submit_plan(class, pass, plan, started).await? {
+            abandoned @ SubmitOutcome::Abandoned { .. } => Ok(abandoned),
+            SubmitOutcome::Completed => {
+                self.commit_marks(update_marks).await?;
+                Ok(SubmitOutcome::Completed)
+            }
+        }
+    }
+
+    fn retire_column_shard(&self, from: Slot, mark: Slot) -> Result<bool, StoreError> {
+        if self.fail_next_shard_drop.swap(false, Ordering::SeqCst) {
+            return Err(StoreError::Config(
+                "injected drop_table failure (S2-B-09)".into(),
+            ));
+        }
+        retire_one_column_shard(&self.engine, &self.metrics, from, mark)
+    }
+
+    fn retire_block_shard(&self, from: Slot, mark: Slot) -> Result<bool, StoreError> {
+        if self.fail_next_shard_drop.swap(false, Ordering::SeqCst) {
+            return Err(StoreError::Config(
+                "injected drop_table failure (S2-B-09)".into(),
+            ));
+        }
+        retire_one_block_shard(&self.engine, &self.metrics, from, mark)
     }
 
     fn record_chunk_stats(&self, stats: &ChunkSubmitStats) {
@@ -1074,6 +1133,7 @@ pub(crate) fn spawn_prune_task(
                             PassOutcome::Ran { .. }
                                 | PassOutcome::RefusedI2
                                 | PassOutcome::AbandonedDeadline { .. }
+                                | PassOutcome::DropFailed
                         ) {
                             info!(
                                 target: "cc_storage::prune",
@@ -1929,5 +1989,133 @@ SECONDS_PER_SLOT: 12
         let final_m = p.marks_snapshot();
         assert!(final_m.columns_up_to.as_u64() >= mid.columns_up_to.as_u64());
         assert!(final_m.blocks_up_to.as_u64() >= mid.blocks_up_to.as_u64());
+    }
+
+    /// Epoch whose column mark is exactly shard 0's exclusive end (1024).
+    ///
+    /// `columns_prune_mark(97, 64, 0, 1)` = `start(33) − 32` = 1024. Only
+    /// shard 0 is retirable — a wider jump would also retire later shards.
+    const S2_B_09_COLUMNS_EPOCH: u64 = 97;
+
+    fn s2_b_09_cfg() -> PruneConfig {
+        PruneConfig {
+            blocks_retention_epochs: 256,
+            columns_retention_epochs: 64,
+            fulu_fork_epoch: 0,
+            prune_columns_epochs: 1,
+            prune_blocks_epochs: 1,
+            prune_margin_epochs: 1,
+            ..PruneConfig::default()
+        }
+    }
+
+    fn seed_column_shard_0(eng: &Engine) {
+        use cc_store::keys::{columns_shard_table, encode_cold_column_key};
+        let table = columns_shard_table(0);
+        let mut b = eng.batch();
+        b.put(&table, &encode_cold_column_key(Slot::new(0), 0), b"sidecar");
+        eng.commit(b).unwrap();
+    }
+
+    async fn pruner_on_engine(
+        eng: Arc<Engine>,
+        cfg: PruneConfig,
+    ) -> (Arc<Pruner>, watch::Sender<bool>) {
+        let (tx, rx) = watch::channel(false);
+        let m = metrics();
+        let writer = spawn_writer(
+            Arc::clone(&eng),
+            m.clone(),
+            WriterBounds::default(),
+            WriterFaults::default(),
+            rx,
+            false,
+        );
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        (Arc::new(Pruner::new(eng, writer, cfg, m)), tx)
+    }
+
+    fn column_shard_0_present(eng: &Engine) -> bool {
+        use cc_store::keys::columns_shard_table;
+        let table = columns_shard_table(0);
+        eng.table_names().unwrap().iter().any(|n| n == &table)
+    }
+
+    /// S2-B-09 — commit-order: a failed drop must not advance marks.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drop_table_failure_holds_marks_until_drop_commits() {
+        let (p, _shutdown, eng) = pruner_with(s2_b_09_cfg()).await;
+        seed_column_shard_0(&eng);
+        assert!(column_shard_0_present(&eng));
+
+        p.fail_next_shard_drop.store(true, Ordering::SeqCst);
+        let before = p.marks_snapshot();
+        let o = p.run_columns_pass(S2_B_09_COLUMNS_EPOCH).await;
+        assert_eq!(o, PassOutcome::DropFailed, "injected drop must surface");
+        assert_eq!(
+            p.marks_snapshot().columns_up_to,
+            before.columns_up_to,
+            "in-memory marks must not advance when drop_table fails"
+        );
+        assert_eq!(
+            load_prune_marks(&eng).unwrap().columns_up_to,
+            before.columns_up_to,
+            "durable marks must not advance when drop_table fails"
+        );
+        assert_eq!(p.last_columns_epoch.load(Ordering::SeqCst), 0);
+        assert!(
+            column_shard_0_present(&eng),
+            "failed drop must leave the stripped shard in place for retry"
+        );
+
+        // Retry on the same process: drop commits, then marks advance.
+        let o2 = p.run_columns_pass(S2_B_09_COLUMNS_EPOCH).await;
+        assert!(
+            matches!(o2, PassOutcome::Ran { mark, .. } if mark.as_u64() == 1024),
+            "retry after drop success must complete: {o2:?}"
+        );
+        assert_eq!(p.marks_snapshot().columns_up_to.as_u64(), 1024);
+        assert_eq!(load_prune_marks(&eng).unwrap().columns_up_to.as_u64(), 1024);
+        assert!(
+            !column_shard_0_present(&eng),
+            "successful drop must retire the shard before marks advance"
+        );
+    }
+
+    /// S2-B-09 — restart: un-advanced marks make the pending drop retryable
+    /// after a new `Pruner` loads from the same engine.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drop_table_failure_retries_after_pruner_restart() {
+        let (p, shutdown, eng) = pruner_with(s2_b_09_cfg()).await;
+        seed_column_shard_0(&eng);
+
+        p.fail_next_shard_drop.store(true, Ordering::SeqCst);
+        let o = p.run_columns_pass(S2_B_09_COLUMNS_EPOCH).await;
+        assert_eq!(o, PassOutcome::DropFailed);
+        assert_eq!(load_prune_marks(&eng).unwrap().columns_up_to, Slot::ZERO);
+        assert!(column_shard_0_present(&eng));
+
+        let _ = shutdown.send(true);
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        drop(p);
+
+        let (p2, _sd2) = pruner_on_engine(Arc::clone(&eng), s2_b_09_cfg()).await;
+        assert_eq!(
+            p2.marks_snapshot().columns_up_to,
+            Slot::ZERO,
+            "restart must reload un-advanced marks, not a completed prune"
+        );
+        let o2 = p2.run_columns_pass(S2_B_09_COLUMNS_EPOCH).await;
+        assert!(
+            matches!(o2, PassOutcome::Ran { mark, .. } if mark.as_u64() == 1024),
+            "restart recovery must complete the pending drop: {o2:?}"
+        );
+        assert_eq!(p2.marks_snapshot().columns_up_to.as_u64(), 1024);
+        assert_eq!(load_prune_marks(&eng).unwrap().columns_up_to.as_u64(), 1024);
+        assert!(!column_shard_0_present(&eng));
     }
 }

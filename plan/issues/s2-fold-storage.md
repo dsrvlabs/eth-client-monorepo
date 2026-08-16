@@ -456,6 +456,11 @@ custody-group-count raise is accepted. Both directions asserted.
 stripped shard permanently. **Acceptance** — marks advance only after the drop commits, or a
 recoverable record of the pending drop survives restart.
 
+**Acceptance (`S2-B-09` only)**
+- [x] Marks advance only after `drop_table` commits (per-key deletes may land first)
+- [x] A failed drop leaves durable marks and cadence unmoved so the next tick retries
+- [x] Test: injected drop failure holds marks and the table; retry (and restart) then drop + advance
+
 ### `S2-B-10` · P1-B/2 — unary serve permits released at handler return · 1–1.5 pd / **3 pts** (≈)
 **Touch** `services/storage/src/serve.rs:484`. The documented 256 MiB ceiling is not enforced.
 **Acceptance** — the permit is held for the lifetime of the response body; a test with two concurrent
