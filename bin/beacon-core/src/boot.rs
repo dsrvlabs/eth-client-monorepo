@@ -118,6 +118,9 @@ pub struct Booted {
 ///
 /// Chain seed/checkpoint is a separate step in [`run`] so tests can assert
 /// that **no** subsystem starts before [`open`] returns.
+///
+/// S2-A-13: proto-free twin lives in crates/beacon-inproc (one TempDir, one
+/// redb; cargo tree without tonic / cc-proto).
 pub fn boot_in_process(
     cfg: &BootConfig,
     metrics: StorageMetrics,

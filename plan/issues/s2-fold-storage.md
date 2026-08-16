@@ -356,6 +356,10 @@ write-behind path — unlike slashing protection.
 `cc-proto` for this path. Assert it mechanically (a `cargo tree` check in CI), not by reading the
 `Cargo.toml`. "No gRPC anywhere" read by eye is the anti-metric `[PRD]` §7.5 names.
 
+- [x] Dedicated proto-free crate (`cc-beacon-inproc`) boots the `boot_in_process` path against one `TempDir`, one redb
+- [x] Test binary `cargo tree` contains no `tonic` and no `cc-proto` (script + CI, not Cargo.toml-by-eye)
+- [x] Harness does not import-assert (S2-A-14) and does not delete restore (S2-J-02)
+
 ---
 
 ### `S2-A-15` · §9.0 A/B run + exit note · 2–3 pd / **5 pts**

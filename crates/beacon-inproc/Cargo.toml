@@ -1,0 +1,21 @@
+[package]
+name = "cc-beacon-inproc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# S2-A-13: proto-free in-process boot surface ([ARCH] §8.2).
+# Must not take cc-proto, tonic, cc-storage-core, or cc-beacon-core — those
+# crates carry gRPC, and workspace feature unification would pull it into
+# this test binary. One TempDir, one redb, no Server.
+anyhow = { workspace = true }
+cc-store = { workspace = true }
+cc-types = { workspace = true }
+tracing = { workspace = true }

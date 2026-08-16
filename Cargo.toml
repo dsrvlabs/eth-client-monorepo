@@ -36,6 +36,8 @@ members = [
   "crates/storage-core",
   # S2-J-01 bin/beacon-core composer ([ARCH] §4.2): 25 → 26.
   "bin/beacon-core",
+  # S2-A-13 proto-free in-process boot harness ([ARCH] §8.2): 26 → 27.
+  "crates/beacon-inproc",
 ]
 
 [workspace.package]
@@ -203,6 +205,8 @@ cc-chain-core = { path = "crates/chain-core" }
 cc-storage-core = { path = "crates/storage-core" }
 # S2-J-01: thin composer ([ARCH] §4.2). Opens redb before any subsystem.
 cc-beacon-core = { path = "bin/beacon-core" }
+# S2-A-13: proto-free in-process boot harness ([ARCH] §8.2). No tonic / cc-proto.
+cc-beacon-inproc = { path = "crates/beacon-inproc" }
 # S2-J-01: checkpoint_sync stays on cc-chain (HTTP grandfather).
 cc-chain = { path = "services/chain" }
 

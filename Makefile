@@ -150,7 +150,7 @@ clippy: ## Clippy with -D warnings (CI: clippy job)
 	$(CARGO) clippy $(CLIPPY_FLAGS) -- -D warnings
 
 .PHONY: lint
-lint: fmt-check clippy check-dag check-env check-http check-gha-pins check-ci-jobs check-compose-uris check-fork-schedule check-offhost-policy check-m3-discharged check-adr-resolver ## Local lint suite (fmt + clippy + guards)
+lint: fmt-check clippy check-dag check-env check-http check-inproc-grpc check-gha-pins check-ci-jobs check-compose-uris check-fork-schedule check-offhost-policy check-m3-discharged check-adr-resolver ## Local lint suite (fmt + clippy + guards)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Policy guards (scripts/ — wired into the matching CI job and `make ci`)
@@ -167,6 +167,10 @@ check-env: ## No std::env::var outside crates/config (CC-09/3)
 .PHONY: check-http
 check-http: ## No HTTP client on the block-import path (CC-28/2)
 	bash $(SCRIPTS)/check-no-http-import-path.sh
+
+.PHONY: check-inproc-grpc
+check-inproc-grpc: ## S2-A-13: in-process harness cargo tree has no tonic / cc-proto
+	bash $(SCRIPTS)/check-no-grpc-beacon-inproc.sh
 
 .PHONY: check-remodelling
 check-remodelling: ## No consensus containers remodelled as protos (CC-02/4)

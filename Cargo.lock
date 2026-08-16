@@ -979,6 +979,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cc-beacon-inproc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cc-store",
+ "cc-types",
+ "tracing",
+]
+
+[[package]]
 name = "cc-bootstrap"
 version = "0.1.0"
 dependencies = [
