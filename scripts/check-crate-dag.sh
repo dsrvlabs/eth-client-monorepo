@@ -35,8 +35,9 @@ fi
 # Engine API transport live in exactly one crate, so a JWT signer appearing
 # outside that crate is a build failure, not a review comment.
 #
-# S1-A-01 re-points the named crate to cc-engine-api. cc-engine still holds
-# the signer until S1-A-03/S1-A-06 move the files; both are allowed HTTP+JWT.
+# S1-A-01 re-points the named crate to cc-engine-api. S1-A-03 moves jwt.rs
+# here (module private). Transitional cc-engine still #[path]s the signer
+# until S1-A-06; both may declare HTTP+JWT.
 # Grandfathered HTTP (never JWT): cc-chain, cc-bootstrap. Workspace root pins.
 # `sha2` is deliberately not listed — cc-crypto legitimately uses hashing.
 # The rule is about *declaring* the dependency; transitive hyper under tonic
@@ -764,6 +765,19 @@ done < <(echo "$METADATA" | jq -r --arg re "$FORBIDDEN_OUTSIDE_ENGINE" '
   | select(.name | test($re))
   | "\($p.name)\t\(.name)"
 ')
+
+# ADR-R-03 / S1-A-03: no crate-public JwtSecret. jwt.rs keeps `pub struct`
+# (verbatim move; module is private). lib.rs must not re-export it.
+ENGINE_API_LIB="$ROOT/crates/engine-api/src/lib.rs"
+if [[ ! -f "$ENGINE_API_LIB" ]]; then
+  echo "error: missing crates/engine-api/src/lib.rs (JwtSecret export grep)" >&2
+  FAILED=1
+elif grep -nE \
+  '^[[:space:]]*pub[[:space:]]+(mod[[:space:]]+jwt\b|use[[:space:]].*\bjwt\b|use[[:space:]].*\bJwtSecret\b)' \
+  "$ENGINE_API_LIB"; then
+  echo "error: cc-engine-api must not publicly export jwt / JwtSecret (ADR-R-03)" >&2
+  FAILED=1
+fi
 
 # Manifest-scan backup (renamed keys / direct tables). Workspace root pin OK;
 # cc-engine-api + transitional cc-engine OK; chain/bootstrap HTTP-only.

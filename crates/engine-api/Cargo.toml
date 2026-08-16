@@ -11,18 +11,20 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-# S1-A-02/A-04: sources live here; `cc-engine` compiles them via `#[path]`.
-# No JWT signer. HTTP client is test-only (moved transport unit tests).
+# S1-A-03: jwt.rs lives here (module is crate-private; ADR-R-03).
+crc32fast = { workspace = true }
+hex = { workspace = true }
+jsonwebtoken = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 futures = { workspace = true }
 prometheus-client = { workspace = true }
 proptest = { workspace = true }
 reqwest = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
 toml = { workspace = true }
-tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 wiremock = { workspace = true }

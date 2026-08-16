@@ -26,14 +26,16 @@
 
 #![allow(missing_docs)]
 
-use cc_engine_api as _;
+pub use cc_engine_api::capabilities;
 
-pub mod capabilities;
 #[path = "../../../crates/engine-api/src/config.rs"]
 pub mod config;
+#[path = "../../../crates/engine-api/src/errors.rs"]
 pub mod errors;
 pub mod fastpath;
 pub mod inject;
+// Private on cc-engine-api (ADR-R-03); same file so the type stays one impl.
+#[path = "../../../crates/engine-api/src/jwt.rs"]
 pub mod jwt;
 pub mod methods;
 pub mod metrics;
@@ -42,6 +44,7 @@ pub mod service;
 pub mod state;
 #[path = "../../../crates/engine-api/src/transport.rs"]
 pub mod transport;
+#[path = "../../../crates/engine-api/src/version.rs"]
 pub mod version;
 
 pub use fastpath::cells::{

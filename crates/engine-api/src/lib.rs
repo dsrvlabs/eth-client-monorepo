@@ -1,33 +1,29 @@
 //! Engine API client: three-lane transport, JWT signer, and health machine.
 //!
-//! S1-A-02: [`config.rs`](config.rs) and [`transport.rs`](transport.rs) live here
-//! (verbatim). S1-A-04: [`state.rs`](state.rs) (health machine) lives here
-//! (verbatim). `cc-engine` compiles them via `#[path]` so JWT / errors /
-//! capabilities / version / methods stay owned by `cc-engine` until S1-A-03 /
-//! A-05.
-//!
-//! Unit tests under this crate compile those files against private
-//! test-only companions (not `jwt.rs` and not a public `JwtSecret`).
+//! S1-A-03: [`jwt.rs`](jwt.rs), [`version.rs`](version.rs), [`errors.rs`](errors.rs),
+//! and [`capabilities.rs`](capabilities.rs) live here (verbatim). `JwtSecret`
+//! is not a crate-public item (ADR-R-03).
+//! S1-A-02/A-04: [`config.rs`](config.rs), [`transport.rs`](transport.rs), and
+//! [`state.rs`](state.rs) live here; `cc-engine` still `#[path]`s them.
 
 #![cfg_attr(test, allow(dead_code, unreachable_pub))]
 
-#[cfg(test)]
-#[path = "test_capabilities.rs"]
-mod capabilities;
-#[cfg(test)]
-#[path = "test_errors.rs"]
-mod errors;
-#[cfg(test)]
-#[path = "test_jwt.rs"]
+pub mod capabilities;
+
+// Signer lives here; module stays private so no crate-public `JwtSecret`.
+#[allow(dead_code, unreachable_pub)]
 mod jwt;
+
 #[cfg(test)]
 #[path = "test_methods.rs"]
 mod methods;
 #[cfg(test)]
 #[path = "test_metrics.rs"]
 mod metrics;
+
 #[cfg(test)]
-#[path = "test_version.rs"]
+mod errors;
+#[cfg(test)]
 mod version;
 
 #[cfg(test)]

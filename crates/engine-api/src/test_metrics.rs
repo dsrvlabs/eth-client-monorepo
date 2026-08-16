@@ -113,6 +113,29 @@ impl ErrorCode {
             Self::Other => "other",
         }
     }
+
+    pub const ALL: [Self; 20] = [
+        Self::ParseError,
+        Self::InvalidRequest,
+        Self::MethodNotFound,
+        Self::InvalidParams,
+        Self::InternalError,
+        Self::ServerError,
+        Self::UnknownPayload,
+        Self::InvalidForkchoiceState,
+        Self::InvalidPayloadAttributes,
+        Self::TooLargeRequest,
+        Self::UnsupportedFork,
+        Self::InvalidRange,
+        Self::Http401,
+        Self::Http403,
+        Self::Http4xx,
+        Self::Http5xx,
+        Self::Timeout,
+        Self::Transport,
+        Self::Decode,
+        Self::Other,
+    ];
 }
 
 #[derive(Clone, Debug, Default)]
@@ -125,6 +148,14 @@ impl HistHandle {
 #[derive(Clone, Debug)]
 pub struct CounterHandle {
     n: Arc<AtomicU64>,
+}
+
+impl Default for CounterHandle {
+    fn default() -> Self {
+        Self {
+            n: Arc::new(AtomicU64::new(0)),
+        }
+    }
 }
 
 impl CounterHandle {
@@ -221,6 +252,7 @@ pub struct EngineMetrics {
     pub errors_total: CounterFamily,
     pub state: GaugeFamily,
     pub el_offline: GaugeHandle,
+    pub unsupported_fork: CounterHandle,
 }
 
 impl EngineMetrics {

@@ -150,6 +150,14 @@ moving, not being re-derived. A new numeric literal in a moved file is a review-
 - [x] `services/engine` compiles via `pub use` from `cc-engine-api`
 - [x] `cc-engine-api` appended to `cc-engine` `allowed_deps`
 
+**Acceptance (`S1-A-03` only)**
+- [x] `jwt.rs`, `version.rs`, `errors.rs`, `capabilities.rs` live in `crates/engine-api`, verbatim with tests
+- [x] Files moved (git rename), not rewritten; no new numeric literal in a moved file; `errors.rs` retry taxonomy unchanged (ADR-P3-09)
+- [x] `cargo test -p cc-engine-api` covers the moved tests
+- [x] `cc-engine` re-exports `capabilities` via `pub use cc_engine_api::capabilities`; jwt / errors / version stay `#[path]` so `JwtSecret` is not crate-public (ADR-R-03) and metric / method types stay in `cc-engine` until A-05
+- [x] `cc-engine-api` declares `jsonwebtoken`; grep asserts no public `JwtSecret` / `pub mod jwt`
+- [x] A-02 test-only stubs `test_jwt.rs` / `test_errors.rs` / `test_version.rs` removed
+
 **Also deleted in `S1-A-06`** — `services/chain/src/engine_client.rs` (the whole `block_on` bridge,
 E3, P0-15's and P1-B/11's surface) and the `trusted_local` bool. E3 becomes a direct
 `cc-engine-api` call from the core thread with an explicit `Duration` argument.
