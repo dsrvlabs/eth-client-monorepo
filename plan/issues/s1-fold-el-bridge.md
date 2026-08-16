@@ -350,6 +350,52 @@ already restarts (`[ARCH]` §7.1). A parked consensus core reports healthy **tod
   deadline-bounded no-op through the consensus core*).
 - `S1-A-17` (1.5–2 pd) — the injected engine black-hole harness.
 
+**Acceptance (`S1-A-17` only)** — E1.2, falsifiable.
+
+- [x] Harness makes the engine path a black hole: `cc-engine-blackhole` accepts
+      TCP on `:9004` and never answers `newPayload` / `fcU`
+      (`services/engine/src/bin/blackhole.rs`; compose overlay rebuilds
+      `SERVICE=cc-engine-blackhole`; `devnet/faults.sh engine-blackhole`).
+      Binary is overlay-only — not copied into the six production images.
+- [x] E1.2 integration test uses the **production** ADR-R-04 budget (N=3,
+      Hoodi deadline ~3999.6 ms, interval 3 s) and a hang `> 8 s × N` (30 s):
+      `black_holed_new_payload_flips_production_probe_budget`. In-flight
+      import still hanging when `""` flips. GetHead still answers (ADR-P1-09).
+      Idle core + black-holed engine stays SERVING (ADR-P3-02). Production
+      `DEFAULT_ENGINE_NEW_PAYLOAD_TIMEOUT` / `TransportTimeouts` stay 8 s
+      (P0-15). Test engine is `DirectEngine` (S1-A-06) against a TCP sink.
+- [x] Compose command + expected probe output recorded below for A-19. No live
+      compose scrape was taken in this worktree (do not fake one).
+
+**A-19 compose command (not executed here):**
+
+```bash
+docker compose up -d --build
+bash scripts/wait-healthy.sh
+# Core must be installed (restore / checkpoint). Then inject the sink:
+docker compose -f docker-compose.yml -f docker-compose.engine-blackhole.yml \
+  up -d --build --no-deps engine
+# or: bash devnet/faults.sh engine-blackhole
+docker compose exec -T chain /usr/local/bin/grpc-health-probe -addr=:9001
+```
+
+Live production stack (8 s RPC caps + N=3 ≈ 18 s): **one** in-flight
+newPayload/fcU stays `SERVING`. Idle + sink stays `SERVING`. `NOT_SERVING`
+only if the core stays off the tick lane across N=3 production samples
+(hang > ~18 s — not one P0-15 timeout). Do not paste the CI `eprintln` as
+the exit-note scrape.
+
+**E1.2 red (this issue, production probe budget):**
+
+```bash
+cargo test -p cc-chain --test engine_blackhole_liveness \
+  black_holed_new_payload_flips_production_probe_budget -- --nocapture
+```
+
+Expected when that test flips: tonic aggregate `""` = `NOT_SERVING` (same
+bit `grpc-health-probe -addr=:9001` reads). FQ `eth.chain.v1.ChainService`
+stays SERVING.
+
 **Acceptance (`S1-A-16` only)**
 
 - [x] Aggregate SERVING requires a recent successful `probe_core_liveness` (3 consecutive
@@ -371,6 +417,11 @@ already restarts (`[ARCH]` §7.1). A parked consensus core reports healthy **tod
 **Acceptance (E1.2, falsifiable)** — **M8 demonstrated red** against an injected engine black-hole,
 with the healthcheck output pasted into the S1 exit note. A probe that has only ever been observed
 green is the same failure shape as an X1 counter that has only ever returned 0. (`S1-A-17`)
+
+- [x] M8 demonstrated red against an injected engine black-hole
+      (`black_holed_new_payload_flips_production_probe_budget`: production
+      N=3 / ~4 s / 3 s and hang > 8 s × N). Compose recipe + live-scrape
+      caveat recorded above for A-19.
 
 ---
 

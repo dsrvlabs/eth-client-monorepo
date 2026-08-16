@@ -7,6 +7,7 @@
 #   pause <container> <seconds>         docker pause → sleep → unpause
 #   restart <container> [--hold <s>]    kill -s SIGKILL, optional hold, then up -d
 #   clock-jump <container> <seconds>    advance container wall clock (CC-4D)
+#   engine-blackhole                    replace engine with a newPayload/fcU sink (S1-A-17)
 #
 # Container names are compose *service* names: main-stack `storage` (CC-4N
 # kill-9) or self-devnet `publisher | node-a | node-b | anchor`. Full container
@@ -44,6 +45,7 @@ Usage:
   $0 [-f FILE|--compose-file FILE] pause <container> <seconds>
   $0 [-f FILE|--compose-file FILE] restart <container> [--hold <seconds>]
   $0 [-f FILE|--compose-file FILE] clock-jump <container> <seconds>
+  $0 [-f FILE|--compose-file FILE] engine-blackhole
   $0 [-f FILE|--compose-file FILE] exercise-once   # each primitive once (acceptance)
   $0 --self-test   # assert effective compose pin matches the CC-4N clause
 
@@ -60,6 +62,11 @@ restart uses: docker compose kill -s SIGKILL <service>
 clock-jump advances the container wall clock by <seconds> (docker exec date -s
 or privileged sidecar). Requires CAP_SYS_TIME; may be unavailable on Docker
 Desktop — report honestly rather than inventing a watermark.
+
+engine-blackhole rebuilds compose \`engine\` as SERVICE=cc-engine-blackhole
+(TCP accept on :9004; newPayload/fcU never answer). Production 8 s RPC
+caps + ADR-R-04 N=3 (~18 s) stay SERVING on one (or two) deadlined RPCs.
+Idle core stays SERVING (ADR-P3-02). Does not scrape health.
 EOF
 }
 
@@ -190,6 +197,41 @@ cmd_restart() {
   fi
   docker compose -f "${FAULTS_COMPOSE}" up -d "${name}"
   echo "  restarted (named volumes retained)"
+}
+
+# S1-A-17 / E1.2: replace engine with a gRPC sink that accepts TCP and never
+# answers newPayload/fcU. Overlay file is next to the main stack compose.
+ENGINE_BLACKHOLE_OVERLAY="${ROOT}/docker-compose.engine-blackhole.yml"
+
+cmd_engine_blackhole() {
+  if [[ ! -f "${ENGINE_BLACKHOLE_OVERLAY}" ]]; then
+    echo "error: missing overlay ${ENGINE_BLACKHOLE_OVERLAY}" >&2
+    exit 2
+  fi
+  echo "==> engine-blackhole: rebuild engine as cc-engine-blackhole via overlay"
+  echo "    compose=${FAULTS_COMPOSE}"
+  echo "    overlay=${ENGINE_BLACKHOLE_OVERLAY}"
+  docker compose -f "${FAULTS_COMPOSE}" -f "${ENGINE_BLACKHOLE_OVERLAY}" \
+    up -d --build --no-deps engine
+  local running
+  running="$(
+    docker compose -f "${FAULTS_COMPOSE}" -f "${ENGINE_BLACKHOLE_OVERLAY}" \
+      ps --status running --services 2>/dev/null || true
+  )"
+  if ! grep -qx engine <<<"${running}"; then
+    echo "error: engine container is not running after overlay up" >&2
+    docker compose -f "${FAULTS_COMPOSE}" -f "${ENGINE_BLACKHOLE_OVERLAY}" \
+      logs --tail 40 engine >&2 || true
+    exit 1
+  fi
+  echo "  engine is a newPayload/fcU black hole (TCP accept, no answers)"
+  echo
+  echo "A-19 probe (do not fake; paste live output):"
+  echo "  docker compose -f ${FAULTS_COMPOSE} exec -T chain /usr/local/bin/grpc-health-probe -addr=:9001"
+  echo "Production 8 s deadlines + N=3 (~18 s): one RPC stays SERVING."
+  echo "NOT_SERVING only if the core stays parked across N=3 production samples."
+  echo "E1.2 red is cargo test -p cc-chain --test engine_blackhole_liveness \\"
+  echo "  black_holed_new_payload_flips_production_probe_budget"
 }
 
 # CC-4D: docker-level wall-clock advance. Not inventoried as a fault mode —
@@ -356,6 +398,27 @@ cmd_self_test() {
   require_service_name storage
   require_service_name node-a
 
+  if [[ ! -f "${ENGINE_BLACKHOLE_OVERLAY}" ]]; then
+    echo "error: S1-A-17 overlay missing: ${ENGINE_BLACKHOLE_OVERLAY}" >&2
+    exit 1
+  fi
+  if ! grep -q 'SERVICE: cc-engine-blackhole' "${ENGINE_BLACKHOLE_OVERLAY}"; then
+    echo "error: overlay must rebuild engine with SERVICE=cc-engine-blackhole" >&2
+    exit 1
+  fi
+  if [[ ! -f "${ROOT}/services/engine/src/bin/blackhole.rs" ]]; then
+    echo "error: cc-engine-blackhole source missing" >&2
+    exit 1
+  fi
+  if ! grep -q 'cc-engine-blackhole' "${ROOT}/Dockerfile"; then
+    echo "error: builder must emit cc-engine-blackhole for overlay SERVICE=" >&2
+    exit 1
+  fi
+  if grep -q 'COPY --from=builder /out/cc-engine-blackhole' "${ROOT}/Dockerfile"; then
+    echo "error: cc-engine-blackhole must not be copied into every runtime image" >&2
+    exit 1
+  fi
+
   clause_file="$(
     awk '
       /^### kill -9 clause/ {p=1; next}
@@ -519,6 +582,10 @@ main() {
     clock-jump)
       [[ $# -eq 2 ]] || { usage; exit 2; }
       cmd_clock_jump "$1" "$2"
+      ;;
+    engine-blackhole)
+      [[ $# -eq 0 ]] || { usage; exit 2; }
+      cmd_engine_blackhole
       ;;
     exercise-once)
       cmd_exercise_once "${1:-node-a}"

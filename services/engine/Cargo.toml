@@ -15,6 +15,10 @@ path = "src/lib.rs"
 name = "cc-engine"
 path = "src/main.rs"
 
+[[bin]]
+name = "cc-engine-blackhole"
+path = "src/bin/blackhole.rs"
+
 [lints]
 workspace = true
 

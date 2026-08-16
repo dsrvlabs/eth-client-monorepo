@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1.7
 # Multi-stage image for all six service binaries (Architecture §6.1, CC-04).
 # BuildKit: shared builder across compose targets; ARG SERVICE selects the runtime binary.
+# S1-A-17: builder also emits overlay-only `cc-engine-blackhole`. Do not COPY it
+# into the default runtime images — `docker-compose.engine-blackhole.yml` sets
+# SERVICE=cc-engine-blackhole so `/usr/local/bin/service` is the sink.
 
 ARG RUST_VERSION=1.97.1
 ARG DEBIAN_RELEASE=bookworm
@@ -35,7 +38,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     cargo build --workspace --release --locked && \
     mkdir -p /out && \
-    for b in cc-chain cc-p2p cc-attestation cc-engine cc-beacon-api cc-storage; do \
+    for b in cc-chain cc-p2p cc-attestation cc-engine cc-engine-blackhole cc-beacon-api cc-storage; do \
       cp "target/release/${b}" /out/; \
     done
 

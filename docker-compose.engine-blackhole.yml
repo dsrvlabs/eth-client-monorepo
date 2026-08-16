@@ -1,0 +1,26 @@
+# S1-A-17 / E1.2 — injected engine black-hole overlay (opt-in; not auto-merged).
+#
+# Rebuilds `engine` with SERVICE=cc-engine-blackhole so `/usr/local/bin/service`
+# is the sink: TCP accept on :9004, newPayload/fcU never answer. The binary is
+# not copied into the six production images.
+#
+# Production chain still caps each RPC at 8 s (P0-15). One (or two) deadlined
+# RPCs stay aggregate SERVING (ADR-R-04 N=3 ≈ 18 s). Live `""` goes NOT_SERVING
+# only if the core stays off the tick lane across N=3 production samples.
+# E1.2 red is the CI test with that production budget + a hang > 8 s × N.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.engine-blackhole.yml \
+#     up -d --build --no-deps engine
+
+services:
+  engine:
+    restart: "no"
+    build:
+      context: .
+      args:
+        SERVICE: cc-engine-blackhole
+        CC_GIT_SHA: ${CC_GIT_SHA:-unknown}
+    command: ["0.0.0.0:9004"]
+    healthcheck:
+      disable: true
+    depends_on: {}
