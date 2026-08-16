@@ -285,6 +285,14 @@ in durable writes ends.
 **Acceptance** — `services/storage/src/write_behind.rs` and `restore_client.rs` no longer exist; the
 `SubscribeEvents` stream still serves an external consumer end to end, asserted by test.
 
+- [x] `crates/storage-core/src/write_behind.rs` deleted; no leftover under `services/storage`
+- [x] write-behind module removed from `lib.rs`, boot spawn, and metrics producer wiring
+- [x] Writer-path `CURSOR_TOO_OLD` → `GetCanonicalRoots` gap-fill gone (grep / test)
+- [x] Ring / `SubscribeEvents` still serves an external consumer end to end (test)
+- [x] Bounds, cursor semantics, and Policy B (`try_send`, drop subscriber) unchanged
+- [x] `restore_client.rs` / `restore.rs` / RestoreFromStore proto left for `S2-J-02`
+- [x] No `ADR-R-02` / overflow-policy change on `SubscribeEvents`
+
 ---
 
 ### `S2-A-10` … `S2-A-12` · **P0-19/3** — the pubkey cache off `BeaconState`

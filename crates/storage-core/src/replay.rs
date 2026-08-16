@@ -763,7 +763,7 @@ pub(crate) fn spawn_replay_task(
     })
 }
 
-/// Async notify helper used by write-behind (best-effort).
+/// Async notify helper (best-effort).
 pub(crate) async fn maybe_snapshot_on_finalized(
     driver: &ReplayDriver,
     epoch: u64,

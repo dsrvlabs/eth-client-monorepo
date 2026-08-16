@@ -4,7 +4,9 @@
 //! Health peer: `chain` (§6.3).
 //!
 //! CC-4Ca: §10.1 metric families are registered between `init` and `serve`.
-//! CC-44b: single writer + write-behind task spawns (append-only here).
+//! CC-44b: single writer spawn (append-only here).
+//! S2-A-09: no write-behind / SubscribeEvents consumer. The ring is
+//! API/observer only; columns go `ArchiveWrite`.
 //! CC-4F / CC-4I: ten-RPC `StorageService` serve pool (materialise-and-drop).
 //!
 //! `services/storage` stays a thin shim so the previous topology remains
@@ -29,10 +31,7 @@ use crate::replay::{self, ReplayConfig, ReplayDriver, spawn_replay_task};
 use crate::restore_client;
 use crate::resume;
 use crate::serve::{self, ServeConfig, StorageServer, UnaryPermitService};
-use crate::write_behind::{self, WriteBehindConfig, spawn_write_behind};
-use crate::writer::{
-    self, WriterBounds, WriterFaults, WriterHandle, load_write_cursor, spawn_writer,
-};
+use crate::writer::{self, WriterBounds, WriterFaults, WriterHandle, spawn_writer};
 use cc_bootstrap::{
     PeerSpec, ServeOptions, ServiceSpec, SignalTrigger, TelemetrySettings, serve_with_options,
 };
@@ -137,14 +136,13 @@ struct StorageConfig {
     /// (P1-A/5). Override: `CC_STORAGE_NETWORK_CONFIG`.
     #[serde(default)]
     network_config: Option<PathBuf>,
-    // ── CC-44b write-behind / writer ────────────────────────────────────────
-    /// One commit per N slots — **the loss bound** (§4.4). Default 1.
+    // ── CC-44b writer mailbox ───────────────────────────────────────────────
+    /// Historical write-behind flush knobs. Loaded so committed toml stays
+    /// valid; S2-A-09 deleted the SubscribeEvents consumer they configured.
     #[serde(default = "default_commit_slots")]
     commit_slots: u64,
-    /// Flush after this many events without a slot boundary. Default 64.
     #[serde(default = "default_commit_max_events")]
     commit_max_events: usize,
-    /// Flush after this many milliseconds. Default 4000.
     #[serde(default = "default_commit_max_latency_ms")]
     commit_max_latency_ms: u64,
     /// P0 channel bound (slots' commit units). Default 32; on full **block**.
@@ -156,7 +154,7 @@ struct StorageConfig {
     /// P2 channel bound. Default 256; on full **drop newest**.
     #[serde(default = "default_writer_p2_bound")]
     writer_p2_bound: usize,
-    /// When false, skip opening the store / spawning writer + write-behind
+    /// When false, skip opening the store / spawning the writer
     /// (Phase 0 compose without a data volume). Default **true**.
     #[serde(default = "default_enable_write_path")]
     enable_write_path: bool,
@@ -224,10 +222,10 @@ fn default_durability() -> String {
     "immediate".to_owned()
 }
 fn default_commit_slots() -> u64 {
-    write_behind::DEFAULT_COMMIT_SLOTS
+    1
 }
 fn default_commit_max_events() -> usize {
-    write_behind::DEFAULT_COMMIT_MAX_EVENTS
+    64
 }
 fn default_commit_max_latency_ms() -> u64 {
     4_000
@@ -330,22 +328,6 @@ impl StorageConfig {
             p0: self.writer_p0_bound.max(1),
             p1: self.writer_p1_bound.max(1),
             p2: self.writer_p2_bound.max(1),
-        }
-    }
-
-    fn write_behind_config(&self) -> WriteBehindConfig {
-        let chain_uri = self
-            .service
-            .peers
-            .get("chain")
-            .map(|u| u.to_string())
-            .unwrap_or_else(|| "http://127.0.0.1:9001".to_owned());
-        WriteBehindConfig {
-            chain_uri,
-            commit_slots: self.commit_slots.max(1),
-            commit_max_events: self.commit_max_events.max(1),
-            commit_max_latency: Duration::from_millis(self.commit_max_latency_ms.max(1)),
-            ..WriteBehindConfig::default()
         }
     }
 
@@ -549,7 +531,8 @@ pub async fn run() -> anyhow::Result<()> {
     // CC-4Ca: §10.1 families into bs.registry between init and serve (Phase 0 seam).
     let storage_metrics = StorageMetrics::register(&mut bs.registry);
 
-    // CC-44b: open store + spawn writer (process-fatal) + write-behind.
+    // CC-44b: open store + spawn writer (process-fatal).
+    // S2-A-09: no write-behind SubscribeEvents consumer.
     // CC-4F: keep engine Arc for the serve pool (no mem::forget).
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -570,9 +553,8 @@ pub async fn run() -> anyhow::Result<()> {
                     metrics::RestartPhase::Open,
                     open_t0.elapsed(),
                 );
-                // CC-45b: drive §3.5 restore sequence (push to chain) before
-                // write-behind resubscribes. EMPTY collapses chain's grace;
-                // matched_expected false is fatal.
+                // CC-45b: drive §3.5 restore sequence (push to chain).
+                // EMPTY collapses chain's grace; matched_expected false is fatal.
                 let chain_uri = cfg
                     .service
                     .peers
@@ -618,11 +600,6 @@ pub async fn run() -> anyhow::Result<()> {
                         return Err(anyhow::anyhow!("resume sequence failed: {e}"));
                     }
                 }
-                // Only a non-zero session_id is resume-valid (O1 / write_behind::is_resumable).
-                let initial_cursor = load_write_cursor(&engine)
-                    .ok()
-                    .flatten()
-                    .filter(write_behind::is_resumable);
                 let faults = WriterFaults::default();
                 let writer = spawn_writer(
                     Arc::clone(&engine),
@@ -630,7 +607,7 @@ pub async fn run() -> anyhow::Result<()> {
                     cfg.writer_bounds(),
                     faults,
                     shutdown_rx.clone(),
-                    true, // process-fatal on panic (§1.5); write-behind is not
+                    true, // process-fatal on panic (§1.5)
                 );
                 // S2-A-05: typed ingest over the live P0 mailbox. J-01 injects
                 // this handle into chain-core. Until then the chain path
@@ -673,21 +650,15 @@ pub async fn run() -> anyhow::Result<()> {
                 ));
                 // Snapshot-ring pass trigger: on each successful snapshot write (§7.0).
                 replayer.set_pruner(Arc::clone(&pruner));
-                let _prune_join = spawn_prune_task(Arc::clone(&pruner), shutdown_rx.clone());
-                // Write-behind: respawn-on-panic with backoff (counter-example to writer).
-                let (_wb, _wb_respawns) = spawn_write_behind(
-                    cfg.write_behind_config(),
-                    writer.clone(),
-                    storage_metrics.clone(),
-                    initial_cursor,
-                    shutdown_rx,
-                    Some(migrator),
-                    Some(replayer),
-                    Some(Arc::clone(&engine)),
-                );
+                let _prune_join = spawn_prune_task(Arc::clone(&pruner), shutdown_rx);
+                // Migrator stays live for P1 split advance; S2-A-09 no longer
+                // drives it from SubscribeEvents (J-01 / later notify).
+                let _migrator_keep = migrator;
                 tracing::info!(
                     data_dir = %cfg.data_dir.display(),
                     commit_slots = cfg.commit_slots,
+                    commit_max_events = cfg.commit_max_events,
+                    commit_max_latency_ms = cfg.commit_max_latency_ms,
                     epochs_per_migration = cfg.epochs_per_migration,
                     snapshot_epochs = cfg.snapshot_epochs,
                     snapshot_ring = cfg.snapshot_ring,
@@ -699,7 +670,7 @@ pub async fn run() -> anyhow::Result<()> {
                     disk_alarm_bytes = cfg.disk_alarm_bytes,
                     serve_buffer_bytes = cfg.serve_buffer_bytes,
                     serve_permits = cfg.serve_permits,
-                    "writer + write-behind + migrator + replay + prune + serve pool ready"
+                    "writer + migrator + replay + prune + serve pool ready"
                 );
                 serve_engine = Some(engine);
                 serve_writer = Some(writer);
@@ -712,9 +683,7 @@ pub async fn run() -> anyhow::Result<()> {
             }
         }
     } else {
-        tracing::warn!(
-            "enable_write_path=false — writer/write-behind not started; serve stub only"
-        );
+        tracing::warn!("enable_write_path=false — writer not started; serve stub only");
         // Still collapse chain's AwaitingRestore so compose first-boot does not
         // wait restore_grace_seconds (CC-45b EMPTY path without a store).
         let chain_uri = cfg

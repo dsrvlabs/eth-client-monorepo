@@ -897,10 +897,9 @@ impl StorageMetrics {
 
     /// Set `cc_storage_following_head` (0/1) — CC-45c restart bar endpoint.
     ///
-    /// Production: write-behind sets **1** after a successful `SubscribeEvents`
-    /// session is established (following the chain event bus / head), and **0**
-    /// on start, stream loss, reconnect, panic-respawn, and clean stop.
-    /// Seeded to 0 at register time.
+    /// S2-A-09: write-behind no longer subscribes. Production leaves the
+    /// register-time seed (0). Tests still toggle the handle.
+    #[cfg(test)]
     pub(crate) fn set_following_head(&self, following: bool) {
         self.following_head.set(i64::from(following));
     }
@@ -1143,8 +1142,8 @@ mod tests {
 
     #[test]
     fn following_head_defaults_zero_and_toggles() {
-        // CC-45c: gauge is the kill→resume bar endpoint; seed 0, then production
-        // write-behind flips it via set_following_head.
+        // CC-45c: gauge is the kill→resume bar endpoint; seed 0.
+        // S2-A-09: no write-behind producer; tests still toggle the handle.
         let mut registry = Registry::default();
         let m = StorageMetrics::register(&mut registry);
         assert_eq!(m.following_head_get(), 0, "seed must be 0");

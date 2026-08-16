@@ -9,7 +9,7 @@
 //!   → RestoreFromStore(stream): header / state chunks / blocks / footer
 //!   ← chain replies { head_root, head_slot, matched_expected }
 //!   → matched_expected == false  →  FATAL, both roots logged, divergence++
-//!   → SubscribeEvents(cursor)  … hand off to write-behind
+//!   → load write cursor (ArchiveWrite restamps; no SubscribeEvents hand-off)
 //!   → enqueue own replay + backfill resume at P2
 //! ```
 //!
@@ -80,7 +80,7 @@ pub(crate) struct ResumeOutcome {
     pub head_slot: u64,
     /// Whether chain matched our expected head (true on EMPTY).
     pub matched_expected: bool,
-    /// Write cursor for SubscribeEvents hand-off (if any).
+    /// Durable write cursor loaded at resume (ArchiveWrite restamps it).
     pub write_cursor: Option<WriteCursor>,
 }
 
@@ -190,7 +190,7 @@ pub(crate) async fn run_resume_sequence(
         });
     }
 
-    // ── resubscribe hand-off ────────────────────────────────────────────────
+    // ── cursor load (no SubscribeEvents resubscribe; S2-A-09) ──────────────
     let t_re = Instant::now();
     let write_cursor = load_write_cursor(engine)?;
     observe_phase(metrics, RestartPhase::Resubscribe, t_re.elapsed());
@@ -199,7 +199,7 @@ pub(crate) async fn run_resume_sequence(
         %head_root,
         head_slot,
         matched_expected = matched,
-        "resume: RestoreFromStore matched; handing off to write-behind SubscribeEvents"
+        "resume: RestoreFromStore matched; write-behind SubscribeEvents is gone"
     );
 
     Ok(ResumeOutcome {

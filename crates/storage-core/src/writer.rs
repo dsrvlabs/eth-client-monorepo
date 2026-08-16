@@ -775,7 +775,7 @@ pub(crate) fn map_put_error(metrics: &StorageMetrics, err: StoreError) -> Writer
     }
 }
 
-// Re-export reconnect reason helper used by write_behind (keeps attribution site clean).
+// Reconnect attribution helper (stream family still seeded; no write-behind).
 pub(crate) fn observe_reconnect(metrics: &StorageMetrics, reason: ReconnectReason) {
     metrics
         .stream_reconnect

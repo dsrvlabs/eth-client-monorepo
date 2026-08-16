@@ -1,6 +1,6 @@
 //! Hot/cold migration task (CC-41 / Architecture §3.2).
 //!
-//! Triggered by `FINALIZED_CHECKPOINT` from the write-behind stream at
+//! Triggered by `FINALIZED_CHECKPOINT` notify at
 //! `storage.epochs_per_migration` (default **1**). One **P1** writer batch runs
 //! the four steps inside the split **write** lock:
 //!
@@ -91,12 +91,12 @@ impl Migrator {
         }
     }
 
-    /// Handle a `FINALIZED_CHECKPOINT` (write-behind stream).
+    /// Handle a `FINALIZED_CHECKPOINT` notify.
     ///
     /// Payload layout from chain (CC-44a): `8 B epoch LE ‖ 32 B state root ‖ …`.
     /// Event `root` is the finalized block root; `slot` is epoch-start tagging.
     ///
-    /// Caller (write-behind) must flush the P0 accumulator **before** this so no
+    /// Caller must flush outstanding P0 work **before** this so no
     /// uncommitted hot rows for slots ≤ new split land after the advance.
     pub(crate) async fn on_finalized_checkpoint(
         &self,
@@ -265,7 +265,7 @@ pub(crate) fn root_from_event(bytes: &[u8]) -> Root {
     Root::from_array(arr)
 }
 
-/// Async notify helper used by write-behind: best-effort migrate, log on error.
+/// Async notify helper: best-effort migrate, log on error.
 pub(crate) async fn maybe_migrate_on_finalized(
     migrator: &Migrator,
     epoch: u64,
@@ -535,6 +535,30 @@ mod tests {
         assert!(
             src.contains("MAX_MIGRATION_SLOTS_PER_BATCH") || src.contains("migration_window_end")
         );
+    }
+
+    /// S2-A-08: production event-payload decode must not index fixed offsets.
+    #[test]
+    fn production_event_payload_decode_has_no_fixed_byte_offset() {
+        let mig = include_str!("migrate.rs");
+        let prod_mig = mig.split("mod tests").next().unwrap();
+        assert!(
+            !prod_mig.contains("ev.payload["),
+            "migrate: production decode indexed ev.payload"
+        );
+        assert!(
+            !prod_mig.contains("payload[.."),
+            "migrate: production decode sliced payload[.."
+        );
+        assert!(
+            !prod_mig.contains("payload[8.."),
+            "migrate: production decode sliced payload[8.."
+        );
+        assert!(
+            !prod_mig.contains("payload[40.."),
+            "migrate: production decode sliced payload[40.."
+        );
+        assert!(prod_mig.contains("FinalizedCheckpointPayload::decode_prefix"));
     }
 
     #[test]

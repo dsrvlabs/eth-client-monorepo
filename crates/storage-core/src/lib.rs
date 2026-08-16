@@ -6,6 +6,8 @@
 //! S2-B-03: remaining companions and the process host ([`boot.rs`](boot.rs))
 //! are production items here. `services/storage` is a thin shim
 //! (`[ARCH]` §9.1).
+//! S2-A-09: the events ring is API/observer only. Write-behind and
+//! `CURSOR_TOO_OLD` gap-fill are gone; columns enter via [`ArchiveWrite`].
 //!
 //! Replay is the one decoder (CC-42); writer/serve/backfill/prune stay
 //! opaque-bytes (`[ARCH]` §1.5). Not JWT/HTTP-grandfathered.
@@ -26,7 +28,50 @@ mod resume;
 mod serve;
 #[cfg(test)]
 mod test_tmpdir;
-mod write_behind;
 mod writer;
 
 pub use boot::run;
+
+#[cfg(test)]
+mod s2_a_09_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::path::Path;
+
+    /// S2-A-09: write-behind is gone; writer paths must not invent history
+    /// from a lost ring cursor via GetCanonicalRoots.
+    #[test]
+    fn write_behind_module_gone_and_no_writer_gap_fill() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        assert!(
+            !src.join("write_behind.rs").exists(),
+            "crates/storage-core/src/write_behind.rs must be deleted"
+        );
+        let lib = include_str!("lib.rs");
+        let prod_lib = lib.split("mod s2_a_09_tests").next().unwrap();
+        assert!(
+            !prod_lib.contains("mod write_behind"),
+            "lib.rs must not declare the write_behind module"
+        );
+
+        let writer_paths = [
+            ("boot.rs", include_str!("boot.rs")),
+            ("writer.rs", include_str!("writer.rs")),
+            ("archive_write.rs", include_str!("archive_write.rs")),
+            ("resume.rs", include_str!("resume.rs")),
+            ("migrate.rs", include_str!("migrate.rs")),
+            ("replay.rs", include_str!("replay.rs")),
+        ];
+        for (name, src) in writer_paths {
+            let prod = src.split("#[cfg(test)]").next().unwrap();
+            let mentions_too_old = prod.contains("CURSOR_TOO_OLD");
+            let mentions_gap = prod.contains("GetCanonicalRoots")
+                || prod.contains("get_canonical_roots")
+                || prod.contains("plan_canonical_fallback");
+            assert!(
+                !(mentions_too_old && mentions_gap),
+                "{name}: writer path must not gap-fill via CURSOR_TOO_OLD → GetCanonicalRoots"
+            );
+        }
+    }
+}

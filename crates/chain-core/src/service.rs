@@ -7,7 +7,7 @@
 //! - `GetCommitteeShuffling` / `GetValidatorPubkeys` → core [`Query`] (CC-1F)
 //! - `P2pStream` / `GetValidatorRecords` → CC-27a chain-side stream contract
 //! - `IsOptimistic` → core [`Query`] over fork-choice only (CC-3B; no Phase 3 caller)
-//! - `GetCanonicalRoots` → core [`Query`] for storage gap fill (CC-44a /3)
+//! - `GetCanonicalRoots` → core [`Query`] for API consumers (CC-44a /3)
 //! - `RestoreFromStore` → [`crate::restore`] (CC-45b / §3.5); available during
 //!   `AwaitingRestore` before the core is installed
 //!
@@ -340,10 +340,9 @@ impl ChainService for ChainServiceImpl {
     ) -> Result<Response<BoxStreamEvent>, Status> {
         let cursor = request.into_inner().cursor;
         let mut sub = self.events.subscribe(cursor).await?;
-        // CC-44b: storage write-behind needs the live session_id to stamp
-        // durable WriteCursor (Event has no session field). Advertise it on
-        // the response so a live-from-tip subscribe can resume later without
-        // spamming CURSOR_UNKNOWN_SESSION.
+        // CC-44b: advertise live session_id so an external consumer can
+        // resume later without spamming CURSOR_UNKNOWN_SESSION. Event has
+        // no session field. Ring eviction is not a durability event.
         let session_id = sub.session_id();
 
         // Bridge EventSubscription → async Stream for tonic.
@@ -668,9 +667,11 @@ mod tests {
 
     use super::*;
     use cc_proto::error_info_from_status;
+    use futures::StreamExt;
     use prometheus_client::registry::Registry;
+    use std::time::Duration;
 
-    use crate::events::EventsConfig;
+    use crate::events::{EventInput, EventsConfig};
     use crate::metrics::ChainMetrics;
 
     #[tokio::test]
@@ -691,5 +692,50 @@ mod tests {
         assert_eq!(err.code(), Code::FailedPrecondition);
         let info = error_info_from_status(&err).unwrap().unwrap();
         assert_eq!(info.reason, REASON_NOT_BOOTSTRAPPED);
+    }
+
+    /// S2-A-09: after write-behind is gone, SubscribeEvents still serves an
+    /// external observer end to end. Policy B / cursor semantics unchanged.
+    #[tokio::test]
+    async fn subscribe_events_serves_external_consumer() {
+        let mut registry = Registry::default();
+        let metrics = ChainMetrics::register(&mut registry);
+        let events = EventsHandle::spawn(EventsConfig {
+            ring_capacity: 8,
+            subscriber_queue_capacity: 8,
+            session_id: Some(9),
+            ring_bytes: usize::MAX,
+        });
+        let svc = ChainServiceImpl::new(None, HeadSnapshotStore::new(), events.clone(), metrics);
+
+        let response = svc
+            .subscribe_events(Request::new(SubscribeEventsRequest { cursor: None }))
+            .await
+            .unwrap();
+        let session = response
+            .metadata()
+            .get(crate::events::SESSION_ID_METADATA_KEY)
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert_eq!(session, "9");
+
+        let mut stream = response.into_inner();
+        events
+            .publish(EventInput::block_imported(
+                42,
+                Bytes::from_static(b"ext-consumer-root-0123456789ab"),
+            ))
+            .await
+            .unwrap();
+
+        let ev = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("external consumer must receive an event")
+            .expect("stream item")
+            .expect("ok event");
+        assert_eq!(ev.slot, 42);
+        assert_eq!(ev.seq, 0);
+        assert_eq!(ev.root.as_slice(), b"ext-consumer-root-0123456789ab");
+        events.shutdown().await;
     }
 }

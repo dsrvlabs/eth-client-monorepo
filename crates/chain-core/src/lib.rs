@@ -20,6 +20,8 @@
 //! extend the durable frontier, never jump it.
 //! S2-A-07: archive ingest Backpressure is Policy A (ADR-R-02). The
 //! `p2p_stream` caller must not map it to `Acceptance::Ignore`.
+//! S2-A-09: the events ring is demoted to API/observer (`SubscribeEvents`).
+//! Bounds, cursor semantics, and policy B are unchanged.
 //!
 //! ADR-P1-09, ADR-P1-12, and ADR-P3-05 ride the moved sources unchanged —
 //! `pending_engine` stays a separate map from `pending_da`.

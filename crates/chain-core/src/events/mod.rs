@@ -77,10 +77,10 @@ pub const ERROR_DOMAIN: &str = "eth.chain.v1";
 
 /// Response metadata key for `SubscribeEvents` live `session_id` (CC-44b).
 ///
-/// `Event` does not carry `session_id`; storage reads this on the initial
-/// `SubscribeEvents` response so durable `WriteCursor` resume works after a
-/// live-from-tip subscribe (without it, resume would stamp `session_id=0` and
-/// re-attribute every reconnect as `CURSOR_UNKNOWN_SESSION`).
+/// `Event` does not carry `session_id`; external consumers read this on the
+/// initial `SubscribeEvents` response so a live-from-tip subscribe can resume
+/// later (without it, resume would stamp `session_id=0` and re-attribute every
+/// reconnect as `CURSOR_UNKNOWN_SESSION`).
 pub const SESSION_ID_METADATA_KEY: &str = "x-cc-chain-session-id";
 
 /// Default event-ring **count** capacity (`chain.event_ring_events`; Architecture §4.3).
@@ -617,6 +617,8 @@ mod tests {
     use super::*;
     use cc_proto::error_info_from_status;
 
+    /// S2-A-09: the ring is an observer bus. A live subscriber still
+    /// receives subsequent events after write-behind is gone.
     #[tokio::test]
     async fn live_subscribe_receives_subsequent_events() {
         let h = EventsHandle::spawn(EventsConfig {
