@@ -123,6 +123,14 @@ dedicated OS thread, not a tokio task ✓ `core.rs:1`, `:469`), `ADR-P1-12` (sta
 - [x] `cc-chain-core` is **not** JWT-grandfathered (E1.4 shape; fixture `chain-core-jwt`)
 - [x] ADR-P1-09, ADR-P1-12, ADR-P3-05 carried intact (files moved, not rewritten)
 
+**Acceptance (`S2-A-02` only)**
+- [x] `da.rs`, `pending_engine.rs`, `residency.rs`, `events/` live in `crates/chain-core`, verbatim with tests
+- [x] Bounds / literals moved (git rename), not re-derived; no new numeric literal in a moved file
+- [x] `cargo test -p cc-chain-core` covers the moved unit tests
+- [x] `services/chain` compiles the four surfaces via `#[path]` and stays a workspace member
+- [x] ADR-P3-05 `pending_engine` stays a separate map from `pending_da` (files moved, not rewritten)
+- [x] ADR-P1-12 residency + 64-block body ring carried intact
+
 ---
 
 ### `S2-A-04` · `ArchiveWrite` on `cc-seam` + the typed `ColumnBatch`

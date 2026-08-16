@@ -34,9 +34,11 @@ pub mod apply_attestations;
 pub mod checkpoint_sync;
 #[path = "../../../crates/chain-core/src/core.rs"]
 pub mod core;
+#[path = "../../../crates/chain-core/src/da.rs"]
 pub mod da;
 pub mod engine;
 pub mod epoch_context;
+#[path = "../../../crates/chain-core/src/events/mod.rs"]
 pub mod events;
 pub mod fcu_driver;
 pub mod head;
@@ -46,7 +48,9 @@ pub mod invalidation;
 pub mod liveness;
 pub mod metrics;
 pub mod p2p_stream;
+#[path = "../../../crates/chain-core/src/pending_engine.rs"]
 pub mod pending_engine;
+#[path = "../../../crates/chain-core/src/residency.rs"]
 pub mod residency;
 pub mod restore;
 pub mod service;

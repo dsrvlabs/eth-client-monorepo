@@ -23,13 +23,13 @@ IMPORT_PATH_ROOTS=(
   crates/chain-core/src/import.rs
   crates/chain-core/src/core.rs
   services/chain/src/service.rs
-  services/chain/src/da.rs
+  crates/chain-core/src/da.rs
   services/chain/src/p2p_stream.rs
   crates/chain-core/src/apply_attestations.rs
   services/chain/src/head.rs
-  services/chain/src/residency.rs
+  crates/chain-core/src/residency.rs
   services/chain/src/epoch_context.rs
-  services/chain/src/events
+  crates/chain-core/src/events
   services/chain/src/metrics.rs
   services/chain/src/lib.rs
 )
