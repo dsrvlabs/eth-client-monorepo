@@ -70,7 +70,7 @@ Estimate provenance and the points scale are defined in [`s0a-gate-restoration.m
 | `S1-B-09` | Gate (a) 3/4 — p2p ids (8) | 1.5–2 | 3 | `S1-B-05` |
 | `S1-B-10` | Gate (a) 4/4 — engine and store ids (13) | 2–2.5 | 5 | `S1-B-05` |
 | `S1-B-11` | Gate (b) — `ADR-P3-16` → **ADR-R-03**. The highest-priority (b) row | 1–1.5 | 3 | `S1-A-01` |
-| `S1-B-12` | Gate (b) — `ADR-P3-02` → ADR-R-03 supersession | 0.75–1 | 2 | `S1-A-16` |
+| `S1-B-12` | Gate (b) — `ADR-P3-02` → **ADR-R-04** supersession (not R-03; R-03 is JWT) | 0.75–1 | 2 | `S1-A-16` |
 | `S1-B-13` | Gate (b) — `ADR-P3-15`, the `trusted_local` KZG skip | 1–1.5 | 3 | `S1-B-01` |
 | `S1-B-14` | Gate (b) — `ADR-P4-03`, chain relays column SSZ without decoding | 0.75–1 | 2 | `S1-B-05` |
 | `S1-B-15` | Gate (b) — `ADR-P2-13`, per-task panic policy. **On the X1 path.** | 0.75–1 | 2 | `S1-B-05` |
@@ -657,11 +657,23 @@ can produce. Each records a decision whose owner is the person who made it; they
 
 | Id | ADR | Why it needs a decision | Coupling |
 |---|---|---|---|
-| `S1-B-12` | `ADR-P3-02` → ADR-R-03 | *engine dials p2p; engine is deliberately not a health peer* — §7.1 shows **this is why a parked core reports green**. Defensible for a separate engine process; **void once the engine is in-process** | **must land with `S1-A-16`'s probe** |
+| `S1-B-12` | `ADR-P3-02` → **ADR-R-04** | *engine dials p2p; engine is deliberately not a health peer* — §7.1 shows **this is why a parked core reports green**. Defensible for a separate engine process; parked-core-green is **void** once liveness is the core no-op. `[ARCH]` named R-03; R-03 is JWT | **must land with `S1-A-16`'s probe** |
 | `S1-B-13` | `ADR-P3-15` | `verify_cell_kzg_proof_batch` runs **only under `cfg(test)`** in the fastpath ✓ (`fastpath/filter.rs:346`) — this is the `trusted_local` KZG-skip. S1 makes the caller the process, which changes the trust argument but **does not automatically make skipping correct** | with `S1-B-01` |
 | `S1-B-14` | `ADR-P4-03` | *chain relays column SSZ without decoding* — right for a relay, wrong for an owner. S2 replaces it with a typed ingest | records the change S2 makes |
 | `S1-B-15` | `ADR-P2-13` | per-task panic policy: **catch and restart rather than abort the process**. **Directly determines whether X1 is measurable** (⟡ D-11) — the ADR must state that the catch path gains a counter before S3 | **on the X1 critical path**; read by `S3a-B-19` |
 | `S1-B-16` | the remaining 7: `ADR-07` (*re-decided at S3*), `ADR-09` (*re-decide at S3*), `ADR-P1-04` (*supersede at S4a* — milhouse changes it), `ADR-P1-11` (*storage stops being a consumer at S2*; survives for API consumers, consequences rewritten), `ADR-P2-10` (gossip topic scoring weight **0** on every topic; **P0-17a wires §5.6 scoring at S3** — the deferral ends, record the new weights), `ADR-P2-11` (`ColumnSidecar` contract-only, no producer; supersede at S2), `ADR-P3-14` (EL dependency is `service_started`, never `service_healthy`; re-decide when compose collapses at S2) | each carries `Status: proposed` + an explicit **"revisit at Sn"** line, per R-17 |
+
+##### `S1-B-12` · Gate (b) — `ADR-P3-02`
+
+- [x] `docs/adr/ADR-P3-02.md` house MADR; Status: superseded; superseded-by
+      ADR-R-04 (not ADR-R-03 — R-03 is JWT isolation). Parked-core-green
+      is no longer acceptable; liveness is the core no-op.
+- [x] `[ARCH]` §10.4 / §10.5 named ADR-R-03 as successor; this file
+      records the id is wrong and does not amend ADR-R-03's JWT rule.
+- [x] `docs/adr/reconciliation.md` `ADR-P3-02` row is
+      `superseded; superseded-by ADR-R-04` → `docs/adr/ADR-P3-02.md`.
+- [x] No production change. `S1-A-16` already wired the probe; engine stays
+      off `[peers]`.
 
 ##### `S1-B-16` · Gate (b) — the remaining 7, `Status: proposed` + revisit at Sn
 

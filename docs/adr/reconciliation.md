@@ -87,7 +87,7 @@ deletes the citation.
 | ADR-P2-13 | b | accepted | docs/adr/ADR-P2-13.md |
 | ADR-P2-14 | a | accepted | docs/adr/ADR-P2-14.md |
 | ADR-P3-01 | a | accepted | docs/adr/ADR-P3-01.md |
-| ADR-P3-02 | b | unwritten (b) | - |
+| ADR-P3-02 | b | superseded; superseded-by ADR-R-04 | docs/adr/ADR-P3-02.md |
 | ADR-P3-03 | a | accepted | docs/adr/ADR-P3-03.md |
 | ADR-P3-04 | a | accepted | docs/adr/ADR-P3-04.md |
 | ADR-P3-05 | a | accepted | docs/adr/ADR-P3-05.md |
@@ -135,5 +135,6 @@ The file is not written — this issue keeps the live skip. Do not add
 S1-A-16 lands [`ADR-R-04.md`](ADR-R-04.md) — Status: accepted. Records that
 liveness is proved by a deadline-bounded no-op through the consensus core
 (N=3 consecutive `probe_core_liveness` misses → aggregate NOT_SERVING; the
-same N successes restore). Does not supersede a §10.4 row (`ADR-P3-02`
-remains `S1-B-12`).
+same N successes restore). `S1-B-12` records that this supersedes
+`ADR-P3-02` (parked-core-green is no longer acceptable). `[ARCH]` named
+ADR-R-03 as that successor; R-03 is JWT isolation (`S1-B-11`).
