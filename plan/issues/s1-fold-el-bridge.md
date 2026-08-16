@@ -606,6 +606,15 @@ can produce. Each records a decision whose owner is the person who made it; they
 slashing-protection record** (written at S0, `S0-B-14`). One of the two needs a new id. Recommend
 `ADR-P3-15` take **`ADR-R-07`**, leaving §10.5's enumeration intact.
 
+##### `S1-B-14` · Gate (b) — `ADR-P4-03`
+
+- [x] `docs/adr/ADR-P4-03.md` in house MADR; Status: accepted; chain relays column SSZ
+      without decoding (right for a relay, wrong for an owner); records the S2 typed
+      ingest (`ColumnBatch` / `ArchiveWrite::ingest_columns`; `ADR-R-02` supersedes at
+      `S2-A-07`).
+- [x] `docs/adr/reconciliation.md` `ADR-P4-03` row is `accepted` →
+      `docs/adr/ADR-P4-03.md`.
+
 ---
 
 ### `S1-B-17` · Gate (c) — the three stale citations

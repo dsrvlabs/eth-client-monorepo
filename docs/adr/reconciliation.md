@@ -102,7 +102,7 @@ deletes the citation.
 | ADR-P3-15 | b | unwritten (b) | - |
 | ADR-P3-16 | b | superseded; superseded-by ADR-R-03 | docs/adr/ADR-R-03.md |
 | ADR-P4-01 | a | accepted | docs/adr/ADR-P4-01.md |
-| ADR-P4-03 | b | unwritten (b) | - |
+| ADR-P4-03 | b | accepted | docs/adr/ADR-P4-03.md |
 | ADR-P4-04 | a | accepted | docs/adr/ADR-P4-04.md |
 | ADR-P4-05 | a | accepted | docs/adr/ADR-P4-05.md |
 | ADR-P4-06 | a | accepted | docs/adr/ADR-P4-06.md |
