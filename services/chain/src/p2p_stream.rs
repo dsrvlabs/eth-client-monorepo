@@ -621,13 +621,27 @@ where
             // F1: async `send().await` applies backpressure; never silent try_send
             // drop of DATA_COLUMN payload. SEC-44a-2: reject oversize before send.
             if let Some(tx) = deps.event_tx.as_ref() {
-                let block_root = if col.root.len() == 32 {
-                    bytes::Bytes::copy_from_slice(&col.root)
-                } else {
-                    bytes::Bytes::from(col.root.clone())
+                // Root is a typed 32-byte identity — do not pad a short vector.
+                let Some(block_root) = EventInput::fixed_root(&col.root) else {
+                    tracing::error!(
+                        root_len = col.root.len(),
+                        "rejected DATA_COLUMN with non-32-byte root"
+                    );
+                    return send_verdict(
+                        out_tx,
+                        next_seq,
+                        Verdict {
+                            correlation_id: col.root,
+                            acceptance: Acceptance::Ignore as i32,
+                            reason: Reason::Internal as i32,
+                            import: ImportResult::None as i32,
+                        },
+                    )
+                    .await;
                 };
-                // Slot is not on the wire message; 0 is fine for the bus — storage
-                // reads slot at the fixed SSZ offset of the sidecar payload.
+                // Slot is not on the proto message (ADR-P4-03: no SSZ decode here).
+                // S2 typed ingest carries slot as a field. Do not peek a sidecar
+                // byte offset or invent a slot; `0` means unknown, not column 0.
                 let input = EventInput::data_column(0, block_root, bytes::Bytes::from(col.ssz));
                 if !input.payload_within_cap() {
                     tracing::error!(
@@ -791,7 +805,7 @@ where
     F: FnMut() -> u64,
 {
     let verdict = match outcome {
-        Ok(o) => map_import_verdict(correlation_id, o.response.verdict, &o.response.reason),
+        Ok(o) => map_import_verdict(correlation_id, o.response.verdict, &o.reason),
         Err(status) => {
             // Map gRPC failures onto Ignore/Internal so we never descore peers
             // for our own transport bugs (Phase 1 §5.3 Internal rule).
@@ -832,40 +846,52 @@ where
     out_tx.send(Ok(out)).await.map_err(|_| ())
 }
 
-fn map_import_verdict(correlation_id: Vec<u8>, verdict: i32, detail: &str) -> Verdict {
-    // H3: machine-readable reasons that are Ignore-class on the wire even when
+fn map_import_verdict(
+    correlation_id: Vec<u8>,
+    verdict: i32,
+    detail: &crate::import::ImportReason,
+) -> Verdict {
+    // H3: typed reasons that are Ignore-class on the wire even when
     // the ImportBlockVerdict enum only has Invalid (proto gap for FUTURE_SLOT).
-    if detail == "future_slot" {
-        return Verdict {
-            correlation_id,
-            acceptance: Acceptance::Ignore as i32,
-            reason: Reason::FutureSlot as i32,
-            import: ImportResult::Invalid as i32,
-        };
-    }
-    if detail == "too_old" {
-        return Verdict {
-            correlation_id,
-            acceptance: Acceptance::Ignore as i32,
-            reason: Reason::AlreadyKnown as i32,
-            import: ImportResult::Invalid as i32,
-        };
-    }
-    if detail == "not_descended_from_finalized" {
-        return Verdict {
-            correlation_id,
-            acceptance: Acceptance::Reject as i32,
-            reason: Reason::NotDescendedFromFinalized as i32,
-            import: ImportResult::Invalid as i32,
-        };
-    }
-    if detail.starts_with("internal_proposer_sig") {
-        return Verdict {
-            correlation_id,
-            acceptance: Acceptance::Ignore as i32,
-            reason: Reason::Internal as i32,
-            import: ImportResult::Invalid as i32,
-        };
+    match detail {
+        crate::import::ImportReason::FutureSlot => {
+            return Verdict {
+                correlation_id,
+                acceptance: Acceptance::Ignore as i32,
+                reason: Reason::FutureSlot as i32,
+                import: ImportResult::Invalid as i32,
+            };
+        }
+        crate::import::ImportReason::TooOld => {
+            return Verdict {
+                correlation_id,
+                acceptance: Acceptance::Ignore as i32,
+                reason: Reason::AlreadyKnown as i32,
+                import: ImportResult::Invalid as i32,
+            };
+        }
+        crate::import::ImportReason::NotDescendedFromFinalized => {
+            return Verdict {
+                correlation_id,
+                acceptance: Acceptance::Reject as i32,
+                reason: Reason::NotDescendedFromFinalized as i32,
+                import: ImportResult::Invalid as i32,
+            };
+        }
+        crate::import::ImportReason::InternalProposerSig(_) => {
+            return Verdict {
+                correlation_id,
+                acceptance: Acceptance::Ignore as i32,
+                reason: Reason::Internal as i32,
+                import: ImportResult::Invalid as i32,
+            };
+        }
+        crate::import::ImportReason::None
+        | crate::import::ImportReason::DataUnavailable
+        | crate::import::ImportReason::UnknownParent
+        | crate::import::ImportReason::ExecutionEngineUnavailable
+        | crate::import::ImportReason::ProposerSigParentStateMissing
+        | crate::import::ImportReason::Other(_) => {}
     }
 
     // ImportBlockVerdict → Acceptance / Reason / ImportResult.
@@ -1020,5 +1046,24 @@ mod tests {
         assert_eq!(epoch_view.proposer_lookahead, vec![1, 2, 3]);
         assert_eq!(epoch_view.active_validator_count, 64);
         assert_eq!(epoch_view.view_kind, VIEW_KIND_EPOCH_TICK);
+    }
+
+    #[test]
+    fn map_import_verdict_uses_typed_reason() {
+        use crate::import::ImportReason;
+        let id = vec![1u8; 32];
+        let v = map_import_verdict(
+            id.clone(),
+            ImportBlockVerdict::Invalid as i32,
+            &ImportReason::FutureSlot,
+        );
+        assert_eq!(v.reason, Reason::FutureSlot as i32);
+        assert_eq!(v.acceptance, Acceptance::Ignore as i32);
+        let v = map_import_verdict(
+            id,
+            ImportBlockVerdict::Invalid as i32,
+            &ImportReason::TooOld,
+        );
+        assert_eq!(v.reason, Reason::AlreadyKnown as i32);
     }
 }

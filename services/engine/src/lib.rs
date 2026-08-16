@@ -47,6 +47,7 @@ pub mod transport;
 #[path = "../../../crates/engine-api/src/version.rs"]
 pub mod version;
 
+pub use cc_proto::EngineRpcReason;
 pub use fastpath::cells::{
     CellsError, ZippedBlobMaterial, compute_cells_zipped_with_el_proofs, parse_el_proofs,
 };
@@ -81,7 +82,6 @@ pub use methods::get_blobs::{
     VERSIONED_HASH_VERSION_KZG, build_get_blobs_v2_params, classify_null, get_blobs_v2,
     kzg_commitment_to_versioned_hash, versioned_hashes_from_commitments,
 };
-pub use service::REASON_FCU_DROPPED_STALE;
 pub use state::{
     CachedForkchoiceState, EngineState, EngineStateHandle, EngineStateInternal, EngineStateMachine,
     StateTransition, TransitionReason, UpcheckOutcome, admits_el_call, spawn_upcheck_driver,

@@ -129,7 +129,8 @@ pub const ERROR_INFO_TYPE_URL: &str = "type.googleapis.com/google.rpc.ErrorInfo"
 /// Read-back is the inverse: `Status::details()` → decode `google.rpc.Status` →
 /// find an `Any` whose type URL ends with `google.rpc.ErrorInfo` → decode.
 ///
-/// Domain convention for this monorepo: `"eth.chain.v1"`.
+/// Domain convention for this monorepo: `"eth.chain.v1"` (chain) /
+/// [`EngineRpcReason::DOMAIN`] (engine).
 pub fn status_with_error_info(
     code: tonic::Code,
     message: impl Into<String>,
@@ -181,6 +182,51 @@ pub fn error_info_from_status(
 
 fn any_type_url_is_error_info(type_url: &str) -> bool {
     type_url == ERROR_INFO_TYPE_URL || type_url.ends_with("/google.rpc.ErrorInfo")
+}
+
+/// Typed `google.rpc.ErrorInfo.reason` values on the engine gRPC surface.
+///
+/// Cross-service discriminants live here so chain and engine share one enum
+/// (P1-D/11 / S1-A-14). Do not format these as `"REASON: …"` message prefixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EngineRpcReason {
+    /// fcU sequence was superseded; EL was not contacted.
+    FcuDroppedStale,
+}
+
+impl EngineRpcReason {
+    /// `ErrorInfo.domain` for engine RPC reasons.
+    pub const DOMAIN: &'static str = "eth.engine.v1";
+
+    /// `ErrorInfo.reason` token (never a message prefix).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FcuDroppedStale => "FCU_DROPPED_STALE",
+        }
+    }
+
+    /// Parse an `ErrorInfo.reason` token.
+    #[must_use]
+    pub fn from_error_info(reason: &str) -> Option<Self> {
+        match reason {
+            "FCU_DROPPED_STALE" => Some(Self::FcuDroppedStale),
+            _ => None,
+        }
+    }
+
+    /// Decode the first packed `ErrorInfo` and map it to this enum.
+    #[must_use]
+    pub fn from_status(status: &tonic::Status) -> Option<Self> {
+        let info = error_info_from_status(status).ok().flatten()?;
+        Self::from_error_info(&info.reason)
+    }
+
+    /// `tonic::Status` with this reason attached as `ErrorInfo` (no prefix).
+    #[must_use]
+    pub fn to_status(self, code: tonic::Code, message: impl Into<String>) -> tonic::Status {
+        status_with_error_info(code, message, self.as_str(), Self::DOMAIN)
+    }
 }
 
 #[cfg(test)]
@@ -340,5 +386,30 @@ mod smoke {
             .expect("ErrorInfo detail present");
         assert_eq!(info.reason, "CURSOR_TOO_OLD");
         assert_eq!(info.domain, "eth.chain.v1");
+    }
+
+    #[test]
+    fn fcu_dropped_stale_is_error_info_not_message_prefix() {
+        let status = crate::EngineRpcReason::FcuDroppedStale.to_status(
+            tonic::Code::Aborted,
+            "forkchoiceUpdated sequence 3 dropped as stale (high_water=4)",
+        );
+        assert_eq!(status.code(), tonic::Code::Aborted);
+        assert!(
+            !status.message().contains("FCU_DROPPED_STALE:"),
+            "reason is ErrorInfo, not a message prefix"
+        );
+        assert_eq!(
+            crate::EngineRpcReason::from_status(&status),
+            Some(crate::EngineRpcReason::FcuDroppedStale)
+        );
+        let info = crate::error_info_from_status(&status)
+            .unwrap()
+            .expect("ErrorInfo detail present");
+        assert_eq!(
+            info.reason,
+            crate::EngineRpcReason::FcuDroppedStale.as_str()
+        );
+        assert_eq!(info.domain, crate::EngineRpcReason::DOMAIN);
     }
 }

@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use cc_proto::EngineRpcReason;
 use cc_proto::common::BuildInfo;
 use cc_proto::engine::engine_service_server::EngineService;
 use cc_proto::engine::{
@@ -30,9 +31,6 @@ use crate::version::ElForkSchedule;
 
 /// Process name for `GetInfo` (matches binary).
 const SERVICE: &str = "engine";
-
-/// gRPC `ErrorInfo.reason` when an fcU sequence is dropped as stale.
-pub const REASON_FCU_DROPPED_STALE: &str = "FCU_DROPPED_STALE";
 
 /// gRPC implementation of [`EngineService`].
 #[derive(Debug, Clone)]
@@ -241,7 +239,7 @@ impl EngineService for EngineServiceImpl {
                 }))
             }
             Err(FcuGatedError::DroppedStale(d)) => {
-                Err(Status::aborted(format!("{REASON_FCU_DROPPED_STALE}: {d}")))
+                Err(EngineRpcReason::FcuDroppedStale.to_status(tonic::Code::Aborted, d.to_string()))
             }
             Err(FcuGatedError::Engine(e)) => {
                 self.note_ordered_lane_error(&e).await;
@@ -264,7 +262,7 @@ impl EngineService for EngineServiceImpl {
         // No state machine wired (unit tests): default online/synced.
         Ok(Response::new(GetEngineStateResponse {
             el_offline: false,
-            internal_state: "synced".into(),
+            internal_state: crate::state::EngineStateInternal::Synced.as_str().into(),
         }))
     }
 

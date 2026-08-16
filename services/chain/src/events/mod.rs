@@ -145,6 +145,14 @@ impl EventInput {
         }
     }
 
+    /// 32-byte root, or `None` — never pad/truncate a short or long slice.
+    #[must_use]
+    pub fn fixed_root(bytes: &[u8]) -> Option<Bytes> {
+        <[u8; 32]>::try_from(bytes)
+            .ok()
+            .map(|r| Bytes::copy_from_slice(&r))
+    }
+
     /// `HEAD` with payload = head slot as 8-byte little-endian.
     pub fn head(slot: u64, root: impl Into<Bytes>) -> Self {
         Self {
@@ -156,6 +164,8 @@ impl EventInput {
     }
 
     /// `CHAIN_REORG` with payload = 32 B old head root ‖ 8 B common-ancestor slot LE.
+    ///
+    /// Short/long old-head roots are **not** padded or truncated to zeros.
     pub fn chain_reorg(
         new_head_slot: u64,
         new_head_root: impl Into<Bytes>,
@@ -163,20 +173,12 @@ impl EventInput {
         common_ancestor_slot: u64,
     ) -> Self {
         let old = old_head_root.into();
-        let mut payload = Vec::with_capacity(40);
-        payload.extend_from_slice(old.as_ref());
-        // Pad/truncate to 32 so the layout is fixed even if a short root is passed.
-        if payload.len() < 32 {
-            payload.resize(32, 0);
-        } else if payload.len() > 32 {
-            payload.truncate(32);
-        }
-        payload.extend_from_slice(&common_ancestor_slot.to_le_bytes());
+        let payload = ChainReorgPayload::encode(old.as_ref(), common_ancestor_slot);
         Self {
             slot: new_head_slot,
             root: new_head_root.into(),
             kind: EventKind::ChainReorg,
-            payload: Bytes::from(payload),
+            payload,
         }
     }
 
@@ -192,22 +194,13 @@ impl EventInput {
     ) -> Self {
         let state = state_root.into();
         let scalars = scalars_ssz.into();
-        let mut payload = Vec::with_capacity(8 + 32 + scalars.len());
-        payload.extend_from_slice(&epoch.to_le_bytes());
-        let sr = state.as_ref();
-        if sr.len() >= 32 {
-            payload.extend_from_slice(&sr[..32]);
-        } else {
-            payload.extend_from_slice(sr);
-            payload.resize(8 + 32, 0);
-        }
-        payload.extend_from_slice(scalars.as_ref());
+        let payload = FinalizedCheckpointPayload::encode(epoch, state.as_ref(), scalars.as_ref());
         Self {
             // Slot is not load-bearing for this kind; use epoch start as a stable tag.
             slot: epoch.saturating_mul(32),
             root: finalized_root.into(),
             kind: EventKind::FinalizedCheckpoint,
-            payload: Bytes::from(payload),
+            payload,
         }
     }
 
@@ -223,6 +216,71 @@ impl EventInput {
             kind: EventKind::DataColumn,
             payload: sidecar_ssz.into(),
         }
+    }
+}
+
+/// Typed `CHAIN_REORG` payload. Decode is fail-closed (no silent zero root).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainReorgPayload {
+    pub old_head_root: [u8; 32],
+    pub common_ancestor_slot: u64,
+}
+
+impl ChainReorgPayload {
+    /// Encode. Non-32-byte roots are written as-is (never padded to `0`).
+    #[must_use]
+    pub fn encode(old_head_root: &[u8], common_ancestor_slot: u64) -> Bytes {
+        let mut payload = Vec::with_capacity(old_head_root.len().saturating_add(8));
+        payload.extend_from_slice(old_head_root);
+        payload.extend_from_slice(&common_ancestor_slot.to_le_bytes());
+        Bytes::from(payload)
+    }
+
+    /// Fail-closed: requires exactly 40 bytes.
+    #[must_use]
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != 40 {
+            return None;
+        }
+        let old_head_root = bytes.get(..32)?.try_into().ok()?;
+        let slot: [u8; 8] = bytes.get(32..40)?.try_into().ok()?;
+        Some(Self {
+            old_head_root,
+            common_ancestor_slot: u64::from_le_bytes(slot),
+        })
+    }
+}
+
+/// Typed `FINALIZED_CHECKPOINT` prefix: 8 B epoch ‖ 32 B state root ‖ scalars.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinalizedCheckpointPayload {
+    pub epoch: u64,
+    pub state_root: [u8; 32],
+}
+
+impl FinalizedCheckpointPayload {
+    /// Encode. Non-32-byte state roots are written as-is (never padded to `0`).
+    #[must_use]
+    pub fn encode(epoch: u64, state_root: &[u8], scalars_ssz: &[u8]) -> Bytes {
+        let mut payload = Vec::with_capacity(8 + state_root.len() + scalars_ssz.len());
+        payload.extend_from_slice(&epoch.to_le_bytes());
+        payload.extend_from_slice(state_root);
+        payload.extend_from_slice(scalars_ssz);
+        Bytes::from(payload)
+    }
+
+    /// Fail-closed prefix decode. Requires at least 40 bytes; scalars follow.
+    #[must_use]
+    pub fn decode_prefix(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 40 {
+            return None;
+        }
+        let epoch: [u8; 8] = bytes.get(..8)?.try_into().ok()?;
+        let state_root = bytes.get(8..40)?.try_into().ok()?;
+        Some(Self {
+            epoch: u64::from_le_bytes(epoch),
+            state_root,
+        })
     }
 }
 
@@ -666,5 +724,38 @@ mod tests {
         let info = error_info_from_status(&err).unwrap().unwrap();
         assert_eq!(info.reason, REASON_CURSOR_UNKNOWN_SESSION);
         h.shutdown().await;
+    }
+
+    #[test]
+    fn chain_reorg_decode_is_fail_closed() {
+        let root = [0x11u8; 32];
+        let encoded = ChainReorgPayload::encode(&root, 7);
+        let decoded = ChainReorgPayload::decode(&encoded).unwrap();
+        assert_eq!(decoded.old_head_root, root);
+        assert_eq!(decoded.common_ancestor_slot, 7);
+        assert!(ChainReorgPayload::decode(&[0u8; 32]).is_none());
+        // Short root is not padded to a zero [u8; 32].
+        let short = ChainReorgPayload::encode(&[0x22], 1);
+        assert!(ChainReorgPayload::decode(&short).is_none());
+        assert_ne!(short.len(), 40);
+    }
+
+    #[test]
+    fn finalized_prefix_decode_is_fail_closed() {
+        let sr = [0x33u8; 32];
+        let encoded = FinalizedCheckpointPayload::encode(4, &sr, &[9, 9]);
+        let decoded = FinalizedCheckpointPayload::decode_prefix(&encoded).unwrap();
+        assert_eq!(decoded.epoch, 4);
+        assert_eq!(decoded.state_root, sr);
+        assert!(FinalizedCheckpointPayload::decode_prefix(&[0u8; 8]).is_none());
+        let short = FinalizedCheckpointPayload::encode(1, &[0x01], &[]);
+        assert!(FinalizedCheckpointPayload::decode_prefix(&short).is_none());
+    }
+
+    #[test]
+    fn fixed_root_rejects_non_32() {
+        assert!(EventInput::fixed_root(&[0u8; 32]).is_some());
+        assert!(EventInput::fixed_root(&[0u8; 31]).is_none());
+        assert!(EventInput::fixed_root(&[0u8; 33]).is_none());
     }
 }

@@ -34,9 +34,32 @@ pub enum SeamError {
     /// The request was structurally rejected before any work was done.
     #[error("seam invalid argument: {0}")]
     InvalidArgument(String),
-    /// Precondition not met (e.g. NOT_BOOTSTRAPPED).
+    /// Precondition not met (e.g. [`FailedPreconditionReason::NotBootstrapped`]).
     #[error("seam failed precondition: {reason}")]
-    FailedPrecondition { reason: &'static str },
+    FailedPrecondition { reason: FailedPreconditionReason },
+}
+
+/// Typed `FailedPrecondition` discriminant. Adding a variant is a contract change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FailedPreconditionReason {
+    /// Called before checkpoint bootstrap completed.
+    NotBootstrapped,
+}
+
+impl FailedPreconditionReason {
+    /// Stable token for logs / gRPC `ErrorInfo.reason`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotBootstrapped => "NOT_BOOTSTRAPPED",
+        }
+    }
+}
+
+impl std::fmt::Display for FailedPreconditionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// 32-byte consensus identity. Not `cc-types::Root` and not a proto `bytes`.
@@ -296,9 +319,13 @@ mod tests {
         assert_eq!(classify(SeamError::InvalidArgument("bad".into())), 2);
         assert_eq!(
             classify(SeamError::FailedPrecondition {
-                reason: "NOT_BOOTSTRAPPED"
+                reason: FailedPreconditionReason::NotBootstrapped
             }),
             3
+        );
+        assert_eq!(
+            FailedPreconditionReason::NotBootstrapped.as_str(),
+            "NOT_BOOTSTRAPPED"
         );
     }
 

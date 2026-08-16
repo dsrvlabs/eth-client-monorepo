@@ -79,8 +79,9 @@ pub use engine_client::{
 };
 pub use epoch_context::{EpochContext, EpochContextStore};
 pub use events::{
-    DEFAULT_RING_BYTES, DEFAULT_RING_CAPACITY, DEFAULT_SUBSCRIBER_QUEUE_CAPACITY, ERROR_DOMAIN,
-    EventInput, EventSubscription, EventsConfig, EventsHandle, MAX_EVENT_PAYLOAD_BYTES, Occupancy,
+    ChainReorgPayload, DEFAULT_RING_BYTES, DEFAULT_RING_CAPACITY,
+    DEFAULT_SUBSCRIBER_QUEUE_CAPACITY, ERROR_DOMAIN, EventInput, EventSubscription, EventsConfig,
+    EventsHandle, FinalizedCheckpointPayload, MAX_EVENT_PAYLOAD_BYTES, Occupancy,
     REASON_CURSOR_TOO_OLD, REASON_CURSOR_UNKNOWN_SESSION, SESSION_ID_METADATA_KEY,
 };
 pub use fcu_driver::{
@@ -89,10 +90,11 @@ pub use fcu_driver::{
 };
 pub use head::{HeadSnapshot, HeadSnapshotStore};
 pub use import::{
-    BLOCK_PAYLOAD_VERDICT_DEFERRED_DA, BLOCK_PAYLOAD_VERDICT_IMPORTED, FORK_CHOICE_SCALARS_SSZ_LEN,
-    ForkChoiceScalarsPayload, ImportCounters, ImportOutcome, block_imported_payload,
-    common_ancestor_slot, decode_signed_block, encode_signed_block, fork_choice_scalars_ssz,
-    import_block_with_early, late_import_flags, on_block_error_gossip_class, parse_root,
+    BLOCK_PAYLOAD_VERDICT_DEFERRED_DA, BLOCK_PAYLOAD_VERDICT_IMPORTED, BlockImportedPayloadVerdict,
+    FORK_CHOICE_SCALARS_SSZ_LEN, ForkChoiceScalarsPayload, ImportCounters, ImportOutcome,
+    ImportReason, block_imported_payload, common_ancestor_slot, decode_signed_block,
+    encode_signed_block, fork_choice_scalars_ssz, import_block_with_early, late_import_flags,
+    on_block_error_gossip_class, parse_root, split_block_imported_payload,
 };
 pub use invalidation::{ExitFn, handle_justified_checkpoint_invalidated, process_exit};
 pub use metrics::{

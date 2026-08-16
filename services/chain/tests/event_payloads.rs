@@ -17,9 +17,9 @@ use cc_chain::events::{
     EventInput, EventRing, EventsConfig, EventsHandle, MAX_EVENT_PAYLOAD_BYTES,
 };
 use cc_chain::{
-    BLOCK_PAYLOAD_VERDICT_DEFERRED_DA, BLOCK_PAYLOAD_VERDICT_IMPORTED, DEFAULT_RING_BYTES,
-    DEFAULT_RING_CAPACITY, FORK_CHOICE_SCALARS_SSZ_LEN, ForkChoiceScalarsPayload,
-    block_imported_payload,
+    BLOCK_PAYLOAD_VERDICT_DEFERRED_DA, BLOCK_PAYLOAD_VERDICT_IMPORTED, BlockImportedPayloadVerdict,
+    DEFAULT_RING_BYTES, DEFAULT_RING_CAPACITY, FORK_CHOICE_SCALARS_SSZ_LEN,
+    ForkChoiceScalarsPayload, block_imported_payload,
 };
 use cc_proto::chain::EventKind;
 use cc_proto::p2p::{ColumnSidecar, P2pToChain, p2p_to_chain};
@@ -33,8 +33,8 @@ use ssz::Encode;
 #[test]
 fn block_imported_payload_shape_and_verdict_discriminator() {
     let body = b"signed-beacon-block-ssz-bytes";
-    let imported = block_imported_payload(BLOCK_PAYLOAD_VERDICT_IMPORTED, body);
-    let deferred = block_imported_payload(BLOCK_PAYLOAD_VERDICT_DEFERRED_DA, body);
+    let imported = block_imported_payload(BlockImportedPayloadVerdict::Imported, body);
+    let deferred = block_imported_payload(BlockImportedPayloadVerdict::DeferredDa, body);
 
     assert_eq!(imported[0], BLOCK_PAYLOAD_VERDICT_IMPORTED);
     assert_eq!(deferred[0], BLOCK_PAYLOAD_VERDICT_DEFERRED_DA);
@@ -168,7 +168,7 @@ async fn live_subscribe_receives_populated_payloads() {
     h.publish(EventInput::block_imported_with_payload(
         10,
         root.clone(),
-        block_imported_payload(BLOCK_PAYLOAD_VERDICT_IMPORTED, block_body),
+        block_imported_payload(BlockImportedPayloadVerdict::Imported, block_body),
     ))
     .await
     .unwrap();

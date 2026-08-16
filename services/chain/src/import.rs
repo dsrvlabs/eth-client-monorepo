@@ -53,10 +53,78 @@ use crate::metrics::{ChainMetrics, ImportResult, ImportStage};
 use crate::pending_engine::{PendingEngine, PendingEngineEntry};
 use crate::tick::{GossipClock, admit_block_slot_if_within_disparity};
 
+/// First payload byte of `BLOCK_IMPORTED` (Architecture §4.2).
+///
+/// Typed so the ring payload is not a bare `u8` with a silent-default reader.
+/// Unknown discriminants must fail closed ([`Self::from_u8`]), never become 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum BlockImportedPayloadVerdict {
+    Imported = ImportBlockVerdict::Imported as u8,
+    DeferredDa = ImportBlockVerdict::DeferredDa as u8,
+}
+
+impl BlockImportedPayloadVerdict {
+    /// Wire first-byte value.
+    #[must_use]
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Fail-closed decode. `None` for an unknown discriminant (never default).
+    #[must_use]
+    pub const fn from_u8(v: u8) -> Option<Self> {
+        if v == Self::Imported as u8 {
+            Some(Self::Imported)
+        } else if v == Self::DeferredDa as u8 {
+            Some(Self::DeferredDa)
+        } else {
+            None
+        }
+    }
+}
+
 /// First payload byte for `BLOCK_IMPORTED` after a successful import (Architecture §4.2).
-pub const BLOCK_PAYLOAD_VERDICT_IMPORTED: u8 = ImportBlockVerdict::Imported as u8;
+pub const BLOCK_PAYLOAD_VERDICT_IMPORTED: u8 = BlockImportedPayloadVerdict::Imported as u8;
 /// First payload byte for `BLOCK_IMPORTED` after `DEFERRED_DA` (same kind, different disc.).
-pub const BLOCK_PAYLOAD_VERDICT_DEFERRED_DA: u8 = ImportBlockVerdict::DeferredDa as u8;
+pub const BLOCK_PAYLOAD_VERDICT_DEFERRED_DA: u8 = BlockImportedPayloadVerdict::DeferredDa as u8;
+
+/// Machine-readable `ImportBlockResponse.reason` (P1-D/11 / S1-A-14).
+///
+/// The proto field stays a string for unary RPC / logs. Cross-service mapping
+/// (p2p stream) must match this enum, not ad-hoc string equality.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportReason {
+    None,
+    DataUnavailable,
+    UnknownParent,
+    FutureSlot,
+    ExecutionEngineUnavailable,
+    TooOld,
+    NotDescendedFromFinalized,
+    ProposerSigParentStateMissing,
+    InternalProposerSig(String),
+    Other(String),
+}
+
+impl ImportReason {
+    /// Wire string written to `ImportBlockResponse.reason`.
+    #[must_use]
+    pub fn to_wire(&self) -> String {
+        match self {
+            Self::None => String::new(),
+            Self::DataUnavailable => "data_unavailable".into(),
+            Self::UnknownParent => "unknown_parent".into(),
+            Self::FutureSlot => "future_slot".into(),
+            Self::ExecutionEngineUnavailable => "execution_engine_unavailable".into(),
+            Self::TooOld => "too_old".into(),
+            Self::NotDescendedFromFinalized => "not_descended_from_finalized".into(),
+            Self::ProposerSigParentStateMissing => "proposer_sig_parent_state_missing".into(),
+            Self::InternalProposerSig(e) => format!("internal_proposer_sig: {e}"),
+            Self::Other(s) => s.clone(),
+        }
+    }
+}
 
 /// SSZ layout matching `cc_store::meta::ForkChoiceScalars` (Architecture §2.5 / §4.2).
 ///
@@ -93,11 +161,27 @@ pub struct ForkChoiceScalarsPayload {
 pub const FORK_CHOICE_SCALARS_SSZ_LEN: usize = 240;
 
 /// Build `BLOCK_IMPORTED` payload: `[verdict_byte] ‖ SignedBeaconBlock SSZ`.
-pub fn block_imported_payload(verdict: u8, block_ssz: &[u8]) -> Bytes {
+pub fn block_imported_payload(verdict: BlockImportedPayloadVerdict, block_ssz: &[u8]) -> Bytes {
     let mut out = Vec::with_capacity(1 + block_ssz.len());
-    out.push(verdict);
+    out.push(verdict.as_u8());
     out.extend_from_slice(block_ssz);
     Bytes::from(out)
+}
+
+/// Fail-closed split of a `BLOCK_IMPORTED` payload. Unknown first byte is `None`.
+#[must_use]
+pub fn split_block_imported_payload(
+    payload: &[u8],
+) -> Option<(BlockImportedPayloadVerdict, &[u8])> {
+    let (disc, rest) = payload.split_first()?;
+    Some((BlockImportedPayloadVerdict::from_u8(*disc)?, rest))
+}
+
+fn import_response(verdict: ImportBlockVerdict, reason: &ImportReason) -> ImportBlockResponse {
+    ImportBlockResponse {
+        verdict: verdict as i32,
+        reason: reason.to_wire(),
+    }
 }
 
 /// Snapshot fork-choice scalars for a `FINALIZED_CHECKPOINT` payload (SSZ).
@@ -172,6 +256,8 @@ use crate::residency::Residency;
 #[derive(Debug)]
 pub struct ImportOutcome {
     pub response: ImportBlockResponse,
+    /// Typed reason that produced [`Self::response`].reason (stream mapping).
+    pub reason: ImportReason,
     /// True when state_transition / on_block was invoked (for DUPLICATE tests).
     pub transition_invoked: bool,
     /// Cheap gossip conditions passed and early ACCEPT was (or would be) emitted.
@@ -304,10 +390,8 @@ pub fn import_block_with_early<P: Preset>(
     if is_fully_imported(store, &probe) {
         metrics.inc_import_result(ImportResult::Duplicate);
         return Ok(ImportOutcome {
-            response: ImportBlockResponse {
-                verdict: ImportBlockVerdict::Duplicate as i32,
-                reason: String::new(),
-            },
+            response: import_response(ImportBlockVerdict::Duplicate, &ImportReason::None),
+            reason: ImportReason::None,
             transition_invoked: false,
             early_accept: false,
             late_import_reject: false,
@@ -345,7 +429,8 @@ pub fn import_block_with_early<P: Preset>(
         gossip_clock,
     )? {
         return Ok(ImportOutcome {
-            response: terminal,
+            response: import_response(terminal.verdict, &terminal.reason),
+            reason: terminal.reason,
             transition_invoked: false,
             early_accept: false,
             late_import_reject: false,
@@ -365,11 +450,10 @@ pub fn import_block_with_early<P: Preset>(
         let class = on_block_error_gossip_class(&err);
         let (late_import_reject, late_import_internal) = late_import_flags(early_accept, class);
         metrics.inc_import_result(ImportResult::Invalid);
+        let reason = ImportReason::Other(err.to_string());
         return Ok(ImportOutcome {
-            response: ImportBlockResponse {
-                verdict: ImportBlockVerdict::Invalid as i32,
-                reason: err.to_string(),
-            },
+            response: import_response(ImportBlockVerdict::Invalid, &reason),
+            reason,
             transition_invoked: false,
             early_accept,
             late_import_reject,
@@ -453,10 +537,11 @@ pub fn import_block_with_early<P: Preset>(
             // Never carries cells; core fires engine FetchBlobs when present.
             let block_branch = block_branch_trigger_from_signed(&signed, true_root);
             Ok(ImportOutcome {
-                response: ImportBlockResponse {
-                    verdict: ImportBlockVerdict::DeferredDa as i32,
-                    reason: "data_unavailable".into(),
-                },
+                response: import_response(
+                    ImportBlockVerdict::DeferredDa,
+                    &ImportReason::DataUnavailable,
+                ),
+                reason: ImportReason::DataUnavailable,
                 transition_invoked: true,
                 early_accept,
                 late_import_reject: false,
@@ -468,10 +553,11 @@ pub fn import_block_with_early<P: Preset>(
             // Parent was present at the cheap check; race/reorg edge.
             metrics.inc_import_result(ImportResult::UnknownParent);
             Ok(ImportOutcome {
-                response: ImportBlockResponse {
-                    verdict: ImportBlockVerdict::UnknownParent as i32,
-                    reason: "unknown_parent".into(),
-                },
+                response: import_response(
+                    ImportBlockVerdict::UnknownParent,
+                    &ImportReason::UnknownParent,
+                ),
+                reason: ImportReason::UnknownParent,
                 transition_invoked: true,
                 early_accept,
                 late_import_reject: false,
@@ -482,10 +568,8 @@ pub fn import_block_with_early<P: Preset>(
         Ok(BlockImport::Deferred(DeferralReason::FutureSlot)) => {
             metrics.inc_import_result(ImportResult::Invalid);
             Ok(ImportOutcome {
-                response: ImportBlockResponse {
-                    verdict: ImportBlockVerdict::Invalid as i32,
-                    reason: "future_slot".into(),
-                },
+                response: import_response(ImportBlockVerdict::Invalid, &ImportReason::FutureSlot),
+                reason: ImportReason::FutureSlot,
                 transition_invoked: true,
                 early_accept,
                 // Future slot is Ignore-class for gossip; not a late Reject penalty.
@@ -516,12 +600,11 @@ pub fn import_block_with_early<P: Preset>(
             }
             metrics.inc_import_result(ImportResult::DeferredEngine);
             Ok(ImportOutcome {
-                response: ImportBlockResponse {
-                    // Proto has no DeferredEngine verdict; DeferredDa is the
-                    // Ignore-class park (same gossip class). Metric distinguishes.
-                    verdict: ImportBlockVerdict::DeferredDa as i32,
-                    reason: "execution_engine_unavailable".into(),
-                },
+                response: import_response(
+                    ImportBlockVerdict::DeferredDa,
+                    &ImportReason::ExecutionEngineUnavailable,
+                ),
+                reason: ImportReason::ExecutionEngineUnavailable,
                 transition_invoked: true,
                 early_accept,
                 late_import_reject: false,
@@ -533,11 +616,10 @@ pub fn import_block_with_early<P: Preset>(
             let class = on_block_error_gossip_class(&e);
             metrics.inc_import_result(ImportResult::Invalid);
             let (late_import_reject, late_import_internal) = late_import_flags(early_accept, class);
+            let reason = ImportReason::Other(e.to_string());
             Ok(ImportOutcome {
-                response: ImportBlockResponse {
-                    verdict: ImportBlockVerdict::Invalid as i32,
-                    reason: e.to_string(),
-                },
+                response: import_response(ImportBlockVerdict::Invalid, &reason),
+                reason,
                 transition_invoked: true,
                 early_accept,
                 late_import_reject,
@@ -563,13 +645,19 @@ pub fn on_block_error_gossip_class(err: &OnBlockError) -> GossipClass {
     }
 }
 
+/// Cheap-path terminal: typed verdict + reason (proto string is derived).
+struct CheapTerminal {
+    verdict: ImportBlockVerdict,
+    reason: ImportReason,
+}
+
 /// Cheap gossip conditions. `Ok(Some(response))` is a terminal import result
 /// without running the state transition. `Ok(None)` means ACCEPT-and-continue.
 ///
 /// # H3 mapping notes
-/// - `future_slot` → stream IGNORE (`Reason::FutureSlot`) via reason string
-/// - `too_old` (slot ≤ finalized) → stream IGNORE (`Reason::AlreadyKnown`)
-/// - checkpoint non-descent → still Reject-class (`not_descended_from_finalized`)
+/// - `FutureSlot` → stream IGNORE (`Reason::FutureSlot`)
+/// - `TooOld` (slot ≤ finalized) → stream IGNORE (`Reason::AlreadyKnown`)
+/// - checkpoint non-descent → still Reject-class (`NotDescendedFromFinalized`)
 #[allow(clippy::too_many_arguments)]
 fn cheap_gossip_terminal<P: Preset>(
     store: &mut Store<P>,
@@ -581,25 +669,25 @@ fn cheap_gossip_terminal<P: Preset>(
     gossip_path: bool,
     metrics: &ChainMetrics,
     gossip_clock: Option<GossipClock>,
-) -> Result<Option<ImportBlockResponse>, Status> {
+) -> Result<Option<CheapTerminal>, Status> {
     let block = &signed.message;
     let parent_root = block.parent_root;
 
     // Parent presence (header).
     if !store.blocks().contains_key(&parent_root) {
         metrics.inc_import_result(ImportResult::UnknownParent);
-        return Ok(Some(ImportBlockResponse {
-            verdict: ImportBlockVerdict::UnknownParent as i32,
-            reason: "unknown_parent".into(),
+        return Ok(Some(CheapTerminal {
+            verdict: ImportBlockVerdict::UnknownParent,
+            reason: ImportReason::UnknownParent,
         }));
     }
 
     // Ensure parent state is resident (same as pre-fast-path import).
     if let Err(e) = residency.ensure_in_store(store, parent_root, config) {
         metrics.inc_import_result(ImportResult::Invalid);
-        return Ok(Some(ImportBlockResponse {
-            verdict: ImportBlockVerdict::Invalid as i32,
-            reason: format!("reorg gap: {e}"),
+        return Ok(Some(CheapTerminal {
+            verdict: ImportBlockVerdict::Invalid,
+            reason: ImportReason::Other(format!("reorg gap: {e}")),
         }));
     }
 
@@ -617,10 +705,10 @@ fn cheap_gossip_terminal<P: Preset>(
         });
         if !admitted {
             metrics.inc_import_result(ImportResult::Invalid);
-            return Ok(Some(ImportBlockResponse {
+            return Ok(Some(CheapTerminal {
                 // Proto has no FUTURE_SLOT verdict; reason drives stream IGNORE.
-                verdict: ImportBlockVerdict::Invalid as i32,
-                reason: "future_slot".into(),
+                verdict: ImportBlockVerdict::Invalid,
+                reason: ImportReason::FutureSlot,
             }));
         }
     }
@@ -629,9 +717,9 @@ fn cheap_gossip_terminal<P: Preset>(
     let finalized_slot = compute_start_slot_at_epoch::<P>(store.finalized_checkpoint().epoch);
     if block.slot.as_u64() <= finalized_slot.as_u64() {
         metrics.inc_import_result(ImportResult::Invalid);
-        return Ok(Some(ImportBlockResponse {
-            verdict: ImportBlockVerdict::Invalid as i32,
-            reason: "too_old".into(),
+        return Ok(Some(CheapTerminal {
+            verdict: ImportBlockVerdict::Invalid,
+            reason: ImportReason::TooOld,
         }));
     }
 
@@ -640,9 +728,9 @@ fn cheap_gossip_terminal<P: Preset>(
         get_checkpoint_block(store, parent_root, store.finalized_checkpoint().epoch);
     if store.finalized_checkpoint().root != finalized_checkpoint_block {
         metrics.inc_import_result(ImportResult::Invalid);
-        return Ok(Some(ImportBlockResponse {
-            verdict: ImportBlockVerdict::Invalid as i32,
-            reason: "not_descended_from_finalized".into(),
+        return Ok(Some(CheapTerminal {
+            verdict: ImportBlockVerdict::Invalid,
+            reason: ImportReason::NotDescendedFromFinalized,
         }));
     }
 
@@ -653,12 +741,12 @@ fn cheap_gossip_terminal<P: Preset>(
         && expected != block.proposer_index.as_u64()
     {
         metrics.inc_import_result(ImportResult::Invalid);
-        return Ok(Some(ImportBlockResponse {
-            verdict: ImportBlockVerdict::Invalid as i32,
-            reason: format!(
+        return Ok(Some(CheapTerminal {
+            verdict: ImportBlockVerdict::Invalid,
+            reason: ImportReason::Other(format!(
                 "proposer mismatch: block={} expected={expected}",
                 block.proposer_index.as_u64()
-            ),
+            )),
         }));
     }
 
@@ -675,9 +763,9 @@ fn cheap_gossip_terminal<P: Preset>(
         let Some(parent_state) = store.block_state(&parent_root) else {
             // Fail closed on gossip: never early-ACCEPT without a parent state to verify against.
             metrics.inc_import_result(ImportResult::Invalid);
-            return Ok(Some(ImportBlockResponse {
-                verdict: ImportBlockVerdict::Invalid as i32,
-                reason: "proposer_sig_parent_state_missing".into(),
+            return Ok(Some(CheapTerminal {
+                verdict: ImportBlockVerdict::Invalid,
+                reason: ImportReason::ProposerSigParentStateMissing,
             }));
         };
         match verify_block_proposer_sig(parent_state, signed, sig_strategy) {
@@ -687,11 +775,11 @@ fn cheap_gossip_terminal<P: Preset>(
                 // Internal (state BLS) → no peer Reject; still no early ACCEPT.
                 metrics.inc_import_result(ImportResult::Invalid);
                 let reason = match e.gossip_class() {
-                    GossipClass::Internal => format!("internal_proposer_sig: {e}"),
-                    GossipClass::Reject | GossipClass::Ignore => e.to_string(),
+                    GossipClass::Internal => ImportReason::InternalProposerSig(e.to_string()),
+                    GossipClass::Reject | GossipClass::Ignore => ImportReason::Other(e.to_string()),
                 };
-                return Ok(Some(ImportBlockResponse {
-                    verdict: ImportBlockVerdict::Invalid as i32,
+                return Ok(Some(CheapTerminal {
+                    verdict: ImportBlockVerdict::Invalid,
                     reason,
                 }));
             }
@@ -848,7 +936,7 @@ fn finish_imported<P: Preset>(
         slot,
         block_root,
         arrival_ssz,
-        BLOCK_PAYLOAD_VERDICT_IMPORTED,
+        BlockImportedPayloadVerdict::Imported,
         head_root,
         head_slot,
         reorg,
@@ -864,10 +952,8 @@ fn finish_imported<P: Preset>(
 
     metrics.inc_import_result(ImportResult::Imported);
     Ok(ImportOutcome {
-        response: ImportBlockResponse {
-            verdict: ImportBlockVerdict::Imported as i32,
-            reason: String::new(),
-        },
+        response: import_response(ImportBlockVerdict::Imported, &ImportReason::None),
+        reason: ImportReason::None,
         transition_invoked: true,
         early_accept,
         late_import_reject: false,
@@ -894,7 +980,7 @@ fn publish_import_events<P: Preset>(
     slot: u64,
     block_root: Root,
     arrival_ssz: &[u8],
-    verdict_byte: u8,
+    verdict: BlockImportedPayloadVerdict,
     head_root: Root,
     head_slot: Slot,
     reorg: Option<ChainReorg>,
@@ -908,7 +994,7 @@ fn publish_import_events<P: Preset>(
         EventInput::block_imported_with_payload(
             slot,
             Bytes::copy_from_slice(block_root.as_slice()),
-            block_imported_payload(verdict_byte, arrival_ssz),
+            block_imported_payload(verdict, arrival_ssz),
         ),
     );
     publish_event_blocking(
@@ -966,7 +1052,7 @@ fn publish_deferred_block_event(
         EventInput::block_imported_with_payload(
             slot,
             Bytes::copy_from_slice(block_root.as_slice()),
-            block_imported_payload(BLOCK_PAYLOAD_VERDICT_DEFERRED_DA, arrival_ssz),
+            block_imported_payload(BlockImportedPayloadVerdict::DeferredDa, arrival_ssz),
         ),
     );
 }
@@ -1092,7 +1178,7 @@ pub fn publish_snapshot_then_events(
         EventInput::block_imported_with_payload(
             slot,
             Bytes::copy_from_slice(block_root.as_slice()),
-            block_imported_payload(BLOCK_PAYLOAD_VERDICT_IMPORTED, &[]),
+            block_imported_payload(BlockImportedPayloadVerdict::Imported, &[]),
         ),
     );
     try_publish_event(
@@ -1270,9 +1356,19 @@ mod tests {
     #[test]
     fn block_imported_payload_preserves_arrival_bytes() {
         let arrival = b"wire-ssz-bytes-not-reencoded";
-        let payload = block_imported_payload(BLOCK_PAYLOAD_VERDICT_IMPORTED, arrival);
+        let payload = block_imported_payload(BlockImportedPayloadVerdict::Imported, arrival);
         assert_eq!(payload[0], BLOCK_PAYLOAD_VERDICT_IMPORTED);
         assert_eq!(&payload[1..], arrival.as_slice());
+        let (v, rest) = split_block_imported_payload(&payload).unwrap();
+        assert_eq!(v, BlockImportedPayloadVerdict::Imported);
+        assert_eq!(rest, arrival);
+        assert!(split_block_imported_payload(&[]).is_none());
+        assert!(split_block_imported_payload(&[0]).is_none());
+        assert_eq!(ImportReason::FutureSlot.to_wire(), "future_slot");
+        assert_eq!(
+            ImportReason::ExecutionEngineUnavailable.to_wire(),
+            "execution_engine_unavailable"
+        );
     }
 
     /// Exhaustive `OnBlockError` → class (no catch-all) — R-13 / §5.3.
@@ -1599,7 +1695,7 @@ mod tests {
             9,
             c,
             &[],
-            BLOCK_PAYLOAD_VERDICT_IMPORTED,
+            BlockImportedPayloadVerdict::Imported,
             c,
             Slot::new(9),
             None,
@@ -1636,7 +1732,7 @@ mod tests {
             16,
             d,
             &[],
-            BLOCK_PAYLOAD_VERDICT_IMPORTED,
+            BlockImportedPayloadVerdict::Imported,
             d,
             Slot::new(16),
             None,

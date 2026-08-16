@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use cc_fork_choice::{ProtoArray, Store};
+use cc_proto::EngineRpcReason;
 use cc_proto::engine::ForkchoiceUpdatedRequest;
 use cc_proto::engine::engine_service_client::EngineServiceClient;
 use cc_types::preset::Preset;
@@ -215,20 +216,23 @@ impl FcuSink for GrpcFcuSink {
         block_on_deadline(&self.handle, timeout, async {
             match client.forkchoice_updated(req).await {
                 Ok(_) => Ok(()),
-                Err(e) => {
-                    let msg = e.message().to_string();
-                    if msg.contains("FCU_DROPPED_STALE") {
-                        Err(EngineError::Transport(format!(
-                            "ForkchoiceUpdated dropped stale: {msg}"
-                        )))
-                    } else {
-                        Err(EngineError::Transport(format!("ForkchoiceUpdated: {e}")))
-                    }
-                }
+                Err(e) => Err(classify_fcu_rpc_error(&e)),
             }
         })
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+}
+
+/// Map engine fcU gRPC failures via [`EngineRpcReason`], never a message prefix.
+pub(crate) fn classify_fcu_rpc_error(status: &tonic::Status) -> EngineError {
+    if EngineRpcReason::from_status(status) == Some(EngineRpcReason::FcuDroppedStale) {
+        EngineError::Transport(format!(
+            "ForkchoiceUpdated dropped stale: {}",
+            status.message()
+        ))
+    } else {
+        EngineError::Transport(format!("ForkchoiceUpdated: {status}"))
     }
 }
 
@@ -474,5 +478,28 @@ pub fn safe_is_ancestor_of_head(
             }
             None => return false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn classify_fcu_uses_error_info_not_message_prefix() {
+        let stale = EngineRpcReason::FcuDroppedStale.to_status(
+            tonic::Code::Aborted,
+            "forkchoiceUpdated sequence 3 dropped as stale (high_water=4)",
+        );
+        let err = classify_fcu_rpc_error(&stale);
+        assert!(err.to_string().contains("dropped stale"));
+        assert!(!stale.message().contains("FCU_DROPPED_STALE:"));
+
+        let other = tonic::Status::unavailable("engine down");
+        let err = classify_fcu_rpc_error(&other);
+        assert!(err.to_string().contains("ForkchoiceUpdated:"));
+        assert!(!err.to_string().contains("dropped stale"));
     }
 }

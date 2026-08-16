@@ -298,6 +298,11 @@ with silent-default fallbacks. The most consequential instance of the last is
 **Acceptance** — every cross-service string discriminant on an S1-moved surface is an enum; a grep for
 the named prefixes outside test code returns 0.
 
+- [x] Verdict reason strings on the import → p2p-stream seam are `ImportReason` (not ad-hoc equality)
+- [x] `FCU_DROPPED_STALE` is `EngineRpcReason::FcuDroppedStale` via `ErrorInfo`; no `FCU_DROPPED_STALE:` message prefix in production
+- [x] S1 event payloads (`BLOCK_IMPORTED` disc., `CHAIN_REORG`, `FINALIZED_CHECKPOINT`) encode/decode as typed layouts; unknown discriminants fail closed
+- [x] `services/storage/src/write_behind.rs` column_index `unwrap_or(0)` left for `S2-A-05` / `S2-A-08`
+
 ---
 
 ### `S1-A-15` … `S1-A-17` · M8 — the core-liveness probe
