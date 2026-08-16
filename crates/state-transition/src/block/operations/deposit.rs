@@ -95,8 +95,6 @@ pub fn add_validator_to_registry<P: Preset>(
     state.previous_epoch_participation_push(0)?;
     state.current_epoch_participation_push(0)?;
     state.inactivity_scores_push(0)?;
-    // Extend PubkeyIndexMap cache (§3.4).
-    state.caches_mut().pubkeys.insert(pubkey, index);
     // Registry growth invalidates epoch-derived active-set cache (CC-13b).
     note_registry_or_effective_balance_change(state);
     Ok(index)
@@ -114,7 +112,7 @@ pub fn apply_deposit<P: Preset>(
     signature: cc_types::primitives::BlsSignature,
     config: &ChainConfig,
 ) -> Result<(), BlockError> {
-    if get_validator_index_by_pubkey(state, &pubkey).is_none() {
+    if get_validator_index_by_pubkey(state, &pubkey, None).is_none() {
         // Proof-of-possession; invalid signature → silently drop (spec).
         if is_valid_deposit_signature(&pubkey, &withdrawal_credentials, amount, &signature, config)?
         {

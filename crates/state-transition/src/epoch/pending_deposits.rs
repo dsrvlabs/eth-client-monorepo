@@ -4,7 +4,7 @@ use cc_types::BeaconState;
 use cc_types::config::ChainConfig;
 use cc_types::operations::PendingDeposit;
 use cc_types::preset::Preset;
-use cc_types::primitives::{Epoch, Gwei, ValidatorIndex};
+use cc_types::primitives::{Epoch, Gwei};
 
 use crate::block::operations::{add_validator_to_registry, is_valid_deposit_signature};
 use crate::error::EpochError;
@@ -24,13 +24,8 @@ pub fn apply_pending_deposit<P: Preset>(
     deposit: &PendingDeposit,
     config: &ChainConfig,
 ) -> Result<(), EpochError> {
-    let existing = state.caches().pubkeys.get(&deposit.pubkey).or_else(|| {
-        state
-            .validators_iter()
-            .enumerate()
-            .find(|(_, v)| v.pubkey == deposit.pubkey)
-            .map(|(i, _)| ValidatorIndex::new(i as u64))
-    });
+    let existing =
+        crate::helpers::accessors::get_validator_index_by_pubkey(state, &deposit.pubkey, None);
 
     match existing {
         None => {
@@ -53,7 +48,6 @@ pub fn apply_pending_deposit<P: Preset>(
             }
         }
         Some(idx) => {
-            state.caches_mut().pubkeys.insert(deposit.pubkey, idx);
             increase_balance(state, idx, deposit.amount).map_err(block_to_epoch)?;
         }
     }
@@ -100,13 +94,11 @@ pub fn process_pending_deposits<P: Preset>(
         }
 
         let (is_validator_exited, is_validator_withdrawn) =
-            match state.caches().pubkeys.get(&deposit.pubkey).or_else(|| {
-                state
-                    .validators_iter()
-                    .enumerate()
-                    .find(|(_, v)| v.pubkey == deposit.pubkey)
-                    .map(|(i, _)| ValidatorIndex::new(i as u64))
-            }) {
+            match crate::helpers::accessors::get_validator_index_by_pubkey(
+                state,
+                &deposit.pubkey,
+                None,
+            ) {
                 Some(idx) => {
                     let v = state
                         .validators_get(idx.as_u64() as usize)

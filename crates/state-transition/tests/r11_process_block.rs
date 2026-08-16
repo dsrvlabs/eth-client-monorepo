@@ -16,9 +16,9 @@ use std::fs;
 use std::time::Instant;
 
 use cc_state_transition::{
+    BlockError, EngineError, ExecutionEngine, NewPayloadRequest, PayloadStatus, TransitionContext,
     compute_time_at_slot, get_beacon_proposer_index, get_current_epoch, get_expected_withdrawals,
-    get_randao_mix, process_block, process_slots, BlockError, EngineError, ExecutionEngine,
-    NewPayloadRequest, PayloadStatus, TransitionContext,
+    get_randao_mix, process_block, process_slots,
 };
 use cc_types::config::ChainConfig;
 use cc_types::containers::SyncAggregate;
@@ -26,7 +26,7 @@ use cc_types::execution::ExecutionPayload;
 use cc_types::primitives::{BlsSignature, Root, Slot};
 use cc_types::{BeaconBlock, BeaconBlockBody, BeaconState, ForkName, Mainnet};
 use ssz_types::VariableList;
-use support::{cache_env_is_set, load_anchor, load_hoodi_config, CACHE_ENV, FETCH_HINT};
+use support::{CACHE_ENV, FETCH_HINT, cache_env_is_set, load_anchor, load_hoodi_config};
 use tree_hash::TreeHash;
 
 /// Always-Valid engine (same shape as S0-A-03 / offline replay).
@@ -171,44 +171,37 @@ fn hoodi_decoded_state_process_block_roundtrip() {
         "committed pair must fail at the header (post-state), got {pair_err:?}"
     );
 
-    // Negative: omit the top-up. Successor process_block → CachePoisoned.
+    // S2-A-10: the map is on TransitionContext. process_block tops up from
+    // the registry, so a raw-decoded successor must succeed (the empty
+    // StateCaches field is no longer the CachePoisoned trigger).
     let t1 = Instant::now();
     let (mut raw_state, raw_block, raw_pre) = advance_one_slot(loaded.state, &config);
-    assert_eq!(
-        raw_state.caches().pubkeys.len(),
-        0,
-        "process_slots must not fill pubkeys"
-    );
     let ctx = TransitionContext::<Mainnet>::new(&config, &engine);
-    let err = process_block(&mut raw_state, &raw_block, &ctx, raw_pre)
-        .expect_err("raw decode must fail process_block");
-    eprintln!(
-        "S0-A-30: negative process_block in {:.1}s → {err:?}",
-        t1.elapsed().as_secs_f64()
+    process_block(&mut raw_state, &raw_block, &ctx, raw_pre)
+        .expect("raw decode must succeed: ctx tops up from the registry");
+    assert_eq!(
+        ctx.pubkeys().len(),
+        raw_state.validators_len(),
+        "process_block must cover the whole registry on the context map"
     );
-    assert_eq!(err, BlockError::CachePoisoned);
+    eprintln!(
+        "S0-A-30: raw successor process_block in {:.1}s; pubkey_cache={}",
+        t1.elapsed().as_secs_f64(),
+        ctx.pubkeys().len()
+    );
     drop(raw_state);
 
-    // Positive: hydrated decode of the same SSZ → process_block ok.
+    // Same SSZ through the production decode chokepoint.
     let paths = support::resolve_anchor_paths().unwrap_or_else(|e| panic!("{e}"));
     let bytes = fs::read(&paths.state_ssz)
         .unwrap_or_else(|e| panic!("read {}: {e}", paths.state_ssz.display()));
     let t2 = Instant::now();
     let hydrated = BeaconState::<Mainnet>::from_ssz_bytes_hydrated(ForkName::Fulu, &bytes)
         .unwrap_or_else(|e| panic!("{e:?}"));
-    assert!(
-        !hydrated.caches().pubkeys.is_empty(),
-        "hydrated decode must fill pubkeys from the registry"
-    );
-    assert_eq!(
-        hydrated.caches().pubkeys.len(),
-        hydrated.validators_len(),
-        "hydrated cache must cover the whole registry"
-    );
     eprintln!(
-        "S0-A-30: hydrated decode in {:.1}s; pubkey_cache={}",
+        "S0-A-30: hydrated decode in {:.1}s; validators={}",
         t2.elapsed().as_secs_f64(),
-        hydrated.caches().pubkeys.len()
+        hydrated.validators_len()
     );
 
     let t3 = Instant::now();
@@ -216,6 +209,7 @@ fn hoodi_decoded_state_process_block_roundtrip() {
     let ctx = TransitionContext::<Mainnet>::new(&config, &engine);
     process_block(&mut hyd_state, &hyd_block, &ctx, hyd_pre)
         .expect("process_block must succeed after from_ssz_bytes_hydrated");
+    assert_eq!(ctx.pubkeys().len(), hyd_state.validators_len());
     eprintln!(
         "S0-A-30: positive process_block in {:.1}s",
         t3.elapsed().as_secs_f64()

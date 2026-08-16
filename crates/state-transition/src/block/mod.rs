@@ -17,7 +17,7 @@ use std::marker::PhantomData;
 use cc_types::config::ChainConfig;
 use cc_types::preset::Preset;
 use cc_types::primitives::Root;
-use cc_types::{BeaconBlock, BeaconState, SignedBeaconBlock};
+use cc_types::{BeaconBlock, BeaconState, PubkeyIndexMap, SignedBeaconBlock};
 
 use crate::BlockSignatureStrategy;
 use crate::engine_seam::{ExecutionEngine, PayloadStatus};
@@ -43,12 +43,16 @@ pub use withdrawals::{get_expected_withdrawals, process_withdrawals};
 // TransitionContext (engine trait lives in `engine_seam.rs`, CC-14)
 // ---------------------------------------------------------------------------
 
-/// Per-transition context (config + engine + payload-status outbox).
+/// Per-transition context (config + engine + payload-status outbox + pubkey cache).
 ///
 /// The outbox carries the EL's [`PayloadStatus`] out of the state transition
 /// without a second `verify_and_notify_new_payload` call site (CC-14/1, ADR P3-03).
 /// Written at the sole call site in [`super::execution_payload::process_execution_payload`];
 /// read by `on_block` from `CC-34a` onward. This commit writes and leaves unread (D-4).
+///
+/// `PubkeyIndexMap` lives here, not on `BeaconState` (S2-A-10 / P0-19/3):
+/// `StateCaches` derives `Clone`, and a ~80–100 MB map with 48-byte keys must
+/// not deep-copy on each of the 3–5 state clones per import.
 ///
 /// `RefCell` rather than `Mutex`: `TransitionContext` is stack-local per import and is
 /// not required to be `Sync` (§12/8 compile check).
@@ -62,6 +66,8 @@ pub struct TransitionContext<'a, P: Preset> {
     /// Written exactly once at the sole engine call site (both Valid/NOT_VALIDATED
     /// and INVALIDATED paths). Not read in this commit (D-4).
     payload_status_outbox: RefCell<Option<PayloadStatus>>,
+    /// Pubkey → validator index. Off `BeaconState` (S2-A-10).
+    pubkeys: RefCell<PubkeyIndexMap>,
     _phantom: PhantomData<P>,
 }
 
@@ -69,6 +75,7 @@ impl<'a, P: Preset> std::fmt::Debug for TransitionContext<'a, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TransitionContext")
             .field("config_name", &self.config.config_name)
+            .field("pubkeys_len", &self.pubkeys.borrow().len())
             .finish_non_exhaustive()
     }
 }
@@ -80,8 +87,28 @@ impl<'a, P: Preset> TransitionContext<'a, P> {
             config,
             engine,
             payload_status_outbox: RefCell::new(None),
+            pubkeys: RefCell::new(PubkeyIndexMap::default()),
             _phantom: PhantomData,
         }
+    }
+
+    /// Borrow the pubkey → index map.
+    pub fn pubkeys(&self) -> std::cell::Ref<'_, PubkeyIndexMap> {
+        self.pubkeys.borrow()
+    }
+
+    /// Mutably borrow the pubkey → index map.
+    pub fn pubkeys_mut(&self) -> std::cell::RefMut<'_, PubkeyIndexMap> {
+        self.pubkeys.borrow_mut()
+    }
+
+    /// Fill [`Self::pubkeys`] from the validator registry.
+    ///
+    /// Append-only and idempotent. Called at the start of
+    /// [`process_block`] / [`state_transition`] so decode sites do not have
+    /// to hydrate a cache on `BeaconState` (S2-A-10).
+    pub fn top_up_pubkey_cache(&self, state: &BeaconState<P>) {
+        self.pubkeys.borrow_mut().import_from_registry(state);
     }
 
     /// Record the payload status returned by the sole engine call site.
@@ -171,6 +198,9 @@ fn process_block_with_strategy<P: Preset>(
     pre_state_root: Root,
     verify: BlockSignatureStrategy,
 ) -> Result<(), BlockError> {
+    // S2-A-10: cache is on the context. Top up from the registry before any
+    // handler that resolves pubkeys (deposits, sync-aggregate).
+    ctx.top_up_pubkey_cache(state);
     process_block_header(state, block, pre_state_root)?;
     process_withdrawals(state, block)?;
     process_execution_payload(state, block, ctx)?;
@@ -183,6 +213,7 @@ fn process_block_with_strategy<P: Preset>(
         state,
         &block.body.sync_aggregate,
         !matches!(verify, BlockSignatureStrategy::NoVerification),
+        ctx,
     )?;
     state.commit();
     Ok(())
@@ -281,12 +312,7 @@ mod tests {
     fn process_block_completes_with_empty_ops_and_empty_sync() {
         let mut state = BeaconState::<Minimal>::default();
         seed(&mut state);
-        // Map default (zero) sync-committee pubkeys to the seeded validator so
-        // reward accounting can resolve indices without a registry scan.
-        state
-            .caches_mut()
-            .pubkeys
-            .insert(Default::default(), ValidatorIndex::new(0));
+        // S2-A-10: PubkeyIndexMap lives on TransitionContext; process_block tops up.
         // eth1 deposits disabled (unset start index) so empty deposits list is ok.
         state.set_deposit_requests_start_index(u64::MAX);
 
@@ -336,15 +362,7 @@ mod tests {
         let mut committee = state.current_sync_committee().clone();
         committee.pubkeys[0] = pk;
         state.set_current_sync_committee(committee);
-        // Remaining committee slots are the default (zero) key.
-        state
-            .caches_mut()
-            .pubkeys
-            .insert(Default::default(), ValidatorIndex::new(0));
-        state
-            .caches_mut()
-            .pubkeys
-            .insert(pk, ValidatorIndex::new(0));
+        // S2-A-10: PubkeyIndexMap lives on TransitionContext; process_block tops up.
         state
     }
 
@@ -385,8 +403,9 @@ mod tests {
         // Control: verifying the same aggregate reaches crypto and increments.
         let mut control = advanced;
         let _ = take_bls_verify_count();
-        let err = process_sync_aggregate_with_opts(&mut control, &block.body.sync_aggregate, true)
-            .expect_err("junk participant aggregate must fail when verified");
+        let err =
+            process_sync_aggregate_with_opts(&mut control, &block.body.sync_aggregate, true, &ctx)
+                .expect_err("junk participant aggregate must fail when verified");
         assert!(
             matches!(
                 err,
@@ -426,6 +445,24 @@ mod tests {
             0,
             "NoVerification must not reach cc_crypto verify for the sync-aggregate"
         );
+    }
+
+    #[test]
+    fn transition_context_top_up_pubkey_cache_is_idempotent() {
+        let mut state = BeaconState::<Minimal>::default();
+        seed(&mut state);
+        let config = minimal_test_config();
+        let engine = AcceptEngine;
+        let ctx = TransitionContext::<Minimal>::new(&config, &engine);
+        assert!(ctx.pubkeys().is_empty());
+        ctx.top_up_pubkey_cache(&state);
+        let first = ctx.pubkeys().len();
+        assert_eq!(first, state.validators_len());
+        ctx.top_up_pubkey_cache(&state);
+        ctx.top_up_pubkey_cache(&state);
+        assert_eq!(ctx.pubkeys().len(), first);
+        let pk = state.validators_get(0).unwrap().pubkey;
+        assert_eq!(ctx.pubkeys().get(&pk), Some(ValidatorIndex::new(0)));
     }
 
     fn minimal_test_config() -> ChainConfig {

@@ -117,10 +117,6 @@ fn seed_state<P: Preset>(n: usize, epoch: u64) -> BeaconState<P> {
     state.set_slot(Slot::new(epoch.saturating_mul(P::SLOTS_PER_EPOCH)));
     for i in 0..n {
         let v = active_validator(i as u64);
-        state
-            .caches_mut()
-            .pubkeys
-            .insert(v.pubkey, ValidatorIndex::new(i as u64));
         state.validators_push(v).unwrap();
         state.balances_push(MAX_EFFECTIVE_BALANCE).unwrap();
     }

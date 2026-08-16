@@ -318,7 +318,7 @@ pub struct ChainMetrics {
     pub pending_engine_occupancy: Gauge,
     /// Blocks dropped from `pending_engine` (timeout or capacity).
     pub pending_engine_dropped: Counter,
-    /// `caches.pubkeys.len()` on the state the core is importing against (M13).
+    /// Pubkey-index map length on the import context (M13 / S2-A-10).
     pub pubkey_cache_len: Gauge,
     /// `validators_len()` on the state the core is importing against (M13).
     pub validators_len: Gauge,
@@ -578,7 +578,7 @@ impl ChainMetrics {
         );
         registry.register(
             PUBKEY_CACHE_LEN_METRIC,
-            "PubkeyIndexMap length on the state the core is importing against (M13 / P0-19)",
+            "PubkeyIndexMap length on the import TransitionContext (M13 / P0-19 / S2-A-10)",
             pubkey_cache_len.clone(),
         );
         registry.register(
@@ -1202,8 +1202,22 @@ impl ChainMetrics {
     ///
     /// Must run **before** `on_block` / STF so a short cache is visible even
     /// when `process_sync_aggregate` returns `CachePoisoned`.
+    ///
+    /// S2-A-10: `PubkeyIndexMap` is not on `BeaconState`. Report length 0
+    /// (fail-closed) so `cc_chain_pubkey_cache_len < cc_chain_validators_len`
+    /// can still fire. Do not invent `validators_len`. S2-A-11 threads
+    /// `ctx.pubkeys().len()` via [`Self::observe_import_state_with_pubkeys`].
     pub fn observe_import_state<P: Preset>(&self, state: &BeaconState<P>) {
-        let cache_len = state.caches().pubkeys.len() as u64;
+        self.observe_import_state_with_pubkeys(state, 0);
+    }
+
+    /// Observe M13 gauges with an explicit pubkey-cache length.
+    pub fn observe_import_state_with_pubkeys<P: Preset>(
+        &self,
+        state: &BeaconState<P>,
+        pubkey_cache_len: usize,
+    ) {
+        let cache_len = pubkey_cache_len as u64;
         let validators_len = state.validators_len() as u64;
         self.pubkey_cache_len.set(cache_len as i64);
         self.validators_len.set(validators_len as i64);
@@ -1705,7 +1719,6 @@ mod tests {
                 })
                 .unwrap();
         }
-        assert!(state.caches().pubkeys.is_empty());
         m.observe_import_state(&state);
         assert_eq!(m.pubkey_cache_len_value(), 0);
         assert_eq!(m.validators_len_value(), 3);
@@ -1714,8 +1727,9 @@ mod tests {
             "alert must fire when pubkey_cache_len < validators_len"
         );
 
-        state.top_up_pubkey_cache();
-        m.observe_import_state(&state);
+        let mut map = cc_types::PubkeyIndexMap::default();
+        map.import_from_registry(&state);
+        m.observe_import_state_with_pubkeys(&state, map.len());
         assert_eq!(m.pubkey_cache_len_value(), 3);
         assert_eq!(m.validators_len_value(), 3);
         assert!(

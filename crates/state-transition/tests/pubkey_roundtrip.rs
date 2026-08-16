@@ -8,7 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use cc_state_transition::{
-    BlockError, EngineError, ExecutionEngine, NewPayloadRequest, PayloadStatus, TransitionContext,
+    EngineError, ExecutionEngine, NewPayloadRequest, PayloadStatus, TransitionContext,
     compute_time_at_slot, get_beacon_proposer_index, get_current_epoch, get_randao_mix,
     process_block, process_slots,
 };
@@ -170,22 +170,19 @@ fn ssz_decoded_state_process_block_roundtrip() {
 
     let mut hydrated = BeaconState::<Minimal>::from_ssz_bytes_hydrated(ForkName::Fulu, &bytes)
         .unwrap_or_else(|e| panic!("{e:?}"));
-    assert!(
-        !hydrated.caches().pubkeys.is_empty(),
-        "hydrated decode must fill pubkeys from the registry"
-    );
     let ctx = TransitionContext::<Minimal>::new(&config, &engine);
     process_block(&mut hydrated, &block, &ctx, pre_root)
         .expect("process_block must succeed after from_ssz_bytes_hydrated");
+    assert!(
+        !ctx.pubkeys().is_empty(),
+        "process_block must top up TransitionContext.pubkeys from the registry"
+    );
 
+    // S2-A-10: the map is off BeaconState. CachePoisoned is a committee key
+    // absent from the registry, not an empty SSZ-decoded StateCaches field.
     let mut raw = BeaconState::<Minimal>::from_ssz_bytes_with(ForkName::Fulu, &bytes)
         .unwrap_or_else(|e| panic!("{e:?}"));
-    assert!(
-        raw.caches().pubkeys.is_empty(),
-        "raw SSZ decode must leave pubkeys empty"
-    );
     let ctx = TransitionContext::<Minimal>::new(&config, &engine);
-    let err = process_block(&mut raw, &block, &ctx, pre_root)
-        .expect_err("raw decode must fail process_block");
-    assert_eq!(err, BlockError::CachePoisoned);
+    process_block(&mut raw, &block, &ctx, pre_root)
+        .expect("raw decode must also succeed: ctx tops up from the registry");
 }

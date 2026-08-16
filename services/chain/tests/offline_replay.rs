@@ -65,7 +65,7 @@ use cc_types::config::ChainConfig;
 use cc_types::containers::SyncAggregate;
 use cc_types::execution::ExecutionPayload;
 use cc_types::preset::{Mainnet, Preset};
-use cc_types::primitives::{BlsSignature, Root, Slot, ValidatorIndex};
+use cc_types::primitives::{BlsSignature, Root, Slot};
 use cc_types::{BeaconBlock, BeaconBlockBody, BeaconState, ForkName, SignedBeaconBlock};
 use prometheus_client::registry::Registry;
 use sha2::{Digest, Sha256};
@@ -253,15 +253,8 @@ fn hoodi_config() -> ChainConfig {
     panic!("hoodi-config.yaml not found; {FETCH_HINT}");
 }
 
-fn rebuild_pubkey_cache(state: &mut BeaconState<Mainnet>) {
-    let entries: Vec<_> = state
-        .validators_iter()
-        .enumerate()
-        .map(|(i, v)| (v.pubkey, ValidatorIndex::new(i as u64)))
-        .collect();
-    for (pk, idx) in entries {
-        state.caches_mut().pubkeys.insert(pk, idx);
-    }
+fn rebuild_pubkey_cache(_state: &mut BeaconState<Mainnet>) {
+    // S2-A-10: PubkeyIndexMap lives on TransitionContext. STF top-up fills it.
 }
 
 fn load_anchor_state() -> BeaconState<Mainnet> {

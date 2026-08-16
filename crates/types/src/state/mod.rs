@@ -1,7 +1,8 @@
 //! `BeaconState` flat struct + cached hashing + List/Vector seam (Architecture §3.4).
 //!
 //! Spec fields are private and reached through accessors. `StateCaches` holds list-hash
-//! caches, field roots, and epoch/pubkey/shuffling shells. Caches are excluded from
+//! caches, field roots, and epoch/shuffling shells. The pubkey index map lives on
+//! `TransitionContext` (S2-A-10 / P0-19/3), not here. Caches are excluded from
 //! SSZ / tree-hash and from `PartialEq`.
 //!
 //! ## Compile-fail: external crates cannot index state lists directly
@@ -64,6 +65,7 @@ pub type ParticipationFlags = u8;
 ///
 /// Production SSZ decode must use [`Self::from_ssz_bytes_hydrated`] (S0-A-02 /
 /// P0-19/1b). Raw [`ssz::Decode::from_ssz_bytes`] leaves `caches` empty.
+/// Pubkey-index hydration is on `TransitionContext` (S2-A-10).
 #[derive(Clone, Encode, Decode, TreeHash)]
 pub struct BeaconState<P: Preset> {
     genesis_time: u64,
@@ -219,15 +221,13 @@ impl<P: Preset> PartialEq for BeaconState<P> {
 impl<P: Preset> Eq for BeaconState<P> {}
 
 impl<P: Preset> BeaconState<P> {
-    /// Decode SSZ bytes under an explicit fork context **and** hydrate caches.
+    /// Decode SSZ bytes under an explicit fork context.
     ///
     /// Production chokepoint (S0-A-02 / P0-19/1b). Routes through
-    /// [`Self::from_ssz_bytes_with`] (fork gate) then
-    /// [`Self::top_up_pubkey_cache`].
+    /// [`Self::from_ssz_bytes_with`] (fork gate). Pubkey-index hydration
+    /// moved to `TransitionContext::top_up_pubkey_cache` (S2-A-10).
     pub fn from_ssz_bytes_hydrated(fork_name: ForkName, bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut state = Self::from_ssz_bytes_with(fork_name, bytes)?;
-        state.top_up_pubkey_cache();
-        Ok(state)
+        Self::from_ssz_bytes_with(fork_name, bytes)
     }
 
     /// Decode SSZ bytes under an explicit fork context.
@@ -252,23 +252,6 @@ impl<P: Preset> BeaconState<P> {
     #[doc(hidden)]
     pub(crate) fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
         <Self as ssz::Decode>::from_ssz_bytes(bytes)
-    }
-
-    /// Fill `caches.pubkeys` from the validator registry.
-    ///
-    /// Append-only and idempotent. Required after SSZ decode: `caches` is
-    /// `skip_deserializing`, so every decoded state starts with an empty map.
-    pub fn top_up_pubkey_cache(&mut self) {
-        let len = self.validators_len();
-        for i in 0..len {
-            let Some(v) = self.validators_get(i) else {
-                continue;
-            };
-            let pk = v.pubkey;
-            self.caches_mut()
-                .pubkeys
-                .insert(pk, ValidatorIndex::new(i as u64));
-        }
     }
 }
 
@@ -357,18 +340,19 @@ mod tests {
     }
 
     #[test]
-    fn from_ssz_bytes_hydrated_fills_pubkey_cache() {
+    fn from_ssz_bytes_hydrated_does_not_own_pubkey_cache() {
         let state = registry_state(4);
         let bytes = state.as_ssz_bytes();
         let decoded = BeaconState::<Minimal>::from_ssz_bytes_hydrated(ForkName::Fulu, &bytes)
             .unwrap_or_else(|e| panic!("{e:?}"));
-        assert_eq!(decoded.caches().pubkeys.len(), decoded.validators_len());
+        assert_eq!(decoded.validators_len(), 4);
+        // S2-A-10: the map is on TransitionContext, not StateCaches.
+        let mut map = PubkeyIndexMap::default();
+        map.import_from_registry(&decoded);
+        assert_eq!(map.len(), decoded.validators_len());
         for i in 0..4 {
             let pk = decoded.validators_get(i).unwrap().pubkey;
-            assert_eq!(
-                decoded.caches().pubkeys.get(&pk),
-                Some(ValidatorIndex::new(i as u64))
-            );
+            assert_eq!(map.get(&pk), Some(ValidatorIndex::new(i as u64)));
         }
     }
 
@@ -449,49 +433,65 @@ mod tests {
         state
     }
 
-    fn cache_mappings(state: &BeaconState<Minimal>) -> Vec<Option<ValidatorIndex>> {
+    fn cache_mappings(
+        state: &BeaconState<Minimal>,
+        map: &PubkeyIndexMap,
+    ) -> Vec<Option<ValidatorIndex>> {
         (0..state.validators_len())
             .map(|i| {
                 let pk = state.validators_get(i).unwrap().pubkey;
-                state.caches().pubkeys.get(&pk)
+                map.get(&pk)
             })
             .collect()
     }
 
     #[test]
-    fn top_up_pubkey_cache_fills_after_ssz_decode() {
+    fn import_from_registry_fills_after_ssz_decode() {
         let state = registry_state(4);
-        assert!(state.caches().pubkeys.is_empty());
         let bytes = state.as_ssz_bytes();
-        let mut decoded =
+        let decoded =
             BeaconState::<Minimal>::from_ssz_bytes(&bytes).unwrap_or_else(|e| panic!("{e:?}"));
-        assert!(
-            decoded.caches().pubkeys.is_empty(),
-            "SSZ decode must leave caches.pubkeys empty"
-        );
-        decoded.top_up_pubkey_cache();
-        assert_eq!(decoded.caches().pubkeys.len(), decoded.validators_len());
+        let mut map = PubkeyIndexMap::default();
+        assert!(map.is_empty(), "fresh map must start empty");
+        map.import_from_registry(&decoded);
+        assert_eq!(map.len(), decoded.validators_len());
         for i in 0..4 {
             let pk = decoded.validators_get(i).unwrap().pubkey;
-            assert_eq!(
-                decoded.caches().pubkeys.get(&pk),
-                Some(ValidatorIndex::new(i as u64))
-            );
+            assert_eq!(map.get(&pk), Some(ValidatorIndex::new(i as u64)));
         }
     }
 
     #[test]
-    fn top_up_pubkey_cache_is_idempotent() {
+    fn import_from_registry_is_idempotent() {
         let state = registry_state(3);
         let bytes = state.as_ssz_bytes();
-        let mut decoded =
+        let decoded =
             BeaconState::<Minimal>::from_ssz_bytes(&bytes).unwrap_or_else(|e| panic!("{e:?}"));
-        decoded.top_up_pubkey_cache();
-        let first_len = decoded.caches().pubkeys.len();
-        let first = cache_mappings(&decoded);
-        decoded.top_up_pubkey_cache();
-        decoded.top_up_pubkey_cache();
-        assert_eq!(decoded.caches().pubkeys.len(), first_len);
-        assert_eq!(cache_mappings(&decoded), first);
+        let mut map = PubkeyIndexMap::default();
+        map.import_from_registry(&decoded);
+        let first_len = map.len();
+        let first = cache_mappings(&decoded, &map);
+        map.import_from_registry(&decoded);
+        map.import_from_registry(&decoded);
+        assert_eq!(map.len(), first_len);
+        assert_eq!(cache_mappings(&decoded, &map), first);
+    }
+
+    #[test]
+    fn import_from_registry_is_first_wins_on_duplicate_pubkey() {
+        let mut state = BeaconState::<Minimal>::default();
+        let pk = BlsPublicKey::from_array([0xABu8; 48]);
+        for _ in 0..2 {
+            state
+                .validators_push(Validator {
+                    pubkey: pk,
+                    ..Validator::default()
+                })
+                .unwrap();
+        }
+        let mut map = PubkeyIndexMap::default();
+        map.import_from_registry(&state);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&pk), Some(ValidatorIndex::new(0)));
     }
 }

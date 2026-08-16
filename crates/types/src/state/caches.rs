@@ -5,7 +5,8 @@
 //! - Field roots: mark the corresponding top-level leaf dirty on any field mutation.
 //! - `ShufflingCache` / `EpochCache`: structs only here; filled/invalidated by `cc-state-transition`
 //!   at CC-13a.
-//! - `PubkeyIndexMap`: append-only; extended by deposit handlers (CC-12c).
+//! - `PubkeyIndexMap`: append-only. Owned by `TransitionContext` (S2-A-10 / P0-19/3),
+//!   not [`StateCaches`]. Extended by deposit handlers (CC-12c) via the context.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -561,6 +562,27 @@ impl PubkeyIndexMap {
         self.linear_scan_count = 0;
         n
     }
+
+    /// Fill from `state.validators`. Append-only and idempotent (S2-A-10).
+    ///
+    /// Walks only `self.len()..validators_len()` so a second call after a
+    /// full fill is O(new). First-wins on a duplicate pubkey (same as
+    /// `get_validator_index_by_pubkey`'s registry scan). Never removes.
+    pub fn import_from_registry<P: crate::preset::Preset>(
+        &mut self,
+        state: &super::BeaconState<P>,
+    ) {
+        let start = self.len();
+        let len = state.validators_len();
+        for i in start..len {
+            let Some(v) = state.validators_get(i) else {
+                continue;
+            };
+            self.map
+                .entry(v.pubkey)
+                .or_insert(ValidatorIndex::new(i as u64));
+        }
+    }
 }
 
 /// Default capacity for [`ShufflingCache`] (Architecture §5.4).
@@ -858,8 +880,6 @@ pub struct StateCaches<P: crate::preset::Preset> {
     pub field_roots: FieldRootCache,
     /// Committee shuffling cache (CC-13a).
     pub committees: ShufflingCache,
-    /// Pubkey → index (append-only).
-    pub pubkeys: PubkeyIndexMap,
     /// Epoch-derived values (CC-13a).
     pub epoch: EpochCache,
     /// Non-spec discriminator for PartialEq unit tests; always zero on decode.
@@ -873,7 +893,6 @@ impl<P: crate::preset::Preset> Default for StateCaches<P> {
             list_hashes: std::array::from_fn(|_| None),
             field_roots: FieldRootCache::default(),
             committees: ShufflingCache::default(),
-            pubkeys: PubkeyIndexMap::default(),
             epoch: EpochCache::default(),
             tag: 0,
             _marker: std::marker::PhantomData,
@@ -894,7 +913,6 @@ impl<P: crate::preset::Preset> fmt::Debug for StateCaches<P> {
                     .collect::<Vec<_>>(),
             )
             .field("field_roots", &self.field_roots)
-            .field("pubkeys_len", &self.pubkeys.len())
             .finish_non_exhaustive()
     }
 }

@@ -460,7 +460,9 @@ pub fn apply_restore_set<P: Preset + 'static>(
     #[cfg(feature = "s0-a-31-observe")]
     record_restore_trace(RestoreTracePoint::Decode {
         hydrated: !restore_observe::raw_decode_enabled(),
-        pubkey_cache_len: state.caches().pubkeys.len(),
+        // S2-A-10: decode does not own PubkeyIndexMap (it lives on
+        // TransitionContext). Both hydrated and raw arms report 0 here.
+        pubkey_cache_len: 0,
         validators_len: state.validators_len(),
     });
     input.metrics.observe_import_state(&state);

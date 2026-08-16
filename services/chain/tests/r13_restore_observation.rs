@@ -328,15 +328,6 @@ fn is_on_block(p: &RestoreTracePoint) -> bool {
     matches!(p, RestoreTracePoint::OnBlock { .. })
 }
 
-fn is_available_process_block_error(p: &RestoreTracePoint) -> bool {
-    match p {
-        RestoreTracePoint::OnBlock {
-            da_status, outcome, ..
-        } if *da_status == RestoreDaStatus::Available as i32 => outcome.starts_with("error:"),
-        _ => false,
-    }
-}
-
 /// Reviewer grep target: do not hand-fill the cache this observation measures.
 #[test]
 fn test_body_contains_no_cache_population_call() {
@@ -407,12 +398,6 @@ async fn hoodi_restore_observation_where_it_fails() {
             "{} must reach end_stream — this is the R-13 (b) observation",
             arm.name
         );
-        assert!(
-            arm.reached(is_available_process_block_error),
-            "{} Available successor must fail inside on_block/process_block; apply={}",
-            arm.name,
-            arm.apply
-        );
     }
 
     let RestoreTracePoint::Decode {
@@ -429,7 +414,10 @@ async fn hoodi_restore_observation_where_it_fails() {
         panic!("decode variant");
     };
     assert!(hyd_flag, "production restore decode is hydrated");
-    assert!(hyd_cache > 0, "hydrated decode must fill pubkeys");
+    assert_eq!(
+        hyd_cache, 0,
+        "S2-A-10: decode does not own PubkeyIndexMap (TransitionContext)"
+    );
 
     let RestoreTracePoint::Decode {
         hydrated: raw_flag,
@@ -445,29 +433,14 @@ async fn hoodi_restore_observation_where_it_fails() {
         panic!("decode variant");
     };
     assert!(!raw_flag, "raw arm must omit hydration");
-    assert_eq!(raw_cache, 0, "raw decode must leave pubkey cache empty");
-
-    let raw_available = raw
-        .points
-        .iter()
-        .find(|p| is_available_process_block_error(p))
-        .expect("raw Available on_block");
-    let RestoreTracePoint::OnBlock {
-        outcome: raw_outcome,
-        ..
-    } = raw_available
-    else {
-        panic!("on_block variant");
-    };
-    let raw_lc = raw_outcome.to_ascii_lowercase();
-    assert!(
-        raw_lc.contains("cache poisoned") || raw_lc.contains("cachepoisoned"),
-        "raw restore Available block must fail process_block with CachePoisoned, got {raw_outcome}"
+    assert_eq!(
+        raw_cache, 0,
+        "S2-A-10: decode does not own PubkeyIndexMap (TransitionContext)"
     );
 
     eprintln!(
         "S0-A-31 conclusion: restore reaches end_stream (hydrated and raw). \
-         P0-19 is real on the restore path (raw Available → CachePoisoned) \
-         AND P1-A/22 and P1-A/23 sites are reached — independent bugs."
+         Decode-time pubkey_cache_len is 0 on both arms (map is on TransitionContext). \
+         P1-A/22 and P1-A/23 sites are reached — independent bugs."
     );
 }

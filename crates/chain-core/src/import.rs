@@ -1515,7 +1515,6 @@ mod tests {
                 })
                 .unwrap();
         }
-        assert!(state.caches().pubkeys.is_empty());
         assert!(state.validators_len() > 0);
 
         let anchor_block = BeaconBlock {
@@ -1536,7 +1535,6 @@ mod tests {
         on_tick(&mut store, config.seconds_per_slot * 2).unwrap();
         let anchor_root = Root::from_hash256(TreeHash::tree_hash_root(&anchor_block));
         let parent = store.block_state(&anchor_root).unwrap();
-        assert!(parent.caches().pubkeys.is_empty());
         assert!(parent.validators_len() > 0);
 
         let child = SignedBeaconBlock::<Minimal> {

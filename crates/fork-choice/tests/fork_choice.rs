@@ -470,25 +470,9 @@ fn columns_structurally_ok<P: Preset>(case_dir: &Path, column_files: &[String]) 
 fn run_case<P: Preset>(rel: &str, case_dir: &Path, config: &ChainConfig, da: Arc<VectorDa>) {
     let anchor_state_bytes = snappy_decompress(&case_dir.join("anchor_state.ssz_snappy"));
     let anchor_block_bytes = snappy_decompress(&case_dir.join("anchor_block.ssz_snappy"));
-    let mut anchor_state =
-        BeaconState::<P>::from_ssz_bytes_with(ForkName::Fulu, &anchor_state_bytes)
-            .unwrap_or_else(|e| panic!("anchor_state {rel}: {e:?}"));
-    // Rebuild pubkey index for any signature paths (vectors mostly NoVerification).
-    {
-        let entries: Vec<_> = anchor_state
-            .validators_iter()
-            .enumerate()
-            .map(|(i, v)| {
-                (
-                    v.pubkey,
-                    cc_types::primitives::ValidatorIndex::new(i as u64),
-                )
-            })
-            .collect();
-        for (pk, idx) in entries {
-            anchor_state.caches_mut().pubkeys.insert(pk, idx);
-        }
-    }
+    let anchor_state = BeaconState::<P>::from_ssz_bytes_with(ForkName::Fulu, &anchor_state_bytes)
+        .unwrap_or_else(|e| panic!("anchor_state {rel}: {e:?}"));
+    // S2-A-10: PubkeyIndexMap lives on TransitionContext; on_block tops up.
     let anchor_block = BeaconBlock::<P>::from_ssz_bytes(&anchor_block_bytes)
         .unwrap_or_else(|e| panic!("anchor_block {rel}: {e:?}"));
 

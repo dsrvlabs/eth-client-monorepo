@@ -504,27 +504,31 @@ pub fn get_consolidation_churn_limit<P: Preset>(
     ))
 }
 
-/// Resolve a validator index by pubkey via [`PubkeyIndexMap`], falling back to
-/// a linear registry scan that is counted on the map (CC-12d).
+/// Resolve a validator index by pubkey via [`cc_types::PubkeyIndexMap`], falling
+/// back to a linear registry scan that is counted on the map (CC-12d).
 ///
 /// Prefer this when a miss is possible; `process_sync_aggregate` uses the map
-/// only (no scan).
+/// only (no scan). The map lives on `TransitionContext` (S2-A-10).
 pub fn get_validator_index_by_pubkey<P: Preset>(
-    state: &mut BeaconState<P>,
+    state: &BeaconState<P>,
     pubkey: &cc_types::primitives::BlsPublicKey,
+    cache: Option<&std::cell::RefCell<cc_types::PubkeyIndexMap>>,
 ) -> Option<ValidatorIndex> {
-    if let Some(idx) = state.caches().pubkeys.get(pubkey) {
+    if let Some(cache) = cache
+        && let Some(idx) = cache.borrow().get(pubkey)
+    {
         return Some(idx);
     }
-    // Full-registry scan fallback + backfill.
-    state.caches_mut().pubkeys.note_linear_scan();
+    if let Some(cache) = cache {
+        cache.borrow_mut().note_linear_scan();
+    }
     let found = state
         .validators_iter()
         .enumerate()
         .find(|(_, v)| v.pubkey == *pubkey)
         .map(|(i, _)| ValidatorIndex::new(i as u64));
-    if let Some(idx) = found {
-        state.caches_mut().pubkeys.insert(*pubkey, idx);
+    if let (Some(idx), Some(cache)) = (found, cache) {
+        cache.borrow_mut().insert(*pubkey, idx);
     }
     found
 }

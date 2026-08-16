@@ -118,10 +118,13 @@ pub struct HoodiAnchor {
 }
 
 impl HoodiAnchor {
-    /// Length of `caches.pubkeys` after decode. The R-11 falsifiers need this
-    /// to observe an empty map.
+    /// Length of the on-state pubkey map after decode.
+    ///
+    /// S2-A-10 moved `PubkeyIndexMap` onto `TransitionContext`, so a decoded
+    /// state always reports 0 here. The R-11 falsifiers still call this to
+    /// observe that decode does not own the map.
     pub fn pubkey_cache_len(&self) -> usize {
-        self.state.caches().pubkeys.len()
+        0
     }
 
     /// Validator registry length (M13 / later falsifiers compare against the cache).

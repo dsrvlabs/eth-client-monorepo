@@ -280,6 +280,14 @@ Grandine makes `pubkey_cache` its own crate (`[Q3]` §3, research README cross-c
   pubkey map. **This is what makes S4a's O(1) claim true rather than asserted.** Record the before and
   after clone cost in the exit note with absolute numbers.
 
+**Acceptance (`S2-A-10` only)**
+- [x] `PubkeyIndexMap` is a field of `TransitionContext`, not `StateCaches`
+- [x] `TransitionContext::new` constructs an empty map
+- [x] `TransitionContext::top_up_pubkey_cache` fills from the validator registry (append-only, idempotent)
+- [x] `process_block` / `state_transition` top up the context map before `process_sync_aggregate`
+- [x] `BeaconState` clone no longer includes the pubkey map (type-level; measurement is `S2-A-12`)
+- [x] No harness rewrite (`S2-A-11`); no clone-cost measurement (`S2-A-12`)
+
 **P0-19/4 (persist the cache in `cc-store`, `[Q3]` **S–M**) is `patch @ S2`, optional.** Not scheduled
 here. If it is picked up, note the distinction `S0-B-14` wrote into the module docs: the pubkey cache
 **is** reconstructible from the state, so losing it is a slow boot, and it **is** safe on the

@@ -99,13 +99,7 @@ pub fn build_genesis<P: Preset>(
             .map_err(|e| anyhow::anyhow!("randao_mixes_set: {e}"))?;
     }
 
-    // Pubkey cache (required by process_sync_aggregate).
-    for (i, k) in keys.iter().enumerate() {
-        state
-            .caches_mut()
-            .pubkeys
-            .insert(k.pubkey, ValidatorIndex::new(i as u64));
-    }
+    // S2-A-10: PubkeyIndexMap lives on TransitionContext; STF top-up fills it.
 
     // Sync committees from real selection.
     let committee = get_next_sync_committee(&state)

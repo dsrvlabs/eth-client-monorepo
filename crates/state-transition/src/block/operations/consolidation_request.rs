@@ -34,7 +34,7 @@ fn is_valid_switch_to_compounding_request<P: Preset>(
         return false;
     }
     let Some(source_index) =
-        get_validator_index_by_pubkey(state, &consolidation_request.source_pubkey)
+        get_validator_index_by_pubkey(state, &consolidation_request.source_pubkey, None)
     else {
         return false;
     };
@@ -72,7 +72,7 @@ pub fn process_consolidation_request<P: Preset>(
     if is_valid_switch_to_compounding_request(state, consolidation_request) {
         // Re-resolve after the validity check (map may have been backfilled).
         let Some(source_index) =
-            get_validator_index_by_pubkey(state, &consolidation_request.source_pubkey)
+            get_validator_index_by_pubkey(state, &consolidation_request.source_pubkey, None)
         else {
             return Ok(());
         };
@@ -94,12 +94,12 @@ pub fn process_consolidation_request<P: Preset>(
     }
 
     let Some(source_index) =
-        get_validator_index_by_pubkey(state, &consolidation_request.source_pubkey)
+        get_validator_index_by_pubkey(state, &consolidation_request.source_pubkey, None)
     else {
         return Ok(());
     };
     let Some(target_index) =
-        get_validator_index_by_pubkey(state, &consolidation_request.target_pubkey)
+        get_validator_index_by_pubkey(state, &consolidation_request.target_pubkey, None)
     else {
         return Ok(());
     };

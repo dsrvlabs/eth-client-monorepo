@@ -12,6 +12,7 @@ use cc_types::preset::Preset;
 use cc_types::primitives::{Gwei, Slot};
 use cc_types::{BeaconBlock, BeaconState};
 
+use crate::block::TransitionContext;
 use crate::error::{BlockError, SignatureKind};
 use crate::helpers::accessors::{
     get_base_reward_per_increment, get_beacon_proposer_index, get_block_root_at_slot,
@@ -31,8 +32,9 @@ use crate::signatures::{decode_signature, decode_state_pubkey};
 pub fn process_sync_aggregate<P: Preset>(
     state: &mut BeaconState<P>,
     block: &BeaconBlock<P>,
+    ctx: &TransitionContext<'_, P>,
 ) -> Result<(), BlockError> {
-    process_sync_aggregate_inner(state, &block.body.sync_aggregate, true)
+    process_sync_aggregate_inner(state, &block.body.sync_aggregate, true, ctx)
 }
 
 /// Core handler used by the operations vector runner (takes the aggregate
@@ -41,15 +43,22 @@ pub fn process_sync_aggregate_with_opts<P: Preset>(
     state: &mut BeaconState<P>,
     sync_aggregate: &SyncAggregate<P>,
     verify_signatures: bool,
+    ctx: &TransitionContext<'_, P>,
 ) -> Result<(), BlockError> {
-    process_sync_aggregate_inner(state, sync_aggregate, verify_signatures)
+    process_sync_aggregate_inner(state, sync_aggregate, verify_signatures, ctx)
 }
 
 fn process_sync_aggregate_inner<P: Preset>(
     state: &mut BeaconState<P>,
     sync_aggregate: &SyncAggregate<P>,
     verify_signatures: bool,
+    ctx: &TransitionContext<'_, P>,
 ) -> Result<(), BlockError> {
+    // Standalone `with_opts` callers (operations vectors) start empty.
+    // `process_block` already topped up; skip the second O(V) walk.
+    if ctx.pubkeys().is_empty() {
+        ctx.top_up_pubkey_cache(state);
+    }
     let committee = state.current_sync_committee().clone();
     let bits = &sync_aggregate.sync_committee_bits;
 
@@ -113,19 +122,19 @@ fn process_sync_aggregate_inner<P: Preset>(
 
     // Resolve committee indices **only** through PubkeyIndexMap (no linear scan).
     let proposer_index = get_beacon_proposer_index(state)?;
-    let mut committee_indices = Vec::with_capacity(sync_size);
-    for i in 0..sync_size {
-        let pk = committee
-            .pubkeys
-            .get(i)
-            .ok_or(BlockError::ArithmeticOverflow)?;
-        let idx = state
-            .caches()
-            .pubkeys
-            .get(pk)
-            .ok_or(BlockError::CachePoisoned)?;
-        committee_indices.push(idx);
-    }
+    let committee_indices = {
+        let pubkeys = ctx.pubkeys();
+        let mut committee_indices = Vec::with_capacity(sync_size);
+        for i in 0..sync_size {
+            let pk = committee
+                .pubkeys
+                .get(i)
+                .ok_or(BlockError::ArithmeticOverflow)?;
+            let idx = pubkeys.get(pk).ok_or(BlockError::CachePoisoned)?;
+            committee_indices.push(idx);
+        }
+        committee_indices
+    };
 
     for (participant_index, i) in committee_indices.into_iter().zip(0..sync_size) {
         let bit = bits.get(i).map_err(|_| BlockError::ArithmeticOverflow)?;

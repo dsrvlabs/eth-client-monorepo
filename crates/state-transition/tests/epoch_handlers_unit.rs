@@ -105,10 +105,6 @@ fn seed_state_inner(n: usize, epoch: u64, valid_bls: bool) -> BeaconState<Minima
     });
     for i in 0..n {
         let v = active_validator(i as u64, valid_bls);
-        state
-            .caches_mut()
-            .pubkeys
-            .insert(v.pubkey, ValidatorIndex::new(i as u64));
         state.validators_push(v).unwrap();
         state.balances_push(MAX_EFFECTIVE_BALANCE).unwrap();
         state.previous_epoch_participation_push(0).unwrap();

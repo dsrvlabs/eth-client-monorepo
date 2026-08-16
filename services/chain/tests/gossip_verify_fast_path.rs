@@ -864,18 +864,9 @@ fn seeded_store_for_gap() -> (
         state.previous_epoch_participation_push(0).unwrap();
         state.current_epoch_participation_push(0).unwrap();
         state.inactivity_scores_push(0).unwrap();
-        state
-            .caches_mut()
-            .pubkeys
-            .insert(pki, ValidatorIndex::new(i));
         keys.push(ski);
     }
-    // Default sync committee is all-zero pubkeys; map them so process_sync_aggregate
-    // can resolve committee indices without CachePoisoned.
-    state
-        .caches_mut()
-        .pubkeys
-        .insert(BlsPublicKey::default(), ValidatorIndex::new(0));
+    // S2-A-10: PubkeyIndexMap lives on TransitionContext; STF top-up fills it.
 
     for i in 0..state.proposer_lookahead_len() {
         state

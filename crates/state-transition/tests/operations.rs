@@ -401,20 +401,8 @@ fn read_execution_valid(case_dir: &Path) -> bool {
 // Handlers
 // ---------------------------------------------------------------------------
 
-fn rebuild_pubkey_cache<P: Preset>(state: &mut BeaconState<P>) {
-    let pk_entries: Vec<_> = state
-        .validators_iter()
-        .enumerate()
-        .map(|(i, v)| {
-            (
-                v.pubkey,
-                cc_types::primitives::ValidatorIndex::new(i as u64),
-            )
-        })
-        .collect();
-    for (pk, idx) in pk_entries {
-        state.caches_mut().pubkeys.insert(pk, idx);
-    }
+fn rebuild_pubkey_cache<P: Preset>(_state: &mut BeaconState<P>) {
+    // S2-A-10: PubkeyIndexMap lives on TransitionContext. STF top-up fills it.
 }
 
 fn run_block_header_cases<P: Preset>() {
@@ -911,7 +899,11 @@ fn sync_aggregate_minimal() {
         "sync_aggregate",
         "sync_aggregate.ssz_snappy",
         true,
-        |op, state, _cfg, verify| process_sync_aggregate_with_opts(state, op, verify),
+        |op, state, cfg, verify| {
+            let engine = AcceptEngine;
+            let ctx = TransitionContext::new(cfg, &engine);
+            process_sync_aggregate_with_opts(state, op, verify, &ctx)
+        },
     );
 }
 
@@ -921,7 +913,11 @@ fn sync_aggregate_mainnet() {
         "sync_aggregate",
         "sync_aggregate.ssz_snappy",
         true,
-        |op, state, _cfg, verify| process_sync_aggregate_with_opts(state, op, verify),
+        |op, state, cfg, verify| {
+            let engine = AcceptEngine;
+            let ctx = TransitionContext::new(cfg, &engine);
+            process_sync_aggregate_with_opts(state, op, verify, &ctx)
+        },
     );
 }
 
@@ -1223,7 +1219,7 @@ fn skiplist_operations_entries_match_disk_if_any() {
 fn deposit_top_up_lands_in_pending_deposits_not_balances() {
     use cc_state_transition::block::operations::apply_deposit;
     use cc_types::containers::Validator;
-    use cc_types::primitives::{BlsPublicKey, BlsSignature, Gwei, ValidatorIndex};
+    use cc_types::primitives::{BlsPublicKey, BlsSignature, Gwei};
 
     let mut state = BeaconState::<Minimal>::default();
     let pk = BlsPublicKey::from_array([0xABu8; 48]);
@@ -1241,10 +1237,6 @@ fn deposit_top_up_lands_in_pending_deposits_not_balances() {
         })
         .unwrap();
     state.balances_push(Gwei::new(32_000_000_000)).unwrap();
-    state
-        .caches_mut()
-        .pubkeys
-        .insert(pk, ValidatorIndex::new(0));
     let before = state.balances_get(0).unwrap();
     let pending_before = state.pending_deposits_len();
 
@@ -1302,7 +1294,6 @@ fn deposit_new_validator_appends_registry_and_pubkey_map() {
 
     let mut state = BeaconState::<Minimal>::default();
     assert_eq!(state.validators_len(), 0);
-    assert!(state.caches().pubkeys.is_empty());
 
     apply_deposit(
         &mut state,
@@ -1319,18 +1310,16 @@ fn deposit_new_validator_appends_registry_and_pubkey_map() {
     // Electra: new validator balance is 0; amount sits in pending_deposits.
     assert_eq!(state.balances_get(0).unwrap(), Gwei::new(0));
     assert_eq!(state.pending_deposits_len(), 1);
-    assert_eq!(
-        state.caches().pubkeys.get(&pk),
-        Some(cc_types::primitives::ValidatorIndex::new(0))
-    );
+    assert_eq!(state.validators_get(0).unwrap().pubkey, pk);
     let _ = TreeHash::tree_hash_root(state.validators_get(0).unwrap());
 }
 
-/// S0-A-10 / P2-B/3: `apply_deposit` must use `get_validator_index_by_pubkey`
-/// so a cache miss increments `linear_scan_count` and backfills the map.
+/// S0-A-10 / P2-B/3: `get_validator_index_by_pubkey` counts a cache miss
+/// on the context-owned map (S2-A-10) and backfills.
 #[test]
 fn apply_deposit_cache_miss_counts_linear_scan() {
     use cc_state_transition::block::operations::apply_deposit;
+    use cc_state_transition::helpers::accessors::get_validator_index_by_pubkey;
     use cc_types::containers::Validator;
     use cc_types::primitives::{BlsPublicKey, BlsSignature, Gwei, ValidatorIndex};
 
@@ -1350,30 +1339,20 @@ fn apply_deposit_cache_miss_counts_linear_scan() {
         })
         .unwrap();
     state.balances_push(Gwei::new(32_000_000_000)).unwrap();
-    // Validator is in the registry; leave the map empty so the lookup must scan.
-    assert!(state.caches().pubkeys.is_empty());
-    let _ = state.caches_mut().pubkeys.take_linear_scan_count();
-
-    apply_deposit(
-        &mut state,
-        pk,
-        creds,
-        Gwei::new(1_000_000_000),
-        BlsSignature::default(),
-        &spec_config_for_preset(PresetName::Minimal),
-    )
-    .unwrap();
+    let cache = std::cell::RefCell::new(cc_types::PubkeyIndexMap::default());
+    assert!(cache.borrow().is_empty());
+    let _ = cache.borrow_mut().take_linear_scan_count();
 
     assert_eq!(
-        state.caches().pubkeys.linear_scan_count(),
-        1,
-        "cache-miss apply_deposit must count the registry scan"
-    );
-    assert_eq!(
-        state.caches().pubkeys.get(&pk),
+        get_validator_index_by_pubkey(&state, &pk, Some(&cache)),
         Some(ValidatorIndex::new(0))
     );
-    assert_eq!(state.pending_deposits_len(), 1);
+    assert_eq!(
+        cache.borrow().linear_scan_count(),
+        1,
+        "cache-miss lookup must count the registry scan"
+    );
+    assert_eq!(cache.borrow().get(&pk), Some(ValidatorIndex::new(0)));
 
     apply_deposit(
         &mut state,
@@ -1384,11 +1363,27 @@ fn apply_deposit_cache_miss_counts_linear_scan() {
         &spec_config_for_preset(PresetName::Minimal),
     )
     .unwrap();
+    assert_eq!(state.pending_deposits_len(), 1);
+
     assert_eq!(
-        state.caches().pubkeys.linear_scan_count(),
+        get_validator_index_by_pubkey(&state, &pk, Some(&cache)),
+        Some(ValidatorIndex::new(0))
+    );
+    assert_eq!(
+        cache.borrow().linear_scan_count(),
         1,
         "cache hit must not scan again"
     );
+
+    apply_deposit(
+        &mut state,
+        pk,
+        creds,
+        Gwei::new(1_000_000_000),
+        BlsSignature::default(),
+        &spec_config_for_preset(PresetName::Minimal),
+    )
+    .unwrap();
     assert_eq!(state.pending_deposits_len(), 2);
 }
 
@@ -1633,7 +1628,7 @@ fn bls_to_execution_change_rejects_current_fork_version_domain() {
 fn invalid_withdrawal_and_consolidation_requests_are_noops() {
     use cc_types::containers::Validator;
     use cc_types::operations::{ConsolidationRequest, WithdrawalRequest};
-    use cc_types::primitives::{BlsPublicKey, Gwei, ValidatorIndex};
+    use cc_types::primitives::{BlsPublicKey, Gwei};
 
     let mut state = BeaconState::<Minimal>::default();
     state.set_slot(Slot::new(32));
@@ -1655,10 +1650,6 @@ fn invalid_withdrawal_and_consolidation_requests_are_noops() {
         })
         .unwrap();
     state.balances_push(Gwei::new(32_000_000_000)).unwrap();
-    state
-        .caches_mut()
-        .pubkeys
-        .insert(pk, ValidatorIndex::new(0));
 
     let pre = state.clone();
 
@@ -1752,10 +1743,6 @@ fn sync_aggregate_empty_participants_infinity_signature_passes() {
         })
         .unwrap();
     state.balances_push(Gwei::new(32_000_000_000)).unwrap();
-    state
-        .caches_mut()
-        .pubkeys
-        .insert(BlsPublicKey::default(), ValidatorIndex::new(0));
     for i in 0..state.proposer_lookahead_len() {
         state
             .proposer_lookahead_set(i, ValidatorIndex::new(0))
@@ -1780,10 +1767,14 @@ fn sync_aggregate_empty_participants_infinity_signature_passes() {
         ..Default::default()
     };
 
-    let scans_before = state.caches().pubkeys.linear_scan_count();
-    process_sync_aggregate_with_opts(&mut state, &agg, true).expect("empty+infinity must pass");
+    let config = spec_config_for_preset(PresetName::Minimal);
+    let engine = AcceptEngine;
+    let ctx = TransitionContext::<Minimal>::new(&config, &engine);
+    let scans_before = ctx.pubkeys().linear_scan_count();
+    process_sync_aggregate_with_opts(&mut state, &agg, true, &ctx)
+        .expect("empty+infinity must pass");
     assert_eq!(
-        state.caches().pubkeys.linear_scan_count(),
+        ctx.pubkeys().linear_scan_count(),
         scans_before,
         "process_sync_aggregate must not full-registry-scan"
     );
@@ -1802,27 +1793,17 @@ fn sync_aggregate_uses_pubkey_index_map_no_registry_scan() {
     assert!(case.is_dir(), "missing empty participants vector case");
     let pre = snappy_decompress(&case.join("pre.ssz_snappy"));
     let mut state = BeaconState::<Minimal>::from_ssz_bytes_with(ForkName::Fulu, &pre).unwrap();
-    let pk_entries: Vec<_> = state
-        .validators_iter()
-        .enumerate()
-        .map(|(i, v)| {
-            (
-                v.pubkey,
-                cc_types::primitives::ValidatorIndex::new(i as u64),
-            )
-        })
-        .collect();
-    for (pk, idx) in pk_entries {
-        state.caches_mut().pubkeys.insert(pk, idx);
-    }
-    let _ = state.caches_mut().pubkeys.take_linear_scan_count();
+    let config = spec_config_for_preset(PresetName::Minimal);
+    let engine = AcceptEngine;
+    let ctx = TransitionContext::<Minimal>::new(&config, &engine);
+    let _ = ctx.pubkeys_mut().take_linear_scan_count();
     let op = SyncAggregate::<Minimal>::from_ssz_bytes(&snappy_decompress(
         &case.join("sync_aggregate.ssz_snappy"),
     ))
     .unwrap();
-    process_sync_aggregate_with_opts(&mut state, &op, true).unwrap();
+    process_sync_aggregate_with_opts(&mut state, &op, true, &ctx).unwrap();
     assert_eq!(
-        state.caches().pubkeys.linear_scan_count(),
+        ctx.pubkeys().linear_scan_count(),
         0,
         "no full-registry scan during process_sync_aggregate"
     );

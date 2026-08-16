@@ -159,20 +159,8 @@ fn list_handlers(tests: &Path, preset: &str) -> BTreeSet<String> {
     set
 }
 
-fn rebuild_pubkey_cache<P: Preset>(state: &mut BeaconState<P>) {
-    let pk_entries: Vec<_> = state
-        .validators_iter()
-        .enumerate()
-        .map(|(i, v)| {
-            (
-                v.pubkey,
-                cc_types::primitives::ValidatorIndex::new(i as u64),
-            )
-        })
-        .collect();
-    for (pk, idx) in pk_entries {
-        state.caches_mut().pubkeys.insert(pk, idx);
-    }
+fn rebuild_pubkey_cache<P: Preset>(_state: &mut BeaconState<P>) {
+    // S2-A-10: PubkeyIndexMap lives on TransitionContext. STF top-up fills it.
 }
 
 fn spec_config_for_preset(preset: PresetName) -> ChainConfig {

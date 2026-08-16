@@ -42,7 +42,8 @@ pub fn process_withdrawal_request<P: Preset>(
         return Ok(());
     }
 
-    let Some(index) = get_validator_index_by_pubkey(state, &withdrawal_request.validator_pubkey)
+    let Some(index) =
+        get_validator_index_by_pubkey(state, &withdrawal_request.validator_pubkey, None)
     else {
         return Ok(());
     };
