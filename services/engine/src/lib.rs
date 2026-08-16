@@ -38,6 +38,7 @@ pub mod jwt;
 pub mod methods;
 pub mod metrics;
 pub mod service;
+#[path = "../../../crates/engine-api/src/state.rs"]
 pub mod state;
 #[path = "../../../crates/engine-api/src/transport.rs"]
 pub mod transport;

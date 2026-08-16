@@ -137,6 +137,12 @@ moving, not being re-derived. A new numeric literal in a moved file is a review-
 | `S1-A-05` | `methods/`, `fastpath/` | 2–3 | `fastpath/cells.rs:1` carries ADR-P3-12 (cell extension on the blocking pool); `fastpath/filter.rs:346` carries ADR-P3-15, the `cfg(test)`-only `verify_cell_kzg_proof_batch` → `S1-B-13` |
 | `S1-A-06` | `services/engine/main.rs` → thin constructor over `cc-engine-api`; delete `service.rs`, `inject.rs` | 1.5–2 | **`services/engine` stays a workspace member** so the 4-container topology can still be run for A/B (`[ARCH]` §9.1) |
 
+**Acceptance (`S1-A-04` only)**
+- [x] `state.rs` lives in `crates/engine-api`, verbatim with tests
+- [x] Bounds / literals moved (git rename), not re-derived; no new numeric literal in a moved file
+- [x] `cargo test -p cc-engine-api` covers the moved health-machine tests
+- [x] `services/engine` compiles via `#[path]` from `cc-engine-api`
+
 **Acceptance (`S1-A-02` only)**
 - [x] `transport.rs` and `config.rs` live in `crates/engine-api`, verbatim with tests
 - [x] Queue bounds moved (git rename), not re-derived; no new numeric literal in a moved file

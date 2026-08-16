@@ -1,7 +1,7 @@
-//! Test-only metrics surface used by moved `transport.rs`.
+//! Test-only metrics surface used by moved `transport.rs` / `state.rs`.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use prometheus_client::registry::Registry;
@@ -36,6 +36,31 @@ pub struct MethodLabels {
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ErrorCodeLabels {
     pub code: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct EngineStateLabels {
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EngineStateLabel {
+    Synced,
+    Syncing,
+    Offline,
+    AuthFailed,
+}
+
+impl EngineStateLabel {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Synced => "synced",
+            Self::Syncing => "syncing",
+            Self::Offline => "offline",
+            Self::AuthFailed => "auth_failed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -160,12 +185,42 @@ impl CounterKey for ErrorCodeLabels {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct GaugeHandle {
+    n: Arc<AtomicI64>,
+}
+
+impl GaugeHandle {
+    pub fn set(&self, value: i64) {
+        self.n.store(value, Ordering::Relaxed);
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GaugeFamily {
+    inner: Arc<Mutex<HashMap<String, Arc<AtomicI64>>>>,
+}
+
+impl GaugeFamily {
+    #[must_use]
+    pub fn get_or_create(&self, labels: &EngineStateLabels) -> GaugeHandle {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let n = map
+            .entry(labels.state.clone())
+            .or_insert_with(|| Arc::new(AtomicI64::new(0)))
+            .clone();
+        GaugeHandle { n }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct EngineMetrics {
     pub request_seconds: HistFamily,
     pub soft_deadline_exceeded: CounterFamily,
     pub transport_timeout: CounterFamily,
     pub errors_total: CounterFamily,
+    pub state: GaugeFamily,
+    pub el_offline: GaugeHandle,
 }
 
 impl EngineMetrics {

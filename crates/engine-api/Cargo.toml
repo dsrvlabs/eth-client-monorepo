@@ -11,7 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-# S1-A-02: sources live here; `cc-engine` compiles them via `#[path]`.
+# S1-A-02/A-04: sources live here; `cc-engine` compiles them via `#[path]`.
 # No JWT signer. HTTP client is test-only (moved transport unit tests).
 
 [dev-dependencies]
