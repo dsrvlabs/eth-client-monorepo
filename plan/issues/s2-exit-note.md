@@ -341,3 +341,249 @@ was not started.
 Same-file open after clean shutdown **was observed** (CI test + this
 HEAD's `cc-storage` + the `e854b1d` storage binary). That is the
 criterion. Compose on a live Hoodi volume remains **not done**.
+
+## E2.1 — §9.0 A/B (`S2-A-15`)
+
+**Conclusion: procedure and blocker rule recorded. Loaded A/B not
+executed. E2.1 is not discharged.**
+
+Same three families, same blocker rule as E1.1 (`S1-A-19` /
+[`s1-exit-note.md`](s1-exit-note.md)). Same procedure as `S0-B-19`
+(`[ARCH]` §9.0). Diff S2 T≥1h against the **first honest loaded**
+window, not against S0's idle Family 1 zeros.
+
+This worktree did **not** run a loaded six-service / 3-container /
+2-process A/B scrape. No `docs/s2-e21-*` scrape is committed. Do not
+invent numbers. Do **not** treat S0 idle Family 1 zeros as a loaded
+baseline — S0 stacks were **not meshed**.
+
+S0 baseline: [`docs/s0-e07-ab-baseline.txt`](../../docs/s0-e07-ab-baseline.txt)
+(commit `e2ad297072d07ab00cb328e5e12549d9c210ba8d`, wall **3632 s**).
+Quoted from that record and [`s0-exit-note.md`](s0-exit-note.md) E0.7 /
+[`s1-exit-note.md`](s1-exit-note.md) E1.1:
+
+- Family 1 `cc_chain_import_total{result=imported}` T≥1h = **0** (and
+  the other five result labels 0). There is **no** series named
+  `cc_chain_import_result`.
+- Family 2 `cc_p2p_head_lag_slots_count=1` (histogram **seed only**)
+  and `cc_chain_head_lag_slots=0`.
+- Family 3 overflow counters all **0**. `dangerous_case=no`.
+- Six-service `cc_chain_head_slot=0`. The six-service stack was **not**
+  on the self-devnet mesh. E1 p2p→chain is dead; the self-devnet is
+  p2p-only. S0 Family 1 imported 0 **because the stacks were not
+  meshed**.
+
+Matching those idle zeros is **not** E2.1 clean. E1.1 was also not
+discharged (`S1-A-19`); there is still no loaded T≥1h pair to diff
+against.
+
+Recorded 2026-08-16 on `feature/s2-a-15-s2-exit` (uncommitted)
+branched from `develop` `d3d7f6065f82011fbb9e0385e7082f673ed60690`.
+Worktree
+`/Users/nil/.grok/worktrees/dsrv-eth-client-monorepo/subagent-01a00a5f-6203-71e3-8e37-becd05547893`.
+Host Darwin 25.6.0 arm64. `rustc 1.97.1 (8bab26f4f 2026-07-14)`.
+
+### Blocker rule (`[ARCH]` §9.0/4) — stated as acceptance
+
+Diff **three families** (absolute numbers, not "no significant change"):
+
+1. Import verdicts: `cc_chain_import_total{result=*}` on six-service
+   `:9101` (OpenMetrics `_total` suffix). The plan name
+   `cc_chain_import_result{*}` does not exist on the scrape.
+2. Head-lag: `cc_p2p_head_lag_slots_bucket` on six-service `:9102` and
+   self-devnet `:19102`/`:19112`/`:19122`, plus gauge
+   `cc_chain_head_lag_slots` on `:9101`.
+3. §2.2 overflow: `*_rejected_backpressure`, `*_dropped`, subscriber
+   terminations, and `cc_grpc_requests_total{code="8"}` if present.
+   Exact names S0 found are listed in the baseline file.
+
+**A non-zero overflow-family (3) diff with a zero diff in families 1
+and 2 is a stage blocker, not a curiosity.** Behaviour unchanged at
+test load and the *contract* changed — the R-1 failure S2's transport
+deletes exist to prevent. `scripts/s0-ab-baseline.sh --record` prints
+`dangerous_case: yes` for that shape.
+
+A loaded pass requires families 1 and 2 to be **import / head-lag
+distributions under mesh**, then compared to a loaded T≥1h. S0 T≥1h
+is idle; S1 did not produce a loaded window either. Until that window
+exists, E2.1 stays open.
+
+### Procedure (not executed here)
+
+Both topologies from the **same** S2 commit (`[ARCH]` §9.0/1). S2
+keeps `services/chain` and `services/storage` as workspace members so
+the previous topology still builds (`[ARCH]` §9.1; `S2-J-01`
+4-container A/B). `bin/beacon-core` is the new host (`S2-J-01`,
+`3e8d529`). Production compose is still the leftover multi-service
+host — it does **not** start `cc-beacon-core` (see E2.2). The
+3-container self-devnet is still `devnet/compose.yml` (publisher,
+node-a, node-b; plus anchor).
+
+Helper: `scripts/s0-ab-baseline.sh` (fail-closed, loopback-only HTTP,
+not in `make ci` / `make lint`). `--wait` is explicit; never implicit
+1 h.
+
+```text
+make build
+# six leftover binaries under target/debug/: cc-chain cc-p2p
+# cc-attestation cc-engine cc-beacon-api cc-storage
+# plus cc-beacon-core (S2-J-01). compose does not run the last one.
+
+COMPOSE_PROJECT_NAME=s2a15-ab docker compose build && docker compose up -d
+bash scripts/wait-healthy.sh 180
+
+CC_DEVNET_MAX_SLOTS=2000 ./devnet/up.sh
+# 3-container mesh: publisher + node-a + node-b (+ anchor). Reuse the
+# same 64-slot fixture S0 used if regenerating; do not change fixtures
+# or EL snap between topologies.
+
+bash scripts/s0-ab-baseline.sh --scrape --label T0 --raw-dir docs/s2-e21-run/t0
+bash scripts/s0-ab-baseline.sh --wait 3610
+bash scripts/s0-ab-baseline.sh --scrape --label T1h --raw-dir docs/s2-e21-run/t1
+bash scripts/s0-ab-baseline.sh --record \
+  --t0-dir docs/s2-e21-run/t0 \
+  --t1-dir docs/s2-e21-run/t1 \
+  --out docs/s2-e21-run/families.txt
+```
+
+Then:
+
+1. Confirm leftover compose `chain`/`p2p`/`attestation`/`engine`/
+   `beacon-api`/`storage` healthy for the whole window. EL gate is
+   `service_started` (ADR-P3-14).
+2. Confirm self-devnet publisher + node-a + node-b + anchor stayed up.
+   Quote mesh gossip (`cc_p2p_gossip_messages_total`) so the run is
+   not an idle six-service scrape.
+3. If a 2-process host is ever composed, scrape that pair from the
+   **same** commit as well. This HEAD has no such compose service.
+4. Diff S2 T≥1h against a **loaded** T≥1h (not S0 idle zeros) for the
+   three families. Apply the §9.0/4 blocker.
+5. Paste absolute numbers into this note. Do not summarise as "no
+   significant change".
+
+If leftover-compose `cc_chain_import_total{result="imported"}` is
+still 0 after ≥1 h, the stacks were not meshed — same defect S0
+recorded. That is **not** a loaded Family 1 match.
+
+### What this worktree demonstrated (not a scrape)
+
+| Check | Result |
+|---|---|
+| `bash scripts/s0-ab-baseline.sh --self-test` | `ok: self-test` (2026-08-16T11:44:07Z) |
+| `docker compose -f docker-compose.yml config --services` | `chain` `p2p` `storage` `attestation` `beacon-api` `el` `engine` |
+| `beacon-core` compose service | **absent** |
+| `docker compose -f devnet/compose.yml config --services` | `anchor` `publisher` `node-a` `node-b` |
+| `bash scripts/s0-ab-baseline.sh --check-bins` | **fail** — empty `target/`; all six `target/debug/cc-*` missing |
+| `make build` / six `target/debug/cc-*` + `cc-beacon-core` | **not run** |
+| leftover compose `up` + `./devnet/up.sh` + ≥1 h scrape | **not run** |
+| 2-process (`cc-p2p` + `cc-beacon-core`) compose scrape | **not run** — no such compose |
+| Host leftover images | `s0b19-ab-baseline-*` / `cc-devnet-*` **18 hours** old (S0 commit `e2ad297`, not this tree). 8-day `*-storage` / `*-beacon-api` images are older still. Not started. |
+
+## E2.2 — two processes on self-devnet (`S2-J-01`, `S2-A-15`)
+
+**Conclusion: `cc-beacon-core` exists. Compose still runs the leftover
+4-container / six-service host. Two processes were not run on
+self-devnet. E2.2 is not discharged.**
+
+`S2-J-01` (`3e8d529544c48e12d13a912216fbd494036b4807`) added
+`bin/beacon-core` (`cc-beacon-core`). One process opens redb before
+any subsystem (`bin/beacon-core/src/boot.rs`). The Dockerfile copies
+`cc-beacon-core` into `/out/` next to the six leftover binaries.
+
+`docker-compose.yml` does **not** start that binary. This HEAD's
+`docker compose config --services` is `chain` `p2p` `storage`
+`attestation` `beacon-api` `el` `engine`. Makefile `SERVICES` is still
+`chain p2p attestation engine beacon-api storage`. `S2-J-01`
+acceptance kept `services/chain` + `services/storage` as workspace
+members for **4-container A/B**.
+
+Self-devnet (`devnet/compose.yml`) is still the p2p-only 3-container
+mesh: publisher, node-a, node-b + anchor. No `cc-beacon-core` service
+there either.
+
+`[ARCH]` §9.1 S2 **ships** "2 processes". That host is not what
+compose runs on this commit.
+
+## E2.3 — `import → durable` in-process (`S2-A-13`, `S2-A-14`)
+
+**Conclusion: the test crate exists and is in the workspace CI graph.
+Not re-run in this worktree (empty `target/`).**
+
+Half of M9. Dedicated proto-free crate **`cc-beacon-import`**
+(`crates/beacon-import`). Harness crate `cc-beacon-inproc`
+(`crates/beacon-inproc`, `S2-A-13`, `8dffb86254ae5dbce0b76a655b9551c9113974a8`).
+
+Assertion (`S2-A-14`, `d3d7f6065f82011fbb9e0385e7082f673ed60690`):
+
+```text
+cargo test -p cc-beacon-import --test import_durable \
+  import_on_block_then_ingest_writes_durable_rows
+```
+
+Test: `crates/beacon-import/tests/import_durable.rs`
+`import_on_block_then_ingest_writes_durable_rows`. After
+`boot_in_process` (one TempDir, one redb), `on_block` then
+`ArchiveWrite::ingest_block`; durable rows
+`canonical[slot] == root`, body present, `WriteCursor` advanced, rows
+survive reopen. No gRPC: `crates/beacon-import/tests/no_grpc.rs` plus
+`scripts/check-no-grpc-beacon-inproc.sh` (clippy job +
+`make check-inproc-grpc`). Workspace `cargo nextest` in the `test` job
+includes this member (not in the vectors-job exclude filter).
+
+## E2.4 — rollback rehearsal (`S2-B-14`)
+
+**Not re-rehearsed here.** Cite the section already in this file
+(`## S2-B-14 — rollback rehearsal (E2.4)`). Same-file `Store::open`
+after a clean shutdown **was observed**. Compose on a live Hoodi
+volume **was not**. No soak / restart-trial / re-sync numbers
+invented.
+
+## E2.5 — P0-19/3 clone-cost measurement (`S2-A-12`)
+
+**Not rewritten here.** Cite the E2.5 section already in this file
+(`S2-A-12`). Those absolute ns / estimated table bytes stand.
+milhouse has not landed.
+
+## E2.6 — M10 restated on the 8-edge denominator (`S2-A-15`)
+
+**Conclusion: M10 is 3 of 8 remaining, 0 dead.** Not a fraction of
+six. ⟡ D-2: there are eight internal edges, not six (`[ARCH]` §2.0).
+`[PRD]` M10's baseline ("4 of 6 dead, 1 of 6 unauthenticated") used
+the wrong denominator.
+
+The eight internal edges (`[ARCH]` §2.3). After S2, **E3–E7 deleted**,
+**E1 / E2 / E8 remaining**.
+
+| ID | Edge | After S2 | This tree |
+|---|---|---|---|
+| **E1** | p2p → chain `P2pStream` | **remaining** | `rpc P2pStream` still in `proto/eth/chain/v1/chain.proto`. Transport undecided (S3). |
+| **E2** | p2p / engine → chain `DataAvailable` | **remaining** | Still a `P2pToChain` arm. Wired at S3 (P0-16). |
+| **E3** | chain → engine gRPC | **deleted** (S1) | `services/chain/src/engine_client.rs` gone. Production is in-process `DirectEngine` (`S1-A-06`). |
+| **E4** | storage → chain `RestoreFromStore` | **deleted** (S2) | Absent from `proto/`. `restore.rs` / `restore_client.rs` gone (`S2-J-02`, `60c6200`). |
+| **E5** | p2p → storage `PutBackfillBatch` | **deleted** as the internal data-plane RPC | Becomes `storage_core::backfill::admit()` behind `ArchiveWrite`. Proto RPC remains on the leftover 4-container `cc-storage` host (`storage.proto:28`) so that A/B topology still builds. |
+| **E6** | p2p ← storage `WatchServeWindow` | **deleted** as the internal data-plane RPC | Serve window is an `AtomicU64` load (`[ARCH]` §2.3). Proto RPC remains on the leftover host (`storage.proto:32`). |
+| **E7** | storage → chain `SubscribeEvents` as bulk data plane | **deleted** for storage (S2) | `write_behind.rs` gone (`78a90e1`). `SubscribeEvents` survives for API/observer (`chain.proto:21`). |
+| **E8** | engine ↔ p2p `EngineStream` | **remaining** | `rpc EngineStream` still in `proto/eth/p2p/v1/p2p.proto`. Folds into E1's egress half at S3. |
+
+**M10 = 3 of 8 remaining, 0 dead.**
+
+"Remaining" is E1, E2, E8. "Dead" here is leftover *deleted-set*
+transports still sitting in the inventory as unwired RPCs of E3–E7.
+Those five are deleted (E3 at S1, E4–E7 at S2). E5/E6 proto methods
+on the leftover 4-container `cc-storage` binary are the previous
+topology, not surviving internal edges on the S2 2-process inventory.
+
+E1/E2 still unwired (P0-16 / P0-17) is **S3 wiring**, not an M10
+dead-edge leftover after S2. Do not write M10 as 3/6, 4/6, or "1 of
+6 unauthenticated".
+
+## S2 exit criteria (`S2-A-15` reading)
+
+| # | Status |
+|---|---|
+| **E2.1** | **open — no loaded A/B; blocker rule recorded; do not match S0 idle zeros** |
+| **E2.2** | **open — `cc-beacon-core` exists; compose still 4-container / six-service; two processes not run on self-devnet** |
+| **E2.3** | **recorded — `cc-beacon-import` `import_on_block_then_ingest_writes_durable_rows`; not re-run here** |
+| **E2.4** | **recorded by `S2-B-14` — same-file open observed; compose-on-Hoodi not run** |
+| **E2.5** | **recorded by `S2-A-12` — numbers in the E2.5 section above; not rewritten** |
+| **E2.6** | **recorded — M10 = 3 of 8 remaining, 0 dead** |

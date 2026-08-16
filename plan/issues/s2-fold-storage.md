@@ -376,6 +376,38 @@ Same three families, same blocker rule as E1.1 (E2.1). Also carries **E2.6**: **
 8-edge denominator** (⟡ D-2 — there are eight internal edges, not six) — E3–E7 deleted, E1/E2/E8
 remaining. State M10 as *3 of 8 remaining, 0 dead*, not as a fraction of six.
 
+Record: [`s2-exit-note.md`](s2-exit-note.md). Loaded A/B was **not** run in this
+worktree. S0 Family 1 imported 0 because the stacks were not meshed — matching
+those zeros is not E2.1. Compose still starts the leftover 4-container /
+six-service host, not `cc-beacon-core`.
+
+**Acceptance**
+
+- [x] Procedure + E2.1 blocker rule (`[ARCH]` §9.0/4: non-zero overflow-family
+      diff with zero diff in families 1–2 is a stage blocker) recorded in
+      [`s2-exit-note.md`](s2-exit-note.md)
+- [x] Helper `scripts/s0-ab-baseline.sh` still the scrape/record tool;
+      `--self-test` green this worktree
+- [x] Leftover compose still lists six CC services + `el` (no `beacon-core`);
+      3-container self-devnet compose exists (`devnet/compose.yml`: publisher,
+      node-a, node-b + anchor); `docker compose … config --services` lists them
+- [x] E2.3 cited: crate `cc-beacon-import`
+      (`crates/beacon-import/tests/import_durable.rs`
+      `import_on_block_then_ingest_writes_durable_rows`)
+- [x] E2.4 cited as same-file open (`S2-B-14`); compose-on-Hoodi not claimed
+- [x] E2.5 clone-cost numbers in [`s2-exit-note.md`](s2-exit-note.md) **not
+      rewritten**
+- [x] E2.6 M10 restated on the 8-edge denominator: **3 of 8 remaining, 0 dead**
+      (E3–E7 deleted, E1/E2/E8 remaining) — not a fraction of six
+- [ ] Loaded §9.0 A/B (≥1 h, leftover compose + 3-container self-devnet, same
+      fixtures, same EL snapshot) — not executed
+- [ ] Family 1 `cc_chain_import_total{result=*}` (no `cc_chain_import_result`
+      series) matches a loaded T≥1h
+- [ ] Family 2 head-lag buckets match a loaded T≥1h
+- [ ] Family 3 overflow-family blocker applied to a loaded pair
+- [ ] Two processes (`cc-p2p` + `cc-beacon-core`) run on self-devnet (E2.2)
+- [ ] E2.1 discharged
+
 ---
 
 ### `S2-J-01` · `bin/beacon-core` boot — **single-owner**
