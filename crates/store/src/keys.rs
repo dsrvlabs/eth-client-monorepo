@@ -46,19 +46,52 @@ pub fn block_shard_start_slot(shard_id: u64) -> Slot {
     )
 }
 
-/// Zero-padded shard table suffix (`columns_00042`).
+/// Prefix for cold block shard tables (`blocks_{suffix}`).
+pub const BLOCKS_SHARD_PREFIX: &str = "blocks_";
+/// Prefix for cold column shard tables (`columns_{suffix}`).
+pub const COLUMNS_SHARD_PREFIX: &str = "columns_";
+
+/// Canonical zero-pad width for shard-id suffixes (ADR-P4-10).
+///
+/// IDs below `10^{width}` stay fixed-width (`00042`). Larger ids emit more
+/// digits (`100000`) so the suffix remains a lossless encoding of the logical
+/// shard id — the intern pool retires dropped names; it does not wrap ids.
+pub const SHARD_TABLE_SUFFIX_WIDTH: usize = 5;
+
+/// Zero-padded shard table suffix (`00042`, or `100000` once the pad overflows).
+///
+/// Inverse of [`parse_shard_suffix`]. The suffix **is** the logical shard id,
+/// not a slot in a wrap-around table-name ring (I-shards reads the id back).
 pub fn format_shard_suffix(shard_id: u64) -> String {
     format!("{shard_id:05}")
 }
 
+/// Parse a suffix produced by [`format_shard_suffix`].
+///
+/// Rejects unpadded (`42`), over-padded (`000042`), and non-digit strings so
+/// `blocks_42` / `blocks_000042` cannot alias `blocks_00042`.
+pub fn parse_shard_suffix(suffix: &str) -> Option<u64> {
+    if suffix.len() < SHARD_TABLE_SUFFIX_WIDTH {
+        return None;
+    }
+    if !suffix.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let id = suffix.parse::<u64>().ok()?;
+    if format_shard_suffix(id) != suffix {
+        return None;
+    }
+    Some(id)
+}
+
 /// `columns_{shard}` table name.
 pub fn columns_shard_table(shard_id: u64) -> String {
-    format!("columns_{}", format_shard_suffix(shard_id))
+    format!("{COLUMNS_SHARD_PREFIX}{}", format_shard_suffix(shard_id))
 }
 
 /// `blocks_{shard}` table name.
 pub fn blocks_shard_table(shard_id: u64) -> String {
-    format!("blocks_{}", format_shard_suffix(shard_id))
+    format!("{BLOCKS_SHARD_PREFIX}{}", format_shard_suffix(shard_id))
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +458,21 @@ mod tests {
         let first_np1 = Slot::new((n + 1) * BLOCK_SHARD_EPOCHS * SLOTS_PER_EPOCH);
         assert_eq!(block_shard_id(last_n), n);
         assert_eq!(block_shard_id(first_np1), n + 1);
+    }
+
+    #[test]
+    fn shard_suffix_roundtrip_and_rejects_aliases() {
+        assert_eq!(format_shard_suffix(0), "00000");
+        assert_eq!(format_shard_suffix(42), "00042");
+        assert_eq!(format_shard_suffix(99_999), "99999");
+        assert_eq!(format_shard_suffix(100_000), "100000");
+        assert_eq!(parse_shard_suffix("00042"), Some(42));
+        assert_eq!(parse_shard_suffix("100000"), Some(100_000));
+        assert_eq!(parse_shard_suffix("42"), None);
+        assert_eq!(parse_shard_suffix("000042"), None);
+        assert_eq!(parse_shard_suffix("00a42"), None);
+        assert_eq!(columns_shard_table(42), "columns_00042");
+        assert_eq!(blocks_shard_table(100_000), "blocks_100000");
     }
 
     #[test]

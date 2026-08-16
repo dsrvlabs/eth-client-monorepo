@@ -384,10 +384,11 @@ pub fn measure_class_stats(engine: &Engine) -> Result<BlockClassStats, StoreErro
         &mut stats.blocks_bytes,
     )?;
 
-    // cold shards present on disk
-    for name in engine.table_names()? {
-        if crate::schema::parse_shard_table(&name).is_some_and(|(c, _)| c == "blocks") {
-            accumulate_table(&rt, &name, &mut stats.blocks_rows, &mut stats.blocks_bytes)?;
+    // cold shards present on disk (O(active tables), not O(all shards ever))
+    let names = engine.table_names()?;
+    for (name, class, _) in crate::schema::iter_shard_tables(&names) {
+        if class == "blocks" {
+            accumulate_table(&rt, name, &mut stats.blocks_rows, &mut stats.blocks_bytes)?;
         }
     }
 

@@ -28,6 +28,7 @@ use cc_types::{ChainConfig, Epoch, Root};
 use crate::engine::{Engine, EngineOptions, StoreError};
 use crate::keys::{
     BLOCK_SHARD_EPOCHS, COLUMN_SHARD_EPOCHS, blocks_shard_table, columns_shard_table,
+    parse_shard_suffix,
 };
 use crate::meta::{ConfigDigest, KEY_CONFIG_DIGEST, KEY_SCHEMA_VERSION, SchemaVersion, TABLE_META};
 
@@ -52,10 +53,10 @@ pub const FIXED_TABLES: &[&str] = &[
     "fork_choice",
 ];
 
-/// Prefix for cold block shard tables (`blocks_{ddddd}`).
-pub const BLOCKS_SHARD_PREFIX: &str = "blocks_";
-/// Prefix for cold column shard tables (`columns_{ddddd}`).
-pub const COLUMNS_SHARD_PREFIX: &str = "columns_";
+/// Prefix for cold block shard tables (`blocks_{suffix}`).
+pub use crate::keys::BLOCKS_SHARD_PREFIX;
+/// Prefix for cold column shard tables (`columns_{suffix}`).
+pub use crate::keys::COLUMNS_SHARD_PREFIX;
 
 /// Shard widths recorded for docs / registry (Deviation 1 / ADR P4-10).
 pub const COLUMN_SHARD_WIDTH_EPOCHS: u64 = COLUMN_SHARD_EPOCHS;
@@ -64,9 +65,10 @@ pub const BLOCK_SHARD_WIDTH_EPOCHS: u64 = BLOCK_SHARD_EPOCHS;
 
 /// Whether `name` is a registered table (fixed inventory or shard pattern).
 ///
-/// Shard names match [`crate::keys`] / CC-40b: zero-padded five-digit ids
-/// (`blocks_00042`, `columns_00042`). Unregistered names fail open (I-shards
-/// reconciliation light for CC-40a).
+/// Shard names match [`crate::keys`] / CC-40b: canonical suffixes from
+/// [`crate::keys::format_shard_suffix`] (`blocks_00042`, `columns_00042`,
+/// `blocks_100000` once the five-digit pad overflows). Unregistered names
+/// fail open (I-shards reconciliation light for CC-40a).
 pub fn is_registered_table(name: &str) -> bool {
     if FIXED_TABLES.contains(&name) {
         return true;
@@ -74,23 +76,26 @@ pub fn is_registered_table(name: &str) -> bool {
     parse_shard_table(name).is_some()
 }
 
-/// Parse `blocks_{ddddd}` / `columns_{ddddd}` → `(class, shard_id)`.
+/// Parse `blocks_{suffix}` / `columns_{suffix}` → `(class, shard_id)`.
 pub fn parse_shard_table(name: &str) -> Option<(&'static str, u64)> {
-    if let Some(rest) = name.strip_prefix(BLOCKS_SHARD_PREFIX)
-        && rest.len() == 5
-        && rest.chars().all(|c| c.is_ascii_digit())
-    {
-        let id = rest.parse::<u64>().ok()?;
-        return Some(("blocks", id));
+    if let Some(rest) = name.strip_prefix(BLOCKS_SHARD_PREFIX) {
+        return parse_shard_suffix(rest).map(|id| ("blocks", id));
     }
-    if let Some(rest) = name.strip_prefix(COLUMNS_SHARD_PREFIX)
-        && rest.len() == 5
-        && rest.chars().all(|c| c.is_ascii_digit())
-    {
-        let id = rest.parse::<u64>().ok()?;
-        return Some(("columns", id));
+    if let Some(rest) = name.strip_prefix(COLUMNS_SHARD_PREFIX) {
+        return parse_shard_suffix(rest).map(|id| ("columns", id));
     }
     None
+}
+
+/// Shard tables present in `names` (from [`Engine::table_names`]).
+///
+/// Cost is O(`names.len()`) — the live on-disk set — never O(all shard ids
+/// ever assigned). Consumers that used to walk `0..=head_shard` should use
+/// this instead (P0-18/1).
+pub fn iter_shard_tables(names: &[String]) -> impl Iterator<Item = (&str, &'static str, u64)> {
+    names
+        .iter()
+        .filter_map(|n| parse_shard_table(n).map(|(class, id)| (n.as_str(), class, id)))
 }
 
 /// Expected shard table name for documentation / tests (delegates to keys).
@@ -106,6 +111,11 @@ pub fn registered_columns_shard(shard_id: u64) -> String {
 /// Reconcile engine table names against the registry.
 ///
 /// Returns the first unregistered name, if any.
+///
+/// Walks only `names` (the live on-disk set from [`Engine::table_names`]).
+/// Does not materialise expected names for shard ids `0..=head` — that
+/// would be O(all shards ever) and is how a 30-day node would grow the
+/// intern pool and the open path together (P0-18/1).
 pub fn find_unregistered_table(names: &[String]) -> Option<&str> {
     names
         .iter()
@@ -393,7 +403,8 @@ impl Store {
     /// Bind an already-opened engine (tests).
     pub fn bind(engine: Engine, opts: &StoreOpenOptions) -> Result<Self, StoreError> {
         let expected_digest = opts.config_digest;
-        // Registry reconciliation (I-shards light — CC-4H owns prune-mark depth).
+        // Registry reconciliation is O(on-disk tables) = O(active shards after
+        // prune), never O(all shard ids ever assigned). I-shards depth is CC-4H.
         let names = engine.table_names()?;
         if let Some(bad) = find_unregistered_table(&names) {
             return Err(StoreError::UnregisteredTable(bad.to_owned()));
@@ -804,11 +815,115 @@ mod tests {
         assert!(is_registered_table("meta"));
         assert!(is_registered_table(&blocks_shard_table(0)));
         assert!(is_registered_table(&columns_shard_table(42)));
+        assert!(is_registered_table(&blocks_shard_table(100_000)));
         assert!(!is_registered_table("blocks_42")); // not zero-padded
         assert!(!is_registered_table("blocks_000042")); // wrong width
         assert!(!is_registered_table("state_roots_00001"));
         assert_eq!(COLUMN_SHARD_WIDTH_EPOCHS, 32);
         assert_eq!(BLOCK_SHARD_WIDTH_EPOCHS, 256);
+    }
+
+    #[test]
+    fn registry_reconcile_is_o_active_names_not_history() {
+        // A 30-day (or year-10) node that has pruned 0..N must not force the
+        // registry to materialise N historical names. Only the live set is walked.
+        let live = vec![
+            "meta".to_owned(),
+            columns_shard_table(211),
+            blocks_shard_table(26),
+        ];
+        assert!(find_unregistered_table(&live).is_none());
+        let active: Vec<_> = iter_shard_tables(&live).collect();
+        assert_eq!(active.len(), 2);
+        assert_eq!(active[0], ("columns_00211", "columns", 211));
+        assert_eq!(active[1], ("blocks_00026", "blocks", 26));
+        // Pattern match is O(1) per name — high ids are registered without a
+        // 0..=id set.
+        assert!(is_registered_table(&columns_shard_table(10_000)));
+        let with_evil = [live.as_slice(), &["not_a_table".to_owned()]].concat();
+        assert_eq!(find_unregistered_table(&with_evil), Some("not_a_table"));
+    }
+
+    #[test]
+    fn thirty_plus_day_shard_rollover_does_not_exhaust_namespace() {
+        // P0-18/1: 30 days of mainnet slots ≈ 211 column shards + 27 block shards.
+        // Roll past the old 512 unique-name intern cap while dropping retired
+        // shards; the live intern set and the registry stay O(active).
+        use crate::engine::MAX_INTERNED_TABLE_NAMES;
+        use crate::keys::{SLOTS_PER_EPOCH, block_shard_id, column_shard_id};
+        use cc_types::Slot;
+
+        const SECONDS_PER_SLOT: u64 = 12;
+        const DAYS: u64 = 45;
+        let slots = DAYS * 24 * 60 * 60 / SECONDS_PER_SLOT;
+        let last_col = column_shard_id(Slot::new(slots));
+        let last_blk = block_shard_id(Slot::new(slots));
+        assert!(
+            last_col >= 211,
+            "45d must cover 30d of column shards; last_col={last_col}"
+        );
+        // Extra unique names so the old leak-until-512 cap would trip.
+        let unique_cols = (MAX_INTERNED_TABLE_NAMES as u64 + 32).max(last_col + 1);
+
+        let dir = tmp_dir("s2-b-04-rollover");
+        let input = hoodi_input();
+        let store = Store::open(&dir, open_opts(&input)).unwrap();
+        let eng = store.engine();
+
+        // Keep a small live window (retention-shaped), drop the rest.
+        const LIVE_COL: u64 = 8;
+        const LIVE_BLK: u64 = 2;
+        for id in 0..unique_cols {
+            let name = columns_shard_table(id);
+            let mut b = eng.batch();
+            b.put(&name, &id.to_be_bytes(), b"c");
+            eng.commit(b).unwrap();
+            if id >= LIVE_COL {
+                eng.drop_table(&columns_shard_table(id - LIVE_COL)).unwrap();
+            }
+            assert!(
+                eng.interned_name_count() <= LIVE_COL as usize + 8,
+                "intern pool grew to {}",
+                eng.interned_name_count()
+            );
+        }
+        for id in 0..=last_blk {
+            let name = blocks_shard_table(id);
+            let mut b = eng.batch();
+            b.put(&name, &id.to_be_bytes(), b"b");
+            eng.commit(b).unwrap();
+            if id >= LIVE_BLK {
+                eng.drop_table(&blocks_shard_table(id - LIVE_BLK)).unwrap();
+            }
+        }
+
+        let names = eng.table_names().unwrap();
+        assert!(find_unregistered_table(&names).is_none());
+        let shards: Vec<_> = iter_shard_tables(&names).collect();
+        // meta + live column shards + live block shards (meta is not a shard).
+        let col_live = shards.iter().filter(|(_, c, _)| *c == "columns").count();
+        let blk_live = shards.iter().filter(|(_, c, _)| *c == "blocks").count();
+        assert_eq!(col_live, LIVE_COL as usize);
+        assert_eq!(blk_live, LIVE_BLK as usize);
+        assert!(
+            shards.len() < MAX_INTERNED_TABLE_NAMES,
+            "active shards {} must stay under intern cap",
+            shards.len()
+        );
+        // Epoch widths unchanged (ADR-P4-10).
+        assert_eq!(
+            crate::keys::column_shard_start_slot(1).as_u64(),
+            COLUMN_SHARD_EPOCHS * SLOTS_PER_EPOCH
+        );
+        assert_eq!(
+            crate::keys::block_shard_start_slot(1).as_u64(),
+            BLOCK_SHARD_EPOCHS * SLOTS_PER_EPOCH
+        );
+
+        drop(store);
+        // Re-open: registry walks only the live tables.
+        Store::open(&dir, open_opts(&input)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

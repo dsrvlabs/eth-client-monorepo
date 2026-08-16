@@ -386,9 +386,16 @@ the issues are actionable; write these back into `[PRD]` §5.1.
 | `S2-B-05` | **The contig-walk cap sits below the full serve window.** `I-contig` is the expensive check and never walks every integer slot | `crates/store/src/invariants.rs:45-50` — `MAX_CONTIG_WALK_SLOTS: u64 = MAX_RANGE_ENTRIES as u64` (SEC-4H-1) · `:12-18` (the module doc stating the cap's role) · `:367` `check_contig`, `:432` `contig_hole_violation`, `:444` `first_uncovered_slot` · the serve window it must cover: `crates/store/src/backfill_progress.rs:237` |
 | `S2-B-06` | **Multi-GB invariant scans block `open` on a supernode.** Becomes **restart-critical-path** at this stage | `crates/store/src/invariants.rs:271` `check_invariants`, `:332` `run_invariant_checks_if_enabled` · `:596-624` `check_ring` and `MAX_RING_SCAN_ROWS` (*"refuse rather than unbounded scan"*) · `:476` `check_col_block`, `:552` `check_split_fin`, `:651` `check_window` |
 
+**Acceptance (`S2-B-04` only)**
+- [x] Shard table names still encode the logical shard id (`format_shard_suffix` / `parse_shard_suffix`); 32 / 256 epoch widths unchanged (ADR-P4-10)
+- [x] Intern pool is the **live** set: dropped tables leave the pool; `Box::leak` of every unique name is gone
+- [x] `MAX_INTERNED_TABLE_NAMES` stays 512 (not raised)
+- [x] Registry reconciliation walks `Engine::table_names()` only (`iter_shard_tables` / `find_unregistered_table`) — O(active), not O(all shards ever)
+- [x] A test simulating 30+ days of shard rollover (and more unique names than the intern cap) does not exhaust the table namespace
+
 **Acceptance for the group**
 1. `S2-B-04` — a test simulating 30+ days of shard rollover does not exhaust the table namespace, and
-   the registry reconciliation stays O(active shards), not O(all shards ever).
+   the registry reconciliation stays O(active shards), not O(all shards ever). ✓
 2. `S2-B-05` — the cap is ≥ the configured serve window, or the walk is chunked; a test with a serve
    window wider than today's cap completes the check.
 3. `S2-B-06` — `open()` returns within a stated bound on a multi-GB store; the bound is a config value

@@ -3,7 +3,7 @@
 //! This is the **only** module (with its parent) that names the `redb` crate
 //! (CC-40 /3). Swapping to fjall replaces this file.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -52,30 +52,48 @@ impl DbInner {
     }
 }
 
-type NameIntern = Arc<Mutex<HashMap<String, &'static str>>>;
+type NameIntern = Arc<Mutex<HashSet<String>>>;
 
-/// Intern a table name to `'static` for redb `open_table` (R-14).
-/// Hard-capped at [`MAX_INTERNED_TABLE_NAMES`] (SEC-40b-3).
-fn intern_name(cache: &NameIntern, name: &str) -> Result<&'static str, StoreError> {
+/// Record a live table name in the intern pool (R-14 / SEC-40b-3).
+///
+/// redb copies the name into table metadata; `open_table` only needs the
+/// `&str` for the duration of the call. The pool is therefore a **live-set
+/// cap**, not a `Box::leak` of every name ever formatted. Dropped tables
+/// leave via [`unintern_name`] so shard rollover cannot exhaust the 512
+/// slots (P0-18/1).
+fn intern_name(cache: &NameIntern, name: &str) -> Result<(), StoreError> {
     if name.is_empty() {
         return Err(StoreError::Config("table name must be non-empty".into()));
     }
     let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(&s) = guard.get(name) {
-        return Ok(s);
+    if guard.contains(name) {
+        return Ok(());
     }
     if guard.len() >= MAX_INTERNED_TABLE_NAMES {
         return Err(StoreError::limit(format!(
             "table name intern pool full ({MAX_INTERNED_TABLE_NAMES}); refusing new name {name:?}"
         )));
     }
-    let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
-    guard.insert(name.to_owned(), leaked);
-    Ok(leaked)
+    guard.insert(name.to_owned());
+    Ok(())
 }
 
-fn table_def(name: &'static str) -> TableDefinition<'static, &'static [u8], &'static [u8]> {
-    TableDefinition::new(name)
+fn unintern_name(cache: &NameIntern, name: &str) {
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    guard.remove(name);
+}
+
+fn interned_len(cache: &NameIntern) -> usize {
+    cache.lock().unwrap_or_else(|e| e.into_inner()).len()
+}
+
+/// `TableDefinition` borrows `name` only for the `open_table` call; redb
+/// copies it (`Table::new` → `name.to_string()`).
+fn table_def(name: &str) -> Result<TableDefinition<'_, &'static [u8], &'static [u8]>, StoreError> {
+    if name.is_empty() {
+        return Err(StoreError::Config("table name must be non-empty".into()));
+    }
+    Ok(TableDefinition::new(name))
 }
 
 /// Accumulated write ops committed as one unit (intersection with fjall batch).
@@ -237,7 +255,7 @@ impl Engine {
             db: Mutex::new(DbInner::ReadWrite(db)),
             path: file,
             durability: opts.durability,
-            names: Arc::new(Mutex::new(HashMap::new())),
+            names: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
@@ -268,7 +286,7 @@ impl Engine {
             db: Mutex::new(DbInner::ReadWrite(db)),
             path: file,
             durability: opts.durability,
-            names: Arc::new(Mutex::new(HashMap::new())),
+            names: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
@@ -297,7 +315,7 @@ impl Engine {
             db: Mutex::new(DbInner::ReadOnly(db)),
             path: file,
             durability: Durability::Immediate,
-            names: Arc::new(Mutex::new(HashMap::new())),
+            names: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
@@ -316,11 +334,17 @@ impl Engine {
         self.durability.two_phase_commit()
     }
 
-    fn def(
+    fn intern_and_def<'a>(
         &self,
-        name: &str,
-    ) -> Result<TableDefinition<'static, &'static [u8], &'static [u8]>, StoreError> {
-        Ok(table_def(intern_name(&self.names, name)?))
+        name: &'a str,
+    ) -> Result<TableDefinition<'a, &'static [u8], &'static [u8]>, StoreError> {
+        intern_name(&self.names, name)?;
+        table_def(name)
+    }
+
+    /// Count of names currently in the intern pool (live set; tests / P0-18/1).
+    pub fn interned_name_count(&self) -> usize {
+        interned_len(&self.names)
     }
 
     fn lock_db(&self) -> Result<std::sync::MutexGuard<'_, DbInner>, StoreError> {
@@ -335,10 +359,7 @@ impl Engine {
             let db = self.lock_db()?;
             db.begin_read()?
         };
-        Ok(ReadTxn {
-            txn,
-            names: Arc::clone(&self.names),
-        })
+        Ok(ReadTxn { txn })
     }
 
     pub fn batch(&self) -> Batch {
@@ -370,18 +391,18 @@ impl Engine {
         for op in batch.ops {
             match op {
                 Op::Put { table, key, value } => {
-                    let def = self.def(&table)?;
+                    let def = self.intern_and_def(&table)?;
                     let mut t = txn.open_table(def).map_err(StoreError::engine)?;
                     t.insert(key.as_slice(), value.as_slice())
                         .map_err(StoreError::engine)?;
                 }
                 Op::Delete { table, key } => {
-                    let def = self.def(&table)?;
+                    let def = self.intern_and_def(&table)?;
                     let mut t = txn.open_table(def).map_err(StoreError::engine)?;
                     t.remove(key.as_slice()).map_err(StoreError::engine)?;
                 }
                 Op::DeleteRange { table, lo, hi } => {
-                    let def = self.def(&table)?;
+                    let def = self.intern_and_def(&table)?;
                     let mut t = txn.open_table(def).map_err(StoreError::engine)?;
                     t.retain_in(lo.as_slice()..hi.as_slice(), |_, _| false)
                         .map_err(StoreError::engine)?;
@@ -407,7 +428,7 @@ impl Engine {
     }
 
     pub fn drop_table(&self, name: &str) -> Result<(), StoreError> {
-        let def = self.def(name)?;
+        let def = table_def(name)?;
         let mut txn = {
             let db = self.lock_db()?;
             match &*db {
@@ -422,6 +443,8 @@ impl Engine {
         apply_durability(&mut txn, self.durability)?;
         let _existed = txn.delete_table(def).map_err(StoreError::engine)?;
         txn.commit().map_err(StoreError::engine)?;
+        // Retire the intern slot so shard rollover cannot fill the pool.
+        unintern_name(&self.names, name);
         Ok(())
     }
 
@@ -504,19 +527,11 @@ fn apply_durability(txn: &mut redb::WriteTransaction, d: Durability) -> Result<(
 #[derive(Debug)]
 pub struct ReadTxn {
     txn: redb::ReadTransaction,
-    names: NameIntern,
 }
 
 impl ReadTxn {
-    fn def(
-        &self,
-        name: &str,
-    ) -> Result<TableDefinition<'static, &'static [u8], &'static [u8]>, StoreError> {
-        Ok(table_def(intern_name(&self.names, name)?))
-    }
-
     pub fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        let t = match self.txn.open_table(self.def(table)?) {
+        let t = match self.txn.open_table(table_def(table)?) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
             Err(e) => return Err(StoreError::engine(e)),
@@ -532,7 +547,7 @@ impl ReadTxn {
     /// Materialisation is capped at [`MAX_RANGE_ENTRIES`] / [`MAX_RANGE_BYTES`]
     /// (SEC-40b-4). Exceeding either returns [`StoreError::Limit`].
     pub fn range(&self, table: &str, lo: &[u8], hi: &[u8]) -> Result<RangeIter, StoreError> {
-        let t = match self.txn.open_table(self.def(table)?) {
+        let t = match self.txn.open_table(table_def(table)?) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => {
                 return Ok(RangeIter {
@@ -615,16 +630,46 @@ mod tests {
 
     #[test]
     fn runtime_table_name_and_drop() {
-        // R-14: runtime-built names work via interning to 'static for open_table.
+        // R-14: runtime-built names work via TableDefinition borrow + intern pool.
         let dir = tmp_dir("runtime-name");
         let eng = Engine::open(&dir, EngineOptions::default()).unwrap();
-        let name = format!("columns_{:05}", 42u32);
+        let name = crate::keys::columns_shard_table(42);
         let mut b = eng.batch();
         b.put(&name, b"\x00\x00\x00\x00\x00\x00\x00\x01", b"sidecar");
         eng.commit(b).unwrap();
         assert!(eng.table_names().unwrap().contains(&name));
+        assert_eq!(eng.interned_name_count(), 1);
         eng.drop_table(&name).unwrap();
         assert!(!eng.table_names().unwrap().contains(&name));
+        assert_eq!(eng.interned_name_count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn intern_pool_retires_on_drop_past_unique_cap() {
+        // P0-18/1: unique-ever names used to leak into a 512-slot intern pool.
+        // Create+drop more unique shard tables than the cap; the live set stays 1.
+        let dir = tmp_dir("intern-retire");
+        let eng = Engine::open(&dir, EngineOptions::default()).unwrap();
+        let n = MAX_INTERNED_TABLE_NAMES + 64;
+        for id in 0..n as u64 {
+            let name = crate::keys::columns_shard_table(id);
+            let mut b = eng.batch();
+            b.put(&name, b"k", b"v");
+            eng.commit(b).unwrap();
+            assert_eq!(eng.interned_name_count(), 1);
+            eng.drop_table(&name).unwrap();
+            assert_eq!(eng.interned_name_count(), 0);
+        }
+        // Next unique name after the old cap still opens.
+        let next = crate::keys::columns_shard_table(n as u64);
+        let mut b = eng.batch();
+        b.put(&next, b"k", b"v");
+        eng.commit(b).unwrap();
+        assert_eq!(
+            eng.read().unwrap().get(&next, b"k").unwrap().as_deref(),
+            Some(&b"v"[..])
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

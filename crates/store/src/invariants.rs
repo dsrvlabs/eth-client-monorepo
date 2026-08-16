@@ -37,7 +37,7 @@ use crate::meta::{
     KEY_SERVE_WINDOW, KEY_SPLIT, KEY_WRITE_CURSOR, PruneMarks, ServeWindow, SlotRange, Split,
     TABLE_META, WriteCursor,
 };
-use crate::schema::{is_registered_table, parse_shard_table};
+use crate::schema::{is_registered_table, iter_shard_tables};
 
 /// Default `storage.snapshot_ring` when config has not set one (CC-42 / Architecture §3.6).
 pub const DEFAULT_SNAPSHOT_RING: u64 = 4;
@@ -503,16 +503,17 @@ fn check_col_block(
         }
     }
 
-    // Cold column shards.
-    for name in engine.table_names()? {
-        let Some(("columns", shard_id)) = parse_shard_table(&name) else {
+    // Cold column shards (live tables only — O(active), not O(history)).
+    let names = engine.table_names()?;
+    for (name, class, shard_id) in iter_shard_tables(&names) {
+        if class != "columns" {
             continue;
-        };
+        }
         let start = column_shard_start_slot(shard_id);
         let end = column_shard_start_slot(shard_id.saturating_add(1));
         let lo = crate::keys::encode_cold_column_key(start, 0);
         let hi = crate::keys::encode_cold_column_key(end, 0);
-        for item in rt.range(&name, &lo, &hi)? {
+        for item in rt.range(name, &lo, &hi)? {
             let (k, _) = item?;
             let Some((slot, idx)) = decode_cold_column_key(&k) else {
                 continue;
@@ -717,9 +718,9 @@ fn check_shards(engine: &Engine, rt: &ReadTxn) -> Result<Option<InvariantViolati
         }
     }
     let marks = read_meta_ssz::<PruneMarks>(rt, KEY_PRUNE_MARKS)?.unwrap_or_default();
-    for name in &names {
-        match parse_shard_table(name) {
-            Some(("blocks", id)) => {
+    for (name, class, id) in iter_shard_tables(&names) {
+        match class {
+            "blocks" => {
                 let end = block_shard_start_slot(id.saturating_add(1));
                 if marks.blocks_up_to.as_u64() >= end.as_u64() {
                     return Ok(Some(InvariantViolation {
@@ -732,7 +733,7 @@ fn check_shards(engine: &Engine, rt: &ReadTxn) -> Result<Option<InvariantViolati
                     }));
                 }
             }
-            Some(("columns", id)) => {
+            "columns" => {
                 let end = column_shard_start_slot(id.saturating_add(1));
                 if marks.columns_up_to.as_u64() >= end.as_u64() {
                     return Ok(Some(InvariantViolation {

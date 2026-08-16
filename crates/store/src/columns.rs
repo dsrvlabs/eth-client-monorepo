@@ -778,14 +778,10 @@ pub fn measure_column_class_stats(engine: &Engine) -> Result<ColumnClassStats, S
         &mut stats.columns_bytes,
     )?;
 
-    for name in engine.table_names()? {
-        if crate::schema::parse_shard_table(&name).is_some_and(|(c, _)| c == "columns") {
-            accumulate_table(
-                &rt,
-                &name,
-                &mut stats.columns_rows,
-                &mut stats.columns_bytes,
-            )?;
+    let names = engine.table_names()?;
+    for (name, class, _) in crate::schema::iter_shard_tables(&names) {
+        if class == "columns" {
+            accumulate_table(&rt, name, &mut stats.columns_rows, &mut stats.columns_bytes)?;
         }
     }
 

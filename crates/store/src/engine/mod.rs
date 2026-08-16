@@ -10,8 +10,12 @@ pub use redb::{Batch, BatchPutsDeletes, Engine, RangeIter, ReadTxn};
 use std::fmt;
 use std::path::PathBuf;
 
-/// Hard cap on interned table names (shard tables + meta/hot).
+/// Hard cap on **live** interned table names (shard tables + meta/hot).
+///
 /// Architecture §2.4 ≈ 390 shards + hot/meta; headroom to 512.
+/// Dropped shard tables leave the pool (P0-18/1) — the cap is the live set,
+/// not every name ever formatted. Do not raise this without a new ADR
+/// (ADR-P4-10).
 pub const MAX_INTERNED_TABLE_NAMES: usize = 512;
 
 /// Hard cap on ops accumulated in one [`Batch`] (cheap mitigation of unbounded growth).
