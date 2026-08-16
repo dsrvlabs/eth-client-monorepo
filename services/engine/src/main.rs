@@ -18,7 +18,7 @@ use cc_config::ServiceConfig;
 use cc_engine::SubscriptionSet;
 use cc_engine::capabilities::CapabilityCache;
 use cc_engine::config::EngineTransportConfig;
-use cc_engine::fastpath::{FastpathLane, hoodi_blob_bound};
+use cc_engine::fastpath::{FastpathLane, hoodi_blob_bound, production_cell_kzg};
 use cc_engine::inject::{INJECT_QUEUE_BOUND, InjectStreamConfig, run_inject_stream_client};
 use cc_engine::jwt::JwtSecret;
 use cc_engine::metrics::EngineMetrics;
@@ -135,13 +135,14 @@ async fn main() -> anyhow::Result<()> {
 
     // CC-37a/b + CC-38a: fastpath lane + ninth-contract inject stream.
     // Subscription starts empty (fail-closed) until p2p pushes SubscriptionSet.
-    // KZG backend is optional here — reconstruction activates when wired (CC-37b).
+    // Abort before serve if the committed trusted setup cannot load (P1-A/25).
+    let kzg = Some(production_cell_kzg().map_err(|e| anyhow::anyhow!("KZG trusted setup: {e}"))?);
     let lane = FastpathLane::new(
         Arc::clone(&transport),
         Some(engine_metrics.clone()),
         hoodi_blob_bound(),
         None,
-        None,
+        kzg,
         SubscriptionSet::empty(),
     );
     let _fastpath_worker = lane.spawn_worker();

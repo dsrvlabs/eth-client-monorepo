@@ -32,7 +32,7 @@ pub mod sidecars;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
-use cc_crypto::CellKzg;
+use cc_crypto::{CKzgBackend, CellKzg};
 use cc_types::primitives::{KzgCommitment, Root};
 use tokio::sync::{Mutex, Notify, mpsc};
 
@@ -109,6 +109,14 @@ pub fn hoodi_blob_bound() -> BlobBound {
     ];
     let schedule = BlobSchedule::try_from_entries(entries).expect("hoodi fixture schedule");
     BlobBound::new(schedule, Epoch::new(2_048), 9)
+}
+
+/// Production CellKzg for the getBlobsV2 fastpath (CC-37b).
+///
+/// `FastpathLane::new`'s `kzg` argument is `None` = fetch-only. Production must
+/// wrap this in `Some` so Complete runs bind + cells + transpose + filter.
+pub fn production_cell_kzg() -> Result<Arc<dyn CellKzg>, cc_crypto::KzgError> {
+    CKzgBackend::load_default().map(|backend| Arc::new(backend) as Arc<dyn CellKzg>)
 }
 
 /// Completion notification payload for the fastpath worker (tests / observers).
@@ -261,6 +269,12 @@ impl FastpathLane {
     /// Snapshot of the current subscription set.
     pub async fn subscription(&self) -> SubscriptionSet {
         self.inner.subscription.lock().await.clone()
+    }
+
+    /// Whether Complete fetches run reconstruction (CC-37b).
+    #[must_use]
+    pub fn has_kzg(&self) -> bool {
+        self.inner.kzg.is_some()
     }
 
     /// Subscribe to fetch completions (tests).
@@ -1610,5 +1624,22 @@ mod tests {
         }
         lane.close().await;
         let _ = worker.await;
+    }
+
+    /// S1-B-01: production constructor is `Some`, not fetch-only `None`.
+    #[test]
+    fn production_cell_kzg_is_some_on_lane() {
+        let kzg = production_cell_kzg().expect("trusted setup");
+        let wrapped = Some(kzg);
+        assert!(wrapped.is_some());
+        let lane = FastpathLane::new(
+            transport("http://127.0.0.1:1", None),
+            None,
+            hoodi_blob_bound(),
+            None,
+            wrapped,
+            SubscriptionSet::empty(),
+        );
+        assert!(lane.has_kzg());
     }
 }

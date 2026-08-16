@@ -382,14 +382,15 @@ self-devnet.
 **Stream** B · **Est** 2–3 pd / **5 pts** (≈) · **Deps** `S1-A-05` · **Discharges** P1-A/25,
 **P0-16's engine half**
 
-The production binary passes `kzg: None` ✓ (`services/engine/src/main.rs:135`), so **the entire
-CC-37b getBlobs fastpath is dead**. P0-16's disposition is `wire @ S3` with the **engine half landing
+The production binary passed `kzg: None` (`services/engine/src/main.rs`), so **the entire
+CC-37b getBlobs fastpath was dead**. P0-16's disposition is `wire @ S3` with the **engine half landing
 at S1** — this issue is that half.
 
-**Acceptance** — a self-devnet run shows non-zero getBlobsV2 fastpath completions. Note that W4's
-Phase-3 clause 4 makes *"non-zero complete **and** zero engine-sourced columns"* the pass condition
-and anything else a **FAIL** — so this issue's success is a precondition for `S3b-W-04`, not a
-substitute for it.
+**Acceptance**
+1. [x] Production lane constructs a real `CellKzg` backend (`Some(production_cell_kzg()?)`), not `None`
+2. [x] Unit/integration assertion: `production_cell_kzg()` is `Some` on a constructed `FastpathLane`
+3. [x] Grep-backed assertion: `services/engine/src/main.rs` passes the `Some`-wrapped binding, not `None`
+4. [ ] Self-devnet non-zero getBlobsV2 fastpath completions — scrape `cc_engine_getblobs_total{result="complete"}` (and `cc_engine_cells_computed`) after a six-service run. Not executed in this worktree. Note that W4's Phase-3 clause 4 makes *"non-zero complete **and** zero engine-sourced columns"* the pass condition and anything else a **FAIL** — so this issue's success is a precondition for `S3b-W-04`, not a substitute for it.
 
 ### `S1-B-02` · P1-A/26 — production lane uses a test fixture · 1–1.5 pd / **3 pts** (≈)
 **Touch** `services/engine/src/main.rs:133` — the production lane uses `hoodi_blob_bound()`, a **test

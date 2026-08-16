@@ -57,7 +57,8 @@ pub use fastpath::filter::{
 pub use fastpath::sidecars::{AssembleError, SidecarTemplate, transpose_to_sidecars};
 pub use fastpath::{
     COMPLETED_LOG_BOUND, EnqueueOutcome, FASTPATH_QUEUE_BOUND, FastpathLane, InjectItem, Trigger,
-    TriggerOwner, hoodi_blob_bound, reconstruct_and_filter, template_from_commitments,
+    TriggerOwner, hoodi_blob_bound, production_cell_kzg, reconstruct_and_filter,
+    template_from_commitments,
 };
 pub use inject::{
     BACKOFF_CAP, BACKOFF_INITIAL, DecodedFetch, INBOUND_QUEUE_BOUND, INJECT_QUEUE_BOUND,
